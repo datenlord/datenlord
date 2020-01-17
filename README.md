@@ -14,3 +14,5 @@ DatenLord is crafted for the aforementioned two senarios.
 Specifically, to reduce latency, DatenLord caches in memory as much data as possible, to minimize disk access; to improve throughput, DatenLord, on one hand, prefetches data in memory to speed up access, on the other hand, leverages K8S to schedule tasks to data nearby, so as to minimize data transfer, like Hadoop does.
 
 ----
+
+## DatenLord Architecture
