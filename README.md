@@ -1,5 +1,7 @@
 # DatenLord
 
+<img src="https://github.com/datenlord/datenlord/raw/master/logo.png" width="100">
+
 ----
 DatenLord is a cloud-native, applicated-orientated distributed storage system, especially for container ecosystem.
 DatenLord provides high-performance storage service for containers, which facilitates state-ful applications running on top of K8S.
