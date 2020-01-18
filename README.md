@@ -1,6 +1,6 @@
 # DatenLord
 
-<img src="https://github.com/datenlord/datenlord/raw/master/logo.png" width="100">
+![Logo of DatenLord](docs/images/logo.png)
 
 ----
 DatenLord is a cloud-native, applicated-orientated distributed storage system, especially for container ecosystem.
