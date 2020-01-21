@@ -23,7 +23,7 @@ The master node has three parts: S3 compatible interface (S3I), Lord, and Meta S
 
 The slave node has multiple parts: Data Storage Engine (DSE), Sklavin, Meta Storage Engine (MSE), S3/P2P interface. DSE is in charge of communicate with kernel modules so as to read/write data from/to memory or disks. Sklavin is to communite with the Lord of the master node and execute the command from the Lord, such as health check report, data synchronization, data consistency inspection, Lord election, etc. The MSE of the slave node is a local copy of the MSE from the master node. S3/P2P interface provides a convenient way, S3 or P2P, to read, write and synchronize data stored in a slave node.
 
-The K8S plugins includes a customer filter and a CSI driver.
+The K8S plugins includes a container storage interface (CSI) driver and a customer filter. The CSI driver is for DatenLord to work with K8S to manage the storage for container tasks, such as creating a volumn for containers to write, loading a volumn for containers to read. The customer filter is to help K8S to schedule tasks to data nearby.
 
 
 
