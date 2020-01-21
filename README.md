@@ -15,3 +15,5 @@ Specifically, to reduce latency, DatenLord caches in memory as much data as poss
 ----
 
 ## DatenLord Architecture
+
+![Logo of DatenLord](docs/images/Computing%20Defined%20Storage%402x.png)
