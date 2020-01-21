@@ -27,7 +27,7 @@ The K8S plugins includes a container storage interface (CSI) driver and a custom
 
 ### Latency-Sensitive Senario
 
-![Latency-Sensitive Senario](docs/images/Computing%20Defined%20Storage%20-%20Persistent%402x.png "Latency-Sensitive")
+![Latency-Sensitive Senario](docs/images/Computing%20Defined%20Storage%20-%20Persistent%402x.png ''Latency-Sensitive'')
 
 ### Throughput-Sensitive Senario
 
