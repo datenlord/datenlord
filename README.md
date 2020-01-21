@@ -21,14 +21,18 @@ DatenLord is of a classical master-slave architecture. To achieve better storage
 
 The master node has three parts: S3 compatible interface (S3I), Lord, and Meta Storage Engine (MSE). S3I provides a convenient way to read and write data stored in DatenLord via S3 protocal, especially for bulk upload and download senarios, such as uploading large amount of data for big data batch jobs or AI machine leanring training jobs. Lord is the overall controller of DatenLord, which controls all the interal behaviers of DatenLord, such as where and how to write data, synchronize data, etc. MSE is to store all the meta information of DatenLord, such as the file pathes of all the data stored in each slave node, the user defined labels of each data file, etc.
 
-The slave node has multiple parts: Data Storage Engine (DSE), Sklavin, Meta Storage Engine (MSE), S3/P2P interface. DSE is in charge of communicate with kernel modules so as to read/write data from/to memory or disks. More specifically, DatenLord sets up a file system in user space (FUSE) by using FUSE driver and library.. Sklavin is to communite with the Lord of the master node and execute the command from the Lord, such as health check report, data synchronization, data consistency inspection, Lord election, etc. The MSE of the slave node is a local copy of the MSE from the master node. S3/P2P interface provides a convenient way, S3 or P2P, to read, write and synchronize data stored in a slave node.
+The slave node has multiple parts: Data Storage Engine (DSE), Sklavin, Meta Storage Engine (MSE), S3/P2P interface. DSE is in charge of communicate with kernel modules so as to read/write data from/to memory or disks. More specifically, DatenLord sets up a file system in user space (FUSE) in each slave node by using FUSE driver and library. DSE is to implement the FUSE in each slave node, which executes all the underlying FUSE operation, such as open, create, read, write, etc. DSE can implement different types of FUSE for different senarios, e.g., memory-based FUSE, disk-based FUSE, and SAN-based FUSE. Sklavin is to communite with the Lord of the master node and execute the command from the Lord, such as health check report, data synchronization, data consistency inspection, Lord election, etc. The MSE of the slave node is a local copy of the MSE from the master node. S3/P2P interface provides a convenient way, S3 or P2P, to read, write and synchronize data stored in a slave node.
 
 The K8S plugins includes a container storage interface (CSI) driver and a customer filter. The CSI driver is for DatenLord to work with K8S to manage the storage for container tasks, such as creating a volumn for containers to write, loading a volumn for containers to read. The customer filter is to help K8S to schedule tasks to data nearby.
 
 ### Latency-Sensitive Senario
 
-Below is the architecture and workflow of DatenLord for latency-sensitive senario.
+Below is the architecture and workflow of DatenLord for latency-sensitive senario, where red solid lines represent K8S workflow and purple dotted lines represent DatenLord workflow.
 ![Latency-Sensitive Architecture](docs/images/Computing%20Defined%20Storage%20-%20Persistent%402x.png "Latency-Sensitive Architecture")
+
+The work flow for latency-sensitive senario is as following. Firstly, when K8S receives a task request, some kubelet on a node is scheduled to launch a container of this task. If this task requires one or more volumes, the kubelet will ask the local DatenLord CSI driver to prepare the volumns. Then the Sklavin of the same node of the kubelet recieves the volumn request from the CSI driver, and prepare the volumns accordingly. Specifically, the volumns are backed up by the FUSE of the node. After volumns are ready, the kubelet will launch the container of this task. Once the container is launched and in runtime, it can read and write data through DatenLord volumns.
+
+DatenLord can 
 
 ### Throughput-Sensitive Senario
 
