@@ -17,13 +17,12 @@ Specifically, to reduce latency, DatenLord caches in memory as much data as poss
 ## DatenLord Architecture
 
 DatenLord is of a classical master-slave architecture. Below is the overall DatenLord architecture.
-[DatenLord Architecture](docs/images/Computing%20Defined%20Storage%402x.png)
+![DatenLord Architecture](docs/images/Computing%20Defined%20Storage%402x.png)
 
-There are several major components of DatenLord: master node (shown as Daten Lord, or Lord for short), slave node (shown as Daten Sklavin, or Sklavin[^1] for short), and K8S plugins.
-
-
+There are several major components of DatenLord: master node (shown as Daten Lord, or Lord for short), slave node (shown as Daten Sklavin, or Sklavin[^skl] for short), and K8S plugins.
 
 
 
 
-[^1]: Sklavin is slave in German.
+
+[^skl]: Sklavin is slave in German.
