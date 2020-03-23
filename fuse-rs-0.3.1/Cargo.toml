@@ -1,0 +1,36 @@
+[package]
+name = "fuse_ll_rs"
+version = "0.3.1"
+authors = ["Andreas Neuhaus <zargony@zargony.com>"]
+edition = "2018"
+#description = "Rust library for filesystems in userspace (FUSE)"
+#documentation = "https://docs.rs/fuse"
+#homepage = "https://github.com/zargony/rust-fuse"
+#repository = "https://github.com/zargony/rust-fuse"
+#readme = "README.md"
+#keywords = ["fuse", "filesystem", "system", "bindings"]
+#categories = ["api-bindings", "filesystem"]
+#license = "MIT"
+#build = "build.rs"
+
+#[badges]
+#travis-ci = { repository = "zargony/rust-fuse" }
+
+#[build-dependencies]
+#pkg-config = "0.3"
+
+[dependencies]
+env_logger = "0.6.1"
+libc = "0.2"
+log = "0.3"
+nix = "0.17.0"
+time = "0.1"
+thread-scoped = "1"
+
+#[lib]
+#name = "fuse"
+#path = "src/lib.rs"
+
+#[[bin]]
+#name = "memfs"
+#path = "src/bin/memfs.rs"
