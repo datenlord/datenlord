@@ -92,11 +92,11 @@ impl Channel {
                 unsafe {
                     buffer.set_len(s as usize);
                 }
-                debug!("read successful {} byte data", s);
+                debug!("receive successfully {} byte data", s);
                 Ok(())
             }
             Err(e) => {
-                error!("read failed, the error is: {:?}", e);
+                error!("receive failed, the error is: {:?}", e);
                 Err(io::Error::last_os_error())
             }
         }
@@ -138,11 +138,11 @@ impl ChannelSender {
         let res = uio::writev(self.fd, &iovecs);
         match res {
             Ok(s) => {
-                debug!("writev successful {} byte data", s);
+                debug!("send successfully {} byte data", s);
                 Ok(())
             }
             Err(e) => {
-                error!("writev failed, the error is: {:?}", e);
+                error!("send failed, the error is: {:?}", e);
                 Err(io::Error::last_os_error())
             }
         }

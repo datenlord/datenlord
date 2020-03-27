@@ -103,17 +103,18 @@ impl<FS: Filesystem> Session<FS> {
         Ok(())
     }
 }
+
+impl<FS: Filesystem> Drop for Session<FS> {
+    fn drop(&mut self) {
+        info!("Unmounted {}", self.mountpoint().display());
+    }
+}
+
 /*
 impl<'a, FS: Filesystem + Send + 'a> Session<FS> {
     /// Run the session loop in a background thread
     pub unsafe fn spawn(self) -> io::Result<BackgroundSession<'a>> {
         BackgroundSession::new(self)
-    }
-}
-
-impl<FS: Filesystem> Drop for Session<FS> {
-    fn drop(&mut self) {
-        info!("Unmounted {}", self.mountpoint().display());
     }
 }
 

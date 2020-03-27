@@ -17,12 +17,13 @@ use std::os::unix::ffi::OsStrExt;
 use std::time::{Duration, SystemTime, SystemTimeError, UNIX_EPOCH};
 use std::{mem, ptr, slice};
 
-use super::abi::fuse_getxattr_out;
 #[cfg(target_os = "macos")]
 use super::abi::fuse_getxtimes_out;
-use super::abi::{fuse_attr, fuse_attr_out, fuse_entry_out, fuse_file_lock, fuse_kstatfs};
-use super::abi::{fuse_bmap_out, fuse_lk_out, fuse_open_out, fuse_statfs_out, fuse_write_out};
-use super::abi::{fuse_dirent, fuse_out_header};
+use super::abi::{
+    fuse_attr, fuse_attr_out, fuse_bmap_out, fuse_dirent, fuse_entry_out, fuse_file_lock,
+    fuse_getxattr_out, fuse_kstatfs, fuse_lk_out, fuse_open_out, fuse_out_header, fuse_statfs_out,
+    fuse_write_out,
+};
 use super::{FileAttr, FileType};
 
 /// Generic reply callback to send data
