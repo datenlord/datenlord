@@ -1,8 +1,8 @@
-use fuse_ll::fuse::{
-    self, FileAttr, FileType, Filesystem, ReplyAttr, ReplyData, ReplyDirectory, ReplyEmpty,
-    ReplyEntry, ReplyOpen, ReplyWrite, Request,
+use crate::fuse::{
+    FileAttr, FileType, Filesystem, ReplyAttr, ReplyData, ReplyDirectory, ReplyEmpty, ReplyEntry,
+    ReplyOpen, ReplyWrite, Request, FUSE_ROOT_ID,
 };
-use libc::{EEXIST, EINVAL, EIO, EISDIR, ENODATA, ENOENT, ENOTDIR, ENOTEMPTY};
+use libc::{EEXIST, EINVAL, ENODATA, ENOENT, ENOTEMPTY};
 use log::{debug, error}; // info, warn
 use nix::dir::{Dir, Type};
 use nix::fcntl::{self, FcntlArg, OFlag};
@@ -11,12 +11,11 @@ use nix::sys::uio;
 use nix::unistd::{self, Gid, Uid, UnlinkatFlags};
 use std::cell::{Cell, RefCell};
 use std::cmp;
-use std::collections::{btree_map::Entry, BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet};
 use std::convert::AsRef;
-use std::env;
 use std::ffi::{OsStr, OsString};
 use std::fs;
-use std::ops::Drop;
+use std::ops::{Deref, Drop};
 use std::os::raw::c_int;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::io::{AsRawFd, RawFd};
@@ -28,7 +27,7 @@ const MY_TTL_SEC: u64 = 1; // TODO: should be a long value, say 1 hour
 const MY_GENERATION: u64 = 1;
 // const MY_DIR_MODE: u16 = 0o755;
 // const MY_FILE_MODE: u16 = 0o644;
-const FUSE_ROOT_ID: u64 = 1; // defined in include/fuse_kernel.h
+// const FUSE_ROOT_ID: u64 = 1; // defined in include/fuse_kernel.h
 
 mod util {
     use super::*;
@@ -54,10 +53,23 @@ mod util {
                 mode,
             ),
         );
+
+        #[cfg(target_os = "linux")]
+        let fmode = Mode::from_bits_truncate(mode);
+        #[cfg(target_os = "macos")]
         let fmode = Mode::from_bits_truncate(mode as u16);
         debug!("helper_parse_mode() read file mode: {:?}", fmode);
         fmode
     }
+    pub fn parse_mode_bits(mode: u32) -> u16 {
+        #[cfg(target_os = "linux")]
+        let bits = parse_mode(mode).bits() as u16;
+        #[cfg(target_os = "macos")]
+        let bits = parse_mode(mode).bits();
+
+        bits
+    }
+
     pub fn parse_sflag(flags: u32) -> SFlag {
         debug_assert!(
             flags < std::u16::MAX as u32,
@@ -66,6 +78,10 @@ mod util {
                 flags,
             ),
         );
+
+        #[cfg(target_os = "linux")]
+        let sflag = SFlag::from_bits_truncate(flags);
+        #[cfg(target_os = "macos")]
         let sflag = SFlag::from_bits_truncate(flags as u16);
         debug!("convert_sflag() read file type as: {:?}", sflag);
         sflag
@@ -114,7 +130,7 @@ mod util {
             ))
         }
         #[cfg(target_os = "linux")]
-        fn build_crtime(st: &FileStat) -> Option<SystemTime> {
+        fn build_crtime(_st: &FileStat) -> Option<SystemTime> {
             None
         }
 
@@ -126,8 +142,8 @@ mod util {
             UNIX_EPOCH.checked_add(Duration::new(st.st_ctime as u64, st.st_ctime_nsec as u32));
         let crtime = build_crtime(&st);
 
-        let perm = util::parse_mode(st.st_mode as u32).bits();
-        debug!("helper_read_attr() got file permission as: {}", perm);
+        let perm = util::parse_mode_bits(st.st_mode as u32);
+        debug!("read_attr() got file permission as: {}", perm);
         let sflag = util::parse_sflag(st.st_mode as u32);
         let kind = util::convert_sflag(sflag);
 
@@ -146,6 +162,9 @@ mod util {
             uid: st.st_uid,
             gid: st.st_gid,
             rdev: st.st_rdev as u32,
+            #[cfg(target_os = "linux")]
+            flags: 0,
+            #[cfg(target_os = "macos")]
             flags: st.st_flags,
         };
         Ok(attr)
@@ -161,9 +180,8 @@ struct DirEntry {
 
 #[derive(Debug)]
 struct DirNode {
-    parent: u64,
-    name: OsString,
-    path: PathBuf,
+    parent: Cell<u64>,
+    name: RefCell<OsString>,
     attr: Cell<FileAttr>,
     data: RefCell<BTreeMap<OsString, DirEntry>>,
     dir_fd: RefCell<Dir>,
@@ -173,9 +191,8 @@ struct DirNode {
 
 #[derive(Debug)]
 struct FileNode {
-    parent: u64,
-    name: OsString,
-    path: PathBuf,
+    parent: Cell<u64>,
+    name: RefCell<OsString>,
     attr: Cell<FileAttr>,
     data: RefCell<Vec<u8>>,
     fd: RawFd,
@@ -221,15 +238,29 @@ impl INode {
 
     fn get_parent_ino(&self) -> u64 {
         match self {
-            INode::DIR(dir_node) => dir_node.parent,
-            INode::FILE(file_node) => file_node.parent,
+            INode::DIR(dir_node) => dir_node.parent.get(),
+            INode::FILE(file_node) => file_node.parent.get(),
         }
     }
 
-    fn get_name(&self) -> &OsString {
+    fn set_parent_ino(&self, parent: u64) -> u64 {
         match self {
-            INode::DIR(dir_node) => &dir_node.name,
-            INode::FILE(file_node) => &file_node.name,
+            INode::DIR(dir_node) => dir_node.parent.replace(parent),
+            INode::FILE(file_node) => file_node.parent.replace(parent),
+        }
+    }
+
+    fn get_name(&self) -> impl Deref<Target = OsString> + '_ {
+        match self {
+            INode::DIR(dir_node) => dir_node.name.borrow(),
+            INode::FILE(file_node) => file_node.name.borrow(),
+        }
+    }
+
+    fn set_name(&self, name: OsString) -> OsString {
+        match self {
+            INode::DIR(dir_node) => dir_node.name.replace(name),
+            INode::FILE(file_node) => file_node.name.replace(name),
         }
     }
 
@@ -341,8 +372,8 @@ impl INode {
         }
     }
 
-    fn open_root_inode(root_ino: u64, name: OsString, path: PathBuf) -> INode {
-        let dir_fd = util::open_dir(&path).expect(&format!(
+    fn open_root_inode(root_ino: u64, name: OsString, path: &Path) -> INode {
+        let dir_fd = util::open_dir(path).expect(&format!(
             "new_dir_inode() failed to open directory {:?}",
             path,
         ));
@@ -354,9 +385,8 @@ impl INode {
 
         // lookup count and open count are increased to 1 by creation
         let root_inode = INode::DIR(DirNode {
-            parent: root_ino,
-            name,
-            path,
+            parent: Cell::new(root_ino),
+            name: RefCell::new(name),
             attr: Cell::new(attr),
             data: RefCell::new(BTreeMap::new()),
             dir_fd: RefCell::new(dir_fd),
@@ -423,9 +453,8 @@ impl INode {
 
         // lookup count and open count are increased to 1 by creation
         let child_inode = INode::DIR(DirNode {
-            parent,
-            name: child_dir_name.clone(),
-            path: parent_node.path.join(&Path::new(child_dir_name)),
+            parent: Cell::new(parent),
+            name: RefCell::new(child_dir_name.clone()),
             attr: Cell::new(child_attr),
             data: RefCell::new(BTreeMap::new()),
             dir_fd: RefCell::new(child_dir_fd),
@@ -454,7 +483,8 @@ impl INode {
             .dir_fd
             .borrow_mut()
             .iter()
-            .map(|e| e.expect(&format!("helper_load_dir_data() failed to load entry")))
+            .filter(|e| e.is_ok())
+            .map(|e| e.unwrap()) // safe to use unwrap() here
             .filter(|e| {
                 let bytes = e.file_name().to_bytes();
                 !bytes.starts_with(&[b'.']) // skip hidden entries, '.' and '..'
@@ -474,6 +504,7 @@ impl INode {
             .map(|e| {
                 let name = OsString::from(OsStr::from_bytes(e.file_name().to_bytes()));
                 dir_node.data.borrow_mut().insert(
+                    // TODO: use functional way to load dir
                     name.clone(),
                     DirEntry {
                         ino: e.ino(),
@@ -517,6 +548,22 @@ impl INode {
             "helper_load_file_data() successfully load {} byte data",
             file_size,
         );
+    }
+
+    fn helper_reload_attribute(&self) -> FileAttr {
+        let raw_fd = match self {
+            INode::DIR(dir_node) => dir_node.dir_fd.borrow().as_raw_fd(),
+            INode::FILE(file_node) => file_node.fd,
+        };
+        let attr = util::read_attr(raw_fd).expect(&format!(
+            "helper_reload_attribute() failed to get the attribute of the node ino={}",
+            self.get_ino(),
+        ));
+        match self {
+            INode::DIR(_) => debug_assert_eq!(FileType::Directory, attr.kind),
+            INode::FILE(_) => debug_assert_eq!(FileType::RegularFile, attr.kind),
+        };
+        attr
     }
 
     // to open child, parent dir must have been opened
@@ -568,9 +615,8 @@ impl INode {
 
         // lookup count and open count are increased to 1 by creation
         INode::FILE(FileNode {
-            parent,
-            name: child_file_name.clone(),
-            path: parent_node.path.join(&Path::new(child_file_name)),
+            parent: Cell::new(parent),
+            name: RefCell::new(child_file_name.clone()),
             attr: Cell::new(child_attr),
             data: RefCell::new(Vec::new()),
             fd: child_fd,
@@ -584,7 +630,7 @@ impl INode {
     }
 
     fn create_child_file(&self, child_file_name: &OsString, oflags: OFlag, mode: Mode) -> INode {
-        self.helper_open_child_file(child_file_name, oflags, Mode::empty(), true)
+        self.helper_open_child_file(child_file_name, oflags, mode, true)
     }
 
     fn dup_fd(&self, oflags: OFlag) -> RawFd {
@@ -615,13 +661,38 @@ impl INode {
         new_fd
     }
 
-    fn unlink_entry(&self, child_name: &OsString) -> Option<DirEntry> {
+    fn insert_entry(&self, child_entry: DirEntry) -> Option<DirEntry> {
         let parent_node = self.helper_get_dir_node();
-        let parent_data: &BTreeMap<OsString, DirEntry> = &parent_node.data.borrow();
-        let child_entry = parent_data.get(child_name).expect(&format!(
-            "unlink_entry() failed to find entry name: {:?}",
-            child_name,
-        ));
+        let previous_entry = parent_node
+            .data
+            .borrow_mut()
+            .insert(child_entry.name.clone(), child_entry);
+        debug!(
+            "insert_entry() successfully inserted new entry and replaced previous entry: {:?}",
+            previous_entry,
+        );
+
+        previous_entry
+    }
+
+    fn remove_entry(&self, child_name: &OsString) -> DirEntry {
+        let parent_node = self.helper_get_dir_node();
+        parent_node
+            .data
+            .borrow_mut()
+            .remove(child_name)
+            .expect(&format!(
+                "unlink_entry found fs is inconsistent, the entry of name={:?}
+                is not in directory of name={:?} and ino={}",
+                child_name,
+                self.get_name().as_os_str(),
+                self.get_ino(),
+            ))
+    }
+
+    fn unlink_entry(&self, child_name: &OsString) -> DirEntry {
+        let parent_node = self.helper_get_dir_node();
+        let child_entry = self.remove_entry(child_name);
         // delete from disk and close the handler
         match child_entry.entry_type {
             Type::Directory => {
@@ -651,7 +722,8 @@ impl INode {
                 child_entry.entry_type
             ),
         }
-        parent_node.data.borrow_mut().remove(child_name)
+
+        child_entry
     }
 
     fn is_empty(&self) -> bool {
@@ -664,22 +736,22 @@ impl INode {
     fn need_load_data(&self) -> bool {
         if !self.is_empty() {
             debug!(
-                "need_load_data() found node data of name: {:?} and ino={} is in cache, no need to load",
-                self.get_name(),
+                "need_load_data() found node data of name={:?} and ino={} is in cache, no need to load",
+                self.get_name().as_os_str(),
                 self.get_ino(),
             );
             false
         } else if self.get_attr().size > 0 {
             debug!(
-                "need_load_data() found node size of name: {:?} and ino={} is non-zero, need to load",
-                self.get_name(),
+                "need_load_data() found node size of name={:?} and ino={} is non-zero, need to load",
+                self.get_name().as_os_str(),
                 self.get_ino(),
             );
             true
         } else {
             debug!(
-                "need_load_data() found node size of name: {:?} and ino={} is zero, no need to load",
-                self.get_name(),
+                "need_load_data() found node size of name={:?} and ino={} is zero, no need to load",
+                self.get_name().as_os_str(),
                 self.get_ino(),
             );
             false
@@ -754,10 +826,12 @@ impl INode {
             "write_file() failed to set the flags {:?} to file handler {} of ino={}",
             oflags, fd, ino,
         ));
-        // TODO: async write to disk
-        let written_size = uio::pwrite(fd, data, offset).expect("write() failed to write to disk");
-        debug_assert_eq!(data.len(), written_size);
-
+        let mut written_size = data.len();
+        if true {
+            // TODO: async write to disk
+            written_size = uio::pwrite(fd, data, offset).expect("write() failed to write to disk");
+            debug_assert_eq!(data.len(), written_size);
+        }
         // update the attribute of the written file
         attr.size = file_data.len() as u64;
         let ts = SystemTime::now();
@@ -765,12 +839,38 @@ impl INode {
 
         written_size
     }
+
+    fn helper_move_file(
+        old_parent_inode: &INode,
+        old_name: &OsStr,
+        new_parent_inode: &INode,
+        new_name: &OsStr,
+    ) -> nix::Result<()> {
+        let old_dir = old_parent_inode.helper_get_dir_node();
+        let new_dir = new_parent_inode.helper_get_dir_node();
+
+        debug!(
+            "helper_move_file() about to move file of old name={:?}
+                from directory {:?} to directory {:?} with new name={:?}",
+            old_name,
+            old_parent_inode.get_name().as_os_str(),
+            new_parent_inode.get_name().as_os_str(),
+            new_name,
+        );
+        fcntl::renameat(
+            Some(old_dir.dir_fd.borrow().as_raw_fd()),
+            Path::new(old_name),
+            Some(new_dir.dir_fd.borrow().as_raw_fd()),
+            Path::new(new_name),
+        )
+    }
 }
 
-struct MemoryFilesystem {
+pub struct MemoryFilesystem {
     // max_ino: AtomicU64,
     uid: Uid,
     gid: Gid,
+    root_path: PathBuf,
     cache: BTreeMap<u64, INode>,
     trash: BTreeSet<u64>,
 }
@@ -851,18 +951,54 @@ impl MemoryFilesystem {
         ))
     }
 
-    fn helper_unlink_node_by_ino(&mut self, ino: u64) -> INode {
-        let inode = self.cache.get(&ino).expect(&format!(
-            "helper_unlink_node_by_ino() failed to find the i-node of ino={}",
-            ino,
-        ));
-        let node_name = inode.get_name();
+    fn helper_may_deferred_delete_node(&mut self, ino: u64) {
+        let parent_ino: u64;
+        let mut deferred_deletion = false;
+        {
+            let inode = self.cache.get(&ino).expect(&format!(
+                "helper_may_deferred_delete_node() failed to find the i-node of ino={}",
+                ino,
+            ));
 
-        let parent_inode = self.helper_get_parent_inode(ino);
-        parent_inode.unlink_entry(node_name);
+            let parent_inode = self.helper_get_parent_inode(ino);
+            parent_ino = parent_inode.get_ino();
+            // remove entry from parent i-node
+            let deleted_entry = parent_inode.unlink_entry(&inode.get_name());
+            debug_assert_eq!(deleted_entry.ino, ino);
+            debug_assert_eq!(inode.get_name().as_os_str(), &deleted_entry.name);
+            debug_assert!(inode.get_lookup_count() >= 0); // lookup count cannot be negative
+            if inode.get_lookup_count() > 0 {
+                deferred_deletion = true;
+            }
+        }
 
-        let inode = self.cache.remove(&ino).unwrap();
-        inode
+        if deferred_deletion {
+            // deferred deletion
+            let inode = self.cache.get(&ino).unwrap(); // TODO: support thread-safe
+            let insert_result = self.trash.insert(ino);
+            debug_assert!(insert_result); // check thread-safe in case of duplicated deferred deletion requests
+            debug!(
+                "helper_may_deferred_delete_node() defered removed the node name={:?} of ino={}
+                    under parent ino={}, open count is: {}, lookup count is : {}",
+                inode.get_name().as_os_str(),
+                ino,
+                parent_ino,
+                inode.get_open_count(),
+                inode.get_lookup_count(),
+            );
+        } else {
+            // complete deletion
+            let inode = self.cache.remove(&ino).unwrap(); // TODO: support thread-safe
+            debug!(
+                "helper_may_deferred_delete_node() successfully removed the node name={:?} of ino={}
+                    under parent ino={}, open count is: {}, lookup count is : {}",
+                inode.get_name().as_os_str(),
+                ino,
+                parent_ino,
+                inode.get_open_count(),
+                inode.get_lookup_count(),
+            );
+        }
     }
 
     fn helper_remove_node(
@@ -919,7 +1055,7 @@ impl MemoryFilesystem {
                         node_name, node_ino, parent,
                     ));
                     debug_assert_eq!(node_ino, child_inode.get_ino());
-                    debug_assert_eq!(node_name, child_inode.get_name());
+                    debug_assert_eq!(node_name, child_inode.get_name().as_os_str());
                     debug_assert_eq!(parent, child_inode.get_parent_ino());
                     debug_assert_eq!(node_type, child_inode.get_type());
                     debug_assert_eq!(node_kind, child_inode.get_attr().kind);
@@ -927,54 +1063,14 @@ impl MemoryFilesystem {
             }
         }
         {
-            // all checks passed, ready to remove, safe to use unwrap() below,
-            // except in multi-thread case
-            // TODO: when deferred deletion, remove entry from directory first
-            // let child_entry = parent_inode.unlink_entry(node_name).unwrap();
-
-            let mut defered_deletion = false;
-            {
-                let inode = self.cache.get(&node_ino).expect(&format!(
-                    "helper_remove_node() failed to find the i-node of ino={}",
-                    node_ino,
-                ));
-                debug_assert!(inode.get_lookup_count() >= 0); // lookup count cannot be negative
-                if inode.get_lookup_count() > 0 {
-                    defered_deletion = true;
-                }
-            }
-            if defered_deletion {
-                let inode = self.cache.get(&node_ino).unwrap(); // TODO: support thread-safe
-                let insert_result = self.trash.insert(node_ino);
-                debug_assert!(insert_result); // check thread-safe in case of duplicated deferred deletion requests
-                debug!(
-                    "helper_remove_node() defered removed the node name={:?} of ino={}
-                        under parent ino={}, its attr is: {:?}, open count is: {}, lookup count is : {}",
-                    node_name,
-                    node_ino,
-                    parent,
-                    INode::get_attr(inode),
-                    INode::get_open_count(inode),
-                    INode::get_lookup_count(inode),
-                );
-            } else {
-                let inode = self.helper_unlink_node_by_ino(node_ino);
-                debug!(
-                    "helper_remove_node() successfully removed the node name={:?} of ino={}
-                        under parent ino={}, its attr is: {:?}, open count is: {}, lookup count is : {}",
-                    node_name,
-                    node_ino,
-                    parent,
-                    INode::get_attr(&inode),
-                    INode::get_open_count(&inode),
-                    INode::get_lookup_count(&inode),
-                );
-            }
+            // all checks passed, ready to remove,
+            // when deferred deletion, remove entry from directory first
+            self.helper_may_deferred_delete_node(node_ino);
             reply.ok();
         }
     }
 
-    fn new<P: AsRef<Path>>(mount_point: P) -> MemoryFilesystem {
+    pub fn new<P: AsRef<Path>>(mount_point: P) -> MemoryFilesystem {
         let uid = unistd::getuid();
         let gid = unistd::getgid();
 
@@ -987,7 +1083,7 @@ impl MemoryFilesystem {
             mount_dir,
         ));
 
-        let root_inode = INode::open_root_inode(FUSE_ROOT_ID, OsString::from("/"), root_path);
+        let root_inode = INode::open_root_inode(FUSE_ROOT_ID, OsString::from("/"), &root_path);
         let mut cache = BTreeMap::new();
         cache.insert(FUSE_ROOT_ID, root_inode);
         let trash = BTreeSet::new(); // for deferred deletion
@@ -995,6 +1091,7 @@ impl MemoryFilesystem {
         MemoryFilesystem {
             uid,
             gid,
+            root_path,
             cache,
             trash,
         }
@@ -1003,35 +1100,7 @@ impl MemoryFilesystem {
 
 impl Filesystem for MemoryFilesystem {
     fn init(&mut self, _req: &Request<'_>) -> Result<(), c_int> {
-        // TODO: test fd health without using unwrap()
-        // let dir_inode = self.cache.get(&FUSE_ROOT_ID).unwrap();
-        // let dir_fd = INode::get_dir_fd_mut(&dir_inode);
-        // dir_fd.iter().map(|e| dbg!(e)).count();
-        // let attr = util::read_attr(dir_fd.as_raw_fd()).unwrap();
-        // dbg!(attr);
-        // let sub_dir = PathBuf::from("文件夹1");
-        // let sub_file = PathBuf::from("文件A.txt");
-        // let dfd = util::open_dir_at(&dir_fd, sub_dir.as_os_str()).unwrap();
-        // let ffd = util::open_file_at(
-        //     &dir_fd,
-        //     sub_file.as_os_str(),
-        //     OFlag::O_RDWR.bits() as u32,
-        // )
-        // .unwrap();
-        // let file_attr = util::read_attr(ffd).unwrap();
-        // dbg!(file_attr);
-        // let dir_attr = util::read_attr(dfd.as_raw_fd()).unwrap();
-        // dbg!(dir_attr);
-        // let dup_ffd = unistd::dup(ffd).unwrap();
-        // let file_attr = util::read_attr(dup_ffd).unwrap();
-        // dbg!(file_attr);
-        // let dup_dfd = unistd::dup(dfd.as_raw_fd()).unwrap();
-        // let mut dup_dir_fd = Dir::from_fd(dup_dfd).unwrap();
-        // let dir_attr = util::read_attr(dup_dir_fd.as_raw_fd()).unwrap();
-        // dbg!(dir_attr);
-        // let dir_data = util::build_dir_data(&mut dup_dir_fd).unwrap();
-        // dbg!(dir_data);
-
+        // TODO:
         Ok(())
     }
 
@@ -1112,7 +1181,7 @@ impl Filesystem for MemoryFilesystem {
             fh, ino,
         ));
         reply.ok();
-        INode::dec_open_count(inode);
+        inode.dec_open_count();
         debug!(
             "release() successfully closed the file handler {} of ino={}",
             fh, ino,
@@ -1154,7 +1223,7 @@ impl Filesystem for MemoryFilesystem {
             fh, ino,
         ));
         reply.ok();
-        INode::dec_open_count(inode);
+        inode.dec_open_count();
         debug!(
             "releasedir() successfully closed the file handler {} of ino={}",
             fh, ino,
@@ -1194,47 +1263,6 @@ impl Filesystem for MemoryFilesystem {
             ino,
         ));
         inode.read_file(read_helper);
-        // {
-        //     // cache hit
-        //     let file_data = INode::get_file_data(inode);
-
-        //     if !file_data.is_empty() {
-        //         debug!("read() cache hit when reading the data of ino={}", ino);
-        //         read_helper(&*file_data, ino, offset, size, reply);
-        //         return;
-        //     }
-        // }
-        // {
-        //     // cache miss
-        //     debug!("read() cache missed when reading the data of ino={}", ino);
-        //     // let inode = self.cache.get(&ino).expect(&format!(
-        //     //     "read() found fs is inconsistent, the i-node of ino={} should be in cache",
-        //     //     ino,
-        //     // ));
-        //     let fd = INode::get_file_fd(inode);
-        //     let attr = INode::get_attr(inode);
-        //     let mut file_data = INode::get_file_data_mut(inode);
-        //     file_data.reserve(attr.size as usize);
-        //     unsafe {
-        //         file_data.set_len(file_data.capacity());
-        //     }
-        //     let res = unistd::read(fd.clone(), &mut *file_data);
-        //     match res {
-        //         Ok(s) => {
-        //             unsafe {
-        //                 file_data.set_len(s as usize);
-        //             }
-        //             read_helper(&file_data, ino, offset, size, reply); // TODO: zero file data copy
-        //         }
-        //         Err(e) => {
-        //             reply.error(EIO);
-        //             panic!(
-        //                 "read() failed to read the file of ino={} from disk, the error is: {:?}",
-        //                 ino, e,
-        //             );
-        //         }
-        //     }
-        // }
     }
 
     fn readdir(
@@ -1284,35 +1312,6 @@ impl Filesystem for MemoryFilesystem {
             ino,
         ));
         inode.read_dir(readdir_helper);
-        // {
-        //     // cache hit
-        //     let dir_data = INode::get_dir_data(inode);
-        //     if !dir_data.is_empty() {
-        //         debug!("readdir() cache hit when reading the data of ino={}", ino);
-        //         readdir_helper(dir_data, &ino, offset, reply);
-        //         return;
-        //     }
-        // }
-        // {
-        //     // cache miss
-        //     debug!(
-        //         "readdir() cache missed when reading the data of ino={}",
-        //         ino,
-        //     );
-        //     let dir_fd = INode::get_dir_fd_mut(inode);
-        //     match util::build_dir_data(&mut dir_fd) {
-        //         Ok(dir_data) => {
-        //             let old_data = INode::set_dir_data(inode, dir_data);
-        //             debug_assert!(old_data.is_empty());
-        //             readdir_helper(&dir_data, &ino, offset, reply);
-        //         }
-        //         Err(e) => panic!(
-        //             "readdir() failed to read the directory of ino={},
-        //                 the error is: {}",
-        //             ino, e,
-        //         ),
-        //     }
-        // }
     }
 
     fn lookup(&mut self, req: &Request, parent: u64, name: &OsStr, reply: ReplyEntry) {
@@ -1361,7 +1360,7 @@ impl Filesystem for MemoryFilesystem {
             // cache hit
             if let Some(inode) = self.cache.get(&ino) {
                 debug!(
-                    "lookup() cache hit when searching file of name: {:?} and ino={} under parent ino={}",
+                    "lookup() cache hit when searching file of name={:?} and ino={} under parent ino={}",
                     child_name, ino, parent,
                 );
                 inode.lookup_attr(lookup_helper);
@@ -1372,7 +1371,7 @@ impl Filesystem for MemoryFilesystem {
             // cache miss
             debug!(
                 "lookup() cache missed when searching parent ino={}
-                    and file name: {:?} of ino={}",
+                    and file name={:?} of ino={}",
                 parent, child_name, ino,
             );
             let parent_inode = self.cache.get(&parent).expect(&format!(
@@ -1422,7 +1421,11 @@ impl Filesystem for MemoryFilesystem {
                 // TODO: support thread-safe
                 if self.trash.contains(&ino) {
                     // deferred deletion
-                    let deleted_inode = self.helper_unlink_node_by_ino(ino);
+                    let deleted_inode = self.cache.remove(&ino).expect(&format!(
+                        "forget() found fs is inconsistent, node of ino={}
+                            found in trash, but no i-node found for deferred deletion",
+                        ino,
+                    ));
                     self.trash.remove(&ino);
                     debug_assert_eq!(deleted_inode.get_lookup_count(), 0);
                     debug!(
@@ -1478,7 +1481,7 @@ impl Filesystem for MemoryFilesystem {
             let ts = SystemTime::now();
 
             if let Some(b) = mode {
-                attr.perm = util::parse_mode(b).bits();
+                attr.perm = util::parse_mode_bits(b);
                 debug!("setattr set permission as: {}", attr.perm);
 
                 let sflag = util::parse_sflag(b);
@@ -1525,42 +1528,6 @@ impl Filesystem for MemoryFilesystem {
             ino,
         ));
         inode.set_attr(setattr_helper);
-        // {
-        //     // cache hit
-        //     if let Some(rc) = self.attr_cache.get(&ino) {
-        //         let attr = &mut *rc.borrow_mut();
-        //         debug!("setattr() cache hit when searching ino={}", ino);
-        //         setattr_helper(
-        //             &ino, mode, uid, gid, size, atime, mtime, crtime, chgtime, bkuptime, flags,
-        //             attr, reply,
-        //         );
-        //         return; // attribute already updated by using mute borrow
-        //     }
-        // }
-        // {
-        //     // cache miss
-        //     debug!("setattr() cache missed when searching ino={}", ino);
-        //     let fd = {
-        //         if fh.is_some() {
-        //             fh.unwrap() as RawFd // safe to use unwrap() here
-        //         } else {
-        //             self.helper_get_fd_by_ino(&ino).expect(&format!(
-        //                 "setattr() found fs is inconsistent,
-        //                     node of ino={} should be opened before setattr()",
-        //                 ino,
-        //             ))
-        //         }
-        //     };
-        //     let mut attr = util::read_attr(&fd).expect(&format!(
-        //         "setattr() failed to read the attribute of ino={}",
-        //         ino
-        //     ));
-        //     setattr_helper(
-        //         &ino, mode, uid, gid, size, atime, mtime, crtime, chgtime, bkuptime, flags,
-        //         &mut attr, reply,
-        //     );
-        //     self.attr_cache.insert(ino, attr);
-        // }
         // TODO: write attribute to disk
     }
 
@@ -1650,93 +1617,8 @@ impl Filesystem for MemoryFilesystem {
                 data
             },
         );
-        // {
-        //     let file_data_ref = self.data_cache.get(&ino).expect(&format!(
-        //         "write() found fs is inconsistent,
-        //             file of ino={} should be opened before write()",
-        //         ino
-        //     ));
-        //     match &mut *file_data_ref.borrow_mut() {
-        //         FileData::Directory(_) => {
-        //             reply.error(EISDIR);
-        //             panic!(
-        //                 "write() found fs is inconsistent,
-        //                     the node type of ino={} should be a file not a directory",
-        //                 ino,
-        //             );
-        //         }
-        //         FileData::File(file_data) => {
-        //             let size_after_write = offset as usize + data.len();
-        //             if file_data.capacity() < size_after_write {
-        //                 let before_cap = file_data.capacity();
-        //                 let extra_space_size = size_after_write - file_data.capacity();
-        //                 file_data.reserve(extra_space_size);
-        //                 // TODO: handle OOM when reserving
-        //                 // let result = file_data.try_reserve(extra_space_size);
-        //                 // if result.is_err() {
-        //                 //     warn!(
-        //                 //         "write cannot reserve enough space, the space size needed is {} byte",
-        //                 //         extra_space_size);
-        //                 //     reply.error(ENOMEM);
-        //                 //     return;
-        //                 // }
-        //                 debug!(
-        //                     "write() enlarged the file data vector capacity from {} to {}",
-        //                     before_cap,
-        //                     file_data.capacity(),
-        //                 );
-        //             }
-        //             match file_data.len().cmp(&(offset as usize)) {
-        //                 cmp::Ordering::Greater => {
-        //                     file_data.truncate(offset as usize);
-        //                     debug!(
-        //                         "write() truncated the file of ino={} to size={}",
-        //                         ino, offset
-        //                     );
-        //                 }
-        //                 cmp::Ordering::Less => {
-        //                     let zero_padding_size = (offset as usize) - file_data.len();
-        //                     let mut zero_padding_vec = vec![0u8; zero_padding_size];
-        //                     file_data.append(&mut zero_padding_vec);
-        //                 }
-        //                 cmp::Ordering::Equal => (),
-        //             }
-        //             file_data.extend_from_slice(data);
-        //             reply.written(data.len() as u32);
-        //             // TODO: async write to disk
-        //             let written_size = uio::pwrite(fh as RawFd, data, offset)
-        //                 .expect("write() failed to write to disk");
-        //             debug_assert_eq!(data.len(), written_size);
-
-        //             // update the attribute of the written file
-        //             let attr_ref = self.attr_cache.get(&ino).expect(&format!(
-        //                 "write() found fs is inconsistent, no attribute found for ino={}",
-        //                 ino,
-        //             ));
-        //             let attr = &mut *attr_ref.borrow_mut();
-        //             attr.size = file_data.len() as u64;
-        //             attr.flags = flags;
-        //             let ts = SystemTime::now();
-        //             attr.mtime = ts;
-
-        //             debug!(
-        //                 "write() successfully wrote {} byte data to file ino={} at offset={},
-        //                  the attr is: {:?}, the first at most 100 byte data are: {:?}",
-        //                 data.len(),
-        //                 ino,
-        //                 offset,
-        //                 &attr,
-        //                 if data.len() > 100 {
-        //                     &data[0..100]
-        //                 } else {
-        //                     data
-        //                 },
-        //             );
-        //         }
-        //     }
-        // }
     }
-    /*
+
     /// Rename a file
     /// The filesystem must return -EINVAL for any unsupported or
     /// unknown flags. Currently the following flags are implemented:
@@ -1763,239 +1645,174 @@ impl Filesystem for MemoryFilesystem {
             parent, old_name, new_parent, new_name, req.request,
         );
 
-        let tree = &mut self
-            .tree
-            .write()
-            .expect("rename cannot get the write lock of fs");
-
-        // check the new parent has no entry with the same name as the rename file
-        match tree.get(&new_parent) {
-            Some(new_parent_node) => match &new_parent_node.data {
-                FileData::Directory(new_parent_data) => {
-                    if new_parent_data.contains_key(&new_name) {
-                        reply.error(EEXIST); // RENAME_NOREPLACE
-                        debug!(
-                            "rename found the new parent directory of ino={} already has a child with name={:?}",
-                            new_parent, new_name,
+        // let old_entry_ino: u64;
+        // let mut need_to_replace = false;
+        // let mut replaced_node_ino: u64 = 0;
+        {
+            // pre-check
+            let parent_inode = self.cache.get(&parent).expect(&format!(
+                "rename() found fs is inconsistent, parent i-node of ino={} should be in cache",
+                new_parent,
+            ));
+            match parent_inode.get_entry(&old_name) {
+                None => {
+                    reply.error(ENOENT);
+                    debug!(
+                        "rename() failed to find child entry of name={:?} under parent directory ino={}",
+                        old_name, parent,
+                    );
+                    return;
+                }
+                Some(old_entry) => {
+                    // check the i-node to rename in cache
+                    if let None = self.cache.get(&old_entry.ino) {
+                        panic!(
+                            "rename() found fs is inconsistent, the i-node of name={:?} and ino={} to rename should be in cache",
+                            old_name, old_entry.ino,
                         );
-                        return;
+                        // return;
                     }
                 }
-                FileData::File(_) => {
-                    reply.error(ENOTDIR);
-                    panic!(
-                        "rename found fs is inconsistent, the node type of new parent ino={} should be a directory not a file",
-                        parent,
-                    );
-                    // return;
-                }
-            },
-            None => {
-                reply.error(ENOENT);
-                debug!(
-                    "rename failed to find the i-node of new parent directory ino={}",
-                    parent,
-                );
-                return;
             }
-        };
 
-        let rename_ino: u64;
-        // check the old parent contains the rename file
-        match tree.get(&parent) {
-            Some(old_parent_node) => match &old_parent_node.data {
-                FileData::Directory(old_parent_data) => match old_parent_data.get(&old_name) {
-                    Some(old_ino) => rename_ino = old_ino.clone(),
-                    None => {
-                        reply.error(ENOENT);
-                        debug!(
-                                "rename cannot find the old file name={:?} under the old parent directory of ino={}",
-                                old_name, parent,
-                            );
-                        return;
-                    }
-                },
-                FileData::File(_) => {
-                    reply.error(ENOTDIR);
-                    panic!(
-                        "rename found fs is inconsistent,
-                         the node type of old parent ino={} should be a directory not a file",
-                        parent,
-                    );
-                    // return;
-                }
-            },
-            None => {
-                reply.error(ENOENT);
+            let new_parent_inode = self.cache.get(&new_parent).expect(&format!(
+                "rename() found fs is inconsistent, new parent i-node of ino={} should be in cache",
+                new_parent,
+            ));
+            if let Some(replace_entry) = new_parent_inode.get_entry(&new_name) {
+                debug_assert_eq!(&new_name, &replace_entry.name);
+                // replaced_node_ino = replace_entry.ino;
+                // need_to_replace = true;
+                // debug!(
+                //     "rename() found the new parent directory of ino={} already has a child with name={:?}",
+                //     new_parent, new_name,
+                // );
+                reply.error(EEXIST); // RENAME_NOREPLACE
                 debug!(
-                    "rename failed to find the i-node of old parent directory ino={}",
-                    parent,
+                    "rename() found the new parent directory of ino={} already has a child with name={:?}",
+                    new_parent, new_name,
                 );
                 return;
             }
         }
 
-        // check the i-node of rename file exists
-        if !tree.contains_key(&rename_ino) {
-            reply.error(ENOENT);
-            panic!(
-                "rename found fs is inconsistent, the file name={:?} of ino={}
-                 found under the parent ino={}, but no i-node found for the file",
-                old_name, rename_ino, parent,
+        // all checks passed, ready to rename
+        {
+            // TODO: support thread-safe
+            let parent_inode = self.cache.get(&parent).unwrap();
+            let new_parent_inode = self.cache.get(&new_parent).unwrap();
+
+            let old_entry = parent_inode.get_entry(&old_name).unwrap();
+            let child_inode = self.cache.get(&old_entry.ino).unwrap();
+            child_inode.set_parent_ino(new_parent_inode.get_ino());
+            child_inode.set_name(new_name.clone());
+
+            let mut child_entry = parent_inode.remove_entry(&old_name);
+            child_entry.name = new_name.clone();
+            let replaced_result = new_parent_inode.insert_entry(child_entry);
+            debug_assert!(replaced_result.is_none());
+            // if need_to_replace {
+            //     debug_assert!(replaced_result.is_some());
+            //     let replaced_entry = replaced_result.unwrap();
+            //     debug_assert_eq!(replaced_entry.ino, replaced_node_ino);
+            //     debug_assert_eq!(new_name, replaced_entry.name);
+            // } else {
+            // move child on disk
+            INode::helper_move_file(&parent_inode, &old_name, &new_parent_inode, newname).expect(
+                &format!(
+                "rename() failed to move the old file name={:?} of ino={} under old parent ino={}
+                    to the new file name={:?} under new parent ino={}",
+                old_name, old_entry.ino, parent, newname, new_parent,
+            ),
             );
-            // return;
+            debug!(
+                "rename() moved on disk the old file name={:?} of ino={} under old parent ino={}
+                    to the new file name={:?} ino={} under new parent ino={}",
+                old_name, old_entry.ino, parent, newname, old_entry.ino, new_parent,
+            );
+
+            let child_attr = child_inode.helper_reload_attribute();
+            debug_assert_eq!(child_attr.ino, child_inode.get_ino());
+            debug_assert_eq!(child_attr.ino, old_entry.ino);
+
+            debug!(
+                "rename() successfully moved the old file name={:?} of ino={} under old parent ino={}
+                    to the new file name={:?} ino={} under new parent ino={}",
+                old_name, old_entry.ino, parent, newname, old_entry.ino, new_parent,
+            );
+            reply.ok();
         }
-
-        // all checks passed, ready to rename, it's safe to use unwrap()
-        if let FileData::Directory(old_parent_data) = &mut tree.get_mut(&parent).unwrap().data {
-            // remove the inode of old file from old directory
-            let rename_ino = old_parent_data.remove(&old_name).unwrap();
-            if let FileData::Directory(new_parent_data) =
-                &mut tree.get_mut(&new_parent).unwrap().data
-            {
-                // move from old parent directory to new parent
-                new_parent_data.insert(new_name, rename_ino);
-
-                let moved_file_info = tree.get_mut(&rename_ino).unwrap();
-                // update the parent inode of the moved file
-                moved_file_info.parent = new_parent;
-
-                // change the ctime of the moved file
-                let ts = SystemTime::now();
-                moved_file_info.attr.ctime = ts;
-
-                reply.ok();
-                debug!(
-                    "rename successfully moved the old file name={:?} of ino={} under old parent ino={}
-                     to the new file name={:?} ino={} under new parent ino={}",
-                    old_name, rename_ino, parent, newname, rename_ino, new_parent,
-                );
-                return;
-            }
-        }
-        panic!("rename should never reach here");
-    } */
+        // if need_to_replace {
+        //     debug_assert_ne!(replaced_node_ino, 0);
+        //     self.helper_may_deferred_delete_node(replaced_node_ino);
+        //     debug!(
+        //         "rename() successfully moved the old file name={:?} of ino={} under old parent ino={}
+        //             to replace the new file name={:?} ino={} under new parent ino={}",
+        //         old_name, old_entry_ino, parent, newname, replaced_node_ino, new_parent,
+        //     );
+        // } else {
+    }
 }
 
-fn main() {
-    env_logger::init();
-
-    let mountpoint = match env::args_os().nth(1) {
-        Some(path) => path,
-        None => {
-            println!(
-                "Usage: {} <MOUNTPOINT>",
-                env::args().nth(0).unwrap(), // safe to use unwrap here
-            );
-            return;
-        }
-    };
-    let options = [
-        // "-d",
-        //"-r",
-        "-s",
-        "-f",
-        "-o",
-        "debug",
-        "-o",
-        "fsname=fuse_rs_demo",
-        "-o",
-        "kill_on_unmount",
-    ]
-    .iter()
-    .map(|o| o.as_ref())
-    .collect::<Vec<&OsStr>>();
-
-    let fs = MemoryFilesystem::new(&mountpoint);
-    fuse::mount(fs, mountpoint, &options).expect("Couldn't mount filesystem");
-}
-
-#[cfg(test)]
 mod test {
     #[test]
-    fn test_tmp() {
-        fn u64fn(u64ref: u64) {
-            dbg!(u64ref);
+    fn test_libc_renameat() {
+        use nix::dir::Dir;
+        use nix::fcntl::OFlag;
+        use nix::sys::stat::Mode;
+        use std::ffi::CString;
+        use std::fs;
+        use std::os::unix::io::AsRawFd;
+        use std::path::Path;
+
+        const DEFAULT_MOUNT_DIR: &str = "/tmp/fuse_test";
+        const FILE_CONTENT: &str = "0123456789ABCDEF";
+        let mount_dir = Path::new(DEFAULT_MOUNT_DIR);
+        if !mount_dir.exists() {
+            fs::create_dir(&mount_dir).unwrap();
         }
-        let num: u64 = 100;
-        let u64ref = &num;
-        u64fn(u64ref.clone());
-    }
 
-    #[test]
-    fn test_skip() {
-        let v = vec![1, 2, 3, 4];
-        for e in v.iter().skip(5) {
-            dbg!(e);
+        let from_dir = Path::new(&mount_dir).join("from_dir");
+        if from_dir.exists() {
+            fs::remove_dir_all(&from_dir).unwrap();
         }
-    }
-
-    #[test]
-    fn test_vec() {
-        let mut v = vec![1, 2, 3, 4, 5];
-        let cap = v.capacity();
-        v.truncate(3);
-        assert_eq!(v.len(), 3);
-        assert_eq!(v.capacity(), cap);
-
-        let mut v2 = vec![0; 3];
-        v.append(&mut v2);
-        assert_eq!(v.len(), 6);
-        assert!(v2.is_empty());
-    }
-
-    #[test]
-    fn test_map_swap() {
-        use std::collections::{btree_map::Entry, BTreeMap};
-        use std::ptr;
-        use std::sync::RwLock;
-        let mut map = BTreeMap::<String, Vec<u8>>::new();
-        let (k1, k2, k3, k4) = ("A", "B", "C", "D");
-        map.insert(k1.to_string(), vec![1]);
-        map.insert(k2.to_string(), vec![2, 2]);
-        map.insert(k3.to_string(), vec![3, 3]);
-        map.insert(k4.to_string(), vec![4, 4, 4, 4]);
-
-        let lock = RwLock::new(map);
-        let mut map = lock.write().unwrap();
-
-        let e1 = map.get_mut(k1).unwrap() as *mut _;
-        let e2 = map.get_mut(k2).unwrap() as *mut _;
-        // mem::swap(e1, e2);
-        unsafe {
-            ptr::swap(e1, e2);
+        fs::create_dir(&from_dir).unwrap();
+        let to_dir = Path::new(&mount_dir).join("to_dir");
+        if to_dir.exists() {
+            fs::remove_dir_all(&to_dir).unwrap();
         }
-        dbg!(&map[k1]);
-        dbg!(&map[k2]);
+        fs::create_dir(&to_dir).unwrap();
+        let old_name = "old.txt";
+        let old_file = from_dir.join(old_name);
+        fs::write(&old_file, FILE_CONTENT).unwrap();
+        let new_name = "new.txt";
+        let new_file = to_dir.join(new_name);
 
-        let e3 = map.get_mut(k3).unwrap();
-        e3.push(3);
-        dbg!(&map[k3]);
-
-        let k5 = "E";
-        let e = map.entry(k5.to_string());
-        if let Entry::Vacant(v) = e {
-            v.insert(vec![5, 5, 5, 5, 5]);
-        }
-        dbg!(&map[k5]);
-    }
-    #[test]
-    fn test_map_entry() {
-        use std::collections::BTreeMap;
-        use std::mem;
-        let mut m1 = BTreeMap::<String, Vec<u8>>::new();
-        let mut m2 = BTreeMap::<String, Vec<u8>>::new();
-        let (k1, k2, k3, k4, k5) = ("A", "B", "C", "D", "E");
-        m1.insert(k1.to_string(), vec![1]);
-        m1.insert(k2.to_string(), vec![2, 2]);
-        m2.insert(k3.to_string(), vec![3, 3, 3]);
-        m2.insert(k4.to_string(), vec![4, 4, 4, 4]);
-
-        let e1 = &mut m1.entry(k1.to_string());
-        let e2 = &mut m2.entry(k5.to_string());
-        mem::swap(e1, e2);
-
-        dbg!(m1);
-        dbg!(m2);
+        let oflags = OFlag::O_RDONLY | OFlag::O_DIRECTORY;
+        let old_dir_fd = Dir::open(&from_dir, oflags, Mode::empty()).unwrap();
+        let new_dir_fd = Dir::open(&to_dir, oflags, Mode::empty()).unwrap();
+        let old_cstr = CString::new(old_name).unwrap();
+        let new_cstr = CString::new(new_name).unwrap();
+        let res = unsafe {
+            libc::renameat(
+                old_dir_fd.as_raw_fd(),
+                old_cstr.as_ptr(),
+                new_dir_fd.as_raw_fd(),
+                new_cstr.as_ptr(),
+            )
+        };
+        // fs::rename(&old_file, &new_file).unwrap();
+        assert_eq!(res, 0);
+        let bytes = fs::read(&new_file).unwrap();
+        let content = String::from_utf8(bytes).unwrap();
+        assert_eq!(content, FILE_CONTENT);
+        assert!(!old_file.exists());
+        assert!(new_file.exists());
+        fs::remove_dir_all(&from_dir).unwrap();
+        assert!(!from_dir.exists());
+        fs::remove_dir_all(&to_dir).unwrap();
+        assert!(!to_dir.exists());
+        fs::remove_dir_all(&mount_dir).unwrap();
+        assert!(!mount_dir.exists());
     }
 }

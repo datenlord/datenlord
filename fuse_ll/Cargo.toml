@@ -12,9 +12,24 @@ libc = "0.2"
 log = "0.4.6"
 nix = "0.17.0"
 
-#[[bin]]
-#name = "memfs"
-#path = "src/examples/memfs.rs"
+[dev-dependencies]
+fuse_ll = { path = "." }
+
+#[profile.dev]
+#codegen-units = 32 # parallel compiling, no optimizations
+
+#[profile.release]
+#debug = true
+#lto = true # Link-Time Optimizations, no parallel compiling
+#opt-level = 2
+
+#[profile.test]
+#debug = true
+#opt-level = 1
+
+#[profile.doc]
+#debug-assertions = false
+#panic = 'abort' # ‘unwind’
 
 [features]
 abi-7-9 = []

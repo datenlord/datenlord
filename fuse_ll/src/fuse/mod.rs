@@ -8,7 +8,7 @@
 
 use libc::ENOSYS;
 // use std::convert::AsRef;
-use std::ffi::{OsStr, OsString};
+use std::ffi::OsStr;
 use std::io;
 use std::os::raw::c_int;
 use std::path::Path;
@@ -16,11 +16,14 @@ use std::time::SystemTime;
 
 pub use abi::consts;
 pub use abi::FUSE_ROOT_ID;
+pub use channel::unmount;
 #[cfg(target_os = "macos")]
 pub use reply::ReplyXTimes;
 pub use reply::ReplyXattr;
-pub use reply::{Reply, ReplyAttr, ReplyData, ReplyEmpty, ReplyEntry, ReplyOpen};
-pub use reply::{ReplyBmap, ReplyCreate, ReplyDirectory, ReplyLock, ReplyStatfs, ReplyWrite};
+pub use reply::{
+    Reply, ReplyAttr, ReplyBmap, ReplyCreate, ReplyData, ReplyDirectory, ReplyEmpty, ReplyEntry,
+    ReplyLock, ReplyOpen, ReplyStatfs, ReplyWrite,
+};
 pub use request::Request;
 pub use session::Session;
 // pub use session::{Session, BackgroundSession};
@@ -551,7 +554,7 @@ pub trait Filesystem {
 /// `examples/hello.rs`.
 pub fn mount<FS: Filesystem>(
     filesystem: FS,
-    mountpoint: OsString,
+    mountpoint: &Path,
     options: &[&OsStr],
 ) -> io::Result<()> {
     Session::new(filesystem, mountpoint, options).and_then(|mut se| se.run())

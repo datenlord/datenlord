@@ -6,9 +6,9 @@ use std::ffi::CString;
 use std::fs;
 use std::os::raw::c_void;
 use std::os::unix::io::RawFd;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-use self::param::*;
+use param::*;
 
 #[cfg(target_os = "linux")]
 mod param {
@@ -17,6 +17,7 @@ mod param {
     // pub const MS_RDONLY: u64 = 1; // Mount read-only
     pub const MS_NOSUID: u64 = 2; // Ignore suid and sgid bits
     pub const MS_NODEV: u64 = 4; // Disallow access to device special files
+    pub const MNT_FORCE: i32 = 1; // Force un-mount
 }
 
 #[cfg(target_os = "macos")]
@@ -67,12 +68,99 @@ mod param {
 
 #[cfg(target_os = "linux")]
 pub fn umount(short_path: &Path) -> i32 {
+    use nix::unistd;
+    use std::process::Command;
+
     let mntpnt = short_path.as_os_str();
-    unsafe { libc::umount(mntpnt as *const _ as *const u8 as *const i8) }
+
+    if unistd::geteuid().is_root() {
+        // direct umount
+        #[cfg(target_arch = "aarch64")]
+        let result = unsafe { libc::umount2(mntpnt as *const _ as *const u8, MNT_FORCE) };
+        #[cfg(target_arch = "x86_64")]
+        let result =
+            unsafe { libc::umount2(mntpnt as *const _ as *const u8 as *const i8, MNT_FORCE) };
+
+        result
+    } else {
+        // use fusermount to umount
+        let umount_handle = Command::new("fusermount")
+            .arg("-uz") // lazy umount
+            .arg(mntpnt)
+            .output()
+            .expect("fusermount command failed to start");
+        if umount_handle.status.success() {
+            0
+        } else {
+            // should be safe to use unwrap() here
+            let stderr = String::from_utf8(umount_handle.stderr).unwrap();
+            debug!("fusermount failed to umount: {}", stderr);
+            -1
+        }
+    }
 }
 
 #[cfg(target_os = "linux")]
-pub fn mount(short_path: &Path) -> i32 {
+pub fn mount(mount_point: &Path) -> RawFd {
+    use nix::unistd;
+
+    if unistd::geteuid().is_root() {
+        // direct umount
+        direct_mount(mount_point)
+    } else {
+        // use fusermount to mount
+        fuser_mount(mount_point)
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn fuser_mount(mount_point: &Path) -> RawFd {
+    use nix::cmsg_space;
+    use nix::sys::socket::{
+        self, AddressFamily, ControlMessageOwned, MsgFlags, SockFlag, SockType,
+    };
+    use nix::sys::uio::IoVec;
+    use std::process::Command;
+
+    let (local, remote) = socket::socketpair(
+        AddressFamily::Unix,
+        SockType::Stream,
+        None,
+        SockFlag::empty(),
+    )
+    .expect("failed to create socket pair");
+
+    let mount_handle = Command::new("fusermount")
+        .arg("-o")
+        .arg("nosuid,nodev,noexec,nonempty") // rw,async,noatime,auto_unmount
+        .arg(mount_point.as_os_str())
+        .env("_FUSE_COMMFD", remote.to_string())
+        .output()
+        .expect("fusermount command failed to start");
+
+    assert!(mount_handle.status.success());
+
+    let mut buf = [0u8; 5];
+    let iov = [IoVec::from_mut_slice(&mut buf[..])];
+    let mut cmsgspace = cmsg_space!([RawFd; 1]);
+    let msg = socket::recvmsg(local, &iov, Some(&mut cmsgspace), MsgFlags::empty())
+        .expect("failed to receive from fusermount");
+
+    let mut mount_fd = -1;
+    for cmsg in msg.cmsgs() {
+        if let ControlMessageOwned::ScmRights(fd) = cmsg {
+            assert_eq!(fd.len(), 1);
+            mount_fd = fd[0];
+        } else {
+            panic!("unexpected cmsg");
+        }
+    }
+
+    mount_fd
+}
+
+#[cfg(target_os = "linux")]
+fn direct_mount(mount_point: &Path) -> RawFd {
     use nix::sys::stat::SFlag;
     use nix::unistd;
 
@@ -91,17 +179,7 @@ pub fn mount(short_path: &Path) -> i32 {
         }
     }
 
-    let full_path: PathBuf;
-    let res = fs::canonicalize(short_path);
-    match res {
-        Ok(p) => {
-            full_path = p;
-        }
-        Err(e) => {
-            error!("fail to get full path of mount point, {}", e);
-            return -1;
-        }
-    }
+    let full_path = fs::canonicalize(mount_point).expect("fail to get full path of mount point");
     let cstr_path = full_path
         .to_str()
         .expect("full mount path to string failed");
@@ -144,6 +222,9 @@ pub fn mount(short_path: &Path) -> i32 {
             let e = Errno::from_i32(errno::errno());
             debug!("errno={}, {:?}", errno::errno(), e);
             let mount_fail_str = "mount failed!";
+            #[cfg(target_arch = "aarch64")]
+            libc::perror(mount_fail_str.as_ptr());
+            #[cfg(target_arch = "x86_64")]
             libc::perror(mount_fail_str.as_ptr() as *const i8);
 
             return -1;
@@ -152,14 +233,14 @@ pub fn mount(short_path: &Path) -> i32 {
 }
 
 #[cfg(any(target_os = "macos"))]
-pub fn umount(short_path: &Path) -> i32 {
-    let mntpnt = short_path.as_os_str();
+pub fn umount(mount_point: &Path) -> i32 {
+    let mntpnt = mount_point.as_os_str();
     unsafe { libc::unmount(mntpnt as *const _ as *const u8 as *const i8, MNT_FORCE) }
 }
 
 #[cfg(any(target_os = "macos"))]
-pub fn mount(short_path: &Path) -> i32 {
-    let devpath = Path::new("/dev/osxfuse0");
+pub fn mount(mount_point: &Path) -> RawFd {
+    let devpath = Path::new("/dev/osxfuse1");
     let fd: RawFd;
     let res = fcntl::open(devpath, OFlag::O_RDWR, Mode::empty());
     match res {
@@ -183,7 +264,8 @@ pub fn mount(short_path: &Path) -> i32 {
     }
 
     // use ioctl to read device random secret
-    // result = ioctl(fd, FUSEDEVIOCGETRANDOM, &drandom); // osxfuse/support/mount_osxfuse/mount_osxfuse.c#L1099
+    // osxfuse/support/mount_osxfuse/mount_osxfuse.c#L1099
+    // result = ioctl(fd, FUSEDEVIOCGETRANDOM, &drandom);
     // FUSEDEVIOCGETRANDOM // osxfuse/common/fuse_ioctl.h#L43
     use nix::ioctl_read;
     let mut drandom: u32 = 0;
@@ -199,17 +281,8 @@ pub fn mount(short_path: &Path) -> i32 {
         return -1;
     }
 
-    let full_path: PathBuf;
-    let res = fs::canonicalize(short_path);
-    match res {
-        Ok(p) => {
-            full_path = p;
-        }
-        Err(e) => {
-            error!("fail to get full path of mount point, {}", e);
-            return -1;
-        }
-    }
+    let full_path =
+        fs::canonicalize(mount_point).expect("fail to get full path of mount point, {}");
     let cstr_path = full_path
         .to_str()
         .expect("full mount path to string failed");

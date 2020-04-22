@@ -5,7 +5,7 @@
 //! filesystem is mounted, the session loop receives, dispatches and replies to kernel requests
 //! for filesystem operations under its mount point.
 
-use std::ffi::{OsStr, OsString};
+use std::ffi::OsStr;
 use std::io;
 use std::iter;
 use std::path::Path;
@@ -45,12 +45,8 @@ pub struct Session<FS: Filesystem> {
 
 impl<FS: Filesystem> Session<FS> {
     /// Create a new session by mounting the given filesystem to the given mountpoint
-    pub fn new(
-        filesystem: FS,
-        mountpoint: OsString,
-        options: &[&OsStr],
-    ) -> io::Result<Session<FS>> {
-        info!("Mounting {:?}", mountpoint);
+    pub fn new(filesystem: FS, mountpoint: &Path, options: &[&OsStr]) -> io::Result<Session<FS>> {
+        info!("mounting {:?}", mountpoint);
         Channel::new(mountpoint, options).map(|ch| Session {
             filesystem: filesystem,
             ch: ch,
@@ -106,7 +102,7 @@ impl<FS: Filesystem> Session<FS> {
 
 impl<FS: Filesystem> Drop for Session<FS> {
     fn drop(&mut self) {
-        info!("Unmounted {}", self.mountpoint().display());
+        info!("umounted {}", self.mountpoint().display());
     }
 }
 

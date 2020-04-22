@@ -6,13 +6,13 @@
 use log::{debug, error};
 use nix::sys::uio::{self, IoVec};
 use nix::unistd;
-use std::ffi::{CString, OsStr, OsString};
+use std::ffi::{CString, OsStr};
 use std::io;
 use std::os::raw::{c_char, c_int};
 use std::os::unix::ffi::OsStrExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-use super::mount::{mount, umount};
+use super::mount;
 use super::reply::ReplySender;
 
 #[repr(C)]
@@ -39,7 +39,7 @@ fn with_fuse_args<T, F: FnOnce(&fuse_args) -> T>(options: &[&OsStr], f: F) -> T 
 /// A raw communication channel to the FUSE kernel driver
 #[derive(Debug)]
 pub struct Channel {
-    mountpoint: OsString,
+    mountpoint: PathBuf,
     fd: c_int,
 }
 
@@ -48,22 +48,25 @@ impl Channel {
     /// given path. The kernel driver will delegate filesystem operations of
     /// the given path to the channel. If the channel is dropped, the path is
     /// unmounted.
-    pub fn new(mountpoint: OsString, options: &[&OsStr]) -> io::Result<Channel> {
+    pub fn new(mountpoint: &Path, options: &[&OsStr]) -> io::Result<Channel> {
         with_fuse_args(options, |_args| {
             // let mnt = CString::new(mountpoint.as_os_str().as_bytes())?;
             // let fd = unsafe { fuse_mount_compat25(mnt.as_ptr(), args) };
-            let fd = mount(mountpoint.as_ref());
+            let fd = mount::mount(mountpoint);
             if fd < 0 {
                 Err(io::Error::last_os_error())
             } else {
-                Ok(Channel { mountpoint, fd })
+                Ok(Channel {
+                    mountpoint: mountpoint.into(),
+                    fd,
+                })
             }
         })
     }
 
     /// Return path of the mounted filesystem
-    pub fn mountpoint(&self) -> &OsStr {
-        &self.mountpoint
+    pub fn mountpoint(&self) -> &Path {
+        &self.mountpoint.as_ref()
     }
 
     /// Receives data up to the capacity of the given buffer (can block).
@@ -159,58 +162,12 @@ impl ReplySender for ChannelSender {
 
 /// Unmount an arbitrary mount point
 pub fn unmount(mountpoint: &Path) -> io::Result<()> {
-    // fuse_unmount_compat22 unfortunately doesn't return a status. Additionally,
-    // it attempts to call realpath, which in turn calls into the filesystem. So
-    // if the filesystem returns an error, the unmount does not take place, with
-    // no indication of the error available to the caller. So we call unmount
-    // directly, which is what osxfuse does anyway, since we already converted
-    // to the real path when we first mounted.
-
-    let res = umount(mountpoint);
+    let res = mount::umount(mountpoint);
     if res == 0 {
         Ok(())
     } else {
         Err(io::Error::last_os_error())
     }
-    // #[cfg(any(
-    //     target_os = "macos",
-    //     target_os = "freebsd",
-    //     target_os = "dragonfly",
-    //     target_os = "openbsd",
-    //     target_os = "bitrig",
-    //     target_os = "netbsd"
-    // ))]
-    // #[inline]
-    // fn libc_umount(mountpoint: &Path) -> c_int {
-    //     // unsafe { libc::unmount(mnt.as_ptr(), 0) }
-    //     umount(mountpoint)
-    // }
-
-    // #[cfg(not(any(target_os = "macos", target_os = "freebsd", target_os = "dragonfly",
-    //               target_os = "openbsd", target_os = "bitrig", target_os = "netbsd")))]
-    // #[inline]
-    // fn libc_umount(mountpoint: &Path) -> c_int {
-    //     // use fuse_sys::fuse_unmount_compat22;
-    //     use std::io::ErrorKind::PermissionDenied;
-
-    //     let mnt = CString::new(mountpoint.as_os_str().as_bytes()).unwrap();
-    //     let rc = unsafe { libc::umount(mnt.as_ptr()) };
-    //     if rc < 0 && io::Error::last_os_error().kind() == PermissionDenied {
-    //         // Linux always returns EPERM for non-root users.  We have to let the
-    //         // library go through the setuid-root "fusermount -u" to unmount.
-    //         // unsafe { fuse_unmount_compat22(mnt.as_ptr()); }
-    //         0
-    //     } else {
-    //         rc
-    //     }
-    // }
-
-    // let rc = libc_umount(mountpoint);
-    // if rc < 0 {
-    //     Err(io::Error::last_os_error())
-    // } else {
-    //     Ok(())
-    // }
 }
 
 #[cfg(test)]
