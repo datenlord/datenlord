@@ -4,7 +4,7 @@ use futures::stream::{StreamExt, TryStreamExt};
 use log::{debug, error};
 use smol::{self, blocking};
 
-mod filesystem;
+mod fs;
 mod fuse_read;
 mod fuse_reply;
 mod fuse_request;
@@ -121,7 +121,7 @@ fn main() -> anyhow::Result<()> {
             // );
             // dbg!(wsize);
             use std::time::Duration;
-            reply_attr.attr(&Duration::from_secs(1), attr).await;
+            reply_attr.attr(Duration::from_secs(1), attr).await?;
 
             let file = blocking!(std::fs::File::open("fuse_reply.log"))?;
             let mut file = smol::reader(file);
@@ -149,7 +149,7 @@ fn main() -> anyhow::Result<()> {
                             Ok(byte_vec) => {
                                 debug!("read {} bytes", byte_vec.len());
                                 let req = Request::new(&byte_vec);
-                                debug!("build fuse read req: {:?}", req);
+                                debug!("build fuse read req={:?}", req);
                                 // Ok::<(), Error>(())
                             }
                             Err(err) => {
@@ -201,7 +201,7 @@ mod test {
                 let mut file = File::open(&entry.path())?;
                 file.read_to_end(&mut buffer)?;
                 let content = String::from_utf8_lossy(&buffer[..]);
-                println!("file content: {}", content);
+                println!("file content is: {}", content);
             }
         }
         Ok(())

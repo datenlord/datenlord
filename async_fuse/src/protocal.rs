@@ -58,11 +58,13 @@ pub const FUSE_KERNEL_MINOR_VERSION: u32 = 31;
 // The node ID of the root inode
 pub const FUSE_ROOT_ID: u64 = 1;
 
+pub type INum = u64;
+
 #[repr(C)]
 #[derive(Debug)]
 pub struct FuseAttr {
     // fuse_attr
-    pub ino: u64,
+    pub ino: INum,
     pub size: u64,
     pub blocks: u64,
     pub atime: u64,
@@ -978,7 +980,7 @@ pub struct FuseOutHeader {
 #[derive(Debug)]
 pub struct FuseDirEnt {
     // fuse_dirent
-    pub ino: u64,
+    pub ino: INum,
     pub off: u64,
     pub namelen: u32,
     pub typ: u32,
@@ -1015,7 +1017,7 @@ pub struct FuseDirEntPlus {
 #[derive(Debug)]
 pub struct FuseNotifyInvalINodeOut {
     // fuse_notify_inval_inode_out
-    pub ino: u64,
+    pub ino: INum,
     pub off: i64,
     pub len: i64,
 }

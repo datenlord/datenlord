@@ -1,38 +1,30 @@
-use anyhow;
-use libc::{S_IFBLK, S_IFCHR, S_IFDIR, S_IFIFO, S_IFLNK, S_IFREG, S_IFSOCK};
+use anyhow::{self, Context};
 use log::{debug, error};
 use nix::sys::stat::SFlag;
 use nix::sys::uio::{self, IoVec};
-use smol::{self, Task};
+use smol::blocking;
 use std::convert::AsRef;
 use std::ffi::OsStr;
 use std::marker::PhantomData;
 use std::os::raw::c_int;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::io::RawFd;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 use std::{mem, ptr, slice};
 
 use super::protocal::*;
 
-fn time_from_system_time(system_time: &SystemTime) -> (u64, u32) {
-    let duration = system_time
-        .duration_since(UNIX_EPOCH)
-        .expect("failed to convert SystemTime to Duration");
-    (duration.as_secs(), duration.subsec_nanos())
-}
-
 // TODO: remove it
 fn mode_from_kind_and_perm(kind: SFlag, perm: u16) -> u32 {
     (match kind {
-        SFlag::S_IFIFO => S_IFIFO,
-        SFlag::S_IFCHR => S_IFCHR,
-        SFlag::S_IFBLK => S_IFBLK,
-        SFlag::S_IFDIR => S_IFDIR,
-        SFlag::S_IFREG => S_IFREG,
-        SFlag::S_IFLNK => S_IFLNK,
-        SFlag::S_IFSOCK => S_IFSOCK,
-        _ => unreachable!(),
+        SFlag::S_IFIFO => libc::S_IFIFO,
+        SFlag::S_IFCHR => libc::S_IFCHR,
+        SFlag::S_IFBLK => libc::S_IFBLK,
+        SFlag::S_IFDIR => libc::S_IFDIR,
+        SFlag::S_IFREG => libc::S_IFREG,
+        SFlag::S_IFLNK => libc::S_IFLNK,
+        SFlag::S_IFSOCK => libc::S_IFSOCK,
+        _ => panic!("unknown SFlag type={:?}", kind),
     }) as u32
         | perm as u32
 }
@@ -60,9 +52,9 @@ impl<T: Send + Sync + 'static> ReplyRaw<T> {
         }
     }
 
-    async fn send(self, to_bytes: ToBytes<T>, err: c_int) -> anyhow::Result<usize> {
+    async fn send(self, to_bytes: ToBytes<T>, err: c_int) -> nix::Result<usize> {
         let fd = self.fd;
-        let wsize = Task::blocking(async move {
+        let wsize = blocking!(
             let instance: T; // to hold the instance of ToBytes::Struct
             let byte_vec: Vec<u8>; // to hold the Vec<u8> of ToBytes::Bytes
             let empty_vec: Vec<u8>; // to hold the emtpy Vec<u8> of ToBytes::Null
@@ -104,43 +96,34 @@ impl<T: Send + Sync + 'static> ReplyRaw<T> {
                 vec![IoVec::from_slice(header_bytes)]
             };
             uio::writev(fd, &iovecs)
-        })
-        .await?;
+        )?;
 
+        debug!("sent {} bytes to fuse device successfully", wsize);
         Ok(wsize)
     }
 
-    async fn send_bytes(self, byte_vec: Vec<u8>) {
-        match self.send(ToBytes::Bytes(byte_vec), 0).await {
-            Ok(wsize) => {
-                debug!("sent {} bytes successfully", wsize);
-            }
-            Err(err) => {
-                error!("failed to send bytes, the error is: {}", err);
-            }
-        }
+    async fn send_bytes(self, byte_vec: Vec<u8>) -> anyhow::Result<()> {
+        let _reply_size = self
+            .send(ToBytes::Bytes(byte_vec), 0)
+            .await
+            .context("send_bytes() failed to send bytes")?;
+        Ok(())
     }
 
-    async fn send_data(self, instance: T) {
-        match self.send(ToBytes::Struct(instance), 0).await {
-            Ok(wsize) => {
-                debug!("sent {} bytes data successfully", wsize);
-            }
-            Err(err) => {
-                error!("failed to send data, the error is: {}", err);
-            }
-        }
+    async fn send_data(self, instance: T) -> anyhow::Result<()> {
+        let _reply_size = self
+            .send(ToBytes::Struct(instance), 0)
+            .await
+            .context("send_data() failed to send data")?;
+        Ok(())
     }
 
-    async fn error(self, err: c_int) {
-        match self.send(ToBytes::Null, err).await {
-            Ok(wsize) => {
-                debug!("sent {} bytes error successfully", wsize);
-            }
-            Err(err) => {
-                error!("failed to send error, the error is: {}", err);
-            }
-        }
+    async fn send_error(self, err: c_int) -> anyhow::Result<()> {
+        let _reply_size = self
+            .send(ToBytes::Null, err)
+            .await
+            .context("send_error() failed to send error")?;
+        Ok(())
     }
 }
 
@@ -170,7 +153,7 @@ impl ReplyInit {
         #[cfg(feature = "abi-7-28")] max_pages: u16,
         #[cfg(feature = "abi-7-28")] padding: u16,
         #[cfg(feature = "abi-7-28")] unused: [u32; 8],
-    ) {
+    ) -> anyhow::Result<()> {
         self.reply
             .send_data(FuseInitOut {
                 major,
@@ -195,10 +178,10 @@ impl ReplyInit {
                 #[cfg(feature = "abi-7-28")]
                 unused,
             })
-            .await;
+            .await
     }
-    pub async fn error(self, err: c_int) {
-        self.reply.error(err).await;
+    pub async fn error(self, err: c_int) -> anyhow::Result<()> {
+        self.reply.send_error(err).await
     }
 }
 
@@ -213,11 +196,11 @@ impl ReplyEmpty {
             reply: ReplyRaw::new(unique, fd),
         }
     }
-    pub async fn ok(self) {
-        self.reply.send_data(()).await;
+    pub async fn ok(self) -> anyhow::Result<()> {
+        self.reply.send_data(()).await
     }
-    pub async fn error(self, err: c_int) {
-        self.reply.error(err).await;
+    pub async fn error(self, err: c_int) -> anyhow::Result<()> {
+        self.reply.send_error(err).await
     }
 }
 
@@ -232,11 +215,11 @@ impl ReplyData {
             reply: ReplyRaw::new(unique, fd),
         }
     }
-    pub async fn data(self, bytes: Vec<u8>) {
-        self.reply.send_bytes(bytes).await;
+    pub async fn data(self, bytes: Vec<u8>) -> anyhow::Result<()> {
+        self.reply.send_bytes(bytes).await
     }
-    pub async fn error(self, err: c_int) {
-        self.reply.error(err).await;
+    pub async fn error(self, err: c_int) -> anyhow::Result<()> {
+        self.reply.send_error(err).await
     }
 }
 
@@ -252,7 +235,7 @@ impl ReplyEntry {
         }
     }
     /// Reply to a request with the given entry
-    pub async fn entry(self, ttl: &Duration, attr: FuseAttr, generation: u64) {
+    pub async fn entry(self, ttl: Duration, attr: FuseAttr, generation: u64) -> anyhow::Result<()> {
         self.reply
             .send_data(FuseEntryOut {
                 nodeid: attr.ino,
@@ -263,12 +246,12 @@ impl ReplyEntry {
                 attr_valid_nsec: ttl.subsec_nanos(),
                 attr,
             })
-            .await;
+            .await
     }
 
     /// Reply to a request with the given error code
-    pub async fn error(self, err: c_int) {
-        self.reply.error(err).await;
+    pub async fn error(self, err: c_int) -> anyhow::Result<()> {
+        self.reply.send_error(err).await
     }
 }
 
@@ -284,7 +267,7 @@ impl ReplyAttr {
         }
     }
     /// Reply to a request with the given attribute
-    pub async fn attr(self, ttl: &Duration, attr: FuseAttr) {
+    pub async fn attr(self, ttl: Duration, attr: FuseAttr) -> anyhow::Result<()> {
         self.reply
             .send_data(FuseAttrOut {
                 attr_valid: ttl.as_secs(),
@@ -292,12 +275,12 @@ impl ReplyAttr {
                 dummy: 0,
                 attr,
             })
-            .await;
+            .await
     }
 
     /// Reply to a request with the given error code
-    pub async fn error(self, err: c_int) {
-        self.reply.error(err).await;
+    pub async fn error(self, err: c_int) -> anyhow::Result<()> {
+        self.reply.send_error(err).await
     }
 }
 
@@ -315,9 +298,16 @@ impl ReplyXTimes {
         }
     }
     /// Reply to a request with the given xtimes
-    pub async fn xtimes(self, bkuptime: SystemTime, crtime: SystemTime) {
-        let (bkuptime_secs, bkuptime_nanos) = time_from_system_time(&bkuptime);
-        let (crtime_secs, crtime_nanos) = time_from_system_time(&crtime);
+    // pub async fn xtimes(self, bkuptime: SystemTime, crtime: SystemTime) {
+    pub async fn xtimes(
+        self,
+        bkuptime_secs: u64,
+        bkuptime_nanos: u32,
+        crtime_secs: u64,
+        crtime_nanos: u32,
+    ) -> anyhow::Result<()> {
+        // let (bkuptime_secs, bkuptime_nanos) = time_from_system_time(&bkuptime);
+        // let (crtime_secs, crtime_nanos) = time_from_system_time(&crtime);
         self.reply
             .send_data(FuseGetXTimesOut {
                 bkuptime: bkuptime_secs,
@@ -325,12 +315,12 @@ impl ReplyXTimes {
                 bkuptimensec: bkuptime_nanos,
                 crtimensec: crtime_nanos,
             })
-            .await;
+            .await
     }
 
     /// Reply to a request with the given error code
-    pub async fn error(self, err: c_int) {
-        self.reply.error(err).await;
+    pub async fn error(self, err: c_int) -> anyhow::Result<()> {
+        self.reply.send_error(err).await
     }
 }
 
@@ -346,19 +336,19 @@ impl ReplyOpen {
         }
     }
     /// Reply to a request with the given open result
-    pub async fn opened(self, fh: u64, flags: u32) {
+    pub async fn opened(self, fh: u64, flags: u32) -> anyhow::Result<()> {
         self.reply
             .send_data(FuseOpenOut {
                 fh: fh,
                 open_flags: flags,
                 padding: 0,
             })
-            .await;
+            .await
     }
 
     /// Reply to a request with the given error code
-    pub async fn error(self, err: c_int) {
-        self.reply.error(err).await;
+    pub async fn error(self, err: c_int) -> anyhow::Result<()> {
+        self.reply.send_error(err).await
     }
 }
 
@@ -374,18 +364,18 @@ impl ReplyWrite {
         }
     }
     /// Reply to a request with the given open result
-    pub async fn written(self, size: u32) {
+    pub async fn written(self, size: u32) -> anyhow::Result<()> {
         self.reply
             .send_data(FuseWriteOut {
                 size: size,
                 padding: 0,
             })
-            .await;
+            .await
     }
 
     /// Reply to a request with the given error code
-    pub async fn error(self, err: c_int) {
-        self.reply.error(err).await;
+    pub async fn error(self, err: c_int) -> anyhow::Result<()> {
+        self.reply.send_error(err).await
     }
 }
 
@@ -411,7 +401,7 @@ impl ReplyStatFs {
         bsize: u32,
         namelen: u32,
         frsize: u32,
-    ) {
+    ) -> anyhow::Result<()> {
         self.reply
             .send_data(FuseStatFsOut {
                 st: FuseKStatFs {
@@ -427,12 +417,12 @@ impl ReplyStatFs {
                     spare: [0; 6],
                 },
             })
-            .await;
+            .await
     }
 
     /// Reply to a request with the given error code
-    pub async fn error(self, err: c_int) {
-        self.reply.error(err).await;
+    pub async fn error(self, err: c_int) -> anyhow::Result<()> {
+        self.reply.send_error(err).await
     }
 }
 
@@ -455,7 +445,7 @@ impl ReplyCreate {
         generation: u64,
         fh: u64,
         flags: u32,
-    ) {
+    ) -> anyhow::Result<()> {
         self.reply
             .send_data((
                 FuseEntryOut {
@@ -473,12 +463,12 @@ impl ReplyCreate {
                     padding: 0,
                 },
             ))
-            .await;
+            .await
     }
 
     /// Reply to a request with the given error code
-    pub async fn error(self, err: c_int) {
-        self.reply.error(err).await;
+    pub async fn error(self, err: c_int) -> anyhow::Result<()> {
+        self.reply.send_error(err).await
     }
 }
 
@@ -494,7 +484,7 @@ impl ReplyLock {
         }
     }
     /// Reply to a request with the given open result
-    pub async fn locked(self, start: u64, end: u64, typ: u32, pid: u32) {
+    pub async fn locked(self, start: u64, end: u64, typ: u32, pid: u32) -> anyhow::Result<()> {
         self.reply
             .send_data(FuseLockOut {
                 lk: FuseFileLock {
@@ -504,12 +494,12 @@ impl ReplyLock {
                     pid: pid,
                 },
             })
-            .await;
+            .await
     }
 
     /// Reply to a request with the given error code
-    pub async fn error(self, err: c_int) {
-        self.reply.error(err).await;
+    pub async fn error(self, err: c_int) -> anyhow::Result<()> {
+        self.reply.send_error(err).await
     }
 }
 
@@ -525,13 +515,13 @@ impl ReplyBMap {
         }
     }
     /// Reply to a request with the given open result
-    pub async fn bmap(self, block: u64) {
-        self.reply.send_data(FuseBMapOut { block: block }).await;
+    pub async fn bmap(self, block: u64) -> anyhow::Result<()> {
+        self.reply.send_data(FuseBMapOut { block: block }).await
     }
 
     /// Reply to a request with the given error code
-    pub async fn error(self, err: c_int) {
-        self.reply.error(err).await;
+    pub async fn error(self, err: c_int) -> anyhow::Result<()> {
+        self.reply.send_error(err).await
     }
 }
 
@@ -579,13 +569,13 @@ impl ReplyDirectory {
     }
 
     /// Reply to a request with the filled directory buffer
-    pub async fn ok(self) {
-        self.reply.send_bytes(self.data).await;
+    pub async fn ok(self) -> anyhow::Result<()> {
+        self.reply.send_bytes(self.data).await
     }
 
     /// Reply to a request with the given error code
-    pub async fn error(self, err: c_int) {
-        self.reply.error(err).await;
+    pub async fn error(self, err: c_int) -> anyhow::Result<()> {
+        self.reply.send_error(err).await
     }
 }
 
@@ -601,23 +591,23 @@ impl ReplyXAttr {
         }
     }
     /// Reply to a request with the size of the xattr.
-    pub async fn size(self, size: u32) {
+    pub async fn size(self, size: u32) -> anyhow::Result<()> {
         self.reply
             .send_data(FuseGetXAttrOut {
                 size: size,
                 padding: 0,
             })
-            .await;
+            .await
     }
 
     /// Reply to a request with the data in the xattr.
-    pub async fn data(self, bytes: Vec<u8>) {
-        self.reply.send_bytes(bytes).await;
+    pub async fn data(self, bytes: Vec<u8>) -> anyhow::Result<()> {
+        self.reply.send_bytes(bytes).await
     }
 
     /// Reply to a request with the given error code.
-    pub async fn error(self, err: c_int) {
-        self.reply.error(err).await;
+    pub async fn error(self, err: c_int) -> anyhow::Result<()> {
+        self.reply.send_error(err).await
     }
 }
 

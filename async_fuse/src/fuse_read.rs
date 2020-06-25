@@ -52,13 +52,13 @@ impl<R: AsyncRead> Stream for FuseBufReadStream<R> {
     }
 }
 
-pub(crate) trait FuseBufReadExt {
-    fn fuse_read_stream(self, capacity: usize) -> FuseBufReadStream<Self>
-    where
-        Self: futures::io::AsyncRead + Unpin + Sized,
-    {
-        FuseBufReadStream::with_capacity(capacity, self)
-    }
-}
+// pub(crate) trait FuseBufReadExt {
+//     fn fuse_read_stream(self, capacity: usize) -> FuseBufReadStream<Self>
+//     where
+//         Self: futures::io::AsyncRead + Unpin + Sized,
+//     {
+//         FuseBufReadStream::with_capacity(capacity, self)
+//     }
+// }
 
-impl FuseBufReadExt for std::fs::File {}
+// impl FuseBufReadExt for std::fs::File { }

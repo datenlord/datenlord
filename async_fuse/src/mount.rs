@@ -53,7 +53,7 @@ mod param {
     pub const MAXPATHLEN: size_t = 1024; //PATH_MAX
 
     #[repr(C)]
-    pub struct FuseMountArgs {
+    pub(crate) struct FuseMountArgs {
         pub mntpath: [u8; MAXPATHLEN],        // path to the mount point
         pub fsname: [u8; MAXPATHLEN],         // file system description string
         pub fstypename: [u8; MFSTYPENAMELEN], // file system type name
@@ -91,7 +91,7 @@ pub async fn umount(short_path: impl AsRef<Path>) -> anyhow::Result<()> {
             } else {
                 Err(anyhow::anyhow!(
                     "failed to umount fuse device, the error is: {}",
-                    io::Error::last_os_error(),
+                    nix::Error::last(),
                 ))
             }
         } else {
@@ -106,7 +106,7 @@ pub async fn umount(short_path: impl AsRef<Path>) -> anyhow::Result<()> {
             } else {
                 // should be safe to use unwrap() here
                 let stderr = String::from_utf8(umount_handle.stderr).unwrap();
-                debug!("fusermount failed to umount: {}", stderr);
+                debug!("fusermount failed to umount, the error is: {}", stderr);
                 Err(anyhow::anyhow!(
                     "fusermount failed to umount fuse device, the error is: {}",
                     stderr,
@@ -145,16 +145,16 @@ async fn fuser_mount(mount_point: impl AsRef<Path>) -> anyhow::Result<RawFd> {
         SockType::Stream,
         None,
         SockFlag::empty(),
-    )
-    .context("failed to create socket pair"))?;
+    ))
+    .context("failed to create socket pair")?;
 
     let mount_handle = blocking!(Command::new("fusermount")
         .arg("-o")
         .arg("nosuid,nodev,noexec,nonempty") // rw,async,noatime,auto_unmount
         .arg(mount_point.as_os_str())
         .env("_FUSE_COMMFD", remote.to_string())
-        .output()
-        .context("fusermount command failed to start"))?;
+        .output())
+    .context("fusermount command failed to start")?;
 
     assert!(mount_handle.status.success());
 
@@ -189,9 +189,8 @@ async fn direct_mount(mount_point: impl AsRef<Path>) -> anyhow::Result<RawFd> {
 
     let devpath = Path::new("/dev/fuse");
 
-    let dev_fd =
-        blocking!(fcntl::open(devpath, OFlag::O_RDWR, Mode::empty())
-            .context("failed to open fuse device"))?;
+    let dev_fd = blocking!(fcntl::open(devpath, OFlag::O_RDWR, Mode::empty()))
+        .context("failed to open fuse device")?;
 
     let full_path = blocking!(fs::canonicalize(mount_point))?;
     let cstr_path = full_path
@@ -203,7 +202,7 @@ async fn direct_mount(mount_point: impl AsRef<Path>) -> anyhow::Result<RawFd> {
     let fsname = CString::new("/dev/fuse").expect("CString::new failed");
 
     let mnt_sb =
-        blocking!(stat::stat(&full_path).context("failed to get the file stat of mount point"))?;
+        blocking!(stat::stat(&full_path)).context("failed to get the file stat of mount point")?;
 
     let opts = format!(
         "fd={},rootmode={:o},user_id={},group_id={}",
@@ -213,7 +212,7 @@ async fn direct_mount(mount_point: impl AsRef<Path>) -> anyhow::Result<RawFd> {
         unistd::getgid().as_raw()
     );
     let opts = CString::new(&*opts).expect("CString::new failed");
-    debug!("direct mount opts: {:?}", &opts);
+    debug!("direct mount opts={:?}", &opts);
     blocking!(
         let result = unsafe { libc::mount(
             fsname.as_ptr(),
@@ -223,11 +222,11 @@ async fn direct_mount(mount_point: impl AsRef<Path>) -> anyhow::Result<RawFd> {
             opts.as_ptr() as *const c_void,
         )};
         if result == 0 {
-            debug!("mount {:?} to {:?} successfully!", mntpath, devpath);
+            debug!("mount path={:?} to FUSE device={:?} successfully!", mntpath, devpath);
             Ok(dev_fd)
         } else {
             // let e = Errno::from_i32(errno::errno());
-            // debug!("errno={}, {:?}", errno::errno(), e);
+            // debug!("errno={},the error is: {:?}", errno::errno(), e);
             // let mount_fail_str = "mount failed!";
             // #[cfg(target_arch = "aarch64")]
             // libc::perror(mount_fail_str.as_ptr());
@@ -236,20 +235,20 @@ async fn direct_mount(mount_point: impl AsRef<Path>) -> anyhow::Result<RawFd> {
 
             Err(anyhow::anyhow!(
                 "failed to mount to fuse device, the error is: {}",
-                io::Error::last_os_error(),
+                nix::Error::last(),
             ))
         }
     )
 }
 
 #[cfg(any(target_os = "macos"))]
-pub async fn umount(mount_point: impl AsRef<Path>) -> io::Result<()> {
+pub async fn umount(mount_point: impl AsRef<Path>) -> nix::Result<()> {
     let mntpnt = mount_point.as_ref().to_path_buf();
     blocking!(
         let mntpnt = mntpnt.as_os_str();
         let res = unsafe { libc::unmount(mntpnt as *const _ as *const u8 as *const i8, MNT_FORCE) };
         if res < 0 {
-            Err(io::Error::last_os_error())
+            Err(nix::Error::last())
         } else {
             Ok(())
         }
@@ -261,9 +260,8 @@ pub async fn mount(mount_point: impl AsRef<Path>) -> anyhow::Result<RawFd> {
     let mount_point = mount_point.as_ref().to_path_buf();
     let devpath = Path::new("/dev/osxfuse0");
 
-    let fd =
-        blocking!(fcntl::open(devpath, OFlag::O_RDWR, Mode::empty())
-            .context("failed to open fuse device"))?;
+    let fd = blocking!(fcntl::open(devpath, OFlag::O_RDWR, Mode::empty()))
+        .context("failed to open fuse device")?;
 
     let sb = blocking!(stat::fstat(fd).context("failed to get the file stat of fuse device"))?;
 
@@ -344,17 +342,17 @@ pub async fn mount(mount_point: impl AsRef<Path>) -> anyhow::Result<RawFd> {
             )
         };
         if result == 0 {
-            debug!("mount {:?} to {:?} successfully!", mntpath, devpath);
+            debug!("mount path={:?} to FUSE device={:?} successfully!", mntpath, devpath);
             Ok(fd)
         } else {
             // let e = Errno::from_i32(errno::errno());
-            // error!("errno={}, {:?}", errno::errno(), e);
+            // error!("errno={}, the error is: {:?}", errno::errno(), e);
             // let mount_fail_str = "mount failed!";
             // unsafe { libc::perror(mount_fail_str.as_ptr() as *const i8); }
 
             Err(anyhow::anyhow!(
                 "failed to mount to fuse device, the error is: {}",
-                io::Error::last_os_error(),
+                nix::Error::last(),
             ))
         }
     )

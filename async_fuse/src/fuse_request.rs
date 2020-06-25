@@ -41,7 +41,7 @@ impl<'a> ByteSlice<'a> {
         match ret {
             Some(obj) => Ok(obj),
             None => Err(anyhow::anyhow!(
-                "failed to convert bytes to type: {}",
+                "failed to convert bytes to type={}",
                 std::any::type_name::<T>()
             )),
         }
@@ -50,8 +50,8 @@ impl<'a> ByteSlice<'a> {
         let elem_len = mem::size_of::<T>();
         if self.len() % elem_len != 0 {
             return Err(anyhow::anyhow!(
-                "failed to convert bytes to a slice of type: {}, \
-                 the length of bytes {} % the type size {} is nonzero",
+                "failed to convert bytes to a slice of type={}, \
+                 the total bytes length={} % the type size={} is nonzero",
                 std::any::type_name::<T>(),
                 self.len(),
                 elem_len,
@@ -359,7 +359,7 @@ impl<'a> Operation<'a> {
             #[cfg(feature = "abi-7-11")]
             4096 => FuseOpCode::CUSE_INIT,
 
-            _ => unreachable!(),
+            _ => panic!("unknown FUSE OpCode={}", n),
         };
 
         // unsafe {
@@ -472,7 +472,7 @@ impl<'a> Operation<'a> {
             #[cfg(feature = "abi-7-11")]
             FuseOpCode::CUSE_INIT => Operation::CuseInit { arg: data.fetch()? },
 
-            _ => unreachable!("unknown FuseOpCode"),
+            _ => panic!("unknown FuseOpCode"),
         })
         // }
     }
@@ -481,139 +481,139 @@ impl<'a> Operation<'a> {
 impl<'a> fmt::Display for Operation<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Operation::Lookup { name } => write!(f, "LOOKUP name {:?}", name),
-            Operation::Forget { arg } => write!(f, "FORGET nlookup {}", arg.nlookup),
+            Operation::Lookup { name } => write!(f, "LOOKUP name={:?}", name),
+            Operation::Forget { arg } => write!(f, "FORGET nlookup={}", arg.nlookup),
             Operation::GetAttr => write!(f, "GETATTR"),
-            Operation::SetAttr { arg } => write!(f, "SETATTR valid {:#x}", arg.valid),
+            Operation::SetAttr { arg } => write!(f, "SETATTR valid={:#x}", arg.valid),
             Operation::ReadLink => write!(f, "READLINK"),
             Operation::SymLink { name, link } => {
-                write!(f, "SYMLINK name {:?}, link {:?}", name, link)
+                write!(f, "SYMLINK name={:?}, link={:?}", name, link)
             }
             Operation::MkNod { arg, name } => write!(
                 f,
-                "MKNOD name {:?}, mode {:#05o}, rdev {}",
+                "MKNOD name={:?}, mode={:#05o}, rdev={}",
                 name, arg.mode, arg.rdev
             ),
             Operation::MkDir { arg, name } => {
-                write!(f, "MKDIR name {:?}, mode {:#05o}", name, arg.mode)
+                write!(f, "MKDIR name={:?}, mode={:#05o}", name, arg.mode)
             }
-            Operation::Unlink { name } => write!(f, "UNLINK name {:?}", name),
-            Operation::RmDir { name } => write!(f, "RMDIR name {:?}", name),
+            Operation::Unlink { name } => write!(f, "UNLINK name={:?}", name),
+            Operation::RmDir { name } => write!(f, "RMDIR name={:?}", name),
             Operation::Rename {
                 arg,
                 oldname,
                 newname,
             } => write!(
                 f,
-                "RENAME name {:?}, newdir {:#018x}, newname {:?}",
+                "RENAME name={:?}, newdir={:#018x}, newname={:?}",
                 oldname, arg.newdir, newname
             ),
             Operation::Link { arg, name } => {
-                write!(f, "LINK name {:?}, oldnodeid {:#018x}", name, arg.oldnodeid)
+                write!(f, "LINK name={:?}, oldnodeid={:#018x}", name, arg.oldnodeid)
             }
-            Operation::Open { arg } => write!(f, "OPEN flags {:#x}", arg.flags),
+            Operation::Open { arg } => write!(f, "OPEN flags={:#x}", arg.flags),
             Operation::Read { arg } => write!(
                 f,
-                "READ fh {}, offset {}, size {}",
+                "READ fh={}, offset={}, size={}",
                 arg.fh, arg.offset, arg.size
             ),
             Operation::Write { arg, .. } => write!(
                 f,
-                "WRITE fh {}, offset {}, size {}, write flags {:#x}",
+                "WRITE fh={}, offset={}, size={}, write flags={:#x}",
                 arg.fh, arg.offset, arg.size, arg.write_flags
             ),
             Operation::StatFs => write!(f, "STATFS"),
             Operation::Release { arg } => write!(
                 f,
-                "RELEASE fh {}, flags {:#x}, release flags {:#x}, lock owner {}",
+                "RELEASE fh={}, flags={:#x}, release flags={:#x}, lock owner={}",
                 arg.fh, arg.flags, arg.release_flags, arg.lock_owner
             ),
             Operation::FSync { arg } => {
-                write!(f, "FSYNC fh {}, fsync flags {:#x}", arg.fh, arg.fsync_flags)
+                write!(f, "FSYNC fh={}, fsync flags={:#x}", arg.fh, arg.fsync_flags)
             }
             Operation::SetXAttr { arg, name, .. } => write!(
                 f,
-                "SETXATTR name {:?}, size {}, flags {:#x}",
+                "SETXATTR name={:?}, size={}, flags={:#x}",
                 name, arg.size, arg.flags
             ),
             Operation::GetXAttr { arg, name } => {
-                write!(f, "GETXATTR name {:?}, size {}", name, arg.size)
+                write!(f, "GETXATTR name={:?}, size={}", name, arg.size)
             }
-            Operation::ListXAttr { arg } => write!(f, "LISTXATTR size {}", arg.size),
-            Operation::RemoveXAttr { name } => write!(f, "REMOVEXATTR name {:?}", name),
+            Operation::ListXAttr { arg } => write!(f, "LISTXATTR size={}", arg.size),
+            Operation::RemoveXAttr { name } => write!(f, "REMOVEXATTR name={:?}", name),
             Operation::Flush { arg } => {
-                write!(f, "FLUSH fh {}, lock owner {}", arg.fh, arg.lock_owner)
+                write!(f, "FLUSH fh={}, lock owner={}", arg.fh, arg.lock_owner)
             }
             Operation::Init { arg } => write!(
                 f,
-                "INIT kernel ABI {}.{}, flags {:#x}, max readahead {}",
+                "INIT kernel ABI={}.{}, flags={:#x}, max readahead={}",
                 arg.major, arg.minor, arg.flags, arg.max_readahead
             ),
-            Operation::OpenDir { arg } => write!(f, "OPENDIR flags {:#x}", arg.flags),
+            Operation::OpenDir { arg } => write!(f, "OPENDIR flags={:#x}", arg.flags),
             Operation::ReadDir { arg } => write!(
                 f,
-                "READDIR fh {}, offset {}, size {}",
+                "READDIR fh={}, offset={}, size={}",
                 arg.fh, arg.offset, arg.size
             ),
             Operation::ReleaseDir { arg } => write!(
                 f,
-                "RELEASEDIR fh {}, flags {:#x}, release flags {:#x}, lock owner {}",
+                "RELEASEDIR fh={}, flags={:#x}, release flags={:#x}, lock owner={}",
                 arg.fh, arg.flags, arg.release_flags, arg.lock_owner
             ),
             Operation::FSyncDir { arg } => write!(
                 f,
-                "FSYNCDIR fh {}, fsync flags {:#x}",
+                "FSYNCDIR fh={}, fsync flags={:#x}",
                 arg.fh, arg.fsync_flags
             ),
-            Operation::GetLk { arg } => write!(f, "GETLK fh {}, lock owner {}", arg.fh, arg.owner),
-            Operation::SetLk { arg } => write!(f, "SETLK fh {}, lock owner {}", arg.fh, arg.owner),
+            Operation::GetLk { arg } => write!(f, "GETLK fh={}, lock owner={}", arg.fh, arg.owner),
+            Operation::SetLk { arg } => write!(f, "SETLK fh={}, lock owner={}", arg.fh, arg.owner),
             Operation::SetLkW { arg } => {
-                write!(f, "SETLKW fh {}, lock owner {}", arg.fh, arg.owner)
+                write!(f, "SETLKW fh={}, lock owner={}", arg.fh, arg.owner)
             }
-            Operation::Access { arg } => write!(f, "ACCESS mask {:#05o}", arg.mask),
+            Operation::Access { arg } => write!(f, "ACCESS mask={:#05o}", arg.mask),
             Operation::Create { arg, name } => write!(
                 f,
-                "CREATE name {:?}, mode {:#05o}, flags {:#x}",
+                "CREATE name={:?}, mode={:#05o}, flags={:#x}",
                 name, arg.mode, arg.flags,
             ),
-            Operation::Interrupt { arg } => write!(f, "INTERRUPT unique {}", arg.unique),
+            Operation::Interrupt { arg } => write!(f, "INTERRUPT unique={}", arg.unique),
             Operation::BMap { arg } => {
-                write!(f, "BMAP blocksize {}, ids {}", arg.blocksize, arg.block)
+                write!(f, "BMAP blocksize={}, ids={}", arg.blocksize, arg.block)
             }
             Operation::Destroy => write!(f, "DESTROY"),
 
             #[cfg(feature = "abi-7-11")]
             Operation::IoCtl { arg, data } => write!(
                 f,
-                "IOCTL fh {}, flags {:#x}, cmd {}, arg {}",
+                "IOCTL fh={}, flags {:#x}, cmd={}, arg={}",
                 arg.fh, arg.flags, arg.cmd, arg.arg,
             ),
             #[cfg(feature = "abi-7-11")]
             Operation::Poll { arg } => {
-                write!(f, "POLL fh{}, kh {}, flags: {:#x} ", arg.fh, arg.kh, arg.flags)
+                write!(f, "POLL fh={}, kh={}, flags={:#x} ", arg.fh, arg.kh, arg.flags)
             }
             #[cfg(feature = "abi-7-15")]
             Operation::NotifyReply { data } => write!(f, "NOTIFY REPLY"),
             #[cfg(feature = "abi-7-16")]
             Operation::BatchForget { arg, nodes } => {
-                write!(f, "BATCH FORGOT count {}", arg.count)
+                write!(f, "BATCH FORGOT count={}", arg.count)
             }
             #[cfg(feature = "abi-7-19")]
             Operation::FAllocate { arg } => write!(
                 f,
-                "FALLOCATE fh {}, offset {}, length {}, mode {:#05o}",
+                "FALLOCATE fh={}, offset={}, length={}, mode={:#05o}",
                 arg.fh, arg.offset, arg.length, arg.mode,
             ),
             #[cfg(feature = "abi-7-21")]
             Operation::ReadDirPlus { arg } => write!(
                 f,
-                "READDIRPLUS fh {}, offset {}, size {}",
+                "READDIRPLUS fh={}, offset={}, size={}",
                 arg.fh, arg.offset, arg.size,
             ),
             #[cfg(feature = "abi-7-23")]
             Operation::Rename2 { arg, oldname, newname } => write!(
                 f,
-                "RENAME2 name {:?}, newdir {:#018x}, newname {:?}, flags  {:#x}",
+                "RENAME2 name={:?}, newdir={:#018x}, newname={:?}, flags={:#x}",
                 oldname, arg.newdir, newname, arg.flags,
             ),
             // #[cfg(feature = "abi-7-24")]
@@ -622,20 +622,20 @@ impl<'a> fmt::Display for Operation<'a> {
             // FUSE_COPY_FILE_RANGE = 47,
 
             #[cfg(target_os = "macos")]
-            Operation::SetVolName { name } => write!(f, "SETVOLNAME name {:?}", name),
+            Operation::SetVolName { name } => write!(f, "SETVOLNAME name={:?}", name),
             #[cfg(target_os = "macos")]
             Operation::GetXTimes => write!(f, "GETXTIMES"),
             #[cfg(target_os = "macos")]
             Operation::Exchange { arg, oldname, newname } => write!(
                 f,
-                "EXCHANGE olddir {:#018x}, oldname {:?}, newdir {:#018x}, newname {:?}, options {:#x}",
+                "EXCHANGE olddir={:#018x}, oldname={:?}, newdir={:#018x}, newname={:?}, options={:#x}",
                 arg.olddir, oldname, arg.newdir, newname, arg.options,
             ),
 
             #[cfg(feature = "abi-7-11")]
             Operation::CuseInit { arg } => write!(
                 f,
-                "CUSE INIT kernel ABI {}.{}, flags {:#x}, max readahead {}",
+                "CUSE INIT kernel ABI={}.{}, flags={:#x}, max readahead={}",
                 arg.major, arg.minor, arg.flags, arg.max_readahead,
             ),
         }
@@ -652,7 +652,7 @@ impl<'a> fmt::Display for Request<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "FUSE({:3}) ino {:#018x}: {}",
+            "FUSE({:3}) ino={:#018x} operation={}",
             self.header.unique, self.header.nodeid, self.operation,
         )
     }
