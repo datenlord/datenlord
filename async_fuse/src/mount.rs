@@ -260,7 +260,7 @@ pub async fn umount(mount_point: impl AsRef<Path>) -> nix::Result<()> {
 #[cfg(any(target_os = "macos"))]
 pub async fn mount(mount_point: impl AsRef<Path>) -> anyhow::Result<RawFd> {
     let mount_point = mount_point.as_ref().to_path_buf();
-    let devpath = Path::new("/dev/osxfuse0");
+    let devpath = Path::new("/dev/osxfuse1");
 
     let fd = blocking!(fcntl::open(devpath, OFlag::O_RDWR, Mode::empty()))
         .context("failed to open fuse device")?;
@@ -271,15 +271,14 @@ pub async fn mount(mount_point: impl AsRef<Path>) -> anyhow::Result<RawFd> {
     // osxfuse/support/mount_osxfuse/mount_osxfuse.c#L1099
     // result = ioctl(fd, FUSEDEVIOCGETRANDOM, &drandom);
     // FUSEDEVIOCGETRANDOM // osxfuse/common/fuse_ioctl.h#L43
-    let drandom = Task::blocking(async move {
+    let drandom = blocking!(
         let mut drandom: u32 = 0;
         nix::ioctl_read!(fuse_read_random, FUSE_IOC_MAGIC, FUSE_IOC_TYPE_MODE, u32);
         let result = unsafe { fuse_read_random(fd, &mut drandom as *mut _)? };
         debug_assert_eq!(result, 0);
         debug!("successfully read drandom={}", drandom);
         Ok::<_, anyhow::Error>(drandom)
-    })
-    .await?;
+    )?;
 
     let full_path = blocking!(fs::canonicalize(mount_point))?;
     let cstr_path = full_path

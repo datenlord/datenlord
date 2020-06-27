@@ -5,6 +5,7 @@ use nix::sys::uio::{self, IoVec};
 use smol::blocking;
 use std::convert::AsRef;
 use std::ffi::OsStr;
+use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::os::raw::c_int;
 use std::os::unix::ffi::OsStrExt;
@@ -52,7 +53,7 @@ impl<T: Send + Sync + 'static> ReplyRaw<T> {
         }
     }
 
-    async fn send(self, to_bytes: ToBytes<T>, err: c_int) -> nix::Result<usize> {
+    async fn send(self, to_bytes: ToBytes<T>, err: c_int) -> anyhow::Result<usize> {
         let fd = self.fd;
         let wsize = blocking!(
             let mut send_error = false;
@@ -100,7 +101,9 @@ impl<T: Send + Sync + 'static> ReplyRaw<T> {
             } else {
                 debug_assert_ne!(err, 0);
             }
-            uio::writev(fd, &iovecs)
+            uio::writev(fd, &iovecs).context(format!(
+                "failed to send to FUSE, the reply header is: {:?}", header,
+            ))
         )?;
 
         debug!("sent {} bytes to fuse device successfully", wsize);

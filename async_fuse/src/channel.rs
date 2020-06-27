@@ -1,11 +1,11 @@
 use anyhow::{anyhow, Context, Result};
 use nix::{
     fcntl::{self, FcntlArg, FdFlag, OFlag},
+    ioctl_read,
     sys::stat::Mode,
     unistd::close,
-    ioctl_read,
 };
-use std::os::unix::io::{RawFd};
+use std::os::unix::io::RawFd;
 
 use super::session::Session;
 
@@ -24,13 +24,14 @@ impl Channel {
             Err(err) => {
                 return Err(anyhow!("fuse: failed to open {:?}: {:?}", devname, err));
             }
-            Ok(fd) => {
-                fd
-            }
+            Ok(fd) => fd,
         };
 
         if let Err(err) = fcntl::fcntl(clonefd, FcntlArg::F_SETFD(FdFlag::FD_CLOEXEC)) {
-            return Err(anyhow::anyhow!("fuse: failed to set clonefd to FD_CLOEXEC: {:?}", err));
+            return Err(anyhow::anyhow!(
+                "fuse: failed to set clonefd to FD_CLOEXEC: {:?}",
+                err
+            ));
         }
 
         ioctl_read!(clone, 299, 0, i32);
@@ -38,7 +39,10 @@ impl Channel {
         let res = unsafe { clone(clonefd, &mut masterfd) };
         if let Err(err) = res {
             close(clonefd).context("fuse: failed to close clone device")?;
-            return Err(anyhow::anyhow!("fuse: failed to clone device fd: {:?}\n", err));
+            return Err(anyhow::anyhow!(
+                "fuse: failed to clone device fd: {:?}\n",
+                err
+            ));
         }
 
         Ok(Channel { chan_fd: clonefd })

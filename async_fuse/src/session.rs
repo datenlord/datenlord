@@ -15,7 +15,6 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use super::channel::*;
 use super::fs::*;
-use super::fuse_read::*;
 use super::fuse_reply::*;
 use super::fuse_request::*;
 use super::mount;
@@ -66,15 +65,20 @@ pub(crate) struct Session {
 
 impl Drop for Session {
     fn drop(&mut self) {
-        // TODO: proper handle umount failure
-        smol::block_on(async { mount::umount(&self.mountpoint).await })
-            .expect(&format!("failed to umount {:?}", self.mountpoint));
-        info!("successfully umount {:?}", self.mountpoint);
+        if !FUSE_DESTROYED.load(Ordering::Acquire) {
+            let res = smol::block_on(async { mount::umount(&self.mountpoint).await });
+            match res {
+                Ok(..) => info!("successfully umount {:?}", self.mountpoint),
+                Err(e) => error!(
+                    "failed to umount {:?}, the error is: {}",
+                    self.mountpoint, e,
+                ),
+            };
+        }
     }
 }
 
 impl Session {
-
     pub fn fd(&self) -> RawFd {
         self.fuse_fd
     }
@@ -88,10 +92,10 @@ impl Session {
             .canonicalize()
             .context(format!("failed to find the mount path={:?}", mountpoint))?;
         let filesystem = FileSystem::new(&full_mountpoint).await?;
+        // Must create filesystem before mount
         let fuse_fd = mount::mount(&full_mountpoint)
             .await
             .context("failed to mount fuse device")?;
-        let filesystem = FileSystem::new(&full_mountpoint).await?;
         Ok(Session {
             mountpoint,
             fuse_fd,
@@ -102,8 +106,9 @@ impl Session {
     }
 
     pub async fn run(&self) -> anyhow::Result<()> {
-        let chan = Channel::new(self).await?;
-        let fuse_fd = chan.fd();
+        // let chan = Channel::new(self).await?;
+        // let fuse_fd = chan.fd();
+        let fuse_fd = self.fuse_fd;
         let mut byte_vec = vec![0u8; BUFFER_SIZE];
         let read_result = blocking!(
             let res = unistd::read(fuse_fd, &mut *byte_vec);
@@ -123,7 +128,7 @@ impl Session {
 
         loop {
             unsafe {
-                // reset buffer size to its capacity
+                // reset buffer size to its capacity, otherwise no enough buffer to read
                 byte_vec.set_len(byte_vec.capacity());
             }
             let read_result = blocking!(
@@ -134,6 +139,11 @@ impl Session {
             match read_result.0 {
                 Ok(read_size) => {
                     debug!("read successfully {} byte data from FUSE device", read_size);
+                    unsafe {
+                        // set buffer size to read size, otherwise encounter panic
+                        byte_vec.set_len(read_size);
+                    }
+
                     let fs = self.filesystem.clone();
                     byte_vec = Task::spawn(async move {
                         let req = match Request::new(&byte_vec) {
@@ -148,6 +158,7 @@ impl Session {
                         debug!("{}", req);
                         let res = dispatch(&req, fuse_fd, fs).await;
                         if let Err(e) = res {
+                            error!("failed to process request, the error is: {}", e);
                             let unique = req.unique();
                             let reply_error_to_fuse = ReplyEmpty::new(unique, fuse_fd);
                             let error_num = match e.downcast_ref::<nix::Error>() {
@@ -164,10 +175,14 @@ impl Session {
                                 },
                                 _ => libc::EINVAL,
                             };
+                            // TODO: there is a bug!
+                            // If the error from dispatch() is related to IO error with FUSE device,
+                            // then it'll fail to reply error to FUSE again.
                             reply_error_to_fuse.error(error_num).await.expect(&format!(
                                 "failed to send error reply for request, unique={}",
                                 unique,
                             ));
+                            // TODO: this panic is for fast fail, can be removed when stable
                             panic!("failed to process request, the error is: {}", e);
                         }
                         byte_vec
@@ -179,17 +194,21 @@ impl Session {
                     match err.as_errno() {
                         // Operation interrupted. Accordingly to FUSE, this is safe to retry
                         Some(Errno::ENOENT) => {
-                            info!("Operation interrupted, retry.");
+                            info!("operation interrupted, retry.");
                         }
                         // Interrupted system call, retry
                         Some(Errno::EINTR) => {
-                            info!("Interrupted system call, retry");
+                            info!("interrupted system call, retry");
                         }
                         // Explicitly try again
                         Some(Errno::EAGAIN) => info!("Explicitly retry"),
                         // Filesystem was unmounted, quit the loop
                         Some(Errno::ENODEV) => {
-                            error!("FUSE unmounted, quit the run loop");
+                            if FUSE_DESTROYED.load(Ordering::Acquire) {
+                                info!("FUSE unmounted, quit the run loop");
+                            } else {
+                                error!("something wrong with FUSE device");
+                            }
                             break;
                         }
                         // Unhandled error
@@ -261,9 +280,9 @@ impl Session {
         reply
             .init(
                 FUSE_KERNEL_VERSION,
-                19,            //FUSE_KERNEL_MINOR_VERSION,
-                max_readahead, // TODO: adjust BUFFER_SIZE according to max_readahead
-                flags,         // use features given in INIT_FLAGS and reported as capable
+                FUSE_KERNEL_MINOR_VERSION, // Do not change minor version, otherwise unknown panic
+                max_readahead,             // TODO: adjust BUFFER_SIZE according to max_readahead
+                flags, // use features given in INIT_FLAGS and reported as capable
                 #[cfg(not(feature = "abi-7-13"))]
                 unused,
                 #[cfg(feature = "abi-7-13")]

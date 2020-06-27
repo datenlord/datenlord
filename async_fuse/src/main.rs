@@ -1,8 +1,7 @@
 use anyhow;
-use futures::stream::{StreamExt, TryStreamExt};
-use log::{debug, error};
-use smol::{self, blocking};
+use log::debug;
 
+mod channel;
 mod fs;
 mod fuse_read;
 mod fuse_reply;
@@ -10,12 +9,8 @@ mod fuse_request;
 mod mount;
 mod protocal;
 mod session;
-mod channel;
-use fuse_read::*;
-use fuse_request::*;
 use session::*;
 
-// #[async_std::main]
 fn main() -> anyhow::Result<()> {
     env_logger::init();
     let mountpoint = match std::env::args_os().nth(1) {
@@ -30,39 +25,8 @@ fn main() -> anyhow::Result<()> {
     debug!("mount point: {:?}", mountpoint);
 
     smol::run(async move {
-        {
-            let ss = Session::new(&mountpoint).await?;
-            ss.run().await?;
-            return Ok(());
-        }
-        {
-            let capacity = 1024;
-            let dir = blocking!(std::fs::read_dir("fuse_reqs"))?;
-            let mut dir = smol::iter(dir);
-            dir.try_for_each_concurrent(3, |entry| async move {
-                let path = entry.path();
-                debug!("read file: {:?}", path);
-                let file = blocking!(std::fs::File::open(path))?;
-                let file = smol::reader(file);
-                FuseBufReadStream::with_capacity(capacity, file)
-                    .for_each_concurrent(2, |res| async move {
-                        match res {
-                            Ok(byte_vec) => {
-                                debug!("read {} bytes", byte_vec.len());
-                                let req = Request::new(&byte_vec);
-                                debug!("build fuse read req={:?}", req);
-                                // Ok::<(), Error>(())
-                            }
-                            Err(err) => {
-                                error!("receive failed, the error is: {:?}", err);
-                            }
-                        }
-                    })
-                    .await;
-                Ok(())
-            })
-            .await?;
-        }
+        let ss = Session::new(&mountpoint).await?;
+        ss.run().await?;
         Ok(())
     })
 }
@@ -73,37 +37,8 @@ mod test {
     use futures::stream::StreamExt;
     use smol::{self, blocking};
     use std::fs::{self, File};
-    use std::io::{self, Read};
+    use std::io;
 
-    #[test]
-    fn test_ascii() {
-        let fs: u8 = 28;
-        println!("{} is ASCII {}", fs, fs.is_ascii());
-        let a = '♥' as u8;
-        println!("{} is ASCII {}", a, a.is_ascii());
-        let b = '♥';
-        println!("{} is ASCII {}", b, b.is_ascii());
-    }
-
-    #[test]
-    fn test_buffer() -> io::Result<()> {
-        let mut buffer = Vec::new();
-        for entry in fs::read_dir(".")? {
-            let entry = entry?;
-            if entry.file_type()?.is_file() {
-                // let fd = nix::fcntl::open(
-                //     &entry.path(),
-                //     nix::fcntl::OFlag::O_RDONLY,
-                //     nix::sys::stat::Mode::all(),
-                // )?;
-                let mut file = File::open(&entry.path())?;
-                file.read_to_end(&mut buffer)?;
-                let content = String::from_utf8_lossy(&buffer[..]);
-                println!("file content is: {}", content);
-            }
-        }
-        Ok(())
-    }
     #[test]
     fn test_async_iter() -> io::Result<()> {
         smol::run(async move {
