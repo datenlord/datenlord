@@ -1,12 +1,10 @@
 use anyhow::{self, Context};
-use log::{debug, error};
-use nix::errno::{self, Errno};
+use log::{debug, info};
 use nix::fcntl::{self, OFlag};
 use nix::sys::stat::{self, Mode};
-use smol::{self, blocking, Task};
+use smol::blocking;
 use std::ffi::CString;
 use std::fs;
-use std::io;
 use std::os::raw::c_void;
 use std::os::unix::io::RawFd;
 use std::path::Path;
@@ -138,7 +136,7 @@ async fn fuser_mount(mount_point: impl AsRef<Path>) -> anyhow::Result<RawFd> {
     use nix::sys::uio::IoVec;
     use std::process::Command;
 
-    let mount_point = mount_point.as_ref().to_path_buf();
+    let mount_path = mount_point.as_ref().to_path_buf();
 
     let (local, remote) = blocking!(socket::socketpair(
         AddressFamily::Unix,
@@ -150,13 +148,17 @@ async fn fuser_mount(mount_point: impl AsRef<Path>) -> anyhow::Result<RawFd> {
 
     let mount_handle = blocking!(Command::new("fusermount")
         .arg("-o")
-        .arg("nosuid,nodev,noexec,nonempty") // rw,async,noatime,auto_unmount
-        .arg(mount_point.as_os_str())
+        .arg("nosuid,nodev,noexec,nonempty,allow_other") // rw,async,noatime,auto_unmount
+        .arg(mount_path.as_os_str())
         .env("_FUSE_COMMFD", remote.to_string())
         .output())
     .context("fusermount command failed to start")?;
 
     assert!(mount_handle.status.success());
+    info!(
+        "fusermount path={:?} to FUSE device successfully!",
+        mount_point.as_ref()
+    );
 
     blocking!(
         let mut buf = [0u8; 5];
@@ -222,7 +224,7 @@ async fn direct_mount(mount_point: impl AsRef<Path>) -> anyhow::Result<RawFd> {
             opts.as_ptr() as *const c_void,
         )};
         if result == 0 {
-            debug!("mount path={:?} to FUSE device={:?} successfully!", mntpath, devpath);
+            info!("mount path={:?} to FUSE device={:?} successfully!", mntpath, devpath);
             Ok(dev_fd)
         } else {
             // let e = Errno::from_i32(errno::errno());
@@ -342,7 +344,7 @@ pub async fn mount(mount_point: impl AsRef<Path>) -> anyhow::Result<RawFd> {
             )
         };
         if result == 0 {
-            debug!("mount path={:?} to FUSE device={:?} successfully!", mntpath, devpath);
+            info!("mount path={:?} to FUSE device={:?} successfully!", mntpath, devpath);
             Ok(fd)
         } else {
             // let e = Errno::from_i32(errno::errno());

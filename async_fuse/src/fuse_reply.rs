@@ -33,7 +33,7 @@ fn mode_from_kind_and_perm(kind: SFlag, perm: u16) -> u32 {
 enum ToBytes<T> {
     Struct(T),
     Bytes(Vec<u8>),
-    Null,
+    Error,
 }
 
 #[derive(Debug)]
@@ -55,6 +55,7 @@ impl<T: Send + Sync + 'static> ReplyRaw<T> {
     async fn send(self, to_bytes: ToBytes<T>, err: c_int) -> nix::Result<usize> {
         let fd = self.fd;
         let wsize = blocking!(
+            let mut send_error = false;
             let instance: T; // to hold the instance of ToBytes::Struct
             let byte_vec: Vec<u8>; // to hold the Vec<u8> of ToBytes::Bytes
             let empty_vec: Vec<u8>; // to hold the emtpy Vec<u8> of ToBytes::Null
@@ -75,7 +76,8 @@ impl<T: Send + Sync + 'static> ReplyRaw<T> {
                     byte_vec = bv;
                     (byte_vec.len(), &byte_vec[..])
                 }
-                ToBytes::Null => {
+                ToBytes::Error => {
+                    send_error = true;
                     empty_vec = Vec::new();
                     (0, &empty_vec[..])
                 }
@@ -89,12 +91,15 @@ impl<T: Send + Sync + 'static> ReplyRaw<T> {
             let h = &header as *const FuseOutHeader as *const u8;
             let header_bytes = unsafe { slice::from_raw_parts(h, header_len) };
             let iovecs: Vec<_> = if data_len > 0 {
-                debug_assert_eq!(err, 0);
                 vec![IoVec::from_slice(header_bytes), IoVec::from_slice(bytes)]
             } else {
-                debug_assert_ne!(err, 0);
                 vec![IoVec::from_slice(header_bytes)]
             };
+            if !send_error {
+                debug_assert_eq!(err, 0);
+            } else {
+                debug_assert_ne!(err, 0);
+            }
             uio::writev(fd, &iovecs)
         )?;
 
@@ -120,7 +125,7 @@ impl<T: Send + Sync + 'static> ReplyRaw<T> {
 
     async fn send_error(self, err: c_int) -> anyhow::Result<()> {
         let _reply_size = self
-            .send(ToBytes::Null, err)
+            .send(ToBytes::Error, err)
             .await
             .context("send_error() failed to send error")?;
         Ok(())
@@ -613,6 +618,17 @@ impl ReplyXAttr {
 
 #[cfg(test)]
 mod test {
+    use super::super::fuse_request::ByteSlice;
+    use super::super::protocal::{FuseAttr, FuseAttrOut, FuseOutHeader};
+    use super::ReplyAttr;
+    use futures::prelude::*;
+    use nix::fcntl::{self, OFlag};
+    use nix::sys::stat::Mode;
+    use nix::unistd::{self, Whence};
+    use smol::{self, blocking};
+    use std::fs::File;
+    use std::time::Duration;
+
     #[test]
     fn test_slice() {
         let s = [1, 2, 3, 4, 5, 6];
@@ -631,5 +647,93 @@ mod test {
 
         println!("{:?}", l1);
         println!("{:?}", v1);
+    }
+    #[test]
+    fn test_reply_output() -> anyhow::Result<()> {
+        smol::run(async move {
+            let file_name = "fuse_reply.log";
+            let fd = blocking!(fcntl::open(
+                file_name,
+                OFlag::O_CREAT | OFlag::O_TRUNC | OFlag::O_RDWR,
+                Mode::all(),
+            ))?;
+            blocking!(unistd::unlink(file_name))?;
+
+            let ino = 64;
+            let size = 64;
+            let blocks = 64;
+            let atime = 64;
+            let mtime = 64;
+            let ctime = 64;
+            #[cfg(target_os = "macos")]
+            let crtime = 64;
+            let atimensec = 32;
+            let mtimensec = 32;
+            let ctimensec = 32;
+            #[cfg(target_os = "macos")]
+            let crtimensec = 32;
+            let mode = 32;
+            let nlink = 32;
+            let uid = 32;
+            let gid = 32;
+            let rdev = 32;
+            #[cfg(target_os = "macos")]
+            let flags = 32;
+            #[cfg(feature = "abi-7-9")]
+            let blksize = 32;
+            #[cfg(feature = "abi-7-9")]
+            let padding = 32;
+            let attr = FuseAttr {
+                ino,
+                size,
+                blocks,
+                atime,
+                mtime,
+                ctime,
+                #[cfg(target_os = "macos")]
+                crtime,
+                atimensec,
+                mtimensec,
+                ctimensec,
+                #[cfg(target_os = "macos")]
+                crtimensec,
+                mode,
+                nlink,
+                uid,
+                gid,
+                rdev,
+                #[cfg(target_os = "macos")]
+                flags,
+                #[cfg(feature = "abi-7-9")]
+                blksize,
+                #[cfg(feature = "abi-7-9")]
+                padding,
+            };
+
+            let unique = 12345;
+            let reply_attr = ReplyAttr::new(unique, fd);
+            reply_attr.attr(Duration::from_secs(1), attr).await?;
+
+            // let file = blocking!(File::open(file_name))?;
+            blocking!(unistd::lseek(fd, 0, Whence::SeekSet))?;
+            use std::os::unix::io::FromRawFd;
+            let file = blocking!(unsafe { File::from_raw_fd(fd) });
+            let mut file = smol::reader(file);
+            let mut bytes = Vec::new();
+            file.read_to_end(&mut bytes).await?;
+
+            let mut bs = ByteSlice::new(&bytes);
+            let foh: &FuseOutHeader = bs.fetch().unwrap();
+            let fao: &FuseAttrOut = bs.fetch().unwrap();
+
+            dbg!(foh, fao);
+            debug_assert_eq!(fao.attr.ino, ino);
+            debug_assert_eq!(fao.attr.size, size);
+            debug_assert_eq!(fao.attr.blocks, blocks);
+            debug_assert_eq!(fao.attr.atime, atime);
+            debug_assert_eq!(fao.attr.mtime, mtime);
+            debug_assert_eq!(fao.attr.ctime, ctime);
+            Ok(())
+        })
     }
 }
