@@ -11,6 +11,7 @@ mod fuse_request;
 mod mount;
 mod protocal;
 mod session;
+mod channel;
 use fuse_read::*;
 use fuse_reply::*;
 use fuse_request::*;

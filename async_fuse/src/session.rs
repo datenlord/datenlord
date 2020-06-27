@@ -12,6 +12,7 @@ use std::sync::{
 };
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use super::channel::*;
 use super::fs::*;
 use super::fuse_read::*;
 use super::fuse_reply::*;
@@ -61,6 +62,11 @@ pub(crate) struct Session {
 }
 
 impl Session {
+
+    pub fn fd(&self) -> RawFd {
+        self.fuse_fd
+    }
+
     pub async fn new(mountpoint: impl AsRef<Path>) -> anyhow::Result<Session> {
         let mountpoint = mountpoint.as_ref().to_path_buf();
         let full_mountpoint = mountpoint
@@ -80,7 +86,8 @@ impl Session {
     }
 
     pub async fn run(&self) -> anyhow::Result<()> {
-        let fuse_fd = self.fuse_fd;
+        let chan = Channel::new(self).await?;
+        let fuse_fd = chan.fd();
         let fuse_reader = blocking!(unsafe { std::fs::File::from_raw_fd(fuse_fd) });
         let fuse_reader = smol::reader(fuse_reader);
         let mut frs = FuseBufReadStream::with_capacity(BUFFER_SIZE, fuse_reader);
