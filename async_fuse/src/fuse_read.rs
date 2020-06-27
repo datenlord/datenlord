@@ -52,13 +52,58 @@ impl<R: AsyncRead> Stream for FuseBufReadStream<R> {
     }
 }
 
-// pub(crate) trait FuseBufReadExt {
-//     fn fuse_read_stream(self, capacity: usize) -> FuseBufReadStream<Self>
-//     where
-//         Self: futures::io::AsyncRead + Unpin + Sized,
-//     {
-//         FuseBufReadStream::with_capacity(capacity, self)
-//     }
-// }
+#[cfg(test)]
+mod test {
+    use futures::prelude::*;
+    use futures::stream::StreamExt;
+    use smol::{self, blocking};
+    use std::fs::{self, File};
+    use std::io;
 
-// impl FuseBufReadExt for std::fs::File { }
+    use super::FuseBufReadStream;
+
+    #[test]
+    fn test_for_each_concurrent() -> io::Result<()> {
+        smol::run(async move {
+            let capacity = 1024;
+            let dir = blocking!(fs::read_dir("./src"))?;
+            let dir = smol::iter(dir);
+            dir.try_for_each_concurrent(2, |entry| async move {
+                let path = entry.path();
+                if path.is_dir() {
+                    println!("skip directory: {:?}", path);
+                } else {
+                    println!("read file: {:?}", path);
+                    let file = blocking!(File::open(path))?;
+                    let file = smol::reader(file);
+                    FuseBufReadStream::with_capacity(capacity, file)
+                        .for_each_concurrent(10, |res| async move {
+                            match res {
+                                Ok(byte_vec) => {
+                                    println!("read {} bytes", byte_vec.len());
+                                    let output_length = 16;
+                                    if byte_vec.len() > output_length {
+                                        println!(
+                                            "first {} bytes: {:?}",
+                                            output_length,
+                                            &byte_vec[..output_length]
+                                        );
+                                    } else {
+                                        println!("total bytes: {:?}", byte_vec);
+                                    }
+                                    // Ok::<(), Error>(())
+                                }
+                                Err(err) => {
+                                    println!("read file failed, the error is: {:?}", err);
+                                }
+                            }
+                        })
+                        .await;
+                }
+                Ok(())
+            })
+            .await?;
+            Ok(())
+        })
+    }
+}

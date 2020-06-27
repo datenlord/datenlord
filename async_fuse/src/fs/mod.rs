@@ -21,7 +21,7 @@ mod util;
 use dir::*;
 use node::*;
 
-const MY_TTL_SEC: u64 = 1; // TODO: should be a long value, say 1 hour
+const MY_TTL_SEC: u64 = 3600; // TODO: should be a long value, say 1 hour
 const MY_GENERATION: u64 = 1; // TODO: find a proper way to set generation
 
 #[derive(Debug)]
@@ -59,7 +59,7 @@ impl FileSystem {
                 occupied.ino(),
             );
             reply.error(EEXIST).await?;
-            return Err(anyhow::anyhow!("cannot create duplicated node"));
+            return Ok(());
         }
         // all checks are passed, ready to create new node
         let mflags = util::parse_mode(mode);
@@ -214,9 +214,7 @@ impl FileSystem {
                         node_name, parent,
                     );
                     reply.error(ENOENT).await?;
-                    return Err(anyhow::anyhow!(
-                        "cannot find the node to remove under parent directory"
-                    ));
+                    return Ok(());
                 }
                 Some(child_entry) => {
                     node_ino = child_entry.ino();
@@ -241,7 +239,7 @@ impl FileSystem {
                                 node_name, node_ino, parent,
                             );
                             reply.error(ENOTEMPTY).await?;
-                            return Err(anyhow::anyhow!("cannot remove non-empty directory node"));
+                            return Ok(());
                         }
                     }
 
@@ -268,16 +266,8 @@ impl FileSystem {
         }
     }
 
-    pub async fn new(mount_point: impl AsRef<Path>) -> anyhow::Result<FileSystem> {
-        let mount_dir = Path::new(mount_point.as_ref());
-        if !mount_dir.is_dir() {
-            panic!("the input mount path is not a directory");
-        }
-        let root_path = std::fs::canonicalize(&mount_dir).context(format!(
-            "failed to convert the mount point={:?} to a full path",
-            mount_dir,
-        ))?;
-
+    pub async fn new(full_mount_path: impl AsRef<Path>) -> anyhow::Result<FileSystem> {
+        let root_path = full_mount_path.as_ref();
         let root_inode =
             Node::open_root_node(FUSE_ROOT_ID, OsString::from("/"), &root_path).await?;
         let mut cache = BTreeMap::new();
@@ -337,10 +327,8 @@ impl FileSystem {
                             under parent directory of ino={}",
                         child_name, parent
                     );
-                    return Err(anyhow::anyhow!(
-                        "failed to find the file name={:?}",
-                        child_name
-                    ));
+                    // lookup() didn't find anything, this is normal
+                    return Ok(());
                 }
             }
         }
@@ -458,7 +446,7 @@ impl FileSystem {
 
         let node = self.cache.get(&ino);
         debug_assert!(
-            node.is_none(),
+            node.is_some(),
             format!(
                 "open() found fs is inconsistent, the i-node of ino={} should be in cache",
                 ino,
@@ -782,7 +770,7 @@ impl FileSystem {
             )
         );
         let node = node.unwrap(); // safe to use unwrap() here
-        if node.need_load_data() {
+        if node.need_load_file_data() {
             node.load_data().await?;
         }
         match node.read_file(read_helper) {
@@ -1095,10 +1083,6 @@ impl FileSystem {
             )
         );
         let node = node.unwrap(); // safe to use unwrap() here
-        debug_assert!(
-            !node.need_load_data(),
-            format!("directory of ino={} should be loaded before read", ino),
-        );
         let num_child_entries = node.read_dir(readdir_helper);
         reply.ok().await?;
         debug!(
@@ -1202,19 +1186,20 @@ impl FileSystem {
             res
         )
         .context("statfs() failed to run statvfs()")?;
-        reply
-            .statfs(
-                // TODO: consider to avoid the numeric cast
-                statvfs.blocks() as u64,
-                statvfs.blocks_free() as u64,
-                statvfs.blocks_available() as u64,
-                statvfs.files() as u64,
-                statvfs.files_free() as u64,
-                statvfs.block_size() as u32, // TODO: consider use customized block size
-                statvfs.name_max() as u32,
-                statvfs.fragment_size() as u32,
-            )
-            .await?;
+        // reply
+        //     .statfs(
+        //         // TODO: consider to avoid the numeric cast
+        //         statvfs.blocks() as u64,
+        //         statvfs.blocks_free() as u64,
+        //         statvfs.blocks_available() as u64,
+        //         statvfs.files() as u64,
+        //         statvfs.files_free() as u64,
+        //         statvfs.block_size() as u32, // TODO: consider use customized block size
+        //         statvfs.name_max() as u32,
+        //         statvfs.fragment_size() as u32,
+        //     )
+        //     .await?;
+        reply.error(ENOSYS).await?;
         debug!(
             "statfs() successfully read the statvfs of ino={}, the statvfs={:?}",
             ino, statvfs,

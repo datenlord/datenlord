@@ -98,9 +98,10 @@ pub fn parse_sflag(flags: u32) -> SFlag {
     sflag
 }
 
-pub fn open_dir(path: impl AsRef<Path>) -> nix::Result<RawFd> {
+pub async fn open_dir(path: impl AsRef<Path>) -> nix::Result<RawFd> {
     let oflags = OFlag::O_RDONLY | OFlag::O_DIRECTORY;
-    let dfd = fcntl::open(path.as_ref(), oflags, Mode::empty())?;
+    let path = path.as_ref().to_path_buf();
+    let dfd = blocking!(fcntl::open(path.as_os_str(), oflags, Mode::empty()))?;
     Ok(dfd)
 }
 
@@ -116,7 +117,7 @@ pub async fn open_dir_at(dfd: RawFd, child_name: OsString) -> nix::Result<RawFd>
 }
 
 pub async fn load_attr(fd: RawFd) -> nix::Result<FileAttr> {
-    let st = blocking!(stat::fstat(fd.clone()))?;
+    let st = blocking!(stat::fstat(fd))?;
 
     #[cfg(target_os = "macos")]
     fn build_crtime(st: &FileStat) -> Option<SystemTime> {
@@ -188,6 +189,7 @@ pub fn convert_to_fuse_attr(attr: FileAttr) -> anyhow::Result<FuseAttr> {
     let (atime_secs, atime_nanos) = time_from_system_time(&attr.atime)?;
     let (mtime_secs, mtime_nanos) = time_from_system_time(&attr.mtime)?;
     let (ctime_secs, ctime_nanos) = time_from_system_time(&attr.ctime)?;
+    #[cfg(target_os = "macos")]
     let (crtime_secs, crtime_nanos) = time_from_system_time(&attr.crtime)?;
 
     Ok(FuseAttr {

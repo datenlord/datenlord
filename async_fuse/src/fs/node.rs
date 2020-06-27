@@ -160,10 +160,10 @@ impl Node {
         }
     }
 
-    pub fn need_load_data(&self) -> bool {
+    pub fn need_load_file_data(&self) -> bool {
         if !self.is_node_data_empty() {
             debug!(
-                "need_load_data() found node data of name={:?} \
+                "need_load_file_data() found node data of name={:?} \
                     and ino={} is in cache, no need to load",
                 self.get_name(),
                 self.get_ino(),
@@ -171,7 +171,7 @@ impl Node {
             false
         } else if self.get_attr().size > 0 {
             debug!(
-                "need_load_data() found node size of name={:?} \
+                "need_load_file_data() found node size of name={:?} \
                     and ino={} is non-zero, need to load",
                 self.get_name(),
                 self.get_ino(),
@@ -179,7 +179,7 @@ impl Node {
             true
         } else {
             debug!(
-                "need_load_data() found node size of name={:?} \
+                "need_load_file_data() found node size of name={:?} \
                     and ino={} is zero, no need to load",
                 self.get_name(),
                 self.get_ino(),
@@ -214,6 +214,13 @@ impl Node {
         };
 
         if create_dir {
+            debug_assert!(
+                !dir_data.contains_key(&child_dir_name),
+                format!(
+                    "open_child_dir_helper() cannot create duplicated directory name={:?}",
+                    child_dir_name
+                ),
+            );
             let child_dir_name_clone = child_dir_name.clone();
             blocking!(stat::mkdirat(fd, child_dir_name_clone.as_os_str(), mode)).context(
                 format!(
@@ -247,7 +254,7 @@ impl Node {
                 child_dir_name.clone(),
                 DirEntry::new(child_attr.ino, child_dir_name.clone(), SFlag::S_IFDIR),
             );
-            debug_assert!(previous_value.is_none());
+            debug_assert!(previous_value.is_none()); // double check creation race
         }
 
         // lookup count and open count are increased to 1 by creation
@@ -261,7 +268,8 @@ impl Node {
             lookup_count: AtomicI64::new(1),
         };
 
-        if child_node.need_load_data() {
+        if !create_dir {
+            // load directory data on open
             child_node.load_data().await?;
         }
 
@@ -296,6 +304,13 @@ impl Node {
         };
 
         if create_file {
+            debug_assert!(
+                !dir_data.contains_key(&child_file_name),
+                format!(
+                    "open_child_file_helper() cannot create duplicated file name={:?}",
+                    child_file_name
+                ),
+            );
             debug_assert!(oflags.contains(OFlag::O_CREAT));
         }
         let child_file_name_clone = child_file_name.clone();
@@ -324,7 +339,7 @@ impl Node {
                 child_file_name.clone(),
                 DirEntry::new(child_attr.ino, child_file_name.clone(), SFlag::S_IFREG),
             );
-            debug_assert!(previous_value.is_none());
+            debug_assert!(previous_value.is_none()); // double check creation race
         }
 
         // lookup count and open count are increased to 1 by creation
@@ -414,10 +429,7 @@ impl Node {
             NodeData::DirData(..) => {
                 let dir_entry_map = self.load_dir_data_helper().await?;
                 let entry_count = dir_entry_map.len();
-                debug!(
-                    "load_data() successfully load {} directory entries",
-                    entry_count,
-                );
+                debug!("load_data() successfully load {} entries", entry_count,);
                 self.data = NodeData::DirData(dir_entry_map);
                 Ok(entry_count)
             }
@@ -464,7 +476,7 @@ impl Node {
 
         let removed_entry = dir_data.remove(child_name.as_os_str());
         debug_assert!(
-            removed_entry.is_none(),
+            removed_entry.is_some(),
             format!(
                 "unlink_entry() found fs is inconsistent, the entry of name={:?} \
                 is not in directory of name={:?} and ino={}",
@@ -510,13 +522,10 @@ impl Node {
     }
 
     pub fn read_dir(&self, func: impl FnOnce(&BTreeMap<OsString, DirEntry>) -> usize) -> usize {
-        // if self.need_load_data() {
-        //     self.load_data();
-        // }
-        debug_assert!(
-            !self.need_load_data(),
-            format!("directory data should be load before read"),
-        );
+        // debug_assert!(
+        //     !self.need_load_file_data(),
+        //     format!("directory data should be load before read"),
+        // );
         let dir_data = match &self.data {
             NodeData::DirData(dir_data) => dir_data,
             NodeData::FileData(..) => panic!("forbidden to load DirData from file node"),
@@ -532,11 +541,8 @@ impl Node {
         &self,
         func: impl FnOnce(&Vec<u8>) -> anyhow::Result<Vec<u8>>,
     ) -> anyhow::Result<Vec<u8>> {
-        // if self.need_load_data() {
-        //     self.load_data();
-        // }
         debug_assert!(
-            !self.need_load_data(),
+            !self.need_load_file_data(),
             format!("file data should be load before read"),
         );
         let file_data = match &self.data {
@@ -627,7 +633,7 @@ impl Node {
         path: impl AsRef<Path>,
     ) -> anyhow::Result<Node> {
         let path = path.as_ref();
-        let dir_fd = util::open_dir(path)?;
+        let dir_fd = util::open_dir(path).await?;
         let mut attr = util::load_attr(dir_fd).await?;
         attr.ino = root_ino; // replace root ino with 1
 
@@ -642,10 +648,8 @@ impl Node {
             // open count set to 1 by creation
             lookup_count: AtomicI64::new(1),
         };
-
-        if root_node.need_load_data() {
-            let _load_size = root_node.load_data().await?;
-        }
+        // load root directory data on open
+        root_node.load_data().await?;
 
         Ok(root_node)
     }

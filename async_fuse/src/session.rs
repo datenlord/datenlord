@@ -1,10 +1,11 @@
 use anyhow::{self, Context};
 use futures::lock::Mutex;
-use futures::stream::StreamExt;
 use lazy_static::lazy_static;
 use log::{debug, error, info, warn};
+use nix::errno::Errno;
+use nix::unistd;
 use smol::{self, blocking, Task};
-use std::os::unix::io::{FromRawFd, RawFd};
+use std::os::unix::io::RawFd;
 use std::path::{Path, PathBuf};
 use std::sync::{
     atomic::{AtomicBool, AtomicU32, Ordering},
@@ -34,13 +35,15 @@ const INIT_FLAGS: u32 = FUSE_ASYNC_READ | FUSE_CASE_INSENSITIVE | FUSE_VOL_RENAM
 /// The max size of write requests from the kernel. The absolute minimum is 4k,
 /// FUSE recommends at least 128k, max 16M. The FUSE default is 16M on macOS
 /// and 128k on other systems.
-const MAX_WRITE_SIZE: u32 = 16 * 1024 * 1024;
+const MAX_WRITE_SIZE: u32 = 1024 * 1024;
+// const MAX_WRITE_SIZE: u32 = 16 * 1024 * 1024;
 
 /// Size of the buffer for reading a request from the kernel. Since the kernel may send
 /// up to MAX_WRITE_SIZE bytes in a write request, we use that value plus some extra space.
-const BUFFER_SIZE: usize = MAX_WRITE_SIZE as usize + 4096;
+const BUFFER_SIZE: usize = MAX_WRITE_SIZE as usize;
+// const BUFFER_SIZE: usize = MAX_WRITE_SIZE as usize + 4096;
 
-const MAX_BACKGROUND: u16 = 100;
+// const MAX_BACKGROUND: u16 = 100;
 
 lazy_static! {
     /// Static variable to indicate whether FUSE is initialized or not
@@ -61,6 +64,15 @@ pub(crate) struct Session {
     filesystem: Arc<Mutex<FileSystem>>,
 }
 
+impl Drop for Session {
+    fn drop(&mut self) {
+        // TODO: proper handle umount failure
+        smol::block_on(async { mount::umount(&self.mountpoint).await })
+            .expect(&format!("failed to umount {:?}", self.mountpoint));
+        info!("successfully umount {:?}", self.mountpoint);
+    }
+}
+
 impl Session {
 
     pub fn fd(&self) -> RawFd {
@@ -68,10 +80,14 @@ impl Session {
     }
 
     pub async fn new(mountpoint: impl AsRef<Path>) -> anyhow::Result<Session> {
+        if !mountpoint.as_ref().is_dir() {
+            panic!("the input mount path is not a directory");
+        }
         let mountpoint = mountpoint.as_ref().to_path_buf();
         let full_mountpoint = mountpoint
             .canonicalize()
             .context(format!("failed to find the mount path={:?}", mountpoint))?;
+        let filesystem = FileSystem::new(&full_mountpoint).await?;
         let fuse_fd = mount::mount(&full_mountpoint)
             .await
             .context("failed to mount fuse device")?;
@@ -88,10 +104,14 @@ impl Session {
     pub async fn run(&self) -> anyhow::Result<()> {
         let chan = Channel::new(self).await?;
         let fuse_fd = chan.fd();
-        let fuse_reader = blocking!(unsafe { std::fs::File::from_raw_fd(fuse_fd) });
-        let fuse_reader = smol::reader(fuse_reader);
-        let mut frs = FuseBufReadStream::with_capacity(BUFFER_SIZE, fuse_reader);
-        if let Some(Ok(byte_vec)) = frs.next().await {
+        let mut byte_vec = vec![0u8; BUFFER_SIZE];
+        let read_result = blocking!(
+            let res = unistd::read(fuse_fd, &mut *byte_vec);
+            (res, byte_vec)
+        );
+        byte_vec = read_result.1;
+        if let Ok(read_size) = read_result.0 {
+            debug!("read successfully {} byte data from FUSE device", read_size);
             if let Ok(req) = Request::new(&byte_vec) {
                 if let Operation::Init { arg } = req.operation() {
                     let filesystem = self.filesystem.clone();
@@ -101,13 +121,21 @@ impl Session {
         }
         debug_assert!(FUSE_INITIALIZED.load(Ordering::Acquire));
 
-        // frs.for_each_concurrent(MAX_BACKGROUND as usize, |res| async move {
-        while let Some(res) = frs.next().await {
-            match res {
-                Ok(byte_vec) => {
-                    debug!("receive successfully {} byte data", byte_vec.len());
+        loop {
+            unsafe {
+                // reset buffer size to its capacity
+                byte_vec.set_len(byte_vec.capacity());
+            }
+            let read_result = blocking!(
+                let res = unistd::read(fuse_fd, &mut *byte_vec);
+                (res, byte_vec)
+            );
+            byte_vec = read_result.1;
+            match read_result.0 {
+                Ok(read_size) => {
+                    debug!("read successfully {} byte data from FUSE device", read_size);
                     let fs = self.filesystem.clone();
-                    Task::spawn(async move {
+                    byte_vec = Task::spawn(async move {
                         let req = match Request::new(&byte_vec) {
                             // Dispatch request
                             Ok(r) => r,
@@ -142,38 +170,41 @@ impl Session {
                             ));
                             panic!("failed to process request, the error is: {}", e);
                         }
+                        byte_vec
                     })
-                    .detach();
+                    .await; // TODO: consider use detach() to run in concurrency
                 }
                 Err(err) => {
                     error!("receive failed, the error is: {:?}", err);
-                    match err.raw_os_error() {
+                    match err.as_errno() {
                         // Operation interrupted. Accordingly to FUSE, this is safe to retry
-                        Some(libc::ENOENT) => {
+                        Some(Errno::ENOENT) => {
                             info!("Operation interrupted, retry.");
                         }
                         // Interrupted system call, retry
-                        Some(libc::EINTR) => {
+                        Some(Errno::EINTR) => {
                             info!("Interrupted system call, retry");
                         }
                         // Explicitly try again
-                        Some(libc::EAGAIN) => info!("Explicitly retry"),
+                        Some(Errno::EAGAIN) => info!("Explicitly retry"),
                         // Filesystem was unmounted, quit the loop
-                        Some(libc::ENODEV) => {
-                            panic!("FUSE unmounted, quit the run loop");
+                        Some(Errno::ENODEV) => {
+                            error!("FUSE unmounted, quit the run loop");
+                            break;
                         }
                         // Unhandled error
-                        _ => panic!(
-                            "non-recoverable io error when read FUSE device, the error is: {}",
-                            err,
-                        ),
+                        _ => {
+                            error!(
+                                "non-recoverable io error when read FUSE device, \
+                                    the error is: {}",
+                                err,
+                            );
+                            break;
+                        }
                     }
                 }
             }
         }
-        // ).await;
-
-        mount::umount(&self.mountpoint).await?;
         Ok(())
     }
 

@@ -652,8 +652,8 @@ impl<'a> fmt::Display for Request<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "FUSE({:3}) ino={:#018x} operation={}",
-            self.header.unique, self.header.nodeid, self.operation,
+            "FUSE({:3}) ino={:#018x} opcode={} operation={}",
+            self.header.unique, self.header.nodeid, self.header.opcode, self.operation,
         )
     }
 }
@@ -782,7 +782,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "failed to assert 48 == 56")]
+    #[should_panic(expected = "failed to assert 48 >= 56")]
     fn short_read() {
         let _req = Request::new(&INIT_REQUEST[..48]);
     }
