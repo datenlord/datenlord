@@ -586,7 +586,7 @@ pub struct FuseSetAttrIn {
     pub atimensec: u32,
     pub mtimensec: u32,
     #[cfg(not(feature = "abi-7-23"))]
-    pub unused3: u64,
+    pub unused3: u32,
     #[cfg(feature = "abi-7-23")]
     pub ctimensec: u32,
     pub mode: u32,

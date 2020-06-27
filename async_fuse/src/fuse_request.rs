@@ -1,4 +1,4 @@
-use anyhow;
+use anyhow::Context;
 use std::ffi::OsStr;
 use std::fmt;
 use std::mem;
@@ -27,7 +27,7 @@ impl<'a> ByteSlice<'a> {
             return Err(anyhow::anyhow!(
                 "no enough bytes to fetch, remaining {} bytes but to fetch {} bytes",
                 self.data.len(),
-                amt
+                amt,
             ));
         }
         let bytes = &self.data[..amt];
@@ -36,7 +36,10 @@ impl<'a> ByteSlice<'a> {
     }
     pub fn fetch<T>(&mut self) -> anyhow::Result<&'a T> {
         let len = mem::size_of::<T>();
-        let bytes = self.fetch_bytes(len)?;
+        let bytes = self.fetch_bytes(len).context(format!(
+            "failed to build FUSE request payload type {}",
+            std::any::type_name::<T>(),
+        ))?;
         let ret = unsafe { (bytes.as_ptr() as *const T).as_ref() };
         match ret {
             Some(obj) => Ok(obj),

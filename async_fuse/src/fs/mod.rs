@@ -115,9 +115,10 @@ impl FileSystem {
             debug_assert!(
                 node.is_some(),
                 format!(
-                "may_deferred_delete_node_helper() failed to find the i-node of ino={} to remove",
-                ino,
-            )
+                    "may_deferred_delete_node_helper() failed to \
+                        find the i-node of ino={} to remove",
+                    ino,
+                )
             );
             let node = node.unwrap(); // safe to use unwrap() here
 
@@ -136,9 +137,11 @@ impl FileSystem {
             debug_assert!(
                 parent_node.is_some(),
                 format!(
-                "helper_get_parent_inode() failed to find the parent of ino={} for i-node of ino={}",
-                parent_ino, ino,
-            ));
+                    "helper_get_parent_inode() failed to \
+                        find the parent of ino={} for i-node of ino={}",
+                    parent_ino, ino,
+                )
+            );
             let parent_node = parent_node.unwrap(); // safe to use unwrap() here
 
             let node_name_clone = node_name.clone();
@@ -201,7 +204,7 @@ impl FileSystem {
                 parent_node.is_some(),
                 format!(
                     "remove_node_helper() found fs is inconsistent, \
-                    parent of ino={} should be in cache before remove its child",
+                        parent of ino={} should be in cache before remove its child",
                     parent,
                 )
             );
@@ -225,8 +228,9 @@ impl FileSystem {
                             dir_node.is_some(),
                             format!(
                                 "remove_node_helper() found fs is inconsistent, \
-                                directory name={:?} of ino={} found under the parent of ino={}, \
-                                but no i-node found for this directory",
+                                    directory name={:?} of ino={} \
+                                    found under the parent of ino={}, \
+                                    but no i-node found for this directory",
                                 node_name, node_ino, parent,
                             )
                         );
@@ -385,7 +389,7 @@ impl FileSystem {
             let fuse_attr = util::convert_to_fuse_attr(attr)?;
             reply.entry(ttl, fuse_attr, MY_GENERATION).await?;
             debug!(
-                "lookup() successfully found the file name={:?} of ino={}
+                "lookup() successfully found the file name={:?} of ino={} \
                     under parent ino={}, the attr={:?}",
                 name, ino, parent, &attr,
             );
@@ -478,7 +482,8 @@ impl FileSystem {
             debug_assert!(
                 node.is_some(),
                 format!(
-                    "forget() found fs is inconsistent, the i-node of ino={} should be in cache",
+                    "forget() found fs is inconsistent, \
+                        the i-node of ino={} should be in cache",
                     ino,
                 )
             );
@@ -502,7 +507,7 @@ impl FileSystem {
                         deleted_node.is_some(),
                         format!(
                             "forget() found fs is inconsistent, node of ino={} \
-                            found in trash, but no i-node found for deferred deletion",
+                                found in trash, but no i-node found for deferred deletion",
                             ino,
                         )
                     );
@@ -537,8 +542,8 @@ impl FileSystem {
         reply: ReplyAttr,
     ) -> anyhow::Result<()> {
         debug!(
-            "setattr(ino={}, mode={:?}, uid={:?}, gid={:?}, size={:?},
-                atime={:?}, mtime={:?}, fh={:?}, crtime={:?}, chgtime={:?},
+            "setattr(ino={}, mode={:?}, uid={:?}, gid={:?}, size={:?}, \
+                atime={:?}, mtime={:?}, fh={:?}, crtime={:?}, chgtime={:?}, \
                 bkuptime={:?}, flags={:?}, req={:?})",
             ino, mode, uid, gid, size, atime, mtime, fh, crtime, chgtime, bkuptime, flags, req,
         );
@@ -547,7 +552,8 @@ impl FileSystem {
         debug_assert!(
             node.is_some(),
             format!(
-                "setattr() found fs is inconsistent, the i-node of ino={} should be in cache",
+                "setattr() found fs is inconsistent, \
+                    the i-node of ino={} should be in cache",
                 ino,
             )
         );
@@ -740,24 +746,35 @@ impl FileSystem {
         );
 
         let read_helper = |content: &Vec<u8>| -> anyhow::Result<Vec<u8>> {
-            if (offset as usize) < content.len() {
-                let read_data = if ((offset + size as i64) as usize) <= content.len() {
-                    debug!("read exact {} bytes", size);
-                    &content[(offset as usize)..(offset + size as i64) as usize]
-                } else {
+            match content.len().cmp(&(offset as usize)) {
+                std::cmp::Ordering::Greater => {
+                    let read_data = if ((offset + size as i64) as usize) <= content.len() {
+                        debug!("read exact {} bytes", size);
+                        &content[(offset as usize)..(offset + size as i64) as usize]
+                    } else {
+                        debug!(
+                            "read {} bytes only, less than expected size={}",
+                            ((offset + size as i64) as usize) - content.len(),
+                            size,
+                        );
+                        &content[(offset as usize)..]
+                    };
+                    // TODO: consider zero copy
+                    Ok(read_data.to_vec())
+                }
+                std::cmp::Ordering::Equal => {
                     debug!(
-                        "read {} bytes only, less than expected size={}",
-                        ((offset + size as i64) as usize) - content.len(),
-                        size,
+                        "offset={} equals file length={}, nothing to read",
+                        offset,
+                        content.len(),
                     );
-                    &content[(offset as usize)..]
-                };
-                // TODO: consider zero copy
-                Ok(read_data.to_vec())
-            } else {
-                Err(anyhow::anyhow!(
-                    "offset beyond file length, nothing to read"
-                ))
+                    Ok(Vec::new())
+                }
+                std::cmp::Ordering::Less => Err(anyhow::anyhow!(
+                    "failed to read, offset={} beyond file length={}",
+                    offset,
+                    content.len(),
+                )),
             }
         };
 
@@ -1061,7 +1078,7 @@ impl FileSystem {
                 );
                 num_child_entries += 1;
                 debug!(
-                    "readdir() found one child name={:?} ino={} offset={} entry={:?}
+                    "readdir() found one child name={:?} ino={} offset={} entry={:?} \
                         under the directory of ino={}",
                     child_name,
                     child_ino,
