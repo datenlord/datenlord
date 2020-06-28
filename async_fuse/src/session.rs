@@ -34,13 +34,14 @@ const INIT_FLAGS: u32 = FUSE_ASYNC_READ | FUSE_CASE_INSENSITIVE | FUSE_VOL_RENAM
 /// The max size of write requests from the kernel. The absolute minimum is 4k,
 /// FUSE recommends at least 128k, max 16M. The FUSE default is 16M on macOS
 /// and 128k on other systems.
-const MAX_WRITE_SIZE: u32 = 1024 * 1024;
-// const MAX_WRITE_SIZE: u32 = 16 * 1024 * 1024;
+#[cfg(not(target_os = "macos"))]
+const MAX_WRITE_SIZE: u32 = 128 * 1024;
+#[cfg(target_os = "macos")]
+const MAX_WRITE_SIZE: u32 = 16 * 1024 * 1024;
 
 /// Size of the buffer for reading a request from the kernel. Since the kernel may send
 /// up to MAX_WRITE_SIZE bytes in a write request, we use that value plus some extra space.
-const BUFFER_SIZE: usize = MAX_WRITE_SIZE as usize;
-// const BUFFER_SIZE: usize = MAX_WRITE_SIZE as usize + 4096;
+const BUFFER_SIZE: usize = MAX_WRITE_SIZE as usize + 512;
 
 // const MAX_BACKGROUND: u16 = 100;
 
@@ -108,7 +109,7 @@ impl Session {
     pub async fn run(&self) -> anyhow::Result<()> {
         // let chan = Channel::new(self).await?;
         // let fuse_fd = chan.fd();
-        let fuse_fd = self.fuse_fd;
+        let fuse_fd = self.fuse_fd; // TODO: use Channel once fixed
         let mut byte_vec = vec![0u8; BUFFER_SIZE];
         let read_result = blocking!(
             let res = unistd::read(fuse_fd, &mut *byte_vec);
@@ -254,22 +255,24 @@ impl Session {
                 err
             ));
         }
-        let max_readahead = if (BUFFER_SIZE as u32) < arg.max_readahead {
-            BUFFER_SIZE as u32
-        } else {
-            arg.max_readahead
-        };
-        let flags = arg.flags & INIT_FLAGS;
+        debug_assert!(
+            arg.max_readahead <= MAX_WRITE_SIZE,
+            format!(
+                "the max readahead={} larger than max write size 16M={}",
+                arg.max_readahead, MAX_WRITE_SIZE
+            ),
+        );
+        let flags = arg.flags & INIT_FLAGS; // TODO: handle init flags properly
         #[cfg(not(feature = "abi-7-13"))]
         let unused = 0u32;
         #[cfg(feature = "abi-7-13")]
-        let congestion_threshold = 100u16;
+        let congestion_threshold = 100u16; // TODO: set congestion threshold
         #[cfg(feature = "abi-7-23")]
-        let time_gran = 1u32;
+        let time_gran = 1u32; // TODO: set time_gran
         #[cfg(all(feature = "abi-7-23", not(feature = "abi-7-28")))]
         let unused = [0u32; 9];
         #[cfg(feature = "abi-7-28")]
-        let max_pages = 0u16; // max_pages = (max_write - 1) / getpagesize() + 1;
+        let max_pages = 0u16; // TODO: max_pages = (max_write - 1) / getpagesize() + 1;
         #[cfg(feature = "abi-7-28")]
         let padding = 0u16;
         #[cfg(feature = "abi-7-28")]
@@ -281,15 +284,15 @@ impl Session {
             .init(
                 FUSE_KERNEL_VERSION,
                 FUSE_KERNEL_MINOR_VERSION, // Do not change minor version, otherwise unknown panic
-                max_readahead,             // TODO: adjust BUFFER_SIZE according to max_readahead
-                flags, // use features given in INIT_FLAGS and reported as capable
+                arg.max_readahead,         // accept FUSE kernel module max_readahead
+                flags, // TODO: use features given in INIT_FLAGS and reported as capable
                 #[cfg(not(feature = "abi-7-13"))]
                 unused,
                 #[cfg(feature = "abi-7-13")]
                 MAX_BACKGROUND,
                 #[cfg(feature = "abi-7-13")]
                 congestion_threshold,
-                MAX_WRITE_SIZE, // TODO: use a max write size that fits into the session's buffer
+                MAX_WRITE_SIZE,
                 #[cfg(feature = "abi-7-23")]
                 time_gran,
                 #[cfg(all(feature = "abi-7-23", not(feature = "abi-7-28")))]
@@ -304,7 +307,11 @@ impl Session {
             .await?;
         debug!(
             "INIT response: ABI version={}.{}, flags={:#x}, max readahead={}, max write={}",
-            FUSE_KERNEL_VERSION, FUSE_KERNEL_MINOR_VERSION, flags, max_readahead, MAX_WRITE_SIZE,
+            FUSE_KERNEL_VERSION,
+            FUSE_KERNEL_MINOR_VERSION,
+            flags,
+            arg.max_readahead,
+            MAX_WRITE_SIZE,
         );
 
         // Store the kernel FUSE major and minor version
