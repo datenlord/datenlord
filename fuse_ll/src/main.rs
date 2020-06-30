@@ -2,6 +2,8 @@ use std::env;
 use std::ffi::OsStr;
 use std::path::Path;
 
+use clap::{Arg, App};
+
 mod fuse;
 mod memfs;
 
@@ -10,31 +12,27 @@ use memfs::MemoryFilesystem;
 fn main() {
     env_logger::init();
 
-    let mountpoint = match env::args_os().nth(1) {
-        Some(path) => path,
-        None => {
-            println!(
-                "Usage: {} <MOUNTPOINT>",
-                env::args().nth(0).unwrap(), // safe to use unwrap here
-            );
-            return;
-        }
+    let matches = App::new("Fuse Low Level")
+    .arg(Arg::with_name("mountpoint")
+        .required(true)
+        .index(1))
+    .arg(Arg::with_name("options")
+        .short('o')
+        .value_name("OPTIONS")
+        .about("Mount options")
+        .multiple(true)
+        .takes_value(true)
+        .number_of_values(1))
+    .get_matches();
+
+    let mountpoint = OsStr::new(matches.value_of("mountpoint").unwrap());
+    let options: Vec<&OsStr> = match matches.values_of("options") {
+        Some(options) => options.map(|o| o.split(','))
+                                .flatten()
+                                .map(|o| OsStr::new(o).as_ref())
+                                .collect(),
+        None => Vec::new(),
     };
-    let options = [
-        // "-d",
-        //"-r",
-        "-s",
-        "-f",
-        "-o",
-        "debug",
-        "-o",
-        "fsname=fuse_rs_demo",
-        "-o",
-        "kill_on_unmount",
-    ]
-    .iter()
-    .map(|o| o.as_ref())
-    .collect::<Vec<&OsStr>>();
 
     let fs = MemoryFilesystem::new(&mountpoint);
     fuse::mount(fs, Path::new(&mountpoint), &options)
