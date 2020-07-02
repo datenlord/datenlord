@@ -1,0 +1,11 @@
+[package]
+name = "master_node"
+version = "0.1.0"
+authors = ["Pu Wang <nicolas.weeks@gmail.com>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+etcd-rs = "0.3.0-alpha.1"
+tokio = { version = "0.2", features = ["full"] }
