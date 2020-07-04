@@ -15,9 +15,9 @@ fn main() {
         .arg(Arg::with_name("mountpoint").required(true).index(1))
         .arg(
             Arg::with_name("options")
-                .short('o')
+                .short("o")
                 .value_name("OPTIONS")
-                .about("Mount options")
+                .help("Mount options")
                 .multiple(true)
                 .takes_value(true)
                 .number_of_values(1),
