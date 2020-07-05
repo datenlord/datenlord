@@ -1,4 +1,3 @@
-use anyhow;
 use log::debug;
 
 mod channel;
@@ -18,7 +17,7 @@ fn main() -> anyhow::Result<()> {
         None => {
             return Err(anyhow::anyhow!(
                 "no mount path input, the usage: {} <MOUNTPOINT>",
-                std::env::args().nth(0).unwrap(), // safe to use unwrap here
+                std::env::args().next().unwrap(), // safe to use unwrap here
             ));
         }
     };

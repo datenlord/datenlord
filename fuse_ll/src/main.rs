@@ -1,8 +1,7 @@
-use std::env;
 use std::ffi::OsStr;
 use std::path::Path;
 
-use clap::{Arg, App};
+use clap::{App, Arg};
 
 mod fuse;
 mod memfs;
@@ -13,30 +12,31 @@ fn main() {
     env_logger::init();
 
     let matches = App::new("Fuse Low Level")
-    .arg(Arg::with_name("mountpoint")
-        .required(true)
-        .index(1))
-    .arg(Arg::with_name("options")
-        .short('o')
-        .value_name("OPTIONS")
-        .about("Mount options")
-        .multiple(true)
-        .takes_value(true)
-        .number_of_values(1))
-    .get_matches();
+        .arg(Arg::with_name("mountpoint").required(true).index(1))
+        .arg(
+            Arg::with_name("options")
+                .short('o')
+                .value_name("OPTIONS")
+                .about("Mount options")
+                .multiple(true)
+                .takes_value(true)
+                .number_of_values(1),
+        )
+        .get_matches();
 
     let mountpoint = OsStr::new(matches.value_of("mountpoint").unwrap());
     let options: Vec<&OsStr> = match matches.values_of("options") {
-        Some(options) => options.map(|o| o.split(','))
-                                .flatten()
-                                .map(|o| OsStr::new(o).as_ref())
-                                .collect(),
+        Some(options) => options
+            .map(|o| o.split(','))
+            .flatten()
+            .map(|o| OsStr::new(o))
+            .collect(),
         None => Vec::new(),
     };
 
     let fs = MemoryFilesystem::new(&mountpoint);
     fuse::mount(fs, Path::new(&mountpoint), &options)
-        .expect(&format!("Couldn't mount filesystem {:?}", mountpoint));
+        .unwrap_or_else(|_| panic!("Couldn't mount filesystem {:?}", mountpoint));
 }
 
 #[cfg(test)]

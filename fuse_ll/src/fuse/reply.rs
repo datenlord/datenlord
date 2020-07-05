@@ -153,7 +153,7 @@ impl<T> Reply for ReplyRaw<T> {
     fn new<S: ReplySender>(unique: u64, sender: S) -> ReplyRaw<T> {
         let sender = Box::new(sender);
         ReplyRaw {
-            unique: unique,
+            unique,
             sender: Some(sender),
             marker: PhantomData,
         }
@@ -281,7 +281,7 @@ impl ReplyEntry {
     pub fn entry(self, ttl: &Duration, attr: &FileAttr, generation: u64) {
         self.reply.ok(&fuse_entry_out {
             nodeid: attr.ino,
-            generation: generation,
+            generation,
             entry_valid: ttl.as_secs(),
             attr_valid: ttl.as_secs(),
             entry_valid_nsec: ttl.subsec_nanos(),
@@ -388,7 +388,7 @@ impl ReplyOpen {
     /// Reply to a request with the given open result
     pub fn opened(self, fh: u64, flags: u32) {
         self.reply.ok(&fuse_open_out {
-            fh: fh,
+            fh,
             open_flags: flags,
             padding: 0,
         });
@@ -419,10 +419,7 @@ impl Reply for ReplyWrite {
 impl ReplyWrite {
     /// Reply to a request with the given open result
     pub fn written(self, size: u32) {
-        self.reply.ok(&fuse_write_out {
-            size: size,
-            padding: 0,
-        });
+        self.reply.ok(&fuse_write_out { size, padding: 0 });
     }
 
     /// Reply to a request with the given error code
@@ -462,14 +459,14 @@ impl ReplyStatfs {
     ) {
         self.reply.ok(&fuse_statfs_out {
             st: fuse_kstatfs {
-                blocks: blocks,
-                bfree: bfree,
-                bavail: bavail,
-                files: files,
-                ffree: ffree,
-                bsize: bsize,
-                namelen: namelen,
-                frsize: frsize,
+                blocks,
+                bfree,
+                bavail,
+                files,
+                ffree,
+                bsize,
+                namelen,
+                frsize,
                 padding: 0,
                 spare: [0; 6],
             },
@@ -504,7 +501,7 @@ impl ReplyCreate {
         self.reply.ok(&(
             fuse_entry_out {
                 nodeid: attr.ino,
-                generation: generation,
+                generation,
                 entry_valid: ttl.as_secs(),
                 attr_valid: ttl.as_secs(),
                 entry_valid_nsec: ttl.subsec_nanos(),
@@ -512,7 +509,7 @@ impl ReplyCreate {
                 attr: fuse_attr_from_attr(attr),
             },
             fuse_open_out {
-                fh: fh,
+                fh,
                 open_flags: flags,
                 padding: 0,
             },
@@ -546,10 +543,10 @@ impl ReplyLock {
     pub fn locked(self, start: u64, end: u64, typ: u32, pid: u32) {
         self.reply.ok(&fuse_lk_out {
             lk: fuse_file_lock {
-                start: start,
-                end: end,
-                typ: typ,
-                pid: pid,
+                start,
+                end,
+                typ,
+                pid,
             },
         });
     }
@@ -579,7 +576,7 @@ impl Reply for ReplyBmap {
 impl ReplyBmap {
     /// Reply to a request with the given open result
     pub fn bmap(self, block: u64) {
-        self.reply.ok(&fuse_bmap_out { block: block });
+        self.reply.ok(&fuse_bmap_out { block });
     }
 
     /// Reply to a request with the given error code
@@ -618,15 +615,15 @@ impl ReplyDirectory {
             return true;
         }
         unsafe {
-            let p = self.data.as_mut_ptr().offset(self.data.len() as isize);
+            let p = self.data.as_mut_ptr().add(self.data.len());
             let pdirent: *mut fuse_dirent = mem::transmute(p);
             (*pdirent).ino = ino;
             (*pdirent).off = offset as u64;
             (*pdirent).namelen = name.len() as u32;
             (*pdirent).typ = mode_from_kind_and_perm(kind, 0) >> 12;
-            let p = p.offset(mem::size_of_val(&*pdirent) as isize);
+            let p = p.add(mem::size_of_val(&*pdirent));
             ptr::copy_nonoverlapping(name.as_ptr(), p, name.len());
-            let p = p.offset(name.len() as isize);
+            let p = p.add(name.len());
             ptr::write_bytes(p, 0u8, padlen);
             let newlen = self.data.len() + entsize;
             self.data.set_len(newlen);
@@ -664,10 +661,7 @@ impl Reply for ReplyXattr {
 impl ReplyXattr {
     /// Reply to a request with the size of the xattr.
     pub fn size(self, size: u32) {
-        self.reply.ok(&fuse_getxattr_out {
-            size: size,
-            padding: 0,
-        });
+        self.reply.ok(&fuse_getxattr_out { size, padding: 0 });
     }
 
     /// Reply to a request with the data in the xattr.
@@ -1183,7 +1177,7 @@ mod test {
             ],
         };
         let reply = ReplyXattr::new(0xdeadbeef, sender);
-        reply.data(&vec![0x11, 0x22, 0x33, 0x44]);
+        reply.data(&[0x11, 0x22, 0x33, 0x44]);
     }
 
     #[test]

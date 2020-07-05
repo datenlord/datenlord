@@ -1,6 +1,6 @@
-use anyhow::{self, ensure, Context};
+use anyhow::{self, Context};
 use libc::{EEXIST, EINVAL, ENODATA, ENOENT, ENOSYS, ENOTEMPTY};
-use log::{debug, error};
+use log::debug;
 use nix::fcntl::OFlag;
 use nix::sys::{stat::SFlag, statvfs};
 use nix::unistd;
@@ -247,12 +247,14 @@ impl FileSystem {
                         }
                     }
 
-                    let child_inode = self.cache.get(&node_ino).expect(&format!(
-                        "remove_node_helper() found fs is inconsistent, \
+                    let child_inode = self.cache.get(&node_ino).unwrap_or_else(|| {
+                        panic!(
+                            "remove_node_helper() found fs is inconsistent, \
                             node name={:?} of ino={} found under the parent of ino={}, \
                             but no i-node found for this node",
-                        node_name, node_ino, parent,
-                    ));
+                            node_name, node_ino, parent
+                        )
+                    });
                     debug_assert_eq!(node_ino, child_inode.get_ino());
                     debug_assert_eq!(node_name, child_inode.get_name());
                     debug_assert_eq!(parent, child_inode.get_parent_ino());
@@ -683,7 +685,7 @@ impl FileSystem {
             "rmdir(parent={}, name={:?}, req={:?})",
             parent, dir_name, req,
         );
-        self.remove_node_helper(parent, dir_name.into(), SFlag::S_IFDIR, reply)
+        self.remove_node_helper(parent, dir_name, SFlag::S_IFDIR, reply)
             .await
     }
 
@@ -937,15 +939,15 @@ impl FileSystem {
         let fd = fh as RawFd;
         if flush {
             // TODO: double check the meaning of the flush flag
-            blocking!(unistd::fsync(fd)).expect(&format!(
-                "release() failed to flush the file of ino={}",
-                ino
-            ));
+            blocking!(unistd::fsync(fd))
+                .unwrap_or_else(|_| panic!("release() failed to flush the file of ino={}", ino));
         }
-        blocking!(unistd::close(fd)).expect(&format!(
-            "release() failed to close the file handler={} of ino={}",
-            fh, ino,
-        ));
+        blocking!(unistd::close(fd)).unwrap_or_else(|_| {
+            panic!(
+                "release() failed to close the file handler={} of ino={}",
+                fh, ino
+            )
+        });
         node.dec_open_count(); // decrease open count before reply in case reply failed
         reply
             .ok()
@@ -1137,10 +1139,12 @@ impl FileSystem {
             )
         );
         let node = node.unwrap(); // safe to use unwrap() here
-        blocking!(unistd::close(fh as RawFd)).expect(&format!(
-            "releasedir() failed to close the file handler={} of ino={}",
-            fh, ino,
-        ));
+        blocking!(unistd::close(fh as RawFd)).unwrap_or_else(|_| {
+            panic!(
+                "releasedir() failed to close the file handler={} of ino={}",
+                fh, ino
+            )
+        });
         node.dec_open_count();
         reply
             .ok()
@@ -1409,7 +1413,7 @@ impl FileSystem {
 
 #[cfg(test)]
 mod test {
-    use anyhow;
+
     use nix::sys::statvfs;
     use std::fs::File;
     #[test]
