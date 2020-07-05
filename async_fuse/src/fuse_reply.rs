@@ -1,5 +1,5 @@
 use anyhow::{self, Context};
-use log::{debug, error};
+use log::debug;
 use nix::sys::stat::SFlag;
 use nix::sys::uio::{self, IoVec};
 use smol::blocking;
@@ -247,7 +247,7 @@ impl ReplyEntry {
         self.reply
             .send_data(FuseEntryOut {
                 nodeid: attr.ino,
-                generation: generation,
+                generation,
                 entry_valid: ttl.as_secs(),
                 attr_valid: ttl.as_secs(),
                 entry_valid_nsec: ttl.subsec_nanos(),
@@ -347,7 +347,7 @@ impl ReplyOpen {
     pub async fn opened(self, fh: u64, flags: u32) -> anyhow::Result<()> {
         self.reply
             .send_data(FuseOpenOut {
-                fh: fh,
+                fh,
                 open_flags: flags,
                 padding: 0,
             })
@@ -374,10 +374,7 @@ impl ReplyWrite {
     /// Reply to a request with the given open result
     pub async fn written(self, size: u32) -> anyhow::Result<()> {
         self.reply
-            .send_data(FuseWriteOut {
-                size: size,
-                padding: 0,
-            })
+            .send_data(FuseWriteOut { size, padding: 0 })
             .await
     }
 
@@ -413,14 +410,14 @@ impl ReplyStatFs {
         self.reply
             .send_data(FuseStatFsOut {
                 st: FuseKStatFs {
-                    blocks: blocks,
-                    bfree: bfree,
-                    bavail: bavail,
-                    files: files,
-                    ffree: ffree,
-                    bsize: bsize,
-                    namelen: namelen,
-                    frsize: frsize,
+                    blocks,
+                    bfree,
+                    bavail,
+                    files,
+                    ffree,
+                    bsize,
+                    namelen,
+                    frsize,
                     padding: 0,
                     spare: [0; 6],
                 },
@@ -458,7 +455,7 @@ impl ReplyCreate {
             .send_data((
                 FuseEntryOut {
                     nodeid: attr.ino,
-                    generation: generation,
+                    generation,
                     entry_valid: ttl.as_secs(),
                     attr_valid: ttl.as_secs(),
                     entry_valid_nsec: ttl.subsec_nanos(),
@@ -466,7 +463,7 @@ impl ReplyCreate {
                     attr,
                 },
                 FuseOpenOut {
-                    fh: fh,
+                    fh,
                     open_flags: flags,
                     padding: 0,
                 },
@@ -496,10 +493,10 @@ impl ReplyLock {
         self.reply
             .send_data(FuseLockOut {
                 lk: FuseFileLock {
-                    start: start,
-                    end: end,
-                    typ: typ,
-                    pid: pid,
+                    start,
+                    end,
+                    typ,
+                    pid,
                 },
             })
             .await
@@ -524,7 +521,7 @@ impl ReplyBMap {
     }
     /// Reply to a request with the given open result
     pub async fn bmap(self, block: u64) -> anyhow::Result<()> {
-        self.reply.send_data(FuseBMapOut { block: block }).await
+        self.reply.send_data(FuseBMapOut { block }).await
     }
 
     /// Reply to a request with the given error code
@@ -560,15 +557,15 @@ impl ReplyDirectory {
             return true;
         }
         unsafe {
-            let p = self.data.as_mut_ptr().offset(self.data.len() as isize);
+            let p = self.data.as_mut_ptr().add(self.data.len());
             let pdirent: *mut FuseDirEnt = mem::transmute(p);
             (*pdirent).ino = ino;
             (*pdirent).off = offset as u64;
             (*pdirent).namelen = name.len() as u32;
             (*pdirent).typ = mode_from_kind_and_perm(kind, 0) >> 12;
-            let p = p.offset(mem::size_of_val(&*pdirent) as isize);
+            let p = p.add(mem::size_of_val(&*pdirent));
             ptr::copy_nonoverlapping(name.as_ptr(), p, name.len());
-            let p = p.offset(name.len() as isize);
+            let p = p.add(name.len());
             ptr::write_bytes(p, 0u8, padlen);
             let newlen = self.data.len() + entsize;
             self.data.set_len(newlen);
@@ -601,10 +598,7 @@ impl ReplyXAttr {
     /// Reply to a request with the size of the xattr.
     pub async fn size(self, size: u32) -> anyhow::Result<()> {
         self.reply
-            .send_data(FuseGetXAttrOut {
-                size: size,
-                padding: 0,
-            })
+            .send_data(FuseGetXAttrOut { size, padding: 0 })
             .await
     }
 

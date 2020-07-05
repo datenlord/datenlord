@@ -49,7 +49,7 @@ pub fn setup(mount_dir: &Path) -> JoinHandle<()> {
     let th = thread::spawn(move || {
         info!("begin mount thread");
         fuse::mount(fs, &abs_root_path, &options)
-            .expect(&format!("Couldn't mount filesystem: {:?}", abs_root_path));
+            .unwrap_or_else(|_| panic!("Couldn't mount filesystem: {:?}", abs_root_path));
     });
 
     let seconds = 2;

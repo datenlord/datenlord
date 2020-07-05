@@ -13,7 +13,6 @@ use std::sync::{
 };
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use super::channel::*;
 use super::fs::*;
 use super::fuse_reply::*;
 use super::fuse_request::*;
@@ -179,10 +178,15 @@ impl Session {
                             // TODO: there is a bug!
                             // If the error from dispatch() is related to IO error with FUSE device,
                             // then it'll fail to reply error to FUSE again.
-                            reply_error_to_fuse.error(error_num).await.expect(&format!(
-                                "failed to send error reply for request, unique={}",
-                                unique,
-                            ));
+                            reply_error_to_fuse
+                                .error(error_num)
+                                .await
+                                .unwrap_or_else(|_| {
+                                    panic!(
+                                        "failed to send error reply for request, unique={}",
+                                        unique
+                                    )
+                                });
                             // TODO: this panic is for fast fail, can be removed when stable
                             panic!("failed to process request, the error is: {}", e);
                         }

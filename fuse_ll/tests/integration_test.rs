@@ -166,7 +166,7 @@ fn test_rename_file_no_replace(mount_dir: &Path) {
     let write_size = unistd::write(new_fd, FILE_CONTENT.as_bytes()).unwrap();
     assert_eq!(FILE_CONTENT.len(), write_size);
 
-    fs::rename(&old_file, &new_file).expect_err(&format!("rename no replace should fail"));
+    fs::rename(&old_file, &new_file).expect_err(&"rename no replace should fail".to_string());
 
     let mut buffer: Vec<u8> = iter::repeat(0u8).take(FILE_CONTENT.len()).collect();
     unistd::lseek(old_fd, 0, Whence::SeekSet).unwrap();
