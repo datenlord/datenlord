@@ -36,12 +36,13 @@ pub(crate) struct Node {
 impl Drop for Node {
     fn drop(&mut self) {
         // TODO: check unsaved data in cache
-        unistd::close(self.fd).expect(&format!(
-            "DirNode::drop() failed to clode the file handler \
+        unistd::close(self.fd).unwrap_or_else(|_| {
+            panic!(
+                "DirNode::drop() failed to clode the file handler \
                 of the node name={:?} ino={}",
-            self.name,
-            self.attr.ino, // Avoid copy FileAttr
-        ));
+                self.name, self.attr.ino
+            )
+        });
     }
 }
 
@@ -241,10 +242,10 @@ impl Node {
             ))?;
 
         // get new directory attribute
-        let child_attr = util::load_attr(child_raw_fd).await.context(format!(
-            "open_child_dir_helper() failed to \
-                get the attribute of the new child directory"
-        ))?;
+        let child_attr = util::load_attr(child_raw_fd).await.context(
+            "open_child_dir_helper() failed to get the attribute of the new child directory"
+                .to_string(),
+        )?;
         debug_assert_eq!(SFlag::S_IFDIR, child_attr.kind);
 
         if create_dir {
@@ -327,9 +328,9 @@ impl Node {
         ))?;
 
         // get new file attribute
-        let child_attr = util::load_attr(child_fd).await.context(format!(
-            "open_child_file_helper() failed to get the attribute of the new child"
-        ))?;
+        let child_attr = util::load_attr(child_fd).await.context(
+            "open_child_file_helper() failed to get the attribute of the new child".to_string(),
+        )?;
         debug_assert_eq!(SFlag::S_IFREG, child_attr.kind);
 
         if create_file {
@@ -543,7 +544,7 @@ impl Node {
     ) -> anyhow::Result<Vec<u8>> {
         debug_assert!(
             !self.need_load_file_data(),
-            format!("file data should be load before read"),
+            "file data should be load before read".to_string(),
         );
         let file_data = match &self.data {
             NodeData::DirData(..) => panic!("forbidden to load FileData from dir node"),
@@ -639,8 +640,8 @@ impl Node {
 
         let mut root_node = Node {
             parent: root_ino,
-            name: name,
-            attr: attr,
+            name,
+            attr,
             data: NodeData::DirData(BTreeMap::new()),
             fd: dir_fd,
             // lookup count set to 1 by creation

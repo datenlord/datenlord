@@ -48,8 +48,8 @@ impl<FS: Filesystem> Session<FS> {
     pub fn new(filesystem: FS, mountpoint: &Path, options: &[&OsStr]) -> io::Result<Session<FS>> {
         info!("mounting {:?}", mountpoint);
         Channel::new(mountpoint, options).map(|ch| Session {
-            filesystem: filesystem,
-            ch: ch,
+            filesystem,
+            ch,
             proto_major: 0,
             proto_minor: 0,
             initialized: false,

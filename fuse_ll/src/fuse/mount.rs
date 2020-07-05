@@ -217,7 +217,7 @@ fn direct_mount(mount_point: &Path) -> RawFd {
         );
         if result == 0 {
             debug!("mount {:?} to {:?} successfully!", mntpath, devpath);
-            return dev_fd;
+            dev_fd
         } else {
             let e = Errno::from_i32(errno::errno());
             debug!("errno={}, {:?}", errno::errno(), e);
@@ -227,7 +227,7 @@ fn direct_mount(mount_point: &Path) -> RawFd {
             #[cfg(target_arch = "x86_64")]
             libc::perror(mount_fail_str.as_ptr() as *const i8);
 
-            return -1;
+            -1
         }
     }
 }

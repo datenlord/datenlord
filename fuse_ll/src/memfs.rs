@@ -156,8 +156,8 @@ mod util {
             mtime: mtime.unwrap_or(nt),
             ctime: ctime.unwrap_or(nt),
             crtime: crtime.unwrap_or(nt),
-            kind: kind,
-            perm: perm,
+            kind,
+            perm,
             nlink: st.st_nlink as u32,
             uid: st.st_uid,
             gid: st.st_gid,
@@ -202,12 +202,14 @@ struct FileNode {
 
 impl Drop for FileNode {
     fn drop(&mut self) {
-        unistd::close(self.fd).expect(&format!(
-            "FileNode::drop() failed to clode the file handler of
+        unistd::close(self.fd).unwrap_or_else(|_| {
+            panic!(
+                "FileNode::drop() failed to clode the file handler of
                 file name {:?} ino={}",
-            self.name,
-            self.attr.get_mut().ino,
-        ));
+                self.name,
+                self.attr.get_mut().ino
+            )
+        });
     }
 }
 
@@ -373,14 +375,14 @@ impl INode {
     }
 
     fn open_root_inode(root_ino: u64, name: OsString, path: &Path) -> INode {
-        let dir_fd = util::open_dir(path).expect(&format!(
-            "new_dir_inode() failed to open directory {:?}",
-            path,
-        ));
-        let mut attr = util::read_attr(dir_fd.as_raw_fd()).expect(&format!(
-            "new_dir_inode() failed to read directory attribute {:?}",
-            path,
-        ));
+        let dir_fd = util::open_dir(path)
+            .unwrap_or_else(|_| panic!("new_dir_inode() failed to open directory {:?}", path));
+        let mut attr = util::read_attr(dir_fd.as_raw_fd()).unwrap_or_else(|_| {
+            panic!(
+                "new_dir_inode() failed to read directory attribute {:?}",
+                path
+            )
+        });
         attr.ino = root_ino; // replace root ino with 1
 
         // lookup count and open count are increased to 1 by creation
@@ -416,24 +418,26 @@ impl INode {
                 &PathBuf::from(child_dir_name),
                 mode,
             )
-            .expect(&format!(
-                "helper_open_child_dir() failed to create directory name={:?} under parent ino={}",
-                child_dir_name, parent,
-            ));
+            .unwrap_or_else(|_| panic!("helper_open_child_dir() failed to create directory name={:?} under parent ino={}", child_dir_name, parent));
         }
 
-        let child_dir_fd =
-            util::open_dir_at(&parent_node.dir_fd.borrow(), child_dir_name).expect(&format!(
-                "helper_open_child_dir() failed to open the new directory name={:?}
+        let child_dir_fd = util::open_dir_at(&parent_node.dir_fd.borrow(), child_dir_name)
+            .unwrap_or_else(|_| {
+                panic!(
+                    "helper_open_child_dir() failed to open the new directory name={:?}
                     under parent ino={}",
-                child_dir_name, parent,
-            ));
+                    child_dir_name, parent
+                )
+            });
         let child_raw_fd = child_dir_fd.as_raw_fd();
 
         // get new directory attribute
-        let child_attr = util::read_attr(child_raw_fd).expect(&format!(
-            "helper_open_child_dir() failed to get the attribute of the new child directory"
-        ));
+        let child_attr = util::read_attr(child_raw_fd).unwrap_or_else(|_| {
+            panic!(
+                "helper_open_child_dir() failed to get the attribute of the new child directory"
+                    .to_string()
+            )
+        });
         debug_assert_eq!(FileType::Directory, child_attr.kind);
 
         if create_dir {
@@ -530,7 +534,7 @@ impl INode {
         unsafe {
             file_data.set_len(file_data.capacity());
         }
-        let res = unistd::read(fd.clone(), &mut *file_data);
+        let res = unistd::read(fd, &mut *file_data);
         match res {
             Ok(s) => unsafe {
                 file_data.set_len(s as usize);
@@ -555,10 +559,12 @@ impl INode {
             INode::DIR(dir_node) => dir_node.dir_fd.borrow().as_raw_fd(),
             INode::FILE(file_node) => file_node.fd,
         };
-        let attr = util::read_attr(raw_fd).expect(&format!(
-            "helper_reload_attribute() failed to get the attribute of the node ino={}",
-            self.get_ino(),
-        ));
+        let attr = util::read_attr(raw_fd).unwrap_or_else(|_| {
+            panic!(
+                "helper_reload_attribute() failed to get the attribute of the node ino={}",
+                self.get_ino()
+            )
+        });
         match self {
             INode::DIR(_) => debug_assert_eq!(FileType::Directory, attr.kind),
             INode::FILE(_) => debug_assert_eq!(FileType::RegularFile, attr.kind),
@@ -586,16 +592,20 @@ impl INode {
             oflags,
             mode,
         )
-        .expect(&format!(
-            "helper_open_child_file() failed to open a file name={:?}
+        .unwrap_or_else(|_| {
+            panic!(
+                "helper_open_child_file() failed to open a file name={:?}
                 under parent ino={} with oflags: {:?} and mode: {:?}",
-            child_file_name, parent, oflags, mode,
-        ));
+                child_file_name, parent, oflags, mode
+            )
+        });
 
         // get new file attribute
-        let child_attr = util::read_attr(child_fd).expect(&format!(
-            "helper_open_child_file() failed to get the attribute of the new child"
-        ));
+        let child_attr = util::read_attr(child_fd).unwrap_or_else(|_| {
+            panic!(
+                "helper_open_child_file() failed to get the attribute of the new child".to_string()
+            )
+        });
         debug_assert_eq!(FileType::RegularFile, child_attr.kind);
 
         if create_file {
@@ -644,19 +654,23 @@ impl INode {
             }
         }
         let ino = self.get_ino();
-        let new_fd = unistd::dup(raw_fd).expect(&format!(
-            "dup_fd() failed to duplicate the handler ino={} raw fd={:?}",
-            ino, raw_fd,
-        ));
+        let new_fd = unistd::dup(raw_fd).unwrap_or_else(|_| {
+            panic!(
+                "dup_fd() failed to duplicate the handler ino={} raw fd={:?}",
+                ino, raw_fd
+            )
+        });
         // let fcntl_oflags = FcntlArg::F_SETFL(oflags);
         // fcntl::fcntl(new_fd, fcntl_oflags).expect(&format!(
         //     "dup_fd() failed to set the flags {:?} of duplicated handler of ino={}",
         //     oflags, ino,
         // ));
-        unistd::dup3(raw_fd, new_fd, oflags).expect(&format!(
-            "dup_fd() failed to set the flags {:?} of duplicated handler of ino={}",
-            oflags, ino,
-        ));
+        unistd::dup3(raw_fd, new_fd, oflags).unwrap_or_else(|_| {
+            panic!(
+                "dup_fd() failed to set the flags {:?} of duplicated handler of ino={}",
+                oflags, ino
+            )
+        });
         self.inc_open_count();
         new_fd
     }
@@ -681,13 +695,15 @@ impl INode {
             .data
             .borrow_mut()
             .remove(child_name)
-            .expect(&format!(
-                "unlink_entry found fs is inconsistent, the entry of name={:?}
+            .unwrap_or_else(|| {
+                panic!(
+                    "unlink_entry found fs is inconsistent, the entry of name={:?}
                 is not in directory of name={:?} and ino={}",
-                child_name,
-                self.get_name().as_os_str(),
-                self.get_ino(),
-            ))
+                    child_name,
+                    self.get_name().as_os_str(),
+                    self.get_ino()
+                )
+            })
     }
 
     fn unlink_entry(&self, child_name: &OsString) -> DirEntry {
@@ -701,10 +717,12 @@ impl INode {
                     &PathBuf::from(child_name),
                     UnlinkatFlags::RemoveDir,
                 )
-                .expect(&format!(
-                    "unlink_entry() failed to delete the file name {:?} from disk",
-                    child_name,
-                ));
+                .unwrap_or_else(|_| {
+                    panic!(
+                        "unlink_entry() failed to delete the file name {:?} from disk",
+                        child_name
+                    )
+                });
             }
             Type::File => {
                 unistd::unlinkat(
@@ -712,10 +730,12 @@ impl INode {
                     &PathBuf::from(child_name),
                     UnlinkatFlags::NoRemoveDir,
                 )
-                .expect(&format!(
-                    "unlink_entry() failed to delete the file name {:?} from disk",
-                    child_name,
-                ));
+                .unwrap_or_else(|_| {
+                    panic!(
+                        "unlink_entry() failed to delete the file name {:?} from disk",
+                        child_name
+                    )
+                });
             }
             _ => panic!(
                 "unlink_entry() found unsupported entry type: {:?}",
@@ -822,10 +842,12 @@ impl INode {
 
         let fcntl_oflags = FcntlArg::F_SETFL(oflags);
         let fd = fh as RawFd;
-        fcntl::fcntl(fd, fcntl_oflags).expect(&format!(
-            "write_file() failed to set the flags {:?} to file handler {} of ino={}",
-            oflags, fd, ino,
-        ));
+        fcntl::fcntl(fd, fcntl_oflags).unwrap_or_else(|_| {
+            panic!(
+                "write_file() failed to set the flags {:?} to file handler {} of ino={}",
+                oflags, fd, ino
+            )
+        });
         let mut written_size = data.len();
         if true {
             // TODO: async write to disk
@@ -886,11 +908,13 @@ impl MemoryFilesystem {
     ) {
         let node_kind = util::convert_node_type(&node_type);
         // pre-check
-        let parent_inode = self.cache.get(&parent).expect(&format!(
-            "helper_create_node() found fs is inconsistent,
+        let parent_inode = self.cache.get(&parent).unwrap_or_else(|| {
+            panic!(
+                "helper_create_node() found fs is inconsistent,
                 parent of ino={} should be in cache before create it new child",
-            parent,
-        ));
+                parent
+            )
+        });
         if let Some(occupied) = parent_inode.get_entry(node_name) {
             debug!(
                 "helper_create_node() found the directory of ino={}
@@ -940,25 +964,26 @@ impl MemoryFilesystem {
     }
 
     fn helper_get_parent_inode(&self, ino: u64) -> &INode {
-        let inode = self.cache.get(&ino).expect(&format!(
-            "helper_get_parent_inode() failed to find the i-node of ino={}",
-            ino,
-        ));
+        let inode = self.cache.get(&ino).unwrap_or_else(|| {
+            panic!(
+                "helper_get_parent_inode() failed to find the i-node of ino={}",
+                ino
+            )
+        });
         let parent_ino = inode.get_parent_ino();
-        self.cache.get(&parent_ino).expect(&format!(
-            "helper_get_parent_inode() failed to find the parent of ino={} for i-node of ino={}",
-            parent_ino, ino,
-        ))
+        self.cache.get(&parent_ino).unwrap_or_else(|| panic!("helper_get_parent_inode() failed to find the parent of ino={} for i-node of ino={}", parent_ino, ino))
     }
 
     fn helper_may_deferred_delete_node(&mut self, ino: u64) {
         let parent_ino: u64;
         let mut deferred_deletion = false;
         {
-            let inode = self.cache.get(&ino).expect(&format!(
-                "helper_may_deferred_delete_node() failed to find the i-node of ino={}",
-                ino,
-            ));
+            let inode = self.cache.get(&ino).unwrap_or_else(|| {
+                panic!(
+                    "helper_may_deferred_delete_node() failed to find the i-node of ino={}",
+                    ino
+                )
+            });
 
             let parent_inode = self.helper_get_parent_inode(ino);
             parent_ino = parent_inode.get_ino();
@@ -1012,11 +1037,13 @@ impl MemoryFilesystem {
         let node_ino: u64;
         {
             // pre-checks
-            let parent_inode = self.cache.get(&parent).expect(&format!(
-                "helper_remove_node() found fs is inconsistent,
+            let parent_inode = self.cache.get(&parent).unwrap_or_else(|| {
+                panic!(
+                    "helper_remove_node() found fs is inconsistent,
                     parent of ino={} should be in cache before remove its child",
-                parent,
-            ));
+                    parent
+                )
+            });
             match parent_inode.get_entry(node_name) {
                 None => {
                     debug!(
@@ -1031,12 +1058,14 @@ impl MemoryFilesystem {
                     node_ino = child_entry.ino;
                     if let FileType::Directory = node_kind {
                         // check the directory to delete is empty
-                        let dir_inode = self.cache.get(&node_ino).expect(&format!(
-                            "helper_remove_node() found fs is inconsistent,
+                        let dir_inode = self.cache.get(&node_ino).unwrap_or_else(|| {
+                            panic!(
+                                "helper_remove_node() found fs is inconsistent,
                                 directory name={:?} of ino={} found under the parent of ino={},
                                 but no i-node found for this directory",
-                            node_name, node_ino, parent,
-                        ));
+                                node_name, node_ino, parent
+                            )
+                        });
                         if !dir_inode.is_empty() {
                             debug!(
                                 "helper_remove_node() cannot remove
@@ -1049,11 +1078,8 @@ impl MemoryFilesystem {
                         }
                     }
 
-                    let child_inode = self.cache.get(&node_ino).expect(&format!(
-                        "helper_remove_node() found fs is inconsistent, node name={:?} of ino={}
-                            found under the parent of ino={}, but no i-node found for this node",
-                        node_name, node_ino, parent,
-                    ));
+                    let child_inode = self.cache.get(&node_ino).unwrap_or_else(|| panic!("helper_remove_node() found fs is inconsistent, node name={:?} of ino={}
+                            found under the parent of ino={}, but no i-node found for this node", node_name, node_ino, parent));
                     debug_assert_eq!(node_ino, child_inode.get_ino());
                     debug_assert_eq!(node_name, child_inode.get_name().as_os_str());
                     debug_assert_eq!(parent, child_inode.get_parent_ino());
@@ -1078,10 +1104,12 @@ impl MemoryFilesystem {
         if !mount_dir.is_dir() {
             panic!("the input mount path is not a directory");
         }
-        let root_path = fs::canonicalize(&mount_dir).expect(&format!(
-            "failed to convert the mount point {:?} to a full path",
-            mount_dir,
-        ));
+        let root_path = fs::canonicalize(&mount_dir).unwrap_or_else(|_| {
+            panic!(
+                "failed to convert the mount point {:?} to a full path",
+                mount_dir
+            )
+        });
 
         let root_inode = INode::open_root_inode(FUSE_ROOT_ID, OsString::from("/"), &root_path);
         let mut cache = BTreeMap::new();
@@ -1107,10 +1135,12 @@ impl Filesystem for MemoryFilesystem {
     fn getattr(&mut self, req: &Request, ino: u64, reply: ReplyAttr) {
         debug!("getattr(ino={}, req={:?})", ino, req.request);
 
-        let inode = self.cache.get(&ino).expect(&format!(
-            "getattr() found fs is inconsistent, the i-node of ino={} should be in cache",
-            ino,
-        ));
+        let inode = self.cache.get(&ino).unwrap_or_else(|| {
+            panic!(
+                "getattr() found fs is inconsistent, the i-node of ino={} should be in cache",
+                ino
+            )
+        });
         let attr = inode.get_attr();
         debug!(
             "getattr() cache hit when searching the attribute of ino={}",
@@ -1140,10 +1170,12 @@ impl Filesystem for MemoryFilesystem {
     //     destroy
     fn open(&mut self, req: &Request<'_>, ino: u64, flags: u32, reply: ReplyOpen) {
         debug!("open(ino={}, flags={}, req={:?})", ino, flags, req.request,);
-        let inode = self.cache.get(&ino).expect(&format!(
-            "open() found fs is inconsistent, the i-node of ino={} should be in cache",
-            ino,
-        ));
+        let inode = self.cache.get(&ino).unwrap_or_else(|| {
+            panic!(
+                "open() found fs is inconsistent, the i-node of ino={} should be in cache",
+                ino
+            )
+        });
         let oflags = util::parse_oflag(flags);
         let new_fd = inode.dup_fd(oflags);
         reply.opened(new_fd as u64, flags);
@@ -1167,19 +1199,23 @@ impl Filesystem for MemoryFilesystem {
             "release(ino={}, fh={}, flags={}, lock_owner={}, flush={}, req={:?})",
             ino, fh, flags, lock_owner, flush, req.request,
         );
-        let inode = self.cache.get(&ino).expect(&format!(
-            "release() found fs is inconsistent, the i-node of ino={} should be in cache",
-            ino,
-        ));
+        let inode = self.cache.get(&ino).unwrap_or_else(|| {
+            panic!(
+                "release() found fs is inconsistent, the i-node of ino={} should be in cache",
+                ino
+            )
+        });
         if flush {
             // TODO: support flush
         }
 
         // close the duplicated dir fd
-        unistd::close(fh as RawFd).expect(&format!(
-            "release() failed to close the file handler {} of ino={}",
-            fh, ino,
-        ));
+        unistd::close(fh as RawFd).unwrap_or_else(|_| {
+            panic!(
+                "release() failed to close the file handler {} of ino={}",
+                fh, ino
+            )
+        });
         reply.ok();
         inode.dec_open_count();
         debug!(
@@ -1194,10 +1230,12 @@ impl Filesystem for MemoryFilesystem {
             ino, flags, req.request,
         );
 
-        let inode = self.cache.get(&ino).expect(&format!(
-            "opendir() found fs is inconsistent, the i-node of ino={} should be in cache",
-            ino,
-        ));
+        let inode = self.cache.get(&ino).unwrap_or_else(|| {
+            panic!(
+                "opendir() found fs is inconsistent, the i-node of ino={} should be in cache",
+                ino
+            )
+        });
         let oflags = util::parse_oflag(flags);
         let new_fd = inode.dup_fd(oflags);
 
@@ -1213,15 +1251,19 @@ impl Filesystem for MemoryFilesystem {
             "releasedir(ino={}, fh={}, flags={}, req={:?})",
             ino, fh, flags, req.request,
         );
-        let inode = self.cache.get(&ino).expect(&format!(
-            "releasedir() found fs is inconsistent, the i-node of ino={} should be in cache",
-            ino,
-        ));
+        let inode = self.cache.get(&ino).unwrap_or_else(|| {
+            panic!(
+                "releasedir() found fs is inconsistent, the i-node of ino={} should be in cache",
+                ino
+            )
+        });
         // close the duplicated dir fd
-        unistd::close(fh as RawFd).expect(&format!(
-            "releasedir() failed to close the file handler {} of ino={}",
-            fh, ino,
-        ));
+        unistd::close(fh as RawFd).unwrap_or_else(|_| {
+            panic!(
+                "releasedir() failed to close the file handler {} of ino={}",
+                fh, ino
+            )
+        });
         reply.ok();
         inode.dec_open_count();
         debug!(
@@ -1258,10 +1300,12 @@ impl Filesystem for MemoryFilesystem {
             }
         };
 
-        let inode = self.cache.get(&ino).expect(&format!(
-            "read() found fs is inconsistent, the i-node of ino={} should be in cache",
-            ino,
-        ));
+        let inode = self.cache.get(&ino).unwrap_or_else(|| {
+            panic!(
+                "read() found fs is inconsistent, the i-node of ino={} should be in cache",
+                ino
+            )
+        });
         inode.read_file(read_helper);
     }
 
@@ -1307,10 +1351,12 @@ impl Filesystem for MemoryFilesystem {
             reply.ok();
         };
 
-        let inode = self.cache.get(&ino).expect(&format!(
-            "readdir() found fs is inconsistent, the i-node of ino={} should be in cache",
-            ino,
-        ));
+        let inode = self.cache.get(&ino).unwrap_or_else(|| {
+            panic!(
+                "readdir() found fs is inconsistent, the i-node of ino={} should be in cache",
+                ino
+            )
+        });
         inode.read_dir(readdir_helper);
     }
 
@@ -1325,11 +1371,13 @@ impl Filesystem for MemoryFilesystem {
         let child_type: FileType;
         {
             // lookup child ino and type first
-            let parent_inode = self.cache.get(&parent).expect(&format!(
-                "lookup() found fs is inconsistent,
+            let parent_inode = self.cache.get(&parent).unwrap_or_else(|| {
+                panic!(
+                    "lookup() found fs is inconsistent,
                     the parent i-node of ino={} should be in cache",
-                parent
-            ));
+                    parent
+                )
+            });
             match parent_inode.get_entry(&child_name) {
                 Some(child_entry) => {
                     ino = child_entry.ino;
@@ -1374,10 +1422,12 @@ impl Filesystem for MemoryFilesystem {
                     and file name={:?} of ino={}",
                 parent, child_name, ino,
             );
-            let parent_inode = self.cache.get(&parent).expect(&format!(
-                "lookup() found fs is inconsistent, parent i-node of ino={} should be in cache",
-                parent,
-            ));
+            let parent_inode = self.cache.get(&parent).unwrap_or_else(|| {
+                panic!(
+                    "lookup() found fs is inconsistent, parent i-node of ino={} should be in cache",
+                    parent
+                )
+            });
             let child_inode: INode;
             match child_type {
                 FileType::Directory => {
@@ -1403,10 +1453,12 @@ impl Filesystem for MemoryFilesystem {
         );
         let current_count: i64;
         {
-            let inode = self.cache.get(&ino).expect(&format!(
-                "forget() found fs is inconsistent, the i-node of ino={} should be in cache",
-                ino,
-            ));
+            let inode = self.cache.get(&ino).unwrap_or_else(|| {
+                panic!(
+                    "forget() found fs is inconsistent, the i-node of ino={} should be in cache",
+                    ino
+                )
+            });
             let previous_count = inode.dec_lookup_count_by(nlookup);
             current_count = inode.get_lookup_count();
             debug_assert!(current_count >= 0);
@@ -1421,11 +1473,13 @@ impl Filesystem for MemoryFilesystem {
                 // TODO: support thread-safe
                 if self.trash.contains(&ino) {
                     // deferred deletion
-                    let deleted_inode = self.cache.remove(&ino).expect(&format!(
-                        "forget() found fs is inconsistent, node of ino={}
+                    let deleted_inode = self.cache.remove(&ino).unwrap_or_else(|| {
+                        panic!(
+                            "forget() found fs is inconsistent, node of ino={}
                             found in trash, but no i-node found for deferred deletion",
-                        ino,
-                    ));
+                            ino
+                        )
+                    });
                     self.trash.remove(&ino);
                     debug_assert_eq!(deleted_inode.get_lookup_count(), 0);
                     debug!(
@@ -1523,10 +1577,12 @@ impl Filesystem for MemoryFilesystem {
             }
         };
 
-        let inode = self.cache.get_mut(&ino).expect(&format!(
-            "setattr() found fs is inconsistent, the i-node of ino={} should be in cache",
-            ino,
-        ));
+        let inode = self.cache.get_mut(&ino).unwrap_or_else(|| {
+            panic!(
+                "setattr() found fs is inconsistent, the i-node of ino={} should be in cache",
+                ino
+            )
+        });
         inode.set_attr(setattr_helper);
         // TODO: write attribute to disk
     }
@@ -1598,10 +1654,12 @@ impl Filesystem for MemoryFilesystem {
             // req.request,
         );
 
-        let inode = self.cache.get_mut(&ino).expect(&format!(
-            "write() found fs is inconsistent, the i-node of ino={} should be in cache",
-            ino,
-        ));
+        let inode = self.cache.get_mut(&ino).unwrap_or_else(|| {
+            panic!(
+                "write() found fs is inconsistent, the i-node of ino={} should be in cache",
+                ino
+            )
+        });
         let oflags = util::parse_oflag(flags);
         let written_size = inode.write_file(fh, offset, data, oflags);
         reply.written(written_size as u32);
@@ -1650,10 +1708,12 @@ impl Filesystem for MemoryFilesystem {
         // let mut replaced_node_ino: u64 = 0;
         {
             // pre-check
-            let parent_inode = self.cache.get(&parent).expect(&format!(
-                "rename() found fs is inconsistent, parent i-node of ino={} should be in cache",
-                new_parent,
-            ));
+            let parent_inode = self.cache.get(&parent).unwrap_or_else(|| {
+                panic!(
+                    "rename() found fs is inconsistent, parent i-node of ino={} should be in cache",
+                    new_parent
+                )
+            });
             match parent_inode.get_entry(&old_name) {
                 None => {
                     reply.error(ENOENT);
@@ -1665,7 +1725,7 @@ impl Filesystem for MemoryFilesystem {
                 }
                 Some(old_entry) => {
                     // check the i-node to rename in cache
-                    if let None = self.cache.get(&old_entry.ino) {
+                    if self.cache.get(&old_entry.ino).is_none() {
                         panic!(
                             "rename() found fs is inconsistent, the i-node of name={:?} and ino={} to rename should be in cache",
                             old_name, old_entry.ino,
@@ -1675,10 +1735,7 @@ impl Filesystem for MemoryFilesystem {
                 }
             }
 
-            let new_parent_inode = self.cache.get(&new_parent).expect(&format!(
-                "rename() found fs is inconsistent, new parent i-node of ino={} should be in cache",
-                new_parent,
-            ));
+            let new_parent_inode = self.cache.get(&new_parent).unwrap_or_else(|| panic!("rename() found fs is inconsistent, new parent i-node of ino={} should be in cache", new_parent));
             if let Some(replace_entry) = new_parent_inode.get_entry(&new_name) {
                 debug_assert_eq!(&new_name, &replace_entry.name);
                 // replaced_node_ino = replace_entry.ino;
@@ -1708,7 +1765,7 @@ impl Filesystem for MemoryFilesystem {
             child_inode.set_name(new_name.clone());
 
             let mut child_entry = parent_inode.remove_entry(&old_name);
-            child_entry.name = new_name.clone();
+            child_entry.name = new_name;
             let replaced_result = new_parent_inode.insert_entry(child_entry);
             debug_assert!(replaced_result.is_none());
             // if need_to_replace {
@@ -1718,13 +1775,8 @@ impl Filesystem for MemoryFilesystem {
             //     debug_assert_eq!(new_name, replaced_entry.name);
             // } else {
             // move child on disk
-            INode::helper_move_file(&parent_inode, &old_name, &new_parent_inode, newname).expect(
-                &format!(
-                "rename() failed to move the old file name={:?} of ino={} under old parent ino={}
-                    to the new file name={:?} under new parent ino={}",
-                old_name, old_entry.ino, parent, newname, new_parent,
-            ),
-            );
+            INode::helper_move_file(&parent_inode, &old_name, &new_parent_inode, newname).unwrap_or_else(|_| panic!("rename() failed to move the old file name={:?} of ino={} under old parent ino={}
+                    to the new file name={:?} under new parent ino={}", old_name, old_entry.ino, parent, newname, new_parent));
             debug!(
                 "rename() moved on disk the old file name={:?} of ino={} under old parent ino={}
                     to the new file name={:?} ino={} under new parent ino={}",
