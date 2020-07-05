@@ -28,6 +28,7 @@ pub use request::Request;
 pub use session::Session;
 // pub use session::{Session, BackgroundSession};
 
+pub(crate) use mount::options_validator;
 mod abi;
 mod argument;
 mod channel;
@@ -564,7 +565,7 @@ pub trait Filesystem {
 pub fn mount<FS: Filesystem>(
     filesystem: FS,
     mountpoint: &Path,
-    options: &[&OsStr],
+    options: &[&str],
 ) -> io::Result<()> {
     Session::new(filesystem, mountpoint, options).and_then(|mut se| se.run())
 }
