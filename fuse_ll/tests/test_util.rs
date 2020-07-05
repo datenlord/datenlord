@@ -2,7 +2,6 @@ use log::{debug, info}; // error, warn
 use nix::fcntl::{self, OFlag};
 use nix::sys::stat::Mode;
 use nix::unistd::{self, Whence};
-use std::ffi::OsStr;
 use std::fs;
 use std::iter;
 use std::path::Path;
@@ -31,18 +30,17 @@ pub fn setup(mount_dir: &Path) -> JoinHandle<()> {
     let options = [
         // "-d",
         //"-r",
-        "-s",
-        "-f",
-        "-o",
-        "debug",
-        "-o",
+        //"-s",
+        //"-f",
+        //"-o",
+        //"debug",
         "fsname=fuse_rs_demo",
-        "-o",
-        "kill_on_unmount",
+        "ro",
+        "allow_other",
     ]
     .iter()
     .map(|o| o.as_ref())
-    .collect::<Vec<&OsStr>>();
+    .collect::<Vec<&str>>();
 
     let fs = MemoryFilesystem::new(&abs_root_path);
 

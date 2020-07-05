@@ -1,3 +1,4 @@
+use log::debug;
 use std::ffi::OsStr;
 use std::path::Path;
 
@@ -20,19 +21,18 @@ fn main() {
                 .help("Mount options")
                 .multiple(true)
                 .takes_value(true)
+                .validator(fuse::options_validator)
                 .number_of_values(1),
         )
         .get_matches();
 
-    let mountpoint = OsStr::new(matches.value_of("mountpoint").unwrap());
-    let options: Vec<&OsStr> = match matches.values_of("options") {
-        Some(options) => options
-            .map(|o| o.split(','))
-            .flatten()
-            .map(|o| OsStr::new(o))
-            .collect(),
+    let mountpoint = OsStr::new(matches.value_of("mountpoint").unwrap()); // safe to use unwrap() here, because mountpoint is required
+    let options: Vec<&str> = match matches.values_of("options") {
+        Some(options) => options.map(|o| o.split(',')).flatten().collect(),
         None => Vec::new(),
     };
+    debug!("{:?}", &options);
+    // TODO: add check function for mutual exclusive options
 
     let fs = MemoryFilesystem::new(&mountpoint);
     fuse::mount(fs, Path::new(&mountpoint), &options)
