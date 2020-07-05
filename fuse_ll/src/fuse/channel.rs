@@ -48,20 +48,18 @@ impl Channel {
     /// given path. The kernel driver will delegate filesystem operations of
     /// the given path to the channel. If the channel is dropped, the path is
     /// unmounted.
-    pub fn new(mountpoint: &Path, options: &[&OsStr]) -> io::Result<Channel> {
-        with_fuse_args(options, |_args| {
-            // let mnt = CString::new(mountpoint.as_os_str().as_bytes())?;
-            // let fd = unsafe { fuse_mount_compat25(mnt.as_ptr(), args) };
-            let fd = mount::mount(mountpoint);
-            if fd < 0 {
-                Err(io::Error::last_os_error())
-            } else {
-                Ok(Channel {
-                    mountpoint: mountpoint.into(),
-                    fd,
-                })
-            }
-        })
+    pub fn new(mountpoint: &Path, options: &[&str]) -> io::Result<Channel> {
+        // let mnt = CString::new(mountpoint.as_os_str().as_bytes())?;
+        // let fd = unsafe { fuse_mount_compat25(mnt.as_ptr(), args) };
+        let fd = mount::mount(mountpoint, options);
+        if fd < 0 {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(Channel {
+                mountpoint: mountpoint.into(),
+                fd,
+            })
+        }
     }
 
     /// Return path of the mounted filesystem
