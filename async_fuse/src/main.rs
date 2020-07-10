@@ -32,6 +32,9 @@ fn main() -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod test {
+    mod integration_tests;
+    mod test_util;
+
     use futures::prelude::*;
     use futures::stream::StreamExt;
     use smol::{self, blocking};

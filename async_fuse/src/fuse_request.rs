@@ -670,7 +670,9 @@ impl<'a> Request<'a> {
         // Check data size
         debug_assert!(
             data_len >= header.len as usize, // TODO: why not daten_len == header.len?
-            format!("failed to assert {} >= {}", data_len, header.len),
+            "failed to assert {} >= {}",
+            data_len,
+            header.len,
         );
         // Parse/check operation arguments
         let operation = Operation::parse(header.opcode, &mut data)?;

@@ -217,10 +217,8 @@ impl Node {
         if create_dir {
             debug_assert!(
                 !dir_data.contains_key(&child_dir_name),
-                format!(
-                    "open_child_dir_helper() cannot create duplicated directory name={:?}",
-                    child_dir_name
-                ),
+                "open_child_dir_helper() cannot create duplicated directory name={:?}",
+                child_dir_name
             );
             let child_dir_name_clone = child_dir_name.clone();
             blocking!(stat::mkdirat(fd, child_dir_name_clone.as_os_str(), mode)).context(
@@ -307,10 +305,8 @@ impl Node {
         if create_file {
             debug_assert!(
                 !dir_data.contains_key(&child_file_name),
-                format!(
-                    "open_child_file_helper() cannot create duplicated file name={:?}",
-                    child_file_name
-                ),
+                "open_child_file_helper() cannot create duplicated file name={:?}",
+                child_file_name
             );
             debug_assert!(oflags.contains(OFlag::O_CREAT));
         }
@@ -478,13 +474,11 @@ impl Node {
         let removed_entry = dir_data.remove(child_name.as_os_str());
         debug_assert!(
             removed_entry.is_some(),
-            format!(
-                "unlink_entry() found fs is inconsistent, the entry of name={:?} \
+            "unlink_entry() found fs is inconsistent, the entry of name={:?} \
                 is not in directory of name={:?} and ino={}",
-                child_name,
-                self.get_name(),
-                self.get_ino(),
-            ),
+            child_name,
+            self.get_name(),
+            self.get_ino(),
         );
         let removed_entry = removed_entry.unwrap(); // safe to use unwrap() here
         let child_name_clone = child_name.clone();
@@ -525,7 +519,7 @@ impl Node {
     pub fn read_dir(&self, func: impl FnOnce(&BTreeMap<OsString, DirEntry>) -> usize) -> usize {
         // debug_assert!(
         //     !self.need_load_file_data(),
-        //     format!("directory data should be load before read"),
+        //     "directory data should be load before read",
         // );
         let dir_data = match &self.data {
             NodeData::DirData(dir_data) => dir_data,

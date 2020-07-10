@@ -102,12 +102,11 @@ pub async fn umount(short_path: impl AsRef<Path>) -> anyhow::Result<()> {
             if umount_handle.status.success() {
                 Ok(())
             } else {
-                // should be safe to use unwrap() here
-                let stderr = String::from_utf8(umount_handle.stderr).unwrap();
-                debug!("fusermount failed to umount, the error is: {}", stderr);
+                let stderr = String::from_utf8_lossy(&umount_handle.stderr);
+                debug!("fusermount failed to umount, the error is: {}", &stderr);
                 Err(anyhow::anyhow!(
                     "fusermount failed to umount fuse device, the error is: {}",
-                    stderr,
+                    &stderr,
                 ))
             }
         }
@@ -148,16 +147,21 @@ async fn fuser_mount(mount_point: impl AsRef<Path>) -> anyhow::Result<RawFd> {
 
     let mount_handle = blocking!(Command::new("fusermount")
         .arg("-o")
-        .arg("nosuid,nodev,noexec,nonempty,allow_other") // rw,async,noatime,auto_unmount
+        // fusermount option allow_other only allowed if user_allow_other is set in /etc/fuse.conf
+        .arg("nosuid,nodev,noexec,nonempty") // rw,async,noatime,auto_unmount,allow_other
         .arg(mount_path.as_os_str())
         .env("_FUSE_COMMFD", remote.to_string())
         .output())
     .context("fusermount command failed to start")?;
 
-    assert!(mount_handle.status.success());
+    assert!(
+        mount_handle.status.success(),
+        "failed to run fusermount, the error is: {}",
+        String::from_utf8_lossy(&mount_handle.stderr),
+    );
     info!(
         "fusermount path={:?} to FUSE device successfully!",
-        mount_point.as_ref()
+        mount_point.as_ref(),
     );
 
     blocking!(

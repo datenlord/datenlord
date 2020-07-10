@@ -45,10 +45,8 @@ pub struct FileAttr {
 pub fn parse_oflag(flags: u32) -> OFlag {
     debug_assert!(
         flags < std::i32::MAX as u32,
-        format!(
-            "helper_parse_oflag() found flags={} overflow, larger than u16::MAX",
-            flags,
-        ),
+        "helper_parse_oflag() found flags={} overflow, larger than u16::MAX",
+        flags,
     );
     let oflags = OFlag::from_bits_truncate(flags as i32);
     debug!("helper_parse_oflag() read file flags={:?}", oflags);
@@ -58,10 +56,8 @@ pub fn parse_oflag(flags: u32) -> OFlag {
 pub fn parse_mode(mode: u32) -> Mode {
     debug_assert!(
         mode < std::u16::MAX as u32,
-        format!(
-            "helper_parse_mode() found mode={} overflow, larger than u16::MAX",
-            mode,
-        ),
+        "helper_parse_mode() found mode={} overflow, larger than u16::MAX",
+        mode,
     );
 
     #[cfg(target_os = "linux")]
@@ -84,10 +80,8 @@ pub fn parse_mode_bits(mode: u32) -> u16 {
 pub fn parse_sflag(flags: u32) -> SFlag {
     debug_assert!(
         flags < std::u16::MAX as u32,
-        format!(
-            "parse_sflag() found flags={} overflow, larger than u16::MAX",
-            flags,
-        ),
+        "parse_sflag() found flags={} overflow, larger than u16::MAX",
+        flags,
     );
 
     #[cfg(target_os = "linux")]
