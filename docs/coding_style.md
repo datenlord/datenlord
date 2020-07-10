@@ -128,6 +128,16 @@ fn bar() -> anyhow::Result<()> {
 
 ```
 
+* Every `assert!`, `assert_eq!` and `assert_nq!` should have a explanation about assertion failure. For example:
+```Rust
+
+// not recommended
+assert!(some_condition);
+
+// preferred
+assert!(some_condition, "explanation about assertion failure");
+```
+
 * *DO NOT* use `unwrap()` of `Result` and `Option` directly, unless `Result` or `Option` are properly checked.
 If you believe using `unwrap()` is safe, please add a comment for each `unwrap()`.
 For example:
