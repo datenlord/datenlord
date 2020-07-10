@@ -43,11 +43,9 @@ impl FileSystem {
         let parent_node = self.cache.get_mut(&parent);
         debug_assert!(
             parent_node.is_some(),
-            format!(
-                "create_node_helper() found fs is inconsistent, \
+            "create_node_helper() found fs is inconsistent, \
                 parent of ino={} should be in cache before create it new child",
-                parent,
-            )
+            parent,
         );
         let parent_node = parent_node.unwrap(); // safe to use unwrap() here
         if let Some(occupied) = parent_node.get_entry(&node_name) {
@@ -114,11 +112,9 @@ impl FileSystem {
             let node = self.cache.get(&ino);
             debug_assert!(
                 node.is_some(),
-                format!(
-                    "may_deferred_delete_node_helper() failed to \
+                "may_deferred_delete_node_helper() failed to \
                         find the i-node of ino={} to remove",
-                    ino,
-                )
+                ino,
             );
             let node = node.unwrap(); // safe to use unwrap() here
 
@@ -136,11 +132,10 @@ impl FileSystem {
             let parent_node = self.cache.get_mut(&parent_ino);
             debug_assert!(
                 parent_node.is_some(),
-                format!(
-                    "helper_get_parent_inode() failed to \
+                "helper_get_parent_inode() failed to \
                         find the parent of ino={} for i-node of ino={}",
-                    parent_ino, ino,
-                )
+                parent_ino,
+                ino,
             );
             let parent_node = parent_node.unwrap(); // safe to use unwrap() here
 
@@ -157,10 +152,8 @@ impl FileSystem {
             let insert_result = self.trash.insert(ino); // check thread-safe in case of deferred deletion race
             debug_assert!(
                 insert_result,
-                format!(
-                    "failed to insert node of ino={} into trash for deferred deletion",
-                    ino,
-                ),
+                "failed to insert node of ino={} into trash for deferred deletion",
+                ino,
             );
             debug!(
                 "may_deferred_delete_node_helper() defered removed \
@@ -202,11 +195,9 @@ impl FileSystem {
             let parent_node = self.cache.get(&parent);
             debug_assert!(
                 parent_node.is_some(),
-                format!(
-                    "remove_node_helper() found fs is inconsistent, \
+                "remove_node_helper() found fs is inconsistent, \
                         parent of ino={} should be in cache before remove its child",
-                    parent,
-                )
+                parent,
             );
             let parent_node = parent_node.unwrap(); // safe to use unwrap() here
             match parent_node.get_entry(&node_name) {
@@ -226,13 +217,13 @@ impl FileSystem {
                         let dir_node = self.cache.get(&node_ino);
                         debug_assert!(
                             dir_node.is_some(),
-                            format!(
-                                "remove_node_helper() found fs is inconsistent, \
+                            "remove_node_helper() found fs is inconsistent, \
                                     directory name={:?} of ino={} \
                                     found under the parent of ino={}, \
                                     but no i-node found for this directory",
-                                node_name, node_ino, parent,
-                            )
+                            node_name,
+                            node_ino,
+                            parent,
                         );
                         let dir_node = dir_node.unwrap(); // safe to use unwrap() here
                         if !dir_node.is_node_data_empty() {
@@ -314,11 +305,9 @@ impl FileSystem {
             let parent_node = self.cache.get(&parent);
             debug_assert!(
                 parent_node.is_some(),
-                format!(
-                    "lookup() found fs is inconsistent, \
+                "lookup() found fs is inconsistent, \
                         the parent i-node of ino={} should be in cache",
-                    parent
-                ),
+                parent
             );
             let parent_node = parent_node.unwrap(); // safe to use unwrap() here
             match parent_node.get_entry(&child_name) {
@@ -369,11 +358,9 @@ impl FileSystem {
             let parent_node = self.cache.get_mut(&parent);
             debug_assert!(
                 parent_node.is_some(),
-                format!(
-                    "lookup() found fs is inconsistent, \
+                "lookup() found fs is inconsistent, \
                         parent i-node of ino={} should be in cache",
-                    parent,
-                ),
+                parent,
             );
             let parent_node = parent_node.unwrap(); // safe to use unwrap() here
             let child_node = match child_type {
@@ -411,11 +398,9 @@ impl FileSystem {
         let node = self.cache.get(&ino);
         debug_assert!(
             node.is_some(),
-            format!(
-                "getattr() found fs is inconsistent, \
+            "getattr() found fs is inconsistent, \
                     the i-node of ino={} should be in cache",
-                ino,
-            )
+            ino,
         );
         let node = node.unwrap(); // safe to use unwrap() here
         let attr = node.get_attr();
@@ -453,10 +438,8 @@ impl FileSystem {
         let node = self.cache.get(&ino);
         debug_assert!(
             node.is_some(),
-            format!(
-                "open() found fs is inconsistent, the i-node of ino={} should be in cache",
-                ino,
-            )
+            "open() found fs is inconsistent, the i-node of ino={} should be in cache",
+            ino,
         );
         let node = node.unwrap(); // safe to use unwrap() here
         let oflags = util::parse_oflag(flags);
@@ -483,11 +466,9 @@ impl FileSystem {
             let node = self.cache.get(&ino);
             debug_assert!(
                 node.is_some(),
-                format!(
-                    "forget() found fs is inconsistent, \
+                "forget() found fs is inconsistent, \
                         the i-node of ino={} should be in cache",
-                    ino,
-                )
+                ino,
             );
             let node = node.unwrap(); // safe to use unwrap() here
             let previous_count = node.dec_lookup_count_by(nlookup);
@@ -507,11 +488,9 @@ impl FileSystem {
                     let deleted_node = self.cache.remove(&ino);
                     debug_assert!(
                         deleted_node.is_some(),
-                        format!(
-                            "forget() found fs is inconsistent, node of ino={} \
+                        "forget() found fs is inconsistent, node of ino={} \
                                 found in trash, but no i-node found for deferred deletion",
-                            ino,
-                        )
+                        ino,
                     );
                     let deleted_node = deleted_node.unwrap(); // safe to use unwrap() here
                     self.trash.remove(&ino);
@@ -553,11 +532,9 @@ impl FileSystem {
         let node = self.cache.get_mut(&ino);
         debug_assert!(
             node.is_some(),
-            format!(
-                "setattr() found fs is inconsistent, \
+            "setattr() found fs is inconsistent, \
                     the i-node of ino={} should be in cache",
-                ino,
-            )
+            ino,
         );
         let node = node.unwrap(); // safe to use unwrap() here
         let mut attr = node.get_attr();
@@ -783,10 +760,8 @@ impl FileSystem {
         let node = self.cache.get_mut(&ino);
         debug_assert!(
             node.is_some(),
-            format!(
-                "read() found fs is inconsistent, the i-node of ino={} should be in cache",
-                ino,
-            )
+            "read() found fs is inconsistent, the i-node of ino={} should be in cache",
+            ino,
         );
         let node = node.unwrap(); // safe to use unwrap() here
         if node.need_load_file_data() {
@@ -843,11 +818,9 @@ impl FileSystem {
         let inode = self.cache.get_mut(&ino);
         debug_assert!(
             inode.is_some(),
-            format!(
-                "write() found fs is inconsistent, \
+            "write() found fs is inconsistent, \
                     the i-node of ino={} should be in cache",
-                ino,
-            )
+            ino,
         );
         let inode = inode.unwrap(); // safe to use unwrap() here
         let oflags = util::parse_oflag(flags);
@@ -929,11 +902,9 @@ impl FileSystem {
         let node = self.cache.get(&ino);
         debug_assert!(
             node.is_some(),
-            format!(
-                "release() found fs is inconsistent, \
+            "release() found fs is inconsistent, \
                     the i-node of ino={} should be in cache",
-                ino,
-            ),
+            ino,
         );
         let node = node.unwrap(); // safe to use unwrap() here
         let fd = fh as RawFd;
@@ -1033,10 +1004,8 @@ impl FileSystem {
         let node = self.cache.get(&ino);
         debug_assert!(
             node.is_some(),
-            format!(
-                "opendir() found fs is inconsistent, the i-node of ino={} should be in cache",
-                ino,
-            )
+            "opendir() found fs is inconsistent, the i-node of ino={} should be in cache",
+            ino,
         );
         let node = node.unwrap(); // safe to use unwrap() here
         let oflags = util::parse_oflag(flags);
@@ -1095,11 +1064,9 @@ impl FileSystem {
         let node = self.cache.get(&ino);
         debug_assert!(
             node.is_some(),
-            format!(
-                "readdir() found fs is inconsistent, \
+            "readdir() found fs is inconsistent, \
                     the i-node of ino={} should be in cache",
-                ino,
-            )
+            ino,
         );
         let node = node.unwrap(); // safe to use unwrap() here
         let num_child_entries = node.read_dir(readdir_helper);
@@ -1132,11 +1099,9 @@ impl FileSystem {
         let node = self.cache.get(&ino);
         debug_assert!(
             node.is_some(),
-            format!(
-                "releasedir() found fs is inconsistent, \
+            "releasedir() found fs is inconsistent, \
                     the i-node of ino={} should be in cache",
-                ino,
-            )
+            ino,
         );
         let node = node.unwrap(); // safe to use unwrap() here
         blocking!(unistd::close(fh as RawFd)).unwrap_or_else(|_| {
@@ -1192,11 +1157,9 @@ impl FileSystem {
         let node = self.cache.get(&ino);
         debug_assert!(
             node.is_some(),
-            format!(
-                "statfs() found fs is inconsistent, \
+            "statfs() found fs is inconsistent, \
                     the i-node of ino={} should be in cache",
-                ino,
-            )
+            ino,
         );
         let node = node.unwrap(); // safe to use unwrap() here
         let fd = node.get_fd();

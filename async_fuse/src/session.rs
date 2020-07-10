@@ -261,10 +261,9 @@ impl Session {
         }
         debug_assert!(
             arg.max_readahead <= MAX_WRITE_SIZE,
-            format!(
-                "the max readahead={} larger than max write size 16M={}",
-                arg.max_readahead, MAX_WRITE_SIZE
-            ),
+            "the max readahead={} larger than max write size 16M={}",
+            arg.max_readahead,
+            MAX_WRITE_SIZE,
         );
         let flags = arg.flags & INIT_FLAGS; // TODO: handle init flags properly
         #[cfg(not(feature = "abi-7-13"))]
