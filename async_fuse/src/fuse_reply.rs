@@ -355,6 +355,7 @@ impl ReplyOpen {
     }
 
     /// Reply to a request with the given error code
+    #[allow(dead_code)]
     pub async fn error(self, err: c_int) -> anyhow::Result<()> {
         self.reply.send_error(err).await
     }
