@@ -14,6 +14,7 @@ impl<'a> ByteSlice<'a> {
     pub fn new(data: &'a [u8]) -> ByteSlice<'a> {
         ByteSlice { data }
     }
+    #[allow(dead_code)]
     pub fn len(&self) -> usize {
         self.data.len()
     }

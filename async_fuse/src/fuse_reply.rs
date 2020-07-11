@@ -397,6 +397,7 @@ impl ReplyStatFs {
         }
     }
 
+    #[allow(dead_code)]
     pub async fn statfs(
         self,
         blocks: u64,
@@ -444,6 +445,7 @@ impl ReplyCreate {
         }
     }
     /// Reply to a request with the given entry
+    #[allow(dead_code)]
     pub async fn created(
         self,
         ttl: &Duration,
@@ -490,6 +492,7 @@ impl ReplyLock {
         }
     }
     /// Reply to a request with the given open result
+    #[allow(dead_code)]
     pub async fn locked(self, start: u64, end: u64, typ: u32, pid: u32) -> anyhow::Result<()> {
         self.reply
             .send_data(FuseLockOut {
@@ -521,11 +524,13 @@ impl ReplyBMap {
         }
     }
     /// Reply to a request with the given open result
+    #[allow(dead_code)]
     pub async fn bmap(self, block: u64) -> anyhow::Result<()> {
         self.reply.send_data(FuseBMapOut { block }).await
     }
 
     /// Reply to a request with the given error code
+    #[allow(dead_code)]
     pub async fn error(self, err: c_int) -> anyhow::Result<()> {
         self.reply.send_error(err).await
     }
@@ -597,6 +602,7 @@ impl ReplyXAttr {
         }
     }
     /// Reply to a request with the size of the xattr.
+    #[allow(dead_code)]
     pub async fn size(self, size: u32) -> anyhow::Result<()> {
         self.reply
             .send_data(FuseGetXAttrOut { size, padding: 0 })
@@ -604,6 +610,7 @@ impl ReplyXAttr {
     }
 
     /// Reply to a request with the data in the xattr.
+    #[allow(dead_code)]
     pub async fn data(self, bytes: Vec<u8>) -> anyhow::Result<()> {
         self.reply.send_bytes(bytes).await
     }
