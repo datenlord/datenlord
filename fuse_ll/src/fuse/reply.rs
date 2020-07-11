@@ -6,6 +6,7 @@
 //! data without cloning the data. A reply *must always* be used (by calling either ok() or
 //! error() exactly once).
 
+use bincode;
 use libc::{EIO, S_IFBLK, S_IFCHR, S_IFDIR, S_IFIFO, S_IFLNK, S_IFREG, S_IFSOCK};
 use log::warn;
 use std::convert::AsRef;
@@ -395,6 +396,7 @@ impl ReplyOpen {
     }
 
     /// Reply to a request with the given error code
+    #[allow(dead_code)]
     pub fn error(self, err: c_int) {
         self.reply.error(err);
     }
@@ -444,29 +446,40 @@ impl Reply for ReplyStatfs {
     }
 }
 
+/// Param passed to Statfs Reply
+#[derive(Debug)]
+pub struct ReplyStatfsParam {
+    /// Total data blocks in filesystem
+    pub blocks: u64,
+    /// Free blocks in filesystem
+    pub bfree: u64,
+    /// Free blocks available to unprivileged user
+    pub bavail: u64,
+    /// Total inodes in filesystem
+    pub files: u64,
+    /// Free inodes in filesystem
+    pub ffree: u64,
+    /// Optimal transfer block size
+    pub bsize: u32,
+    /// Maximum length of filenames
+    pub namelen: u32,
+    /// Fragment size (since Linux 2.6)
+    pub frsize: u32,
+}
+
 impl ReplyStatfs {
     /// Reply to a request with the given open result
-    pub fn statfs(
-        self,
-        blocks: u64,
-        bfree: u64,
-        bavail: u64,
-        files: u64,
-        ffree: u64,
-        bsize: u32,
-        namelen: u32,
-        frsize: u32,
-    ) {
+    pub fn statfs(self, param: &ReplyStatfsParam) {
         self.reply.ok(&fuse_statfs_out {
             st: fuse_kstatfs {
-                blocks,
-                bfree,
-                bavail,
-                files,
-                ffree,
-                bsize,
-                namelen,
-                frsize,
+                blocks: param.blocks,
+                bfree: param.bfree,
+                bavail: param.bavail,
+                files: param.files,
+                ffree: param.ffree,
+                bsize: param.bsize,
+                namelen: param.namelen,
+                frsize: param.frsize,
                 padding: 0,
                 spare: [0; 6],
             },
@@ -616,16 +629,19 @@ impl ReplyDirectory {
         }
         unsafe {
             let p = self.data.as_mut_ptr().add(self.data.len());
-            let pdirent: *mut fuse_dirent = mem::transmute(p);
-            (*pdirent).ino = ino;
-            (*pdirent).off = offset as u64;
-            (*pdirent).namelen = name.len() as u32;
-            (*pdirent).typ = mode_from_kind_and_perm(kind, 0) >> 12;
-            let p = p.add(mem::size_of_val(&*pdirent));
+            // The following serialization won't produce error
+            // because the size is checked before
+            // TODO: Change the Param to use fuse_dirent directly
+            bincode::serialize_into(&mut self.data, &ino).unwrap();
+            bincode::serialize_into(&mut self.data, &(offset as u64)).unwrap();
+            bincode::serialize_into(&mut self.data, &(name.len() as u32)).unwrap();
+            bincode::serialize_into(&mut self.data, &(mode_from_kind_and_perm(kind, 0) >> 12))
+                .unwrap();
+            let p = p.add(mem::size_of::<fuse_dirent>());
             ptr::copy_nonoverlapping(name.as_ptr(), p, name.len());
             let p = p.add(name.len());
             ptr::write_bytes(p, 0u8, padlen);
-            let newlen = self.data.len() + entsize;
+            let newlen = self.data.len() + padlen + name.len();
             self.data.set_len(newlen);
         }
         false
@@ -682,7 +698,9 @@ mod test {
     use super::ReplyXTimes;
     use super::ReplyXattr;
     use super::{FileAttr, FileType};
-    use super::{Reply, ReplyAttr, ReplyData, ReplyEmpty, ReplyEntry, ReplyOpen, ReplyRaw};
+    use super::{
+        Reply, ReplyAttr, ReplyData, ReplyEmpty, ReplyEntry, ReplyOpen, ReplyRaw, ReplyStatfsParam,
+    };
     use super::{ReplyBmap, ReplyCreate, ReplyDirectory, ReplyLock, ReplyStatfs, ReplyWrite};
     use std::sync::mpsc::{channel, Sender};
     use std::thread;
@@ -1015,7 +1033,16 @@ mod test {
             ],
         };
         let reply: ReplyStatfs = Reply::new(0xdeadbeef, sender);
-        reply.statfs(0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88);
+        reply.statfs(&ReplyStatfsParam {
+            blocks: 0x11,
+            bfree: 0x22,
+            bavail: 0x33,
+            files: 0x44,
+            ffree: 0x55,
+            bsize: 0x66,
+            namelen: 0x77,
+            frsize: 0x88,
+        });
     }
 
     #[test]

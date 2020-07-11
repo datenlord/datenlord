@@ -142,7 +142,7 @@ pub mod consts {
     pub const FOPEN_PURGE_UBC: u32 = 1 << 31;
 
     // Init request/reply flags
-    pub const FUSE_ASYNC_READ: u32 = 1 << 0; // asynchronous read requests
+    pub const FUSE_ASYNC_READ: u32 = 1; // asynchronous read requests
     pub const FUSE_POSIX_LOCKS: u32 = 1 << 1; // remote locking for POSIX file locks
     #[cfg(feature = "abi-7-9")]
     pub const FUSE_FILE_OPS: u32 = 1 << 2; // kernel sends file handle for fstat, etc...
@@ -183,7 +183,7 @@ pub mod consts {
     pub const CUSE_UNRESTRICTED_IOCTL: u32 = 1 << 0; // use unrestricted ioctl
 
     // Release flags
-    pub const FUSE_RELEASE_FLUSH: u32 = 1 << 0;
+    pub const FUSE_RELEASE_FLUSH: u32 = 1;
     #[cfg(feature = "abi-7-17")]
     pub const FUSE_RELEASE_FLOCK_UNLOCK: u32 = 1 << 1;
 

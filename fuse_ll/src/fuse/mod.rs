@@ -22,7 +22,7 @@ pub use reply::ReplyXTimes;
 pub use reply::ReplyXattr;
 pub use reply::{
     Reply, ReplyAttr, ReplyBmap, ReplyCreate, ReplyData, ReplyDirectory, ReplyEmpty, ReplyEntry,
-    ReplyLock, ReplyOpen, ReplyStatfs, ReplyWrite,
+    ReplyLock, ReplyOpen, ReplyStatfs, ReplyStatfsParam, ReplyWrite,
 };
 pub use request::Request;
 pub use session::Session;
@@ -389,7 +389,16 @@ pub trait Filesystem {
 
     /// Get file system statistics.
     fn statfs(&mut self, _req: &Request<'_>, _ino: u64, reply: ReplyStatfs) {
-        reply.statfs(0, 0, 0, 0, 0, 512, 255, 0);
+        reply.statfs(&ReplyStatfsParam {
+            blocks: 0,
+            bfree: 0,
+            bavail: 0,
+            files: 0,
+            ffree: 0,
+            bsize: 512,
+            namelen: 255,
+            frsize: 0,
+        });
     }
 
     /// Set an extended attribute.

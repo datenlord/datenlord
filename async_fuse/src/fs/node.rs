@@ -120,6 +120,7 @@ impl Node {
             .fetch_sub(nlookup as i64, atomic::Ordering::Relaxed)
     }
 
+    #[allow(dead_code)]
     async fn load_attribute(&self) -> anyhow::Result<FileAttr> {
         let attr = util::load_attr(self.fd).await.context(format!(
             "load_attribute() failed to get the attribute of the node ino={}",
@@ -440,6 +441,7 @@ impl Node {
         }
     }
 
+    #[allow(dead_code)]
     fn insert_entry(&mut self, child_entry: DirEntry) -> Option<DirEntry> {
         let dir_data = match &mut self.data {
             NodeData::DirData(dir_data) => dir_data,
@@ -649,6 +651,7 @@ impl Node {
         Ok(root_node)
     }
 
+    #[allow(dead_code)]
     fn move_file(
         old_parent_node: &Node,
         old_name: &OsStr,

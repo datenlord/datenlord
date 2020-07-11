@@ -17,6 +17,7 @@ pin_project! {
 }
 
 impl<R: AsyncRead> FuseBufReadStream<R> {
+    #[allow(dead_code)]
     pub fn with_capacity(capacity: usize, reader: R) -> FuseBufReadStream<R> {
         FuseBufReadStream {
             reader,
