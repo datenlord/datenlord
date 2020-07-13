@@ -50,6 +50,7 @@ impl<'a> ByteSlice<'a> {
             )),
         }
     }
+    #[allow(dead_code)]
     pub fn fetch_slice<T>(&mut self) -> anyhow::Result<Vec<&'a T>> {
         let elem_len = mem::size_of::<T>();
         if self.len() % elem_len != 0 {
@@ -693,24 +694,28 @@ impl<'a> Request<'a> {
     }
 
     /// Returns the UID that the process that triggered this request runs under.
+    #[allow(dead_code)]
     #[inline]
     pub fn uid(&self) -> u32 {
         self.header.uid
     }
 
     /// Returns the GID that the process that triggered this request runs under.
+    #[allow(dead_code)]
     #[inline]
     pub fn gid(&self) -> u32 {
         self.header.gid
     }
 
     /// Returns the PID of the process that triggered this request.
+    #[allow(dead_code)]
     #[inline]
     pub fn pid(&self) -> u32 {
         self.header.pid
     }
 
     /// Returns the byte length of this request.
+    #[allow(dead_code)]
     #[inline]
     pub fn len(&self) -> u32 {
         self.header.len
