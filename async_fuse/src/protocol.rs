@@ -149,7 +149,9 @@ pub const FATTR_FLAGS: u32 = 1 << 31;
 // FOPEN_CACHE_DIR: allow caching this directory
 // FOPEN_STREAM: the file is stream-like (no file position at all)
 //
+#[allow(dead_code)]
 pub const FOPEN_DIRECT_IO: u32 = 1 << 0;
+#[allow(dead_code)]
 pub const FOPEN_KEEP_CACHE: u32 = 1 << 1;
 #[cfg(feature = "abi-7-10")]
 pub const FOPEN_NONSEEKABLE: u32 = 1 << 2;
@@ -192,6 +194,7 @@ pub const FOPEN_PURGE_UBC: u32 = 1 << 31;
 // FUSE_EXPLICIT_INVAL_DATA: only invalidate cached pages on explicit request
 //
 pub const FUSE_ASYNC_READ: u32 = 1 << 0;
+#[allow(dead_code)]
 pub const FUSE_POSIX_LOCKS: u32 = 1 << 1;
 #[cfg(feature = "abi-7-9")]
 pub const FUSE_FILE_OPS: u32 = 1 << 2;
