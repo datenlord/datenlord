@@ -13,7 +13,7 @@ use std::time::{Duration, SystemTime};
 
 use super::fuse_reply::*;
 use super::fuse_request::*;
-use super::protocal::{INum, FUSE_ROOT_ID};
+use super::protocol::{INum, FUSE_ROOT_ID};
 
 mod dir;
 mod node;

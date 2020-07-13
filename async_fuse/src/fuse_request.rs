@@ -4,7 +4,7 @@ use std::fmt;
 use std::mem;
 use std::os::unix::ffi::OsStrExt;
 
-use super::protocal::*;
+use super::protocol::*;
 
 pub(crate) struct ByteSlice<'a> {
     data: &'a [u8],
