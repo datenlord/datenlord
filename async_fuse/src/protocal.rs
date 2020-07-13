@@ -331,9 +331,10 @@ pub const FUSE_POLL_SCHEDULE_NOTIFY: u32 = 1 << 0;
 #[cfg(feature = "abi-7-31")]
 pub const FUSE_FSYNC_FDATASYNC: u32 = 1 << 0;
 
-#[allow(non_camel_case_types)]
 #[repr(C)]
 #[derive(Debug)]
+#[allow(non_camel_case_types)]
+#[non_exhaustive]
 pub enum FuseOpCode {
     // fuse_opcode
     FUSE_LOOKUP = 1,

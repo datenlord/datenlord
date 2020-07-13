@@ -8,7 +8,7 @@ use nix::dir::{Dir, Type};
 use nix::fcntl::{self, FcntlArg, OFlag};
 use nix::sys::stat::{self, FileStat, Mode, SFlag};
 use nix::sys::uio;
-use nix::unistd::{self, Gid, Uid, UnlinkatFlags};
+use nix::unistd::{self, UnlinkatFlags};
 use std::cell::{Cell, RefCell};
 use std::cmp;
 use std::collections::{BTreeMap, BTreeSet};
@@ -890,9 +890,6 @@ impl INode {
 
 pub struct MemoryFilesystem {
     // max_ino: AtomicU64,
-    uid: Uid,
-    gid: Gid,
-    root_path: PathBuf,
     cache: BTreeMap<u64, INode>,
     trash: BTreeSet<u64>,
 }
@@ -1097,9 +1094,6 @@ impl MemoryFilesystem {
     }
 
     pub fn new<P: AsRef<Path>>(mount_point: P) -> MemoryFilesystem {
-        let uid = unistd::getuid();
-        let gid = unistd::getgid();
-
         let mount_dir = PathBuf::from(mount_point.as_ref());
         if !mount_dir.is_dir() {
             panic!("the input mount path is not a directory");
@@ -1116,13 +1110,7 @@ impl MemoryFilesystem {
         cache.insert(FUSE_ROOT_ID, root_inode);
         let trash = BTreeSet::new(); // for deferred deletion
 
-        MemoryFilesystem {
-            uid,
-            gid,
-            root_path,
-            cache,
-            trash,
-        }
+        MemoryFilesystem { cache, trash }
     }
 }
 

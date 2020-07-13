@@ -365,7 +365,6 @@ impl<'a> Operation<'a> {
             _ => panic!("unknown FUSE OpCode={}", n),
         };
 
-        // unsafe {
         Ok(match opcode {
             FuseOpCode::FUSE_LOOKUP => Operation::Lookup {
                 name: data.fetch_str()?,
@@ -474,10 +473,7 @@ impl<'a> Operation<'a> {
 
             #[cfg(feature = "abi-7-11")]
             FuseOpCode::CUSE_INIT => Operation::CuseInit { arg: data.fetch()? },
-
-            _ => panic!("unknown FuseOpCode"),
         })
-        // }
     }
 }
 

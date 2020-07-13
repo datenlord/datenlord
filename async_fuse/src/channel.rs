@@ -16,6 +16,7 @@ pub(crate) struct Channel {
 }
 
 impl Channel {
+    #[allow(dead_code)]
     pub async fn new(session: &Session) -> Result<Channel> {
         let devname = "/dev/fuse";
         let clonefd = fcntl::open(devname, OFlag::O_RDWR | OFlag::O_CLOEXEC, Mode::empty());
@@ -48,6 +49,7 @@ impl Channel {
         Ok(Channel { chan_fd: clonefd })
     }
 
+    #[allow(dead_code)]
     pub fn fd(&self) -> RawFd {
         self.chan_fd
     }
