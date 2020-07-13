@@ -105,9 +105,10 @@ pub struct fuse_file_lock {
     pub pid: u32,
 }
 
+#[allow(dead_code)]
 pub mod consts {
     // Bitmasks for fuse_setattr_in.valid
-    pub const FATTR_MODE: u32 = 1 << 0;
+    pub const FATTR_MODE: u32 = 1;
     pub const FATTR_UID: u32 = 1 << 1;
     pub const FATTR_GID: u32 = 1 << 2;
     pub const FATTR_SIZE: u32 = 1 << 3;
@@ -131,7 +132,7 @@ pub mod consts {
     pub const FATTR_FLAGS: u32 = 1 << 31;
 
     // Flags returned by the open request
-    pub const FOPEN_DIRECT_IO: u32 = 1 << 0; // bypass page cache for this open file
+    pub const FOPEN_DIRECT_IO: u32 = 1; // bypass page cache for this open file
     pub const FOPEN_KEEP_CACHE: u32 = 1 << 1; // don't invalidate the data cache on open
     #[cfg(feature = "abi-7-10")]
     pub const FOPEN_NONSEEKABLE: u32 = 1 << 2; // the file is not seekable

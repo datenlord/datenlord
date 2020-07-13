@@ -59,6 +59,8 @@ impl Node {
     pub fn get_parent_ino(&self) -> INum {
         self.parent
     }
+
+    #[allow(dead_code)]
     fn set_parent_ino(&mut self, parent: u64) -> INum {
         let old_parent = self.parent;
         self.parent = parent;
@@ -68,6 +70,8 @@ impl Node {
     pub fn get_name(&self) -> &OsStr {
         self.name.as_os_str()
     }
+
+    #[allow(dead_code)]
     fn set_name(&mut self, name: OsString) {
         self.name = name;
     }
