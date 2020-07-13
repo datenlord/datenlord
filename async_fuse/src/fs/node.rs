@@ -12,7 +12,7 @@ use std::path::Path;
 use std::sync::atomic::{self, AtomicI64};
 use std::time::SystemTime;
 
-use super::super::protocal::*;
+use super::super::protocol::*;
 use super::dir::*;
 use super::util::{self, FileAttr};
 

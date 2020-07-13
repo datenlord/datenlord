@@ -17,7 +17,7 @@ use super::fs::*;
 use super::fuse_reply::*;
 use super::fuse_request::*;
 use super::mount;
-use super::protocal::*;
+use super::protocol::*;
 
 /// We generally support async reads
 #[cfg(not(target_os = "macos"))]
