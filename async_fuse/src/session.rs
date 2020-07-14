@@ -42,7 +42,7 @@ const MAX_WRITE_SIZE: u32 = 16 * 1024 * 1024;
 /// up to MAX_WRITE_SIZE bytes in a write request, we use that value plus some extra space.
 const BUFFER_SIZE: usize = MAX_WRITE_SIZE as usize + 512;
 
-// const MAX_BACKGROUND: u16 = 100;
+const MAX_BACKGROUND: u16 = 10;
 
 lazy_static! {
     /// Static variable to indicate whether FUSE is initialized or not
@@ -106,10 +106,18 @@ impl Session {
     }
 
     pub async fn run(&self) -> anyhow::Result<()> {
+        let (pool_sender, pool_receiver) = crossbeam_channel::bounded(MAX_BACKGROUND.into());
+        (0..MAX_BACKGROUND).for_each(|i| {
+            let res = pool_sender.send((i, vec![0u8; BUFFER_SIZE]));
+            if let Err(e) = res {
+                panic!("failed to insert buffer idx={} to buffer pool", i);
+            }
+        });
+
         // let chan = Channel::new(self).await?;
         // let fuse_fd = chan.fd();
         let fuse_fd = self.fuse_fd; // TODO: use Channel once fixed
-        let mut byte_vec = vec![0u8; BUFFER_SIZE];
+        let (idx, mut byte_vec) = pool_receiver.recv()?;
         let read_result = blocking!(
             let res = unistd::read(fuse_fd, &mut *byte_vec);
             (res, byte_vec)
@@ -124,9 +132,11 @@ impl Session {
                 }
             }
         }
+        pool_sender.send((idx, byte_vec))?;
         debug_assert!(FUSE_INITIALIZED.load(Ordering::Acquire));
 
         loop {
+            let (idx, mut byte_vec) = pool_receiver.recv()?;
             unsafe {
                 // reset buffer size to its capacity, otherwise no enough buffer to read
                 byte_vec.set_len(byte_vec.capacity());
@@ -145,7 +155,8 @@ impl Session {
                     }
 
                     let fs = self.filesystem.clone();
-                    byte_vec = Task::spawn(async move {
+                    let sender = pool_sender.clone();
+                    Task::spawn(async move {
                         let req = match Request::new(&byte_vec) {
                             // Dispatch request
                             Ok(r) => r,
@@ -190,9 +201,15 @@ impl Session {
                             // TODO: this panic is for fast fail, can be removed when stable
                             panic!("failed to process request, the error is: {}", e);
                         }
-                        byte_vec
+                        let res = sender.send((idx, byte_vec));
+                        if let Err(e) = res {
+                            panic!("failed to put buffer idx={} back to buffer pool", idx);
+                        }
                     })
-                    .await; // TODO: consider use detach() to run in concurrency
+                    // TODO: when debug mode, run in series using await,
+                    // when release mode, run in parallel
+                    // .await; // Run in series
+                    .detach(); // Run in parallel
                 }
                 Err(err) => {
                     error!("receive failed, the error is: {:?}", err);

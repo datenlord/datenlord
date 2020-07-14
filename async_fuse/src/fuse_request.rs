@@ -723,7 +723,7 @@ impl<'a> Request<'a> {
 }
 
 #[cfg(test)]
-mod tests {
+mod test {
     use super::*;
     use log::debug;
 
