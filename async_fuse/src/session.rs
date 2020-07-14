@@ -13,6 +13,7 @@ use std::sync::{
 };
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use super::channel::Channel;
 use super::fs::*;
 use super::fuse_reply::*;
 use super::fuse_request::*;
@@ -114,9 +115,8 @@ impl Session {
             }
         });
 
-        // let chan = Channel::new(self).await?;
-        // let fuse_fd = chan.fd();
-        let fuse_fd = self.fuse_fd; // TODO: use Channel once fixed
+        let chan = Channel::new(self).await?;
+        let fuse_fd = chan.fd();
         let (idx, mut byte_vec) = pool_receiver.recv()?;
         let read_result = blocking!(
             let res = unistd::read(fuse_fd, &mut *byte_vec);
@@ -128,7 +128,7 @@ impl Session {
             if let Ok(req) = Request::new(&byte_vec) {
                 if let Operation::Init { arg } = req.operation() {
                     let filesystem = self.filesystem.clone();
-                    self.init(arg, &req, filesystem).await?;
+                    self.init(arg, &req, filesystem, fuse_fd).await?;
                 }
             }
         }
@@ -254,9 +254,9 @@ impl Session {
         arg: &'a FuseInitIn,
         req: &'a Request<'a>,
         fs: Arc<Mutex<FileSystem>>,
+        fd: RawFd,
     ) -> anyhow::Result<()> {
         debug!("Init args={:?}", arg);
-        let fd = self.fuse_fd;
         // TODO: rewrite init based on do_init() in fuse_lowlevel.c
         // https://github.com/libfuse/libfuse/blob/master/lib/fuse_lowlevel.c#L1892
         let reply = ReplyInit::new(req.unique(), fd);

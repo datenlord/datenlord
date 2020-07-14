@@ -35,9 +35,10 @@ impl Channel {
             ));
         }
 
-        ioctl_read!(clone, 299, 0, i32);
-        let mut masterfd = session.fd();
-        let res = unsafe { clone(clonefd, &mut masterfd) };
+        ioctl_read!(clone, 229, 0, u32);
+        let masterfd = session.fd();
+        let mut masterfd_u32 = masterfd as u32;
+        let res = unsafe { clone(clonefd, &mut masterfd_u32) };
         if let Err(err) = res {
             close(clonefd).context("fuse: failed to close clone device")?;
             return Err(anyhow::anyhow!(
