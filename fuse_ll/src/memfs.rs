@@ -4,6 +4,7 @@ use crate::fuse::{
 };
 use libc::{EEXIST, EINVAL, ENODATA, ENOENT, ENOTEMPTY};
 use log::{debug, error}; // info, warn
+use nix::dir::Entry;
 use nix::dir::{Dir, Type};
 use nix::fcntl::{self, FcntlArg, OFlag};
 use nix::sys::stat::{self, FileStat, Mode, SFlag};
@@ -120,7 +121,7 @@ mod util {
     }
 
     pub fn read_attr(fd: RawFd) -> Result<FileAttr, nix::Error> {
-        let st = stat::fstat(fd.clone())?;
+        let st = stat::fstat(fd)?;
 
         #[cfg(target_os = "macos")]
         fn build_crtime(st: &FileStat) -> Option<SystemTime> {
@@ -483,7 +484,7 @@ impl INode {
 
     fn helper_load_dir_data(&self) {
         let dir_node = self.helper_get_dir_node();
-        let entry_count = dir_node
+        let dir_entry: Vec<Entry> = dir_node
             .dir_fd
             .borrow_mut()
             .iter()
@@ -505,19 +506,22 @@ impl INode {
                 },
                 None => false,
             })
-            .map(|e| {
-                let name = OsString::from(OsStr::from_bytes(e.file_name().to_bytes()));
-                dir_node.data.borrow_mut().insert(
-                    // TODO: use functional way to load dir
-                    name.clone(),
-                    DirEntry {
-                        ino: e.ino(),
-                        name,
-                        entry_type: e.file_type().unwrap(), // safe to use unwrap() here
-                    },
-                )
-            })
-            .count();
+            .collect();
+
+        dir_entry.iter().for_each(|e| {
+            let name = OsString::from(OsStr::from_bytes(e.file_name().to_bytes()));
+            dir_node.data.borrow_mut().insert(
+                // TODO: use functional way to load dir
+                name.clone(),
+                DirEntry {
+                    ino: e.ino(),
+                    name,
+                    entry_type: e.file_type().unwrap(), // safe to use unwrap() here
+                },
+            );
+        });
+
+        let entry_count = dir_entry.len();
         debug!(
             "helper_load_dir_data() successfully load {} directory entries",
             entry_count,

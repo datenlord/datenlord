@@ -79,6 +79,7 @@ impl Drop for Session {
 }
 
 impl Session {
+    #[allow(dead_code)]
     pub fn fd(&self) -> RawFd {
         self.fuse_fd
     }
