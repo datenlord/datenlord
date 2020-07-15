@@ -22,8 +22,8 @@
 
     // Treat warnings as errors
     // warnings, TODO: treat all wanings as errors
-)]
-#![deny(
+
+
     // Deny all Clippy lints even Clippy allow some by default
     // https://rust-lang.github.io/rust-clippy/master/
     clippy::all,
@@ -34,6 +34,12 @@
 )]
 
 use log::debug;
+
+#[allow(unsafe_code)] // verified
+mod byte_slice;
+
+#[allow(unsafe_code)] // verified
+mod aligned_bytes;
 
 mod channel;
 mod fs;

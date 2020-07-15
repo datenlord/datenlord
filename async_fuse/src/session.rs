@@ -1,6 +1,5 @@
 use anyhow::{self, Context};
 use futures::lock::Mutex;
-use lazy_static::lazy_static;
 use log::{debug, error, info, warn};
 use nix::errno::Errno;
 use nix::unistd;
@@ -13,6 +12,7 @@ use std::sync::{
 };
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use super::aligned_bytes::AlignedBytes;
 use super::channel::Channel;
 use super::fs::*;
 use super::fuse_reply::*;
@@ -43,14 +43,15 @@ const MAX_WRITE_SIZE: u32 = 16 * 1024 * 1024;
 /// up to MAX_WRITE_SIZE bytes in a write request, we use that value plus some extra space.
 const BUFFER_SIZE: usize = MAX_WRITE_SIZE as usize + 512;
 
+/// We use PAGE_SIZE (4 KiB) as the alignment of the buffer.
+const PAGE_SIZE: usize = 4096;
+
 const MAX_BACKGROUND: u16 = 10;
 
-lazy_static! {
-    /// Static variable to indicate whether FUSE is initialized or not
-    static ref FUSE_INITIALIZED: AtomicBool = AtomicBool::new(false);
-    /// Static variable to indicate whether FUSE is destroyed or not
-    static ref FUSE_DESTROYED: AtomicBool = AtomicBool::new(false);
-}
+/// Static variable to indicate whether FUSE is initialized or not
+static FUSE_INITIALIZED: AtomicBool = AtomicBool::new(false);
+/// Static variable to indicate whether FUSE is destroyed or not
+static FUSE_DESTROYED: AtomicBool = AtomicBool::new(false);
 
 #[derive(Debug)]
 pub(crate) struct Session {
@@ -91,7 +92,7 @@ impl Session {
         let mountpoint = mountpoint.as_ref().to_path_buf();
         let full_mountpoint = mountpoint
             .canonicalize()
-            .context(format!("failed to find the mount path={:?}", mountpoint))?;
+            .with_context(|| format!("failed to find the mount path={:?}", mountpoint))?;
         let filesystem = FileSystem::new(&full_mountpoint).await?;
         // Must create filesystem before mount
         let fuse_fd = mount::mount(&full_mountpoint)
@@ -107,9 +108,12 @@ impl Session {
     }
 
     pub async fn run(&self) -> anyhow::Result<()> {
-        let (pool_sender, pool_receiver) = crossbeam_channel::bounded(MAX_BACKGROUND.into());
+        let (pool_sender, pool_receiver) =
+            crossbeam_channel::bounded::<(u16, AlignedBytes)>(MAX_BACKGROUND.into());
+
         (0..MAX_BACKGROUND).for_each(|i| {
-            let res = pool_sender.send((i, vec![0u8; BUFFER_SIZE]));
+            let buf = AlignedBytes::new_zeroed(BUFFER_SIZE,PAGE_SIZE);
+            let res = pool_sender.send((i, buf));
             if let Err(e) = res {
                 panic!(
                     "failed to insert buffer idx={} to buffer pool when initializing, the error is: {}",
@@ -142,28 +146,22 @@ impl Session {
         debug_assert!(FUSE_INITIALIZED.load(Ordering::Acquire));
 
         loop {
-            let (idx, mut byte_vec) = pool_receiver.recv()?;
-            unsafe {
-                // reset buffer size to its capacity, otherwise no enough buffer to read
-                byte_vec.set_len(byte_vec.capacity());
-            }
-            let read_result = blocking!(
-                let res = unistd::read(fuse_fd, &mut *byte_vec);
-                (res, byte_vec)
+            let (idx, mut byte_arr) = pool_receiver.recv()?;
+
+            let (res, byte_arr) = blocking!(
+                let res = unistd::read(fuse_fd, &mut *byte_arr);
+                (res, byte_arr)
             );
-            byte_vec = read_result.1;
-            match read_result.0 {
+
+            match res {
                 Ok(read_size) => {
                     debug!("read successfully {} byte data from FUSE device", read_size);
-                    unsafe {
-                        // set buffer size to read size, otherwise encounter panic
-                        byte_vec.set_len(read_size);
-                    }
 
                     let fs = self.filesystem.clone();
                     let sender = pool_sender.clone();
                     Task::spawn(async move {
-                        let req = match Request::new(&byte_vec) {
+                        let bytes = &byte_arr[..read_size];
+                        let req = match Request::new(bytes) {
                             // Dispatch request
                             Ok(r) => r,
                             // Quit on illegal request
@@ -207,7 +205,7 @@ impl Session {
                             // TODO: this panic is for fast fail, can be removed when stable
                             panic!("failed to process request, the error is: {}", e);
                         }
-                        let res = sender.send((idx, byte_vec));
+                        let res = sender.send((idx, byte_arr));
                         if let Err(e) = res {
                             panic!(
                                 "failed to put buffer idx={} back to buffer pool, the error is: {}",
