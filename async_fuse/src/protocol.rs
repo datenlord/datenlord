@@ -1002,11 +1002,11 @@ pub struct FuseNotifyPollWakeUpOut {
 #[derive(Debug)]
 pub struct FuseFAllocateIn {
     // fuse_fallocate_in
-    fh: u64,
-    offset: u64,
-    length: u64,
-    mode: u32,
-    padding: u32,
+    pub fh: u64,
+    pub offset: u64,
+    pub length: u64,
+    pub mode: u32,
+    pub padding: u32,
 }
 
 #[repr(C)]
@@ -1056,8 +1056,8 @@ pub struct FuseDirEnt {
 #[derive(Debug)]
 pub struct FuseDirEntPlus {
     // fuse_direntplus
-    entry_out: FuseEntryOut,
-    dirent: FuseDirEnt,
+    pub entry_out: FuseEntryOut,
+    pub dirent: FuseDirEnt,
 }
 
 // TODO: re-define it
@@ -1093,10 +1093,10 @@ pub struct FuseNotifyInvalEntryOut {
 #[derive(Debug)]
 pub struct FuseNotifyDeleteOut {
     // fuse_notify_delete_out
-    parent: u64,
-    child: u64,
-    namelen: u32,
-    padding: u32,
+    pub parent: u64,
+    pub child: u64,
+    pub namelen: u32,
+    pub padding: u32,
 }
 
 #[cfg(feature = "abi-7-15")]
@@ -1171,4 +1171,132 @@ struct FuseCopyFileRangeIn {
     pub off_out: u64,
     pub len: u64,
     pub flags: u64,
+}
+
+/// FUSE ABI types.
+/// It is safe to transmute a `&[u8]` to `&T` when `T: FuseAbiData`.
+pub(crate) unsafe trait FuseAbiData: Sized {}
+
+macro_rules! unsafe_impl_fuse_abi_data_for{
+    {$($t:ty,)+} => {
+        $(unsafe impl FuseAbiData for $t {})+
+    }
+}
+
+unsafe_impl_fuse_abi_data_for! {
+    u8, u16, u32, u64, usize,
+    i8, i16, i32, i64, isize,
+}
+
+unsafe_impl_fuse_abi_data_for! {
+    FuseAttr,
+    FuseKStatFs,
+    FuseFileLock,
+    FuseEntryOut,
+    FuseForgetIn,
+    FuseAttrOut,
+    FuseMkNodIn,
+    FuseMkDirIn,
+    FuseRenameIn,
+    FuseLinkIn,
+    FuseSetAttrIn,
+    FuseOpenIn,
+    FuseCreateIn,
+    FuseOpenOut,
+    FuseReleaseIn,
+    FuseFlushIn,
+    FuseReadIn,
+    FuseWriteIn,
+    FuseWriteOut,
+    FuseStatFsOut,
+    FuseFSyncIn,
+    FuseSetXAttrIn,
+    FuseGetXAttrIn,
+    FuseGetXAttrOut,
+    FuseLockIn,
+    FuseLockOut,
+    FuseAccessIn,
+    FuseInitIn,
+    FuseInitOut,
+    FuseInterruptIn,
+    FuseBMapIn,
+    FuseBMapOut,
+    FuseInHeader,
+    FuseOutHeader,
+    FuseDirEnt,
+}
+
+#[cfg(feature = "abi-7-9")]
+unsafe_impl_fuse_abi_data_for! {
+    FuseGetAttrIn,
+}
+
+#[cfg(feature = "abi-7-11")]
+unsafe_impl_fuse_abi_data_for! {
+    CuseInitIn,
+    CuseInitOut,
+    FuseIoCtlIn,
+    FuseIoCtlOut,
+    FusePollIn,
+    FusePollOut,
+    FuseNotifyPollWakeUpOut,
+}
+
+#[cfg(feature = "abi-7-12")]
+unsafe_impl_fuse_abi_data_for! {
+    FuseNotifyInvalEntryOut,
+    FuseNotifyInvalINodeOut,
+}
+
+#[cfg(feature = "abi-7-15")]
+unsafe_impl_fuse_abi_data_for! {
+    FuseNotifyRetrieveOut,
+    FuseNotifyRetrieveIn,
+    FuseNotifyStoreOut,
+}
+
+#[cfg(feature = "abi-7-16")]
+unsafe_impl_fuse_abi_data_for! {
+    FuseForgetOne,
+    FuseBatchForgetIn,
+    FuseIoCtlIoVec,
+}
+
+#[cfg(feature = "abi-7-18")]
+unsafe_impl_fuse_abi_data_for! {
+    FuseNotifyDeleteOut,
+
+}
+
+#[cfg(feature = "abi-7-19")]
+unsafe_impl_fuse_abi_data_for! {
+    FuseFAllocateIn,
+
+}
+
+#[cfg(feature = "abi-7-21")]
+unsafe_impl_fuse_abi_data_for! {
+    FuseDirEntPlus,
+}
+
+#[cfg(feature = "abi-7-23")]
+unsafe_impl_fuse_abi_data_for! {
+    FuseRename2In,
+}
+
+#[cfg(feature = "abi-7-24")]
+unsafe_impl_fuse_abi_data_for! {
+    FuseLSeekIn,
+    FuseLSeekOut,
+}
+
+#[cfg(feature = "abi-7-28")]
+unsafe_impl_fuse_abi_data_for! {
+    FuseCopyFileRangeIn,
+}
+
+#[cfg(target_os = "macos")]
+unsafe_impl_fuse_abi_data_for! {
+    FuseGetXTimesOut,
+    FuseExchangeIn,
 }

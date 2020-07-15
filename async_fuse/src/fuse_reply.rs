@@ -625,7 +625,8 @@ impl ReplyXAttr {
 
 #[cfg(test)]
 mod test {
-    use super::super::fuse_request::ByteSlice;
+    use super::super::aligned_bytes::AlignedBytes;
+    use super::super::byte_slice::ByteSlice;
     use super::super::protocol::{FuseAttr, FuseAttrOut, FuseOutHeader};
     use super::ReplyAttr;
     use futures::prelude::*;
@@ -729,7 +730,10 @@ mod test {
             let mut bytes = Vec::new();
             file.read_to_end(&mut bytes).await?;
 
-            let mut bs = ByteSlice::new(&bytes);
+            let mut aligned_bytes = AlignedBytes::new_zeroed(bytes.len(), 4096);
+            aligned_bytes.copy_from_slice(&bytes);
+
+            let mut bs = ByteSlice::new(&aligned_bytes);
             let foh: &FuseOutHeader = bs.fetch().unwrap();
             let fao: &FuseAttrOut = bs.fetch().unwrap();
 
