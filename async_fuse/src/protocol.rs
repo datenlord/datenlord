@@ -141,28 +141,49 @@ pub const FATTR_BKUPTIME: u32 = 1 << 30;
 #[cfg(target_os = "macos")]
 pub const FATTR_FLAGS: u32 = 1 << 31;
 
-// Flags returned by the OPEN request
-//
-// FOPEN_DIRECT_IO: bypass page cache for this open file
-// FOPEN_KEEP_CACHE: don't invalidate the data cache on open
-// FOPEN_NONSEEKABLE: the file is not seekable
-// FOPEN_CACHE_DIR: allow caching this directory
-// FOPEN_STREAM: the file is stream-like (no file position at all)
-//
 #[allow(dead_code)]
-pub const FOPEN_DIRECT_IO: u32 = 1 << 0;
-#[allow(dead_code)]
-pub const FOPEN_KEEP_CACHE: u32 = 1 << 1;
-#[cfg(feature = "abi-7-10")]
-pub const FOPEN_NONSEEKABLE: u32 = 1 << 2;
-#[cfg(feature = "abi-7-28")]
-pub const FOPEN_CACHE_DIR: u32 = 1 << 3;
-#[cfg(feature = "abi-7-31")]
-pub const FOPEN_STREAM: u32 = 1 << 4;
-#[cfg(target_os = "macos")]
-pub const FOPEN_PURGE_ATTR: u32 = 1 << 30;
-#[cfg(target_os = "macos")]
-pub const FOPEN_PURGE_UBC: u32 = 1 << 31;
+pub mod fopen_flags {
+    //! Flags returned by the OPEN request
+    //!
+    //! FOPEN_DIRECT_IO: bypass page cache for this open file
+    //!
+    //! FOPEN_KEEP_CACHE: don't invalidate the data cache on open
+    //!
+    //! FOPEN_NONSEEKABLE: the file is not seekable
+    //!
+    //! FOPEN_CACHE_DIR: allow caching this directory
+    //!
+    //! FOPEN_STREAM: the file is stream-like (no file position at all)
+    //!
+
+    /// bypass page cache for this open file
+    pub const FOPEN_DIRECT_IO: u32 = 1;
+
+    /// don't invalidate the data cache on open
+    pub const FOPEN_KEEP_CACHE: u32 = 1 << 1;
+
+    /// the file is not seekable
+    #[cfg(feature = "abi-7-10")]
+    pub const FOPEN_NONSEEKABLE: u32 = 1 << 2;
+
+    /// allow caching this directory
+    #[cfg(feature = "abi-7-28")]
+    pub const FOPEN_CACHE_DIR: u32 = 1 << 3;
+
+    /// the file is stream-like (no file position at all)
+    #[cfg(feature = "abi-7-31")]
+    pub const FOPEN_STREAM: u32 = 1 << 4;
+
+    /// TODO: write documentation for FOPEN_PURGE_ATTR
+    #[cfg(target_os = "macos")]
+    pub const FOPEN_PURGE_ATTR: u32 = 1 << 30;
+
+    /// TODO: write documentation for FOPEN_PURGE_UBC
+    #[cfg(target_os = "macos")]
+    pub const FOPEN_PURGE_UBC: u32 = 1 << 31;
+}
+
+pub use fopen_flags::*;
 
 // INIT request/reply flags
 //
