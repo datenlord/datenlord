@@ -8,7 +8,7 @@ use std::os::unix::io::RawFd;
 use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use super::super::protocal::{FuseAttr, INum};
+use super::super::protocol::{FuseAttr, INum};
 
 #[derive(Clone, Copy, Debug)]
 pub struct FileAttr {

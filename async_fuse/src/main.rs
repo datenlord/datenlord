@@ -6,7 +6,7 @@ mod fuse_read;
 mod fuse_reply;
 mod fuse_request;
 mod mount;
-mod protocal;
+mod protocol;
 mod session;
 use session::*;
 

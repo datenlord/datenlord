@@ -4,7 +4,7 @@ use std::fmt;
 use std::mem;
 use std::os::unix::ffi::OsStrExt;
 
-use super::protocal::*;
+use super::protocol::*;
 
 pub(crate) struct ByteSlice<'a> {
     data: &'a [u8],
@@ -724,7 +724,7 @@ impl<'a> Request<'a> {
 }
 
 #[cfg(test)]
-mod tests {
+mod test {
     use super::*;
     use log::debug;
 

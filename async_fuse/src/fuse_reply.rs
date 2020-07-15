@@ -13,7 +13,7 @@ use std::os::unix::io::RawFd;
 use std::time::Duration;
 use std::{mem, ptr, slice};
 
-use super::protocal::*;
+use super::protocol::*;
 
 // TODO: remove it
 fn mode_from_kind_and_perm(kind: SFlag, perm: u16) -> u32 {
@@ -624,7 +624,7 @@ impl ReplyXAttr {
 #[cfg(test)]
 mod test {
     use super::super::fuse_request::ByteSlice;
-    use super::super::protocal::{FuseAttr, FuseAttrOut, FuseOutHeader};
+    use super::super::protocol::{FuseAttr, FuseAttrOut, FuseOutHeader};
     use super::ReplyAttr;
     use futures::prelude::*;
     use nix::fcntl::{self, OFlag};
