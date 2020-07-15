@@ -145,10 +145,13 @@ pub async fn load_attr(fd: RawFd) -> nix::Result<FileAttr> {
         crtime: crtime.unwrap_or(nt),
         kind,
         perm,
-        nlink: st.st_nlink as u32,
+        #[cfg(target_arch = "aarch64")]
+        nlink: st.st_nlink,
+        #[cfg(target_arch = "x86_64")]
+        nlink: st.st_nlink as u32, // TODO: need safe check for u64 to u32
         uid: st.st_uid,
         gid: st.st_gid,
-        rdev: st.st_rdev as u32,
+        rdev: st.st_rdev as u32, // TODO: need safe check for u64 to u32
         #[cfg(target_os = "linux")]
         flags: 0,
         #[cfg(target_os = "macos")]
