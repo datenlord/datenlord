@@ -423,9 +423,15 @@ pub enum FuseNotifyCode {
     FUSE_NOTIFY_CODE_MAX,
 }
 
-// The read buffer is required to be at least 8k, but may be much larger
 #[allow(dead_code)]
-pub const FUSE_MIN_READ_BUFFER: usize = 8192;
+pub mod fuse_configs {
+    // The read buffer is required to be at least 8k, but may be much larger
+    pub const FUSE_MIN_READ_BUFFER: usize = 8192;
+
+    pub const FUSE_COMPAT_STATFS_SIZE: usize = 48;
+}
+
+pub use fuse_configs::*;
 
 #[cfg(all(target_os = "macos", feature = "abi-7-9"))]
 pub const FUSE_COMPAT_ENTRY_OUT_SIZE: usize = 136;
@@ -703,9 +709,6 @@ pub struct FuseWriteOut {
     pub size: u32,
     pub padding: u32,
 }
-
-#[allow(dead_code)]
-pub const FUSE_COMPAT_STATFS_SIZE: usize = 48;
 
 #[repr(C)]
 #[derive(Debug)]
