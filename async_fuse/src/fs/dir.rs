@@ -67,7 +67,7 @@ impl DirEntry {
     }
 
     fn from_dirent(de: dirent) -> Self {
-        let ino = de.d_ino as INum;
+        let ino = de.d_ino;
 
         let name = unsafe { OsStr::from_bytes(CStr::from_ptr(de.d_name.as_ptr()).to_bytes()) };
 

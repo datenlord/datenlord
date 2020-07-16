@@ -17,7 +17,7 @@ use super::protocol::*;
 
 // TODO: remove it
 fn mode_from_kind_and_perm(kind: SFlag, perm: u16) -> u32 {
-    (match kind {
+    let file_type: u32 = (match kind {
         SFlag::S_IFIFO => libc::S_IFIFO,
         SFlag::S_IFCHR => libc::S_IFCHR,
         SFlag::S_IFBLK => libc::S_IFBLK,
@@ -26,8 +26,10 @@ fn mode_from_kind_and_perm(kind: SFlag, perm: u16) -> u32 {
         SFlag::S_IFLNK => libc::S_IFLNK,
         SFlag::S_IFSOCK => libc::S_IFSOCK,
         _ => panic!("unknown SFlag type={:?}", kind),
-    }) as u32
-        | perm as u32
+    })
+    .into();
+    let file_perm: u32 = perm.into();
+    file_type | file_perm
 }
 
 #[derive(Debug)]

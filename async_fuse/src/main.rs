@@ -1,3 +1,29 @@
+#![deny(
+    // The following are allowed by default lints according to
+    // https://doc.rust-lang.org/rustc/lints/listing/allowed-by-default.html
+    anonymous_parameters,
+    bare_trait_objects,
+    // box_pointers, TODO: fix box pointers
+    elided_lifetimes_in_paths,
+    missing_copy_implementations,
+    missing_debug_implementations,
+    // missing_docs, TODO: add documents
+    // single_use_lifetimes, TODO: fix lifetime names only used once
+    // trivial_casts, TODO: remove trivial casts in code
+    trivial_numeric_casts,
+    // unreachable_pub, TODO: fix unreachable pub
+    // unsafe_code,
+    unstable_features,
+    unused_extern_crates,
+    unused_import_braces,
+    unused_qualifications,
+    // unused_results, TODO: fix unused results
+    variant_size_differences,
+
+    // Treat warnings as errors
+    // warnings, TODO: treat all wanings as errors
+)]
+
 use log::debug;
 
 mod channel;

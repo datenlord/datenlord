@@ -111,7 +111,10 @@ impl Session {
         (0..MAX_BACKGROUND).for_each(|i| {
             let res = pool_sender.send((i, vec![0u8; BUFFER_SIZE]));
             if let Err(e) = res {
-                panic!("failed to insert buffer idx={} to buffer pool", i);
+                panic!(
+                    "failed to insert buffer idx={} to buffer pool when initializing, the error is: {}",
+                    i, e,
+                );
             }
         });
 
@@ -132,7 +135,10 @@ impl Session {
                 }
             }
         }
-        pool_sender.send((idx, byte_vec))?;
+        pool_sender.send((idx, byte_vec)).context(format!(
+            "failed to put buffer idx={} back to buffer pool after FUSE init",
+            idx,
+        ))?;
         debug_assert!(FUSE_INITIALIZED.load(Ordering::Acquire));
 
         loop {
@@ -203,7 +209,10 @@ impl Session {
                         }
                         let res = sender.send((idx, byte_vec));
                         if let Err(e) = res {
-                            panic!("failed to put buffer idx={} back to buffer pool", idx);
+                            panic!(
+                                "failed to put buffer idx={} back to buffer pool, the error is: {}",
+                                idx, e,
+                            );
                         }
                     })
                     // TODO: when debug mode, run in series using await,
