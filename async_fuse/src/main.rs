@@ -23,6 +23,15 @@
     // Treat warnings as errors
     // warnings, TODO: treat all wanings as errors
 )]
+#![deny(
+    // Deny all Clippy lints even Clippy allow some by default
+    // https://rust-lang.github.io/rust-clippy/master/
+    clippy::all,
+)]
+#![allow(
+    // Some explicitly allowed Clippy lints, must have clear reason to allow
+    clippy::implicit_return, // actually omitting the return keyword is idiomatic Rust code
+)]
 
 use log::debug;
 
