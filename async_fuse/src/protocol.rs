@@ -185,100 +185,131 @@ pub mod fopen_flags {
 
 pub use fopen_flags::*;
 
-// INIT request/reply flags
-//
-// FUSE_ASYNC_READ: asynchronous read requests
-// FUSE_POSIX_LOCKS: remote locking for POSIX file locks
-// FUSE_FILE_OPS: kernel sends file handle for fstat, etc... (not yet supported)
-// FUSE_ATOMIC_O_TRUNC: handles the O_TRUNC open flag in the filesystem
-// FUSE_EXPORT_SUPPORT: filesystem handles lookups of "." and ".."
-// FUSE_BIG_WRITES: filesystem can handle write size larger than 4kB
-// FUSE_DONT_MASK: don't apply umask to file mode on create operations
-// FUSE_SPLICE_WRITE: kernel supports splice write on the device
-// FUSE_SPLICE_MOVE: kernel supports splice move on the device
-// FUSE_SPLICE_READ: kernel supports splice read on the device
-// FUSE_FLOCK_LOCKS: remote locking for BSD style file locks
-// FUSE_HAS_IOCTL_DIR: kernel supports ioctl on directories
-// FUSE_AUTO_INVAL_DATA: automatically invalidate cached pages
-// FUSE_DO_READDIRPLUS: do READDIRPLUS (READDIR+LOOKUP in one)
-// FUSE_READDIRPLUS_AUTO: adaptive readdirplus
-// FUSE_ASYNC_DIO: asynchronous direct I/O submission
-// FUSE_WRITEBACK_CACHE: use writeback cache for buffered writes
-// FUSE_NO_OPEN_SUPPORT: kernel supports zero-message opens
-// FUSE_PARALLEL_DIROPS: allow parallel lookups and readdir
-// FUSE_HANDLE_KILLPRIV: fs handles killing suid/sgid/cap on write/chown/trunc
-// FUSE_POSIX_ACL: filesystem supports posix acls
-// FUSE_ABORT_ERROR: reading the device after abort returns ECONNABORTED
-// FUSE_MAX_PAGES: init_out.max_pages contains the max number of req pages
-// FUSE_CACHE_SYMLINKS: cache READLINK responses
-// FUSE_NO_OPENDIR_SUPPORT: kernel supports zero-message opendir
-// FUSE_EXPLICIT_INVAL_DATA: only invalidate cached pages on explicit request
-//
-pub const FUSE_ASYNC_READ: u32 = 1 << 0;
 #[allow(dead_code)]
-pub const FUSE_POSIX_LOCKS: u32 = 1 << 1;
-#[cfg(feature = "abi-7-9")]
-pub const FUSE_FILE_OPS: u32 = 1 << 2;
-#[cfg(feature = "abi-7-9")]
-pub const FUSE_ATOMIC_O_TRUNC: u32 = 1 << 3;
-#[cfg(feature = "abi-7-10")]
-pub const FUSE_EXPORT_SUPPORT: u32 = 1 << 4;
-#[cfg(feature = "abi-7-9")]
-pub const FUSE_BIG_WRITES: u32 = 1 << 5;
-#[cfg(feature = "abi-7-12")]
-pub const FUSE_DONT_MASK: u32 = 1 << 6;
-#[cfg(feature = "abi-7-14")]
-pub const FUSE_SPLICE_WRITE: u32 = 1 << 7;
-#[cfg(feature = "abi-7-14")]
-pub const FUSE_SPLICE_MOVE: u32 = 1 << 8;
-#[cfg(feature = "abi-7-14")]
-pub const FUSE_SPLICE_READ: u32 = 1 << 9;
-#[cfg(feature = "abi-7-17")]
-pub const FUSE_FLOCK_LOCKS: u32 = 1 << 10;
+pub mod init_flags {
+    //! INIT request/reply flags
+    //!
+    //! FUSE_ASYNC_READ: asynchronous read requests
+    //!
+    //! FUSE_POSIX_LOCKS: remote locking for POSIX file locks
+    //!
+    //! FUSE_FILE_OPS: kernel sends file handle for fstat, etc... (not yet supported)
+    //!
+    //! FUSE_ATOMIC_O_TRUNC: handles the O_TRUNC open flag in the filesystem
+    //!
+    //! FUSE_EXPORT_SUPPORT: filesystem handles lookups of "." and ".."
+    //!
+    //! FUSE_BIG_WRITES: filesystem can handle write size larger than 4kB
+    //!
+    //! FUSE_DONT_MASK: don't apply umask to file mode on create operations
+    //!
+    //! FUSE_SPLICE_WRITE: kernel supports splice write on the device
+    //!
+    //! FUSE_SPLICE_MOVE: kernel supports splice move on the device
+    //!
+    //! FUSE_SPLICE_READ: kernel supports splice read on the device
+    //!
+    //! FUSE_FLOCK_LOCKS: remote locking for BSD style file locks
+    //!
+    //! FUSE_HAS_IOCTL_DIR: kernel supports ioctl on directories
+    //!
+    //! FUSE_AUTO_INVAL_DATA: automatically invalidate cached pages
+    //!
+    //! FUSE_DO_READDIRPLUS: do READDIRPLUS (READDIR+LOOKUP in one)
+    //!
+    //! FUSE_READDIRPLUS_AUTO: adaptive readdirplus
+    //!
+    //! FUSE_ASYNC_DIO: asynchronous direct I/O submission
+    //!
+    //! FUSE_WRITEBACK_CACHE: use writeback cache for buffered writes
+    //!
+    //! FUSE_NO_OPEN_SUPPORT: kernel supports zero-message opens
+    //!
+    //! FUSE_PARALLEL_DIROPS: allow parallel lookups and readdir
+    //!
+    //! FUSE_HANDLE_KILLPRIV: fs handles killing suid/sgid/cap on write/chown/trunc
+    //!
+    //! FUSE_POSIX_ACL: filesystem supports posix acls
+    //!
+    //! FUSE_ABORT_ERROR: reading the device after abort returns ECONNABORTED
+    //!
+    //! FUSE_MAX_PAGES: init_out.max_pages contains the max number of req pages
+    //!
+    //! FUSE_CACHE_SYMLINKS: cache READLINK responses
+    //!
+    //! FUSE_NO_OPENDIR_SUPPORT: kernel supports zero-message opendir
+    //!
+    //! FUSE_EXPLICIT_INVAL_DATA: only invalidate cached pages on explicit request
+    //!
 
-#[cfg(feature = "abi-7-18")]
-pub const FUSE_HAS_IOCTL_DIR: u32 = 1 << 11;
-#[cfg(feature = "abi-7-20")]
-pub const FUSE_AUTO_INVAL_DATA: u32 = 1 << 12;
-#[cfg(feature = "abi-7-21")]
-pub const FUSE_DO_READDIRPLUS: u32 = 1 << 13;
+    pub const FUSE_ASYNC_READ: u32 = 1;
 
-// TODO: verify it's added in 7.21
-#[cfg(feature = "abi-7-21")]
-pub const FUSE_READDIRPLUS_AUTO: u32 = 1 << 14;
-#[cfg(feature = "abi-7-22")]
-pub const FUSE_ASYNC_DIO: u32 = 1 << 15;
-#[cfg(feature = "abi-7-23")]
-pub const FUSE_WRITEBACK_CACHE: u32 = 1 << 16;
-#[cfg(feature = "abi-7-23")]
-pub const FUSE_NO_OPEN_SUPPORT: u32 = 1 << 17;
-#[cfg(feature = "abi-7-25")]
-pub const FUSE_PARALLEL_DIROPS: u32 = 1 << 18;
-#[cfg(feature = "abi-7-26")]
-pub const FUSE_HANDLE_KILLPRIV: u32 = 1 << 19;
-#[cfg(feature = "abi-7-26")]
-pub const FUSE_POSIX_ACL: u32 = 1 << 20;
-#[cfg(feature = "abi-7-27")]
-pub const FUSE_ABORT_ERROR: u32 = 1 << 21;
-#[cfg(feature = "abi-7-28")]
-pub const FUSE_MAX_PAGES: u32 = 1 << 22;
-#[cfg(feature = "abi-7-28")]
-pub const FUSE_CACHE_SYMLINKS: u32 = 1 << 23;
-#[cfg(feature = "abi-7-29")]
-pub const FUSE_NO_OPENDIR_SUPPORT: u32 = 1 << 24;
-#[cfg(feature = "abi-7-30")]
-pub const FUSE_EXPLICIT_INVAL_DATA: u32 = 1 << 25;
+    pub const FUSE_POSIX_LOCKS: u32 = 1 << 1;
+    #[cfg(feature = "abi-7-9")]
+    pub const FUSE_FILE_OPS: u32 = 1 << 2;
+    #[cfg(feature = "abi-7-9")]
+    pub const FUSE_ATOMIC_O_TRUNC: u32 = 1 << 3;
+    #[cfg(feature = "abi-7-10")]
+    pub const FUSE_EXPORT_SUPPORT: u32 = 1 << 4;
+    #[cfg(feature = "abi-7-9")]
+    pub const FUSE_BIG_WRITES: u32 = 1 << 5;
+    #[cfg(feature = "abi-7-12")]
+    pub const FUSE_DONT_MASK: u32 = 1 << 6;
+    #[cfg(feature = "abi-7-14")]
+    pub const FUSE_SPLICE_WRITE: u32 = 1 << 7;
+    #[cfg(feature = "abi-7-14")]
+    pub const FUSE_SPLICE_MOVE: u32 = 1 << 8;
+    #[cfg(feature = "abi-7-14")]
+    pub const FUSE_SPLICE_READ: u32 = 1 << 9;
+    #[cfg(feature = "abi-7-17")]
+    pub const FUSE_FLOCK_LOCKS: u32 = 1 << 10;
 
-#[cfg(target_os = "macos")]
-pub const FUSE_ALLOCATE: u32 = 1 << 27;
-#[cfg(target_os = "macos")]
-pub const FUSE_EXCHANGE_DATA: u32 = 1 << 28;
-#[cfg(target_os = "macos")]
-pub const FUSE_CASE_INSENSITIVE: u32 = 1 << 29;
-#[cfg(target_os = "macos")]
-pub const FUSE_VOL_RENAME: u32 = 1 << 30;
-#[cfg(target_os = "macos")]
-pub const FUSE_XTIMES: u32 = 1 << 31;
+    #[cfg(feature = "abi-7-18")]
+    pub const FUSE_HAS_IOCTL_DIR: u32 = 1 << 11;
+    #[cfg(feature = "abi-7-20")]
+    pub const FUSE_AUTO_INVAL_DATA: u32 = 1 << 12;
+    #[cfg(feature = "abi-7-21")]
+    pub const FUSE_DO_READDIRPLUS: u32 = 1 << 13;
+
+    // TODO: verify it's added in 7.21
+    #[cfg(feature = "abi-7-21")]
+    pub const FUSE_READDIRPLUS_AUTO: u32 = 1 << 14;
+    #[cfg(feature = "abi-7-22")]
+    pub const FUSE_ASYNC_DIO: u32 = 1 << 15;
+    #[cfg(feature = "abi-7-23")]
+    pub const FUSE_WRITEBACK_CACHE: u32 = 1 << 16;
+    #[cfg(feature = "abi-7-23")]
+    pub const FUSE_NO_OPEN_SUPPORT: u32 = 1 << 17;
+    #[cfg(feature = "abi-7-25")]
+    pub const FUSE_PARALLEL_DIROPS: u32 = 1 << 18;
+    #[cfg(feature = "abi-7-26")]
+    pub const FUSE_HANDLE_KILLPRIV: u32 = 1 << 19;
+    #[cfg(feature = "abi-7-26")]
+    pub const FUSE_POSIX_ACL: u32 = 1 << 20;
+    #[cfg(feature = "abi-7-27")]
+    pub const FUSE_ABORT_ERROR: u32 = 1 << 21;
+    #[cfg(feature = "abi-7-28")]
+    pub const FUSE_MAX_PAGES: u32 = 1 << 22;
+    #[cfg(feature = "abi-7-28")]
+    pub const FUSE_CACHE_SYMLINKS: u32 = 1 << 23;
+    #[cfg(feature = "abi-7-29")]
+    pub const FUSE_NO_OPENDIR_SUPPORT: u32 = 1 << 24;
+    #[cfg(feature = "abi-7-30")]
+    pub const FUSE_EXPLICIT_INVAL_DATA: u32 = 1 << 25;
+
+    #[cfg(target_os = "macos")]
+    pub const FUSE_ALLOCATE: u32 = 1 << 27;
+    #[cfg(target_os = "macos")]
+    pub const FUSE_EXCHANGE_DATA: u32 = 1 << 28;
+    #[cfg(target_os = "macos")]
+    pub const FUSE_CASE_INSENSITIVE: u32 = 1 << 29;
+    #[cfg(target_os = "macos")]
+    pub const FUSE_VOL_RENAME: u32 = 1 << 30;
+    #[cfg(target_os = "macos")]
+    pub const FUSE_XTIMES: u32 = 1 << 31;
+}
+
+pub use init_flags::*;
 
 // CUSE INIT request/reply flags
 //
