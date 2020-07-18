@@ -20,6 +20,7 @@ log = "0.4.6"
 nix = "0.17.0"
 pin-project-lite ="0.1.7"
 smol = "0.1.11"
+memchr = "2.3.3"
 
 [features]
 abi-7-9 = []
