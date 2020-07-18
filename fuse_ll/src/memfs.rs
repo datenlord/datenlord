@@ -4,8 +4,7 @@ use crate::fuse::{
 };
 use libc::{EEXIST, EINVAL, ENODATA, ENOENT, ENOTEMPTY};
 use log::{debug, error}; // info, warn
-use nix::dir::Entry;
-use nix::dir::{Dir, Type};
+use nix::dir::{Dir, Entry, Type};
 use nix::fcntl::{self, FcntlArg, OFlag};
 use nix::sys::stat::{self, FileStat, Mode, SFlag};
 use nix::sys::uio;
