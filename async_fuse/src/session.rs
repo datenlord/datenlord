@@ -13,6 +13,7 @@ use std::sync::{
 };
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use super::channel::Channel;
 use super::fs::*;
 use super::fuse_reply::*;
 use super::fuse_request::*;
@@ -111,13 +112,15 @@ impl Session {
         (0..MAX_BACKGROUND).for_each(|i| {
             let res = pool_sender.send((i, vec![0u8; BUFFER_SIZE]));
             if let Err(e) = res {
-                panic!("failed to insert buffer idx={} to buffer pool", i);
+                panic!(
+                    "failed to insert buffer idx={} to buffer pool when initializing, the error is: {}",
+                    i, e,
+                );
             }
         });
 
-        // let chan = Channel::new(self).await?;
-        // let fuse_fd = chan.fd();
-        let fuse_fd = self.fuse_fd; // TODO: use Channel once fixed
+        let chan = Channel::new(self).await?;
+        let fuse_fd = chan.fd();
         let (idx, mut byte_vec) = pool_receiver.recv()?;
         let read_result = blocking!(
             let res = unistd::read(fuse_fd, &mut *byte_vec);
@@ -129,11 +132,14 @@ impl Session {
             if let Ok(req) = Request::new(&byte_vec) {
                 if let Operation::Init { arg } = req.operation() {
                     let filesystem = self.filesystem.clone();
-                    self.init(arg, &req, filesystem).await?;
+                    self.init(arg, &req, filesystem, fuse_fd).await?;
                 }
             }
         }
-        pool_sender.send((idx, byte_vec))?;
+        pool_sender.send((idx, byte_vec)).context(format!(
+            "failed to put buffer idx={} back to buffer pool after FUSE init",
+            idx,
+        ))?;
         debug_assert!(FUSE_INITIALIZED.load(Ordering::Acquire));
 
         loop {
@@ -204,7 +210,10 @@ impl Session {
                         }
                         let res = sender.send((idx, byte_vec));
                         if let Err(e) = res {
-                            panic!("failed to put buffer idx={} back to buffer pool", idx);
+                            panic!(
+                                "failed to put buffer idx={} back to buffer pool, the error is: {}",
+                                idx, e,
+                            );
                         }
                     })
                     // TODO: when debug mode, run in series using await,
@@ -255,9 +264,9 @@ impl Session {
         arg: &'a FuseInitIn,
         req: &'a Request<'a>,
         fs: Arc<Mutex<FileSystem>>,
+        fd: RawFd,
     ) -> anyhow::Result<()> {
         debug!("Init args={:?}", arg);
-        let fd = self.fuse_fd;
         // TODO: rewrite init based on do_init() in fuse_lowlevel.c
         // https://github.com/libfuse/libfuse/blob/master/lib/fuse_lowlevel.c#L1892
         let reply = ReplyInit::new(req.unique(), fd);

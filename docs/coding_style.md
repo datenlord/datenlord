@@ -1,9 +1,11 @@
 # Code Style
 
-## Default Rust style
+## Default Rust style and check
 
-Please *DO* run `cargo fmt` to format the code before submit.
-Also make sure the code has no warning from `cargo clippy`.
+Please *DO* the following steps before submitting a PR:
+* Run `cargo fmt` to format the code, you can also run `cargo fmt -- --check` to review the format changes;
+* Run `cargo clippy` to make sure the code has no warnings from clippy;
+* Run `cargo test` in project root directory to make sure no tests break.
 
 ## `impl`
 

@@ -417,7 +417,7 @@ impl Node {
                 ino,
             ))?;
             unsafe {
-                file_data_vec.set_len(read_size as usize);
+                file_data_vec.set_len(read_size);
             }
             // TODO: should explicitly highlight the error type?
             Ok::<Vec<u8>, anyhow::Error>(file_data_vec)

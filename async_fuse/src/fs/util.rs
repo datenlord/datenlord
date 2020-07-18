@@ -130,9 +130,9 @@ pub async fn load_attr(fd: RawFd) -> nix::Result<FileAttr> {
     let ctime = UNIX_EPOCH.checked_add(Duration::new(st.st_ctime as u64, st.st_ctime_nsec as u32));
     let crtime = build_crtime(&st);
 
-    let perm = parse_mode_bits(st.st_mode as u32);
+    let perm = parse_mode_bits(st.st_mode.into());
     debug!("load_attr() got file permission={}", perm);
-    let kind = parse_sflag(st.st_mode as u32);
+    let kind = parse_sflag(st.st_mode.into());
 
     let nt = SystemTime::now();
     let attr = FileAttr {
@@ -145,10 +145,13 @@ pub async fn load_attr(fd: RawFd) -> nix::Result<FileAttr> {
         crtime: crtime.unwrap_or(nt),
         kind,
         perm,
-        nlink: st.st_nlink as u32,
+        #[cfg(target_arch = "aarch64")]
+        nlink: st.st_nlink,
+        #[cfg(target_arch = "x86_64")]
+        nlink: st.st_nlink as u32, // TODO: need safe check for u64 to u32
         uid: st.st_uid,
         gid: st.st_gid,
-        rdev: st.st_rdev as u32,
+        rdev: st.st_rdev as u32, // TODO: need safe check for u64 to u32
         #[cfg(target_os = "linux")]
         flags: 0,
         #[cfg(target_os = "macos")]
@@ -166,7 +169,7 @@ pub fn time_from_system_time(system_time: &SystemTime) -> anyhow::Result<(u64, u
 }
 
 pub fn mode_from_kind_and_perm(kind: SFlag, perm: u16) -> u32 {
-    (match kind {
+    let file_type: u32 = (match kind {
         SFlag::S_IFIFO => libc::S_IFIFO,
         SFlag::S_IFCHR => libc::S_IFCHR,
         SFlag::S_IFBLK => libc::S_IFBLK,
@@ -175,8 +178,10 @@ pub fn mode_from_kind_and_perm(kind: SFlag, perm: u16) -> u32 {
         SFlag::S_IFLNK => libc::S_IFLNK,
         SFlag::S_IFSOCK => libc::S_IFSOCK,
         _ => panic!("unknown SFlag type={:?}", kind),
-    }) as u32
-        | perm as u32
+    })
+    .into();
+    let file_perm: u32 = perm.into();
+    file_type | file_perm
 }
 
 pub fn convert_to_fuse_attr(attr: FileAttr) -> anyhow::Result<FuseAttr> {

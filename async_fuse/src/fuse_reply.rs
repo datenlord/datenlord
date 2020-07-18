@@ -17,7 +17,7 @@ use super::protocol::*;
 
 // TODO: remove it
 fn mode_from_kind_and_perm(kind: SFlag, perm: u16) -> u32 {
-    (match kind {
+    let file_type: u32 = (match kind {
         SFlag::S_IFIFO => libc::S_IFIFO,
         SFlag::S_IFCHR => libc::S_IFCHR,
         SFlag::S_IFBLK => libc::S_IFBLK,
@@ -26,8 +26,10 @@ fn mode_from_kind_and_perm(kind: SFlag, perm: u16) -> u32 {
         SFlag::S_IFLNK => libc::S_IFLNK,
         SFlag::S_IFSOCK => libc::S_IFSOCK,
         _ => panic!("unknown SFlag type={:?}", kind),
-    }) as u32
-        | perm as u32
+    })
+    .into();
+    let file_perm: u32 = perm.into();
+    file_type | file_perm
 }
 
 #[derive(Debug)]
@@ -397,6 +399,7 @@ impl ReplyStatFs {
         }
     }
 
+    #[allow(dead_code)]
     pub async fn statfs(
         self,
         blocks: u64,
@@ -444,6 +447,7 @@ impl ReplyCreate {
         }
     }
     /// Reply to a request with the given entry
+    #[allow(dead_code)]
     pub async fn created(
         self,
         ttl: &Duration,
@@ -490,6 +494,7 @@ impl ReplyLock {
         }
     }
     /// Reply to a request with the given open result
+    #[allow(dead_code)]
     pub async fn locked(self, start: u64, end: u64, typ: u32, pid: u32) -> anyhow::Result<()> {
         self.reply
             .send_data(FuseLockOut {
@@ -521,11 +526,13 @@ impl ReplyBMap {
         }
     }
     /// Reply to a request with the given open result
+    #[allow(dead_code)]
     pub async fn bmap(self, block: u64) -> anyhow::Result<()> {
         self.reply.send_data(FuseBMapOut { block }).await
     }
 
     /// Reply to a request with the given error code
+    #[allow(dead_code)]
     pub async fn error(self, err: c_int) -> anyhow::Result<()> {
         self.reply.send_error(err).await
     }
@@ -597,6 +604,7 @@ impl ReplyXAttr {
         }
     }
     /// Reply to a request with the size of the xattr.
+    #[allow(dead_code)]
     pub async fn size(self, size: u32) -> anyhow::Result<()> {
         self.reply
             .send_data(FuseGetXAttrOut { size, padding: 0 })
@@ -604,6 +612,7 @@ impl ReplyXAttr {
     }
 
     /// Reply to a request with the data in the xattr.
+    #[allow(dead_code)]
     pub async fn data(self, bytes: Vec<u8>) -> anyhow::Result<()> {
         self.reply.send_bytes(bytes).await
     }
