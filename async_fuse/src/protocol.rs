@@ -478,20 +478,40 @@ pub enum FuseNotifyCode {
     FUSE_NOTIFY_CODE_MAX,
 }
 
+// The read buffer is required to be at least 8k, but may be much larger
 #[allow(dead_code)]
-pub mod fuse_configs {
-    // The read buffer is required to be at least 8k, but may be much larger
-    pub const FUSE_MIN_READ_BUFFER: usize = 8192;
+pub const FUSE_MIN_READ_BUFFER: usize = 8192;
 
+#[allow(dead_code)]
+pub mod fuse_compat_configs {
     pub const FUSE_COMPAT_STATFS_SIZE: usize = 48;
+
+    #[cfg(all(target_os = "macos", feature = "abi-7-9"))]
+    pub const FUSE_COMPAT_ENTRY_OUT_SIZE: usize = 136;
+
+    #[cfg(feature = "abi-7-9")]
+    pub const FUSE_COMPAT_ENTRY_OUT_SIZE: usize = 120;
+
+    #[cfg(all(target_os = "macos", feature = "abi-7-9"))]
+    pub const FUSE_COMPAT_ATTR_OUT_SIZE: usize = 112;
+
+    #[cfg(feature = "abi-7-9")]
+    pub const FUSE_COMPAT_ATTR_OUT_SIZE: usize = 96;
+
+    #[cfg(feature = "abi-7-12")]
+    pub const FUSE_COMPAT_MKNOD_IN_SIZE: usize = 8;
+
+    #[cfg(feature = "abi-7-9")]
+    pub const FUSE_COMPAT_WRITE_IN_SIZE: usize = 24;
+
+    #[cfg(feature = "abi-7-23")]
+    pub const FUSE_COMPAT_INIT_OUT_SIZE: usize = 8;
+
+    #[cfg(feature = "abi-7-23")]
+    pub const FUSE_COMPAT_22_INIT_OUT_SIZE: usize = 24;
 }
 
-pub use fuse_configs::*;
-
-#[cfg(all(target_os = "macos", feature = "abi-7-9"))]
-pub const FUSE_COMPAT_ENTRY_OUT_SIZE: usize = 136;
-#[cfg(feature = "abi-7-9")]
-pub const FUSE_COMPAT_ENTRY_OUT_SIZE: usize = 120;
+pub use fuse_compat_configs::*;
 
 #[repr(C)]
 #[derive(Debug)]
@@ -542,11 +562,6 @@ pub struct FuseGetAttrIn {
     pub fh: u64,
 }
 
-#[cfg(all(target_os = "macos", feature = "abi-7-9"))]
-pub const FUSE_COMPAT_ATTR_OUT_SIZE: usize = 112;
-#[cfg(feature = "abi-7-9")]
-pub const FUSE_COMPAT_ATTR_OUT_SIZE: usize = 96;
-
 #[repr(C)]
 #[derive(Debug)]
 pub struct FuseAttrOut {
@@ -567,9 +582,6 @@ pub struct FuseGetXTimesOut {
     pub bkuptimensec: u32,
     pub crtimensec: u32,
 }
-
-#[cfg(feature = "abi-7-12")]
-pub const FUSE_COMPAT_MKNOD_IN_SIZE: usize = 8;
 
 #[repr(C)]
 #[derive(Debug)]
@@ -738,9 +750,6 @@ pub struct FuseReadIn {
     pub padding: u32,
 }
 
-#[cfg(feature = "abi-7-9")]
-pub const FUSE_COMPAT_WRITE_IN_SIZE: usize = 24;
-
 #[repr(C)]
 #[derive(Debug)]
 pub struct FuseWriteIn {
@@ -850,11 +859,6 @@ pub struct FuseInitIn {
     pub max_readahead: u32,
     pub flags: u32,
 }
-
-#[cfg(feature = "abi-7-23")]
-pub const FUSE_COMPAT_INIT_OUT_SIZE: usize = 8;
-#[cfg(feature = "abi-7-23")]
-pub const FUSE_COMPAT_22_INIT_OUT_SIZE: usize = 24;
 
 #[repr(C)]
 #[derive(Debug)]
