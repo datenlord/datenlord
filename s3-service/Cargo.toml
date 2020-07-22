@@ -1,0 +1,9 @@
+[package]
+name = "s3-service"
+version = "0.1.0"
+authors = ["Nugine <nugine@foxmail.com>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
