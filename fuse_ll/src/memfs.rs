@@ -1099,7 +1099,7 @@ impl MemoryFilesystem {
     pub fn new<P: AsRef<Path>>(mount_point: P) -> MemoryFilesystem {
         let mount_dir = PathBuf::from(mount_point.as_ref());
         if !mount_dir.is_dir() {
-            panic!("the input mount path is not a directory");
+            panic!("the input mount path is not a directory: {:?}", mount_dir);
         }
         let root_path = fs::canonicalize(&mount_dir).unwrap_or_else(|_| {
             panic!(
