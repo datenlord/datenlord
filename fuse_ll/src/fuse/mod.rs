@@ -28,7 +28,7 @@ pub use request::Request;
 pub use session::Session;
 // pub use session::{Session, BackgroundSession};
 
-pub(crate) use mount::options_validator;
+pub use mount::options_validator;
 mod abi;
 mod argument;
 mod channel;

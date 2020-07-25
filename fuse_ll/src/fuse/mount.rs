@@ -3,6 +3,7 @@ use nix::errno::{self, Errno};
 use nix::fcntl::{self, OFlag};
 use nix::sys::stat::{self, FileStat, Mode};
 use regex::Regex;
+use std::collections::HashMap;
 use std::ffi::CString;
 use std::fs;
 use std::os::raw::c_void;
@@ -23,7 +24,7 @@ pub struct MountOption {
     pub fuse_flag: Option<u64>,
 }
 
-pub fn get_all_options() -> String {
+fn get_all_options() -> String {
     get_mount_options()
         .iter()
         .map(|x| x.name.clone())
@@ -46,6 +47,13 @@ pub fn options_validator(option: String) -> Result<(), String> {
             get_all_options()
         ))
     }
+}
+
+pub fn get_mount_options_map() -> HashMap<String, MountOption> {
+    get_mount_options()
+        .into_iter()
+        .map(|op| (op.name.split('=').collect::<Vec<_>>()[0].to_string(), op))
+        .collect::<HashMap<_, _>>()
 }
 
 #[cfg(target_os = "linux")]
@@ -148,12 +156,10 @@ mod param {
                 kernel_opts: None,
                 max_read: 0,
             };
-            options.iter().for_each(|&op| {
-                let mount_options = get_mount_options();
-                let option = mount_options
-                    .iter()
-                    .find(|x| x.regex.is_match(&op))
-                    .unwrap();
+            let mount_options_map = super::get_mount_options_map();
+            options.iter().for_each(|op| {
+                let key = op.split('=').collect::<Vec<_>>()[0].to_string();
+                let option = mount_options_map.get(&key).unwrap(); // Safe to use unwrap here, because key always exists
                 (option.parser)(&mut args, &option, &op)
             });
             args
@@ -211,9 +217,7 @@ mod param {
     use super::MountOption;
     use regex::Regex;
     pub fn get_mount_options() -> Vec<MountOption> {
-        fn empty_parser(_args: &mut FuseMountArgs, _mount_option: &MountOption, _option: &str) {
-            ()
-        }
+        fn empty_parser(_args: &mut FuseMountArgs, _mount_option: &MountOption, _option: &str) {}
         fn parse_fuse_flag(args: &mut FuseMountArgs, mount_option: &MountOption, _option: &str) {
             if let Some(flag) = mount_option.fuse_flag {
                 args.altflags |= flag;
@@ -283,12 +287,10 @@ mod param {
                 rdev: 0u32,
             };
 
-            options.iter().for_each(|&op| {
-                let mount_options = get_mount_options();
-                let option = mount_options
-                    .iter()
-                    .find(|x| x.regex.is_match(&op))
-                    .unwrap();
+            let mount_options_map = super::get_mount_options_map();
+            options.iter().for_each(|op| {
+                let key = op.split('=').collect::<Vec<_>>()[0].to_string();
+                let option = mount_options_map.get(&key).unwrap(); // Safe to use unwrap here, because key always exists
                 (option.parser)(&mut args, &option, &op)
             });
             args
@@ -594,14 +596,14 @@ pub fn mount(mount_point: &Path, options: &[&str]) -> RawFd {
         );
         if result == 0 {
             debug!("mount {:?} to {:?} successfully!", mntpath, devpath);
-            return fd;
+            fd
         } else {
             let e = Errno::from_i32(errno::errno());
             debug!("errno={}, {:?}", errno::errno(), e);
             let mount_fail_str = "mount failed!";
             libc::perror(mount_fail_str.as_ptr() as *const i8);
 
-            return -1;
+            -1
         }
     }
 }
