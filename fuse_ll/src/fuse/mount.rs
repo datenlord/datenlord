@@ -193,19 +193,18 @@ mod param {
 
     #[repr(C)]
     pub struct FuseMountArgs {
-        // TODO remove pub after removing the use in mount()
-        pub mntpath: [u8; MAXPATHLEN],        // path to the mount point
-        pub fsname: [u8; MAXPATHLEN],         // file system description string
-        pub fstypename: [u8; MFSTYPENAMELEN], // file system type name
-        pub volname: [u8; MAXPATHLEN],        // volume name
-        pub altflags: u64,                    // see mount-time flags below
-        pub blocksize: u32,                   // fictitious block size of our "storage"
-        pub daemon_timeout: u32,              // timeout in seconds for upcalls to daemon
-        pub fsid: u32,                        // optional custom value for part of fsid[0]
-        pub fssubtype: u32,                   // file system sub type id
-        pub iosize: u32,                      // maximum size for reading or writing
-        pub random: u32,                      // random "secret" from device
-        pub rdev: u32,                        // dev_t for the /dev/osxfuse{n} in question
+        mntpath: [u8; MAXPATHLEN],        // path to the mount point
+        fsname: [u8; MAXPATHLEN],         // file system description string
+        fstypename: [u8; MFSTYPENAMELEN], // file system type name
+        volname: [u8; MAXPATHLEN],        // volume name
+        altflags: u64,                    // see mount-time flags below
+        blocksize: u32,                   // fictitious block size of our "storage"
+        daemon_timeout: u32,              // timeout in seconds for upcalls to daemon
+        fsid: u32,                        // optional custom value for part of fsid[0]
+        fssubtype: u32,                   // file system sub type id
+        iosize: u32,                      // maximum size for reading or writing
+        random: u32,                      // random "secret" from device
+        rdev: u32,                        // dev_t for the /dev/osxfuse{n} in question
     }
 
     use super::MountOption;
@@ -267,18 +266,28 @@ mod param {
     use std::ffi::CString;
     impl FuseMountArgs {
         pub fn parse(options: &[&str]) -> FuseMountArgs {
-            // TODO: add default arguments
+            let fsname = CString::new("macfuse").expect("CString::new failed");
+            let fstypename = CString::new("").expect("CString::new failed");
+            let volname = CString::new("OSXFUSE Volume 0 (macfuse)").expect("CString::new failed");
+
+            let mut fsname_slice = [0u8; MAXPATHLEN];
+            copy_slice(fsname.as_bytes(), &mut fsname_slice);
+            let mut fstypename_slice = [0u8; MFSTYPENAMELEN];
+            copy_slice(fstypename.as_bytes(), &mut fstypename_slice);
+            let mut volname_slice = [0u8; MAXPATHLEN];
+            copy_slice(volname.as_bytes(), &mut volname_slice);
+
             let mut args = FuseMountArgs {
                 mntpath: [0u8; MAXPATHLEN],
-                fsname: [0u8; MAXPATHLEN],
-                fstypename: [0u8; MFSTYPENAMELEN],
-                volname: [0u8; MAXPATHLEN],
+                fsname: fsname_slice,
+                fstypename: fstypename_slice,
+                volname: volname_slice,
                 altflags: 0u64,
-                blocksize: 0u32,
-                daemon_timeout: 0u32,
+                blocksize: FUSE_DEFAULT_BLOCKSIZE,
+                daemon_timeout: FUSE_DEFAULT_DAEMON_TIMEOUT,
                 fsid: 0u32,
-                fssubtype: 0u32,
-                iosize: 0u32,
+                fssubtype: FUSE_FSSUBTYPE_UNKNOWN,
+                iosize: FUSE_DEFAULT_IOSIZE,
                 random: 0u32,
                 rdev: 0u32,
             };
@@ -292,6 +301,18 @@ mod param {
                 (option.parser)(&mut args, &option, &op)
             });
             args
+        }
+
+        pub fn set_mntpath(&mut self, mntpath: [u8; MAXPATHLEN]) {
+            self.mntpath = mntpath;
+        }
+
+        pub fn set_random(&mut self, drandom: u32) {
+            self.random = drandom;
+        }
+
+        pub fn set_rdev(&mut self, rdev: u32) {
+            self.rdev = rdev;
         }
     }
 
@@ -493,7 +514,7 @@ pub fn umount(mount_point: &Path) -> i32 {
 
 #[cfg(any(target_os = "macos"))]
 pub fn mount(mount_point: &Path, options: &[&str]) -> RawFd {
-    let _args = FuseMountArgs::parse(options);
+    let mut _args = FuseMountArgs::parse(options);
     let devpath = Path::new("/dev/osxfuse1");
     let fd: RawFd;
     let res = fcntl::open(devpath, OFlag::O_RDWR, Mode::empty());
@@ -543,54 +564,25 @@ pub fn mount(mount_point: &Path, options: &[&str]) -> RawFd {
 
     let mntpath = CString::new(cstr_path).expect("CString::new failed");
     let fstype = CString::new("osxfuse").expect("CString::new failed");
-    let fsname = CString::new("macfuse").expect("CString::new failed");
-    let fstypename = CString::new("").expect("CString::new failed");
-    let volname = CString::new("OSXFUSE Volume 0 (macfuse)").expect("CString::new failed");
 
-    // (fuse_mount_args) args = {
-    //     mntpath = "/private/tmp/hello"
-    //     fsname = "macfuse@osxfuse0"
-    //     fstypename = ""
-    //     volname = "OSXFUSE Volume 0 (macfuse)"
-    //     altflags = 64
-    //     blocksize = 4096
-    //     daemon_timeout = 60
-    //     fsid = 0
-    //     fssubtype = 0
-    //     iosize = 65536
-    //     random = 1477356727
-    //     rdev = 587202560
-    //   }
     let mut mntpath_slice = [0u8; MAXPATHLEN];
     copy_slice(mntpath.as_bytes(), &mut mntpath_slice);
-    let mut fsname_slice = [0u8; MAXPATHLEN];
-    copy_slice(fsname.as_bytes(), &mut fsname_slice);
-    let mut fstypename_slice = [0u8; MFSTYPENAMELEN];
-    copy_slice(fstypename.as_bytes(), &mut fstypename_slice);
-    let mut volname_slice = [0u8; MAXPATHLEN];
-    copy_slice(volname.as_bytes(), &mut volname_slice);
 
-    let mut mnt_args = FuseMountArgs {
-        mntpath: mntpath_slice,
-        fsname: fsname_slice,
-        fstypename: fstypename_slice,
-        volname: volname_slice,
-        altflags: FUSE_MOPT_DEBUG | FUSE_MOPT_FSNAME | FUSE_MOPT_NO_APPLEXATTR,
-        blocksize: FUSE_DEFAULT_BLOCKSIZE,
-        daemon_timeout: FUSE_DEFAULT_DAEMON_TIMEOUT,
-        fsid: 0,
-        fssubtype: FUSE_FSSUBTYPE_UNKNOWN,
-        iosize: FUSE_DEFAULT_IOSIZE,
-        random: drandom,
-        rdev: sb.st_rdev as u32,
-    };
+    _args.set_mntpath(mntpath_slice);
+    _args.set_random(drandom);
+    _args.set_rdev(sb.st_rdev as u32);
+
+    // Default mount flags.
+    let mut flag = MNT_NOSUID | MNT_NODEV | MNT_NOUSERXATTR | MNT_NOATIME;
+    let parsed_flag = parse_mount_flag(options);
+    flag |= parsed_flag;
 
     unsafe {
         let result = libc::mount(
             fstype.as_ptr(),
             mntpath.as_ptr(),
-            MNT_NOSUID | MNT_NODEV | MNT_NOUSERXATTR | MNT_NOATIME,
-            &mut mnt_args as *mut _ as *mut c_void,
+            flag,
+            &mut _args as *mut _ as *mut c_void,
         );
         if result == 0 {
             debug!("mount {:?} to {:?} successfully!", mntpath, devpath);
