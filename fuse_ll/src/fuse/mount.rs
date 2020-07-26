@@ -514,7 +514,7 @@ pub fn umount(mount_point: &Path) -> i32 {
 
 #[cfg(any(target_os = "macos"))]
 pub fn mount(mount_point: &Path, options: &[&str]) -> RawFd {
-    let mut _args = FuseMountArgs::parse(options);
+    let mut args = FuseMountArgs::parse(options);
     let devpath = Path::new("/dev/osxfuse1");
     let fd: RawFd;
     let res = fcntl::open(devpath, OFlag::O_RDWR, Mode::empty());
@@ -568,9 +568,9 @@ pub fn mount(mount_point: &Path, options: &[&str]) -> RawFd {
     let mut mntpath_slice = [0u8; MAXPATHLEN];
     copy_slice(mntpath.as_bytes(), &mut mntpath_slice);
 
-    _args.set_mntpath(mntpath_slice);
-    _args.set_random(drandom);
-    _args.set_rdev(sb.st_rdev as u32);
+    args.set_mntpath(mntpath_slice);
+    args.set_random(drandom);
+    args.set_rdev(sb.st_rdev as u32);
 
     // Default mount flags.
     let mut flag = MNT_NOSUID | MNT_NODEV | MNT_NOUSERXATTR | MNT_NOATIME;
@@ -582,7 +582,7 @@ pub fn mount(mount_point: &Path, options: &[&str]) -> RawFd {
             fstype.as_ptr(),
             mntpath.as_ptr(),
             flag,
-            &mut _args as *mut _ as *mut c_void,
+            &mut args as *mut _ as *mut c_void,
         );
         if result == 0 {
             debug!("mount {:?} to {:?} successfully!", mntpath, devpath);

@@ -1,0 +1,18 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "type": "lldb",
+            "request": "launch",
+            "name": "Debug",
+            "program": "${workspaceFolder}/target/debug/fuse_ll",
+            "args": [ "/Users/tian/Documents/datenlord/work/test" ],
+            "env": {
+                "RUST_LOG": "debug",
+                "RUST_BACKTRACE": "full",
+            },
+            "cwd": "${workspaceFolder}"
+        }
+    ]
+
+}
