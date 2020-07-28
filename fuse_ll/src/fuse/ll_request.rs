@@ -198,7 +198,7 @@ pub enum Operation<'a> {
     // },
 }
 
-impl<'a> fmt::Display for Operation<'a> {
+impl fmt::Display for Operation<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Operation::Lookup { name } => write!(f, "LOOKUP name {:?}", name),
@@ -350,7 +350,7 @@ pub struct Request<'a> {
     operation: Operation<'a>,
 }
 
-impl<'a> fmt::Display for Request<'a> {
+impl fmt::Display for Request<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
@@ -385,7 +385,7 @@ impl<'a> TryFrom<&'a [u8]> for Request<'a> {
     }
 }
 
-impl<'a> Request<'a> {
+impl Request<'_> {
     /// Returns the unique identifier of this request.
     ///
     /// The FUSE kernel driver assigns a unique id to every concurrent request. This allows to

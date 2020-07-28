@@ -1,3 +1,37 @@
+//! FUSE userspace library implementation
+
+#![deny(
+    // The following are allowed by default lints according to
+    // https://doc.rust-lang.org/rustc/lints/listing/allowed-by-default.html
+    anonymous_parameters,
+    bare_trait_objects,
+    // box_pointers,
+    elided_lifetimes_in_paths,
+    missing_copy_implementations,
+    missing_debug_implementations,
+    missing_docs,
+    single_use_lifetimes,
+    // trivial_casts,
+    trivial_numeric_casts,
+    // unreachable_pub, // This lint conflicts with clippy::redundant_pub_crate
+    // unsafe_code,
+    unstable_features,
+    unused_extern_crates,
+    unused_import_braces,
+    unused_qualifications,
+    // unused_results,
+    variant_size_differences,
+
+    // Treat warnings as errors
+    // warnings, TODO: treat all wanings as errors
+
+    clippy::all,
+    clippy::restriction,
+    clippy::pedantic,
+    clippy::nursery,
+    clippy::cargo
+)]
+
 use log::debug;
 use std::ffi::OsStr;
 use std::path::Path;

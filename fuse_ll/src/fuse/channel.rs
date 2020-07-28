@@ -91,7 +91,7 @@ impl Channel {
         match res {
             Ok(s) => {
                 unsafe {
-                    buffer.set_len(s as usize);
+                    buffer.set_len(s);
                 }
                 debug!("receive successfully {} byte data", s);
                 Ok(())
