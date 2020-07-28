@@ -1263,7 +1263,15 @@ impl Filesystem for MemoryFilesystem {
         );
     }
 
-    fn read(&mut self, req: &Request<'_>, ino: u64, fh: u64, offset: i64, size: u32, reply: ReplyData) {
+    fn read(
+        &mut self,
+        req: &Request<'_>,
+        ino: u64,
+        fh: u64,
+        offset: i64,
+        size: u32,
+        reply: ReplyData,
+    ) {
         debug!(
             "read(ino={}, fh={}, offset={}, size={}, req={:?})",
             ino, fh, offset, size, req.request,
@@ -1605,7 +1613,14 @@ impl Filesystem for MemoryFilesystem {
         self.helper_remove_node(parent, &file_name, Type::File, reply);
     }
 
-    fn mkdir(&mut self, req: &Request<'_>, parent: u64, name: &OsStr, mode: u32, reply: ReplyEntry) {
+    fn mkdir(
+        &mut self,
+        req: &Request<'_>,
+        parent: u64,
+        name: &OsStr,
+        mode: u32,
+        reply: ReplyEntry,
+    ) {
         let dir_name = OsString::from(name);
         debug!(
             "mkdir(parent={}, name={:?}, mode={}, req={:?})",
