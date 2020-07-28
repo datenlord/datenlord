@@ -12,7 +12,7 @@
     missing_docs,
     single_use_lifetimes,
     // trivial_casts,
-    trivial_numeric_casts,
+    // trivial_numeric_casts,
     // unreachable_pub, // This lint conflicts with clippy::redundant_pub_crate
     // unsafe_code,
     unstable_features,
@@ -25,11 +25,11 @@
     // Treat warnings as errors
     // warnings, TODO: treat all wanings as errors
 
-    clippy::all,
-    clippy::restriction,
-    clippy::pedantic,
-    clippy::nursery,
-    clippy::cargo
+    // clippy::all,
+    // clippy::restriction,
+    // clippy::pedantic,
+    // clippy::nursery,
+    // clippy::cargo
 )]
 
 use log::debug;

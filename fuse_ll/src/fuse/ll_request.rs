@@ -644,7 +644,7 @@ mod tests {
         //     _ => panic!("Unexpected request operation"),
         // }
 
-        fn debug_attr(req: &Request) {
+        fn debug_attr(req: &Request<'_>) {
             dbg!(req.header.len);
             dbg!(req.header.opcode);
             dbg!(req.unique());
