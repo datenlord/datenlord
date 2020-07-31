@@ -142,10 +142,10 @@ mod util {
             UNIX_EPOCH.checked_add(Duration::new(st.st_ctime as u64, st.st_ctime_nsec as u32));
         let crtime = build_crtime(&st);
 
-        let perm = util::parse_mode_bits(st.st_mode as u32);
+        let perm = parse_mode_bits(st.st_mode as u32);
         debug!("read_attr() got file permission as: {}", perm);
-        let sflag = util::parse_sflag(st.st_mode as u32);
-        let kind = util::convert_sflag(sflag);
+        let sflag = parse_sflag(st.st_mode as u32);
+        let kind = convert_sflag(sflag);
 
         let nt = SystemTime::now();
         let attr = FileAttr {
@@ -534,13 +534,15 @@ impl INode {
         let file_size = file_node.attr.get().size;
         let file_data: &mut Vec<u8> = &mut file_node.data.borrow_mut();
         file_data.reserve(file_size as usize);
+        #[allow(unsafe_code)]
         unsafe {
             file_data.set_len(file_data.capacity());
         }
         let res = unistd::read(fd, &mut *file_data);
+        #[allow(unsafe_code)]
         match res {
             Ok(s) => unsafe {
-                file_data.set_len(s as usize);
+                file_data.set_len(s);
             },
             Err(e) => {
                 panic!(
@@ -1123,7 +1125,7 @@ impl Filesystem for MemoryFilesystem {
         Ok(())
     }
 
-    fn getattr(&mut self, req: &Request, ino: u64, reply: ReplyAttr) {
+    fn getattr(&mut self, req: &Request<'_>, ino: u64, reply: ReplyAttr) {
         debug!("getattr(ino={}, req={:?})", ino, req.request);
 
         let inode = self.cache.get(&ino).unwrap_or_else(|| {
@@ -1263,7 +1265,15 @@ impl Filesystem for MemoryFilesystem {
         );
     }
 
-    fn read(&mut self, req: &Request, ino: u64, fh: u64, offset: i64, size: u32, reply: ReplyData) {
+    fn read(
+        &mut self,
+        req: &Request<'_>,
+        ino: u64,
+        fh: u64,
+        offset: i64,
+        size: u32,
+        reply: ReplyData,
+    ) {
         debug!(
             "read(ino={}, fh={}, offset={}, size={}, req={:?})",
             ino, fh, offset, size, req.request,
@@ -1302,7 +1312,7 @@ impl Filesystem for MemoryFilesystem {
 
     fn readdir(
         &mut self,
-        req: &Request,
+        req: &Request<'_>,
         ino: u64,
         fh: u64,
         offset: i64,
@@ -1351,7 +1361,7 @@ impl Filesystem for MemoryFilesystem {
         inode.read_dir(readdir_helper);
     }
 
-    fn lookup(&mut self, req: &Request, parent: u64, name: &OsStr, reply: ReplyEntry) {
+    fn lookup(&mut self, req: &Request<'_>, parent: u64, name: &OsStr, reply: ReplyEntry) {
         let child_name = OsString::from(name);
         debug!(
             "lookup(parent={}, name={:?}, req={:?})",
@@ -1487,7 +1497,7 @@ impl Filesystem for MemoryFilesystem {
     /// is called by chmod(2) and related system calls.
     fn setattr(
         &mut self,
-        req: &Request,
+        req: &Request<'_>,
         ino: u64,
         mode: Option<u32>,
         uid: Option<u32>,
@@ -1580,7 +1590,7 @@ impl Filesystem for MemoryFilesystem {
 
     fn mknod(
         &mut self,
-        req: &Request,
+        req: &Request<'_>,
         parent: u64,
         name: &OsStr,
         mode: u32,
@@ -1596,7 +1606,7 @@ impl Filesystem for MemoryFilesystem {
         self.helper_create_node(parent, &file_name, mode, Type::File, reply);
     }
 
-    fn unlink(&mut self, req: &Request, parent: u64, name: &OsStr, reply: ReplyEmpty) {
+    fn unlink(&mut self, req: &Request<'_>, parent: u64, name: &OsStr, reply: ReplyEmpty) {
         let file_name = OsString::from(name);
         debug!(
             "unlink(parent={}, name={:?}, req={:?}",
@@ -1605,7 +1615,14 @@ impl Filesystem for MemoryFilesystem {
         self.helper_remove_node(parent, &file_name, Type::File, reply);
     }
 
-    fn mkdir(&mut self, req: &Request, parent: u64, name: &OsStr, mode: u32, reply: ReplyEntry) {
+    fn mkdir(
+        &mut self,
+        req: &Request<'_>,
+        parent: u64,
+        name: &OsStr,
+        mode: u32,
+        reply: ReplyEntry,
+    ) {
         let dir_name = OsString::from(name);
         debug!(
             "mkdir(parent={}, name={:?}, mode={}, req={:?})",
@@ -1615,7 +1632,7 @@ impl Filesystem for MemoryFilesystem {
         self.helper_create_node(parent, &dir_name, mode, Type::Directory, reply);
     }
 
-    fn rmdir(&mut self, req: &Request, parent: u64, name: &OsStr, reply: ReplyEmpty) {
+    fn rmdir(&mut self, req: &Request<'_>, parent: u64, name: &OsStr, reply: ReplyEmpty) {
         let dir_name = OsString::from(name);
         debug!(
             "rmdir(parent={}, name={:?}, req={:?})",
@@ -1626,7 +1643,7 @@ impl Filesystem for MemoryFilesystem {
 
     fn write(
         &mut self,
-        _req: &Request,
+        _req: &Request<'_>,
         ino: u64,
         fh: u64,
         offset: i64,
@@ -1681,7 +1698,7 @@ impl Filesystem for MemoryFilesystem {
     /// source and target may be of different type.
     fn rename(
         &mut self,
-        req: &Request,
+        req: &Request<'_>,
         parent: u64,
         name: &OsStr,
         new_parent: u64,
