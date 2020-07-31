@@ -5,7 +5,6 @@
 //! filesystem is mounted, the session loop receives, dispatches and replies to kernel requests
 //! for filesystem operations under its mount point.
 
-use std::ffi::OsStr;
 use std::io;
 use std::iter;
 use std::path::Path;

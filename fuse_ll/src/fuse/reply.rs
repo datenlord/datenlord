@@ -6,7 +6,6 @@
 //! data without cloning the data. A reply *must always* be used (by calling either ok() or
 //! error() exactly once).
 
-use bincode;
 use libc::{EIO, S_IFBLK, S_IFCHR, S_IFDIR, S_IFIFO, S_IFLNK, S_IFREG, S_IFSOCK};
 use log::warn;
 use std::convert::AsRef;
@@ -351,6 +350,7 @@ impl Reply for ReplyXTimes {
 #[cfg(target_os = "macos")]
 impl ReplyXTimes {
     /// Reply to a request with the given xtimes
+    #[allow(dead_code)]
     pub fn xtimes(self, bkuptime: SystemTime, crtime: SystemTime) {
         // FIXME: unwrap may panic, use unwrap_or((0, 0)) or return a result instead?
         let (bkuptime_secs, bkuptime_nanos) = time_from_system_time(&bkuptime).unwrap();
@@ -487,6 +487,7 @@ impl ReplyStatfs {
     }
 
     /// Reply to a request with the given error code
+    #[allow(dead_code)]
     pub fn error(self, err: c_int) {
         self.reply.error(err);
     }
@@ -510,6 +511,7 @@ impl Reply for ReplyCreate {
 
 impl ReplyCreate {
     /// Reply to a request with the given entry
+    #[allow(dead_code)]
     pub fn created(self, ttl: &Duration, attr: &FileAttr, generation: u64, fh: u64, flags: u32) {
         self.reply.ok(&(
             fuse_entry_out {
@@ -553,6 +555,7 @@ impl Reply for ReplyLock {
 
 impl ReplyLock {
     /// Reply to a request with the given open result
+    #[allow(dead_code)]
     pub fn locked(self, start: u64, end: u64, typ: u32, pid: u32) {
         self.reply.ok(&fuse_lk_out {
             lk: fuse_file_lock {
@@ -588,6 +591,7 @@ impl Reply for ReplyBmap {
 
 impl ReplyBmap {
     /// Reply to a request with the given open result
+    #[allow(dead_code)]
     pub fn bmap(self, block: u64) {
         self.reply.ok(&fuse_bmap_out { block });
     }
@@ -676,11 +680,13 @@ impl Reply for ReplyXattr {
 
 impl ReplyXattr {
     /// Reply to a request with the size of the xattr.
+    #[allow(dead_code)]
     pub fn size(self, size: u32) {
         self.reply.ok(&fuse_getxattr_out { size, padding: 0 });
     }
 
     /// Reply to a request with the data in the xattr.
+    #[allow(dead_code)]
     pub fn data(mut self, data: &[u8]) {
         self.reply.send(0, &[data]);
     }
