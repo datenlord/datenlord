@@ -42,9 +42,9 @@ struct SlotIndex {
 /// only takes a constant time in the worst case.
 ///
 /// The insert operation must pay the price for the quick search. The insert operation can only put the key
-/// into one of the two slots. However, when both slots are already occupied by other entries, it will be 
-/// necessary to move other keys to their second locations (or back to their first locations) to make room 
-/// for the new key, which is called a `relocation`. If the moved key can't be relocated because the other 
+/// into one of the two slots. However, when both slots are already occupied by other entries, it will be
+/// necessary to move other keys to their second locations (or back to their first locations) to make room
+/// for the new key, which is called a `relocation`. If the moved key can't be relocated because the other
 /// slot of it is also occupied, another `relocation` is required and so on. If relocation is a very long chain
 /// or meets a infinite loop, the table should be resized or rehashed.
 ///
