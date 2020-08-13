@@ -1,6 +1,41 @@
-extern crate crossbeam_epoch;
+#![deny(
+    // The following are allowed by default lints according to
+    // https://doc.rust-lang.org/rustc/lints/listing/allowed-by-default.html
+    anonymous_parameters,
+    bare_trait_objects,
+    // box_pointers, // futures involve boxed pointers
+    elided_lifetimes_in_paths, // allow anonymous lifetime in generated code
+    missing_copy_implementations,
+    missing_debug_implementations,
+    // missing_docs, // TODO: add documents
+    single_use_lifetimes, // TODO: fix lifetime names only used once
+    trivial_casts, // TODO: remove trivial casts in code
+    trivial_numeric_casts,
+    // unreachable_pub, use clippy::redundant_pub_crate instead
+    // unsafe_code, unsafe codes are inevitable here
+    // unstable_features,
+    unused_extern_crates,
+    unused_import_braces,
+    unused_qualifications,
+    // unused_results, // TODO: fix unused results
+    variant_size_differences,
 
-mod atomic;
+    // Treat warnings as errors
+    // warnings, TODO: treat all wanings as errors
+
+    clippy::all,
+    // clippy::restriction,
+    clippy::pedantic,
+    clippy::nursery,
+    // clippy::cargo
+)]
+#![allow(
+    // Some explicitly allowed Clippy lints, must have clear reason to allow
+    clippy::implicit_return, // actually omitting the return keyword is idiomatic Rust code
+    clippy::as_conversions, // there are cases when it makes sense to use `as` here
+)]
+
+mod pointer;
 
 use std::collections::hash_map::RandomState;
 
@@ -8,11 +43,15 @@ use std::hash::{BuildHasher, Hash, Hasher};
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use atomic::{AtomicPtr, SharedPtr};
+use pointer::{AtomicPtr, SharedPtr};
 
-use crossbeam_epoch::{Guard, Owned};
+use crossbeam_epoch::Owned;
+
+// Re-export `crossbeam_epoch::pin()` and `crossbeam_epoch::Guard`.
+pub use crossbeam_epoch::{pin, Guard};
 
 // KVPair contains the key-value pair.
+#[derive(Debug)]
 struct KVPair<K, V> {
     // TODO: maybe cache both hash keys here.
     key: K,
@@ -21,14 +60,14 @@ struct KVPair<K, V> {
 
 // SlotIndex represents the index of a slot inside the hashtable.
 // The slot index is composed by `tbl_idx` and `slot_idx`.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 struct SlotIndex {
     tbl_idx: usize,
     slot_idx: usize,
 }
 
-/// LockFreeCuckooHash is a lock-free hash table using cuckoo hashing scheme.
-/// This implementation is based on the approch discussed in the paper:
+/// `LockFreeCuckooHash` is a lock-free hash table using cuckoo hashing scheme.
+/// This implementation is based on the approach discussed in the paper:
 ///
 /// "Nguyen, N., & Tsigas, P. (2014). Lock-Free Cuckoo Hashing. 2014 IEEE 34th International
 /// Conference on Distributed Computing Systems, 627-636."
@@ -56,6 +95,29 @@ pub struct LockFreeCuckooHash<K, V> {
     size: AtomicUsize,
 }
 
+impl<K, V> std::fmt::Debug for LockFreeCuckooHash<K, V>
+where
+    K: std::fmt::Debug,
+    V: std::fmt::Debug,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let capacity = self.tables[0].len();
+        let guard = pin();
+        let mut f = f.debug_map();
+        for tbl_idx in 0..2 {
+            for slot_idx in 0..capacity {
+                let slot = self.tables[tbl_idx][slot_idx].load(Ordering::SeqCst, &guard);
+                unsafe {
+                    if let Some(kv) = slot.as_raw().as_ref() {
+                        f.entry(&kv.key, &kv.value);
+                    }
+                }
+            }
+        }
+        f.finish()
+    }
+}
+
 impl<'guard, K, V> LockFreeCuckooHash<K, V>
 where
     K: 'guard + Eq + Hash,
@@ -63,12 +125,14 @@ where
     /// The default capacity of a new `LockFreeCuckooHash` when created by `LockFreeHashMap::new()`.
     pub const DEFAULT_CAPACITY: usize = 16;
 
-    /// Createa an empty `LockFreeCuckHash` with default capacity.
+    /// Create an empty `LockFreeCuckooHash` with default capacity.
+    #[must_use]
     pub fn new() -> Self {
         Self::with_capacity(Self::DEFAULT_CAPACITY)
     }
 
-    /// Creates an empty `LockFreeCuckHash` with the specified capacity.
+    /// Creates an empty `LockFreeCuckooHash` with the specified capacity.
+    #[must_use]
     pub fn with_capacity(capacity: usize) -> Self {
         let table_capacity = (capacity + 1) / 2;
         let mut tables = Vec::with_capacity(2);
@@ -81,7 +145,7 @@ where
             tables.push(table);
         }
 
-        LockFreeCuckooHash {
+        Self {
             hash_builders: [RandomState::new(), RandomState::new()],
             tables,
             size: AtomicUsize::new(0),
@@ -99,7 +163,106 @@ where
     }
 
     /// Returns a reference to the value corresponding to the key.
-    pub fn search(&self, key: &K, guard: &'guard Guard) -> Option<&'guard V> {
+    ///
+    /// # Example:
+    ///
+    /// ```
+    /// use lockfree_cuckoohash::{pin, LockFreeCuckooHash};
+    /// let map = LockFreeCuckooHash::new();
+    /// map.insert(10, 10);
+    /// let guard = pin();
+    /// let v = map.search_with_guard(&10, &guard);
+    /// assert_eq!(*v.unwrap(), 10);
+    /// ```
+    ///
+    pub fn search_with_guard(&self, key: &K, guard: &'guard Guard) -> Option<&'guard V> {
+        self.search_inner(key, guard)
+    }
+
+    /// Insert a new key-value pair into the hashtable. If the key has already been in the
+    /// table, the value will be overridden.
+    ///
+    /// # Example:
+    ///
+    /// ```
+    /// use lockfree_cuckoohash::{pin, LockFreeCuckooHash};
+    /// let map = LockFreeCuckooHash::new();
+    /// map.insert(10, 10);
+    /// let guard = pin();
+    /// let v1 = map.search_with_guard(&10, &guard);
+    /// assert_eq!(*v1.unwrap(), 10);
+    /// map.insert(10, 20);
+    /// let v2 = map.search_with_guard(&10, &guard);
+    /// assert_eq!(*v2.unwrap(), 20);
+    /// ```
+    ///
+    pub fn insert(&self, key: K, value: V) {
+        let guard = pin();
+        self.insert_with_guard(key, value, &guard)
+    }
+
+    /// Insert a new key-value pair into the hashtable. If the key has already been in the
+    /// table, the value will be overridden.
+    /// Different from `insert(k, v)`, this method requires a user provided guard.
+    ///
+    /// # Example:
+    ///
+    /// ```
+    /// use lockfree_cuckoohash::{pin, LockFreeCuckooHash};
+    /// let map = LockFreeCuckooHash::new();
+    /// let guard = pin();
+    /// map.insert_with_guard(10, 10, &guard);
+    /// let v1 = map.search_with_guard(&10, &guard);
+    /// assert_eq!(*v1.unwrap(), 10);
+    /// map.insert_with_guard(10, 20, &guard);
+    /// let v2 = map.search_with_guard(&10, &guard);
+    /// assert_eq!(*v2.unwrap(), 20);
+    /// ```
+    ///
+    pub fn insert_with_guard(&self, key: K, value: V, guard: &'guard Guard) {
+        self.insert_inner(key, value, guard)
+    }
+
+    /// Remove a key from the map.
+    ///
+    /// # Example:
+    ///
+    /// ```
+    /// use lockfree_cuckoohash::{pin, LockFreeCuckooHash};
+    /// let map = LockFreeCuckooHash::new();
+    /// let guard = pin();
+    /// map.insert(10, 20);
+    /// map.remove(&10);
+    /// let value = map.search_with_guard(&10, &guard);
+    /// assert_eq!(value.is_none(), true);
+    /// ```
+    ///
+    pub fn remove(&self, key: &K) -> bool {
+        let guard = pin();
+        self.remove_with_guard(key, &guard)
+    }
+
+    /// Remove a key from the map.
+    /// Different from `remove(k)`, this method requires a user provided guard.
+    ///
+    /// # Example:
+    ///
+    /// ```
+    /// use lockfree_cuckoohash::{pin, LockFreeCuckooHash};
+    /// let map = LockFreeCuckooHash::new();
+    /// let guard = pin();
+    /// map.insert(10, 20);
+    /// map.remove_with_guard(&10, &guard);
+    /// let value = map.search_with_guard(&10, &guard);
+    /// assert_eq!(value.is_none(), true);
+    /// ```
+    ///
+    pub fn remove_with_guard(&self, key: &K, guard: &'guard Guard) -> bool {
+        self.remove_inner(key, guard)
+    }
+
+    /// Returns a reference to the value corresponding to the key.
+    fn search_inner(&self, key: &K, guard: &'guard Guard) -> Option<&'guard V> {
         // TODO: K could be a Borrowed.
         let slot_idx0 = self.get_index(0, key);
         // TODO: the second hash value could be lazily evaluated.
@@ -107,7 +270,7 @@ where
 
         // Because other concurrent `insert` operations may relocate the key during
         // our `search` here, we may miss the key with one-round query.
-        // For example, suppose the key is located in `table[1][hash1(key)]`:
+        // For example, suppose the key is located in `table[1][hash1(key)]` at first:
         //
         //      search thread              |    relocate thread
         //                                 |
@@ -120,7 +283,7 @@ where
 
         // So `search` uses a two-round query to deal with the `missing key` problem.
         // But it is not enough because a relocation operation might interleave in between.
-        // The other technique to deal with it is a logic-clock based counter -- relocation count.
+        // The other technique to deal with it is a logic-clock based counter -- `relocation count`.
         // Each slot contains a counter that records the number of relocations at the slot.
         loop {
             // The first round:
@@ -156,27 +319,26 @@ where
             // Check the counter.
             if Self::check_counter(count0_0, count0_1, count1_0, count1_1) {
                 continue;
-            } else {
-                break;
             }
+            break;
         }
         None
     }
 
     /// Insert a new key-value pair into the hashtable. If the key has already been in the
-    /// table, the value will be overrided.
-    pub fn insert(&self, key: K, value: V, guard: &'guard Guard) {
+    /// table, the value will be overridden.
+    fn insert_inner(&self, key: K, value: V, guard: &'guard Guard) {
         let mut new_slot = SharedPtr::from_box(Box::new(KVPair { key, value }));
 
-        let key = Self::get_entry_key(new_slot);
-        let slot_idx0 = self.get_index(0, key);
-        let slot_idx1 = self.get_index(1, key);
+        let new_key = Self::get_entry_key(new_slot);
+        let slot_idx0 = self.get_index(0, new_key);
+        let slot_idx1 = self.get_index(1, new_key);
         loop {
-            let key = Self::get_entry_key(new_slot);
-            let (slot_idx, slot0, slot1) = self.find(key, slot_idx0, slot_idx1, guard);
+            // let key = Self::get_entry_key(new_slot);
+            let (slot_idx, slot0, slot1) = self.find(new_key, slot_idx0, slot_idx1, guard);
             let (slot_idx, target_slot, is_replcace) = match slot_idx {
                 Some(tbl_idx) => {
-                    // The key has already in the table, we need to replace the value.
+                    // The key has already been in the table, we need to replace the value.
                     if tbl_idx == 0 {
                         (Some(&slot_idx0), slot0, true)
                     } else {
@@ -185,9 +347,9 @@ where
                 }
                 None => {
                     // The key is a new one, check if we have an empty slot.
-                    if Self::slot_is_empty(&slot0) {
+                    if Self::slot_is_empty(slot0) {
                         (Some(&slot_idx0), slot0, false)
-                    } else if Self::slot_is_empty(&slot1) {
+                    } else if Self::slot_is_empty(slot1) {
                         (Some(&slot_idx1), slot1, false)
                     } else {
                         // Both slots are occupied, we need a relocation.
@@ -222,7 +384,7 @@ where
                     }
                 }
             } else {
-                // We meet a hash conflict here, relocate the first slot.
+                // We meet a hash collision here, relocate the first slot.
                 if self.relocate(slot_idx0, guard) {
                     continue;
                 } else {
@@ -235,7 +397,7 @@ where
 
     /// Remove a key from the map.
     /// TODO: we can return the removed value.
-    pub fn remove(&self, key: &K, guard: &'guard Guard) -> bool {
+    fn remove_inner(&self, key: &K, guard: &'guard Guard) -> bool {
         let slot_idx0 = self.get_index(0, key);
         let slot_idx1 = self.get_index(1, key);
         let new_slot = SharedPtr::null();
@@ -295,6 +457,7 @@ where
     ///     a> the table index of the slot that has the same key.
     ///     b> the first slot.
     ///     c> the second slot.
+    #[allow(clippy::type_complexity)]
     fn find(
         &self,
         key: &K,
@@ -311,9 +474,9 @@ where
 
             // The first round:
             let slot0 = self.get_slot(slot_idx0, guard);
-            let (count0_0, entry0, marked) = Self::unwrap_slot(slot0);
+            let (count0_0, entry0, marked0_0) = Self::unwrap_slot(slot0);
             if let Some(pair) = entry0 {
-                if marked {
+                if marked0_0 {
                     self.help_relocate(slot_idx0, false, guard);
                     continue;
                 }
@@ -325,9 +488,9 @@ where
             }
 
             let slot1 = self.get_slot(slot_idx1, guard);
-            let (count0_1, entry1, marked) = Self::unwrap_slot(slot1);
+            let (count0_1, entry1, marked0_1) = Self::unwrap_slot(slot1);
             if let Some(pair) = entry1 {
-                if marked {
+                if marked0_1 {
                     self.help_relocate(slot_idx1, false, guard);
                     continue;
                 }
@@ -348,9 +511,9 @@ where
 
             // The second round:
             let slot0 = self.get_slot(slot_idx0, guard);
-            let (count1_0, entry0, marked) = Self::unwrap_slot(slot0);
+            let (count1_0, entry0, marked1_0) = Self::unwrap_slot(slot0);
             if let Some(pair) = entry0 {
-                if marked {
+                if marked1_0 {
                     self.help_relocate(slot_idx0, false, guard);
                     continue;
                 }
@@ -360,9 +523,9 @@ where
             }
 
             let slot1 = self.get_slot(slot_idx1, guard);
-            let (count1_1, entry1, marked) = Self::unwrap_slot(slot1);
+            let (count1_1, entry1, marked1_1) = Self::unwrap_slot(slot1);
             if let Some(pair) = entry1 {
-                if marked {
+                if marked1_1 {
                     self.help_relocate(slot_idx1, false, guard);
                     continue;
                 }
@@ -387,9 +550,10 @@ where
         }
     }
 
+    #[allow(clippy::unused_self)]
     fn resize(&self) {
         // FIXME: implement this method.
-        panic!("resize() has not been implemented yet.")
+        unimplemented!("resize() has not been implemented yet.")
     }
 
     /// relocate tries to make the slot in `origin_idx` empty, in order to insert
@@ -414,7 +578,7 @@ where
             let mut depth = start_level;
             loop {
                 let mut slot = self.get_slot(slot_idx, guard);
-                while Self::is_marked(&slot) {
+                while Self::is_marked(slot) {
                     self.help_relocate(slot_idx, false, guard);
                     slot = self.get_slot(slot_idx, guard);
                 }
@@ -423,15 +587,17 @@ where
                     let key = &entry.key;
 
                     // If there are duplicated keys in both slots, we may
-                    // meet an endless loop. So we must do de dedup here.
+                    // meet an endless loop. So we must do the dedup here.
                     let next_slot_idx = self.get_index(1 - slot_idx.tbl_idx, key);
                     let next_slot = self.get_slot(next_slot_idx, guard);
                     let (_, next_entry, _) = Self::unwrap_slot(next_slot);
-                    if next_entry.is_some() && next_entry.unwrap().key.eq(key) {
-                        if slot_idx.tbl_idx == 0 {
-                            self.del_dup(slot_idx, slot, next_slot_idx, next_slot, guard);
-                        } else {
-                            self.del_dup(next_slot_idx, next_slot, slot_idx, slot, guard);
+                    if let Some(pair) = next_entry {
+                        if pair.key.eq(key) {
+                            if slot_idx.tbl_idx == 0 {
+                                self.del_dup(slot_idx, slot, next_slot_idx, next_slot, guard);
+                            } else {
+                                self.del_dup(next_slot_idx, next_slot, slot_idx, slot, guard);
+                            }
                         }
                     }
 
@@ -456,7 +622,7 @@ where
                 'slot_swap: for i in (0..depth).rev() {
                     let src_idx = route[i];
                     let mut src_slot = self.get_slot(src_idx, guard);
-                    while Self::is_marked(&src_slot) {
+                    while Self::is_marked(src_slot) {
                         self.help_relocate(src_idx, false, guard);
                         src_slot = self.get_slot(src_idx, guard);
                     }
@@ -480,7 +646,7 @@ where
         }
     }
 
-    /// del_dup deletes the duplicated key. It only deletes the key in the second table.
+    /// `del_dup` deletes the duplicated key. It only deletes the key in the second table.
     fn del_dup(
         &self,
         slot_idx0: SlotIndex,
@@ -513,12 +679,12 @@ where
         }
     }
 
-    /// help_relocate helps relocate the slot at `src_idx` to the other corresponding slot.
+    /// `help_relocate` helps relocate the slot at `src_idx` to the other corresponding slot.
     fn help_relocate(&self, src_idx: SlotIndex, initiator: bool, guard: &'guard Guard) {
         loop {
             let mut src_slot = self.get_slot(src_idx, guard);
-            while initiator && !Self::is_marked(&src_slot) {
-                if Self::slot_is_empty(&src_slot) {
+            while initiator && !Self::is_marked(src_slot) {
+                if Self::slot_is_empty(src_slot) {
                     return;
                 }
                 let new_slot_with_mark = src_slot.with_tag();
@@ -531,7 +697,7 @@ where
                 );
                 src_slot = self.get_slot(src_idx, guard);
             }
-            if !Self::is_marked(&src_slot) {
+            if !Self::is_marked(src_slot) {
                 return;
             }
 
@@ -596,7 +762,7 @@ where
         self.tables[0].len()
     }
 
-    fn is_marked(slot: &SharedPtr<'guard, KVPair<K, V>>) -> bool {
+    fn is_marked(slot: SharedPtr<'guard, KVPair<K, V>>) -> bool {
         slot.tag()
     }
 
@@ -605,7 +771,7 @@ where
         &entry.unwrap().key
     }
 
-    fn slot_is_empty(slot: &SharedPtr<'guard, KVPair<K, V>>) -> bool {
+    fn slot_is_empty(slot: SharedPtr<'guard, KVPair<K, V>>) -> bool {
         let raw = slot.as_raw();
         raw.is_null()
     }
@@ -647,6 +813,7 @@ where
         self.tables[slot_idx.tbl_idx][slot_idx.slot_idx].load(Ordering::SeqCst, guard)
     }
 
+    #[allow(clippy::cast_possible_truncation)]
     fn get_index(&self, tbl_idx: usize, key: &K) -> SlotIndex {
         let mut hasher = self.hash_builders[tbl_idx].build_hasher();
         key.hash(&mut hasher);
@@ -655,7 +822,7 @@ where
     }
 
     fn defer_drop_ifneed(slot: SharedPtr<'guard, KVPair<K, V>>, guard: &'guard Guard) {
-        if !Self::slot_is_empty(&slot) {
+        if !Self::slot_is_empty(slot) {
             unsafe {
                 guard.defer_destroy(
                     Owned::from_raw(slot.as_raw() as *mut KVPair<K, V>).into_shared(guard),
@@ -665,126 +832,238 @@ where
     }
 }
 
-#[test]
-fn test_single_thread() {
+#[cfg(test)]
+mod tests {
+    use super::{pin, LockFreeCuckooHash};
     use rand::Rng;
     use std::collections::HashMap;
-
-    let capacity: usize = 100000;
-    let load_factor: f32 = 0.3;
-    let remove_factor: f32 = 0.1;
-    let size = (capacity as f32 * load_factor) as usize;
-
-    let mut base_map: HashMap<u32, u32> = HashMap::with_capacity(capacity);
-    let cuckoo_map: LockFreeCuckooHash<u32, u32> = LockFreeCuckooHash::with_capacity(capacity);
-
-    let mut rng = rand::thread_rng();
-    let guard = crossbeam_epoch::pin();
-
-    for _ in 0..size {
-        let key: u32 = rng.gen();
-        let value: u32 = rng.gen();
-
-        base_map.insert(key, value);
-        cuckoo_map.insert(key, value, &guard);
-
-        let r: u8 = rng.gen();
-        let need_remove = (r % 10) < ((remove_factor * 10_f32) as u8);
-        if need_remove {
-            base_map.remove(&key);
-            cuckoo_map.remove(&key, &guard);
-        }
-    }
-
-    assert_eq!(base_map.len(), cuckoo_map.size());
-
-    for (key, value) in base_map {
-        let value2 = cuckoo_map.search(&key, &guard);
-        assert_eq!(value, *value2.unwrap());
-    }
-}
-
-#[test]
-fn test_multi_threads() {
-    use rand::Rng;
-    use std::collections::HashMap;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::time::Instant;
+    #[test]
+    fn test_single_thread() {
+        let capacity: usize = 100_000;
+        let load_factor: f32 = 0.3;
+        let remove_factor: f32 = 0.1;
+        let size = (capacity as f32 * load_factor) as usize;
 
-    let capacity: usize = 1000000;
-    let load_factor: f32 = 0.2;
-    let num_thread: usize = 4;
+        let mut base_map: HashMap<u32, u32> = HashMap::with_capacity(capacity);
+        let cuckoo_map: LockFreeCuckooHash<u32, u32> = LockFreeCuckooHash::with_capacity(capacity);
 
-    let size = (capacity as f32 * load_factor) as usize;
-    let warmup_size = size / 3;
+        let mut rng = rand::thread_rng();
+        let guard = pin();
 
-    let mut warmup_entries: Vec<(u32, u32)> = Vec::with_capacity(warmup_size);
+        for _ in 0..size {
+            let key: u32 = rng.gen();
+            let value: u32 = rng.gen();
 
-    let mut new_insert_entries: Vec<(u32, u32)> = Vec::with_capacity(size - warmup_size);
+            base_map.insert(key, value);
+            cuckoo_map.insert_with_guard(key, value, &guard);
 
-    let mut base_map: HashMap<u32, u32> = HashMap::with_capacity(capacity);
-    let cuckoo_map: LockFreeCuckooHash<u32, u32> = LockFreeCuckooHash::with_capacity(capacity);
-
-    let mut rng = rand::thread_rng();
-    let guard = crossbeam_epoch::pin();
-
-    for _ in 0..warmup_size {
-        let mut key: u32 = rng.gen();
-        while base_map.contains_key(&key) {
-            key = rng.gen();
-        }
-        let value: u32 = rng.gen();
-        base_map.insert(key, value);
-        cuckoo_map.insert(key, value, &guard);
-        warmup_entries.push((key, value));
-    }
-
-    for _ in 0..(size - warmup_size) {
-        let mut key: u32 = rng.gen();
-        while base_map.contains_key(&key) {
-            key = rng.gen();
-        }
-        let value: u32 = rng.gen();
-        new_insert_entries.push((key, value));
-        base_map.insert(key, value);
-    }
-
-    let mut handles = Vec::with_capacity(num_thread);
-    let insert_count = Arc::new(AtomicUsize::new(0));
-    let cuckoo_map = Arc::new(cuckoo_map);
-    let warmup_entries = Arc::new(warmup_entries);
-    let new_insert_entries = Arc::new(new_insert_entries);
-    for _ in 0..num_thread {
-        let insert_count = insert_count.clone();
-        let cuckoo_map = cuckoo_map.clone();
-        let warmup_entries = warmup_entries.clone();
-        let new_insert_entries = new_insert_entries.clone();
-        let handle = std::thread::spawn(move || {
-            let guard = crossbeam_epoch::pin();
-            let mut entry_idx = insert_count.fetch_add(1, Ordering::SeqCst);
-            let mut rng = rand::thread_rng();
-            while entry_idx < new_insert_entries.len() {
-                // read 5 pairs ,then insert 1 pair.
-                for _ in 0..5 {
-                    let rnd_idx: usize = rng.gen_range(0, warmup_entries.len());
-                    let warmup_entry = &warmup_entries[rnd_idx];
-                    let res = cuckoo_map.search(&warmup_entry.0, &guard);
-                    assert_eq!(res.is_some(), true);
-                    assert_eq!(*res.unwrap(), warmup_entry.1);
-                }
-                let insert_pair = &new_insert_entries[entry_idx];
-                cuckoo_map.insert(insert_pair.0, insert_pair.1, &guard);
-                entry_idx = insert_count.fetch_add(1, Ordering::SeqCst);
+            let r: u8 = rng.gen();
+            let need_remove = (r % 10) < ((remove_factor * 10_f32) as u8);
+            if need_remove {
+                base_map.remove(&key);
+                cuckoo_map.remove_with_guard(&key, &guard);
             }
-        });
-        handles.push(handle);
+        }
+
+        assert_eq!(base_map.len(), cuckoo_map.size());
+
+        for (key, value) in base_map {
+            let value2 = cuckoo_map.search_with_guard(&key, &guard);
+            assert_eq!(value, *value2.unwrap());
+        }
     }
 
-    for handle in handles {
-        handle.join().unwrap();
+    #[test]
+    fn test_multi_threads() {
+        let capacity: usize = 1_000_000;
+        let load_factor: f32 = 0.2;
+        let num_thread: usize = 4;
+
+        let size = (capacity as f32 * load_factor) as usize;
+        let warmup_size = size / 3;
+
+        let mut warmup_entries: Vec<(u32, u32)> = Vec::with_capacity(warmup_size);
+
+        let mut new_insert_entries: Vec<(u32, u32)> = Vec::with_capacity(size - warmup_size);
+
+        let mut base_map: HashMap<u32, u32> = HashMap::with_capacity(capacity);
+        let cuckoo_map: LockFreeCuckooHash<u32, u32> = LockFreeCuckooHash::with_capacity(capacity);
+
+        let mut rng = rand::thread_rng();
+        let guard = pin();
+
+        for _ in 0..warmup_size {
+            let mut key: u32 = rng.gen();
+            while base_map.contains_key(&key) {
+                key = rng.gen();
+            }
+            let value: u32 = rng.gen();
+            base_map.insert(key, value);
+            cuckoo_map.insert_with_guard(key, value, &guard);
+            warmup_entries.push((key, value));
+        }
+
+        for _ in 0..(size - warmup_size) {
+            let mut key: u32 = rng.gen();
+            while base_map.contains_key(&key) {
+                key = rng.gen();
+            }
+            let value: u32 = rng.gen();
+            new_insert_entries.push((key, value));
+            base_map.insert(key, value);
+        }
+
+        let mut handles = Vec::with_capacity(num_thread);
+        let insert_count = Arc::new(AtomicUsize::new(0));
+        let cuckoo_map = Arc::new(cuckoo_map);
+        let warmup_entries = Arc::new(warmup_entries);
+        let new_insert_entries = Arc::new(new_insert_entries);
+        for _ in 0..num_thread {
+            let insert_count = insert_count.clone();
+            let cuckoo_map = cuckoo_map.clone();
+            let warmup_entries = warmup_entries.clone();
+            let new_insert_entries = new_insert_entries.clone();
+            let handle = std::thread::spawn(move || {
+                let guard = pin();
+                let mut entry_idx = insert_count.fetch_add(1, Ordering::SeqCst);
+                let mut rng = rand::thread_rng();
+                while entry_idx < new_insert_entries.len() {
+                    // read 5 pairs ,then insert 1 pair.
+                    for _ in 0..5 {
+                        let rnd_idx: usize = rng.gen_range(0, warmup_entries.len());
+                        let warmup_entry = &warmup_entries[rnd_idx];
+                        let res = cuckoo_map.search_with_guard(&warmup_entry.0, &guard);
+                        assert_eq!(res.is_some(), true);
+                        assert_eq!(*res.unwrap(), warmup_entry.1);
+                    }
+                    let insert_pair = &new_insert_entries[entry_idx];
+                    cuckoo_map.insert_with_guard(insert_pair.0, insert_pair.1, &guard);
+                    entry_idx = insert_count.fetch_add(1, Ordering::SeqCst);
+                }
+            });
+            handles.push(handle);
+        }
+
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        for (k, v) in base_map {
+            let v2 = cuckoo_map.search_with_guard(&k, &guard);
+            assert_eq!(v, *v2.unwrap());
+        }
     }
 
-    for (k, v) in base_map {
-        let v2 = cuckoo_map.search(&k, &guard);
-        assert_eq!(v, *v2.unwrap());
+    #[test]
+    #[ignore]
+    fn bench_read_write() {
+        let num_thread = 4;
+        let capacity = 10_000_000;
+        let size = 1_000_000;
+        let warmup_size = 100_000;
+        let num_read_per_write = 19;
+
+        let mut rng = rand::thread_rng();
+        let guard = pin();
+
+        let cuckoo_map = LockFreeCuckooHash::with_capacity(capacity);
+        let mut warmup_entries = Vec::with_capacity(warmup_size);
+        for _ in 0..warmup_size {
+            let key: u32 = rng.gen();
+            let value: u32 = rng.gen();
+
+            cuckoo_map.insert_with_guard(key, value, &guard);
+            warmup_entries.push(key);
+        }
+
+        let mut handles = Vec::with_capacity(num_thread);
+        let warmup_entries = Arc::new(warmup_entries);
+        let cuckoo_map = Arc::new(cuckoo_map);
+        let start = Instant::now();
+        for _ in 0..num_thread {
+            let warmup_entries = warmup_entries.clone();
+            let cuckoo_map = cuckoo_map.clone();
+            let handle = std::thread::spawn(move || {
+                let guard = pin();
+                let mut rng = rand::thread_rng();
+                for _ in 0..size / num_thread {
+                    // 95% read, 5% write
+                    for _ in 0..num_read_per_write {
+                        let idx: usize = rng.gen_range(0, warmup_entries.len());
+                        let key = warmup_entries[idx];
+                        cuckoo_map.search_with_guard(&key, &guard);
+                    }
+                    let key: u32 = rng.gen();
+                    let value: u32 = rng.gen();
+                    cuckoo_map.insert_with_guard(key, value, &guard);
+                }
+            });
+            handles.push(handle);
+        }
+
+        for handle in handles {
+            handle.join().unwrap();
+        }
+        let duration = start.elapsed().as_secs_f64();
+        let throughput = (size * (num_read_per_write + 1)) as f64 / duration;
+        let percent_read = num_read_per_write * 100 / (num_read_per_write + 1);
+        let percent_write = 100 / (num_read_per_write + 1);
+        println!(
+            "{}% read + {}% write, total time: {}s, throughput: {}op/s",
+            percent_read, percent_write, duration, throughput
+        );
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_read_only() {
+        let num_thread = 4;
+        let capacity = 10_000_000;
+        let size = 1_000_000;
+        let num_read_per_thread = size * 2;
+        let mut rng = rand::thread_rng();
+        let guard = pin();
+
+        let cuckoo_map = LockFreeCuckooHash::with_capacity(capacity);
+        let mut warmup_entries = Vec::with_capacity(size);
+        for _ in 0..size {
+            let key: u32 = rng.gen();
+            let value: u32 = rng.gen();
+
+            cuckoo_map.insert_with_guard(key, value, &guard);
+            warmup_entries.push(key);
+        }
+
+        let mut handles = Vec::with_capacity(num_thread);
+        let warmup_entries = Arc::new(warmup_entries);
+        let cuckoo_map = Arc::new(cuckoo_map);
+        let start = Instant::now();
+        for _ in 0..num_thread {
+            let warmup_entries = warmup_entries.clone();
+            let cuckoo_map = cuckoo_map.clone();
+            let handle = std::thread::spawn(move || {
+                let guard = pin();
+                let mut rng = rand::thread_rng();
+                for _ in 0..num_read_per_thread {
+                    let idx: usize = rng.gen_range(0, warmup_entries.len());
+                    let key = warmup_entries[idx];
+                    cuckoo_map.search_with_guard(&key, &guard);
+                }
+            });
+            handles.push(handle);
+        }
+
+        for handle in handles {
+            handle.join().unwrap();
+        }
+        let duration = start.elapsed().as_secs_f64();
+        let throughput = (num_read_per_thread * num_thread) as f64 / duration;
+        println!(
+            "read only, total time: {}s, throughput: {}op/s",
+            duration, throughput
+        );
     }
 }

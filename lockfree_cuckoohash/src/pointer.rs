@@ -1,8 +1,10 @@
 use crossbeam_epoch::Guard;
 use std::marker::PhantomData;
-use std::sync::atomic::AtomicUsize;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
+/// `AtomicPtr` is a pointer which can only be manipulated by
+/// atomic operations.
+#[derive(Debug)]
 pub struct AtomicPtr<T: ?Sized> {
     data: AtomicUsize,
     _marker: PhantomData<*mut T>,
@@ -12,14 +14,14 @@ unsafe impl<T: ?Sized + Send + Sync> Send for AtomicPtr<T> {}
 unsafe impl<T: ?Sized + Send + Sync> Sync for AtomicPtr<T> {}
 
 impl<T> AtomicPtr<T> {
-    fn from_usize(data: usize) -> Self {
-        AtomicPtr {
+    const fn from_usize(data: usize) -> Self {
+        Self {
             data: AtomicUsize::new(data),
             _marker: PhantomData,
         }
     }
 
-    pub fn null() -> Self {
+    pub const fn null() -> Self {
         Self::from_usize(0)
     }
 
@@ -43,6 +45,9 @@ impl<T> AtomicPtr<T> {
     }
 }
 
+/// `SharedPtr` is a pointer which can be shared by multi-threads.
+/// `SharedPtr` can only be used with 64bit-wide pointer, and the
+/// pointer address must be 8-byte aligned.
 pub struct SharedPtr<'g, T: 'g> {
     data: usize,
     _marker: PhantomData<(&'g (), *const T)>,
@@ -59,7 +64,8 @@ impl<T> Clone for SharedPtr<'_, T> {
 
 impl<T> Copy for SharedPtr<'_, T> {}
 
-impl<'g, T> SharedPtr<'g, T> {
+#[allow(clippy::trivially_copy_pass_by_ref, clippy::missing_const_for_fn)]
+impl<T> SharedPtr<'_, T> {
     pub fn from_usize(data: usize) -> Self {
         SharedPtr {
             data,
@@ -79,7 +85,7 @@ impl<'g, T> SharedPtr<'g, T> {
         Self::from_usize(0)
     }
 
-    pub fn as_usize(&self) -> usize {
+    pub const fn as_usize(&self) -> usize {
         self.data
     }
 
@@ -87,8 +93,9 @@ impl<'g, T> SharedPtr<'g, T> {
         (data & !1, data & 1 == 1)
     }
 
+    #[allow(clippy::cast_possible_truncation)]
     fn decompose_higher_u8(data: usize) -> (u8, usize) {
-        let mask = ((1 as usize) << 56) - 1;
+        let mask: usize = (1 << 56) - 1;
         (((data & !mask) >> 56) as u8, data & mask)
     }
 
@@ -114,7 +121,7 @@ impl<'g, T> SharedPtr<'g, T> {
 
     pub fn with_higher_u8(&self, higher_u8: u8) -> Self {
         let data = self.data;
-        let mask = ((1 as usize) << 56) - 1;
+        let mask: usize = (1 << 56) - 1;
         Self::from_usize((data & mask) | ((higher_u8 as usize) << 56))
     }
 
