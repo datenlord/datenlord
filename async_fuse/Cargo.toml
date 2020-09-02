@@ -3,6 +3,12 @@ name = "async_fuse"
 version = "0.1.0"
 authors = ["Pu Wang <nicolas.weeks@gmail.com>"]
 edition = "2018"
+description = "Distributed cloud native storage system"
+repository = "https://github.com/datenlord/datenlord"
+readme = "README.md"
+license = "MIT"
+keywords = ["Storage"]
+categories = ["filesystem"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
