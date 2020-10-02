@@ -1,3 +1,5 @@
+//! The implementation of FUSE response
+
 use anyhow::{self, Context};
 use log::debug;
 use nix::sys::stat::SFlag;
@@ -12,12 +14,17 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::io::RawFd;
 use std::time::Duration;
 use std::{mem, ptr, slice};
+use utilities::{Cast, OverflowArithmetic};
 
-use super::protocol::*;
+use super::protocol::{
+    FuseAttr, FuseAttrOut, FuseBMapOut, FuseDirEnt, FuseEntryOut, FuseFileLock, FuseGetXAttrOut,
+    FuseInitOut, FuseKStatFs, FuseLockOut, FuseOpenOut, FuseOutHeader, FuseStatFsOut, FuseWriteOut,
+};
 
 // TODO: remove it
+/// Build file mode from `SFlag` and file permission
 fn mode_from_kind_and_perm(kind: SFlag, perm: u16) -> u32 {
-    let file_type: u32 = (match kind {
+    let file_type: u32 = match kind {
         SFlag::S_IFIFO => libc::S_IFIFO,
         SFlag::S_IFCHR => libc::S_IFCHR,
         SFlag::S_IFBLK => libc::S_IFBLK,
@@ -26,27 +33,35 @@ fn mode_from_kind_and_perm(kind: SFlag, perm: u16) -> u32 {
         SFlag::S_IFLNK => libc::S_IFLNK,
         SFlag::S_IFSOCK => libc::S_IFSOCK,
         _ => panic!("unknown SFlag type={:?}", kind),
-    })
-    .into();
+    };
     let file_perm: u32 = perm.into();
     file_type | file_perm
 }
 
+/// The FUSE response data
 #[derive(Debug)]
 enum ToBytes<T> {
+    /// The response data is a structure, will be converted to bytes
     Struct(T),
+    /// The response data is bytes
     Bytes(Vec<u8>),
+    /// The response data is error code
     Error,
 }
 
+/// FUSE raw response
 #[derive(Debug)]
 struct ReplyRaw<T: Send + Sync + 'static> {
+    /// The FUSE request unique ID
     unique: u64,
+    /// The FUSE device fd
     fd: RawFd,
+    /// The phantom data
     marker: PhantomData<T>,
 }
 
 impl<T: Send + Sync + 'static> ReplyRaw<T> {
+    /// Create `ReplyRaw`
     fn new(unique: u64, fd: RawFd) -> Self {
         Self {
             unique,
@@ -55,6 +70,7 @@ impl<T: Send + Sync + 'static> ReplyRaw<T> {
         }
     }
 
+    /// Send response to FUSE kernel
     async fn send(self, to_bytes: ToBytes<T>, err: c_int) -> anyhow::Result<usize> {
         let fd = self.fd;
         let wsize = blocking!(
@@ -69,7 +85,7 @@ impl<T: Send + Sync + 'static> ReplyRaw<T> {
                     let bytes = match len {
                         0 => &[],
                         len => {
-                            let p = &instance as *const T as *const u8;
+                            let p = utilities::cast_to_ptr(&instance);
                             unsafe { slice::from_raw_parts(p, len) }
                         }
                     };
@@ -87,21 +103,21 @@ impl<T: Send + Sync + 'static> ReplyRaw<T> {
             };
             let header_len = mem::size_of::<FuseOutHeader>();
             let header = FuseOutHeader {
-                len: (header_len + data_len) as u32,
-                error: -err, // FUSE requires the error number to be negative
+                len: (header_len.overflow_add(data_len)).cast(),
+                error: err.overflow_neg(), // FUSE requires the error number to be negative
                 unique: self.unique,
             };
-            let h = &header as *const FuseOutHeader as *const u8;
+            let h = utilities::cast_to_ptr(&header);
             let header_bytes = unsafe { slice::from_raw_parts(h, header_len) };
             let iovecs: Vec<_> = if data_len > 0 {
                 vec![IoVec::from_slice(header_bytes), IoVec::from_slice(bytes)]
             } else {
                 vec![IoVec::from_slice(header_bytes)]
             };
-            if !send_error {
-                debug_assert_eq!(err, 0);
-            } else {
+            if send_error {
                 debug_assert_ne!(err, 0);
+            } else {
+                debug_assert_eq!(err, 0);
             }
             uio::writev(fd, &iovecs).context(format!(
                 "failed to send to FUSE, the reply header is: {:?}", header,
@@ -112,6 +128,7 @@ impl<T: Send + Sync + 'static> ReplyRaw<T> {
         Ok(wsize)
     }
 
+    /// Send byte array response to FUSE
     async fn send_bytes(self, byte_vec: Vec<u8>) -> anyhow::Result<()> {
         let _reply_size = self
             .send(ToBytes::Bytes(byte_vec), 0)
@@ -120,6 +137,7 @@ impl<T: Send + Sync + 'static> ReplyRaw<T> {
         Ok(())
     }
 
+    /// Send structure response to FUSE
     async fn send_data(self, instance: T) -> anyhow::Result<()> {
         let _reply_size = self
             .send(ToBytes::Struct(instance), 0)
@@ -128,6 +146,7 @@ impl<T: Send + Sync + 'static> ReplyRaw<T> {
         Ok(())
     }
 
+    /// Send error response to FUSE
     async fn send_error(self, err: c_int) -> anyhow::Result<()> {
         let _reply_size = self
             .send(ToBytes::Error, err)
@@ -137,17 +156,22 @@ impl<T: Send + Sync + 'static> ReplyRaw<T> {
     }
 }
 
+/// FUSE init response
 #[derive(Debug)]
-pub(crate) struct ReplyInit {
+pub struct ReplyInit {
+    /// The inner raw reply
     reply: ReplyRaw<FuseInitOut>,
 }
 
 impl ReplyInit {
-    pub fn new(unique: u64, fd: RawFd) -> ReplyInit {
-        ReplyInit {
+    /// Create `ReplyInit`
+    pub fn new(unique: u64, fd: RawFd) -> Self {
+        Self {
             reply: ReplyRaw::new(unique, fd),
         }
     }
+
+    /// Reply init response
     pub async fn init(
         self,
         major: u32,
@@ -190,60 +214,80 @@ impl ReplyInit {
             })
             .await
     }
+
+    /// Reply with error response
     pub async fn error(self, err: c_int) -> anyhow::Result<()> {
         self.reply.send_error(err).await
     }
 }
 
+/// FUSE empty response
 #[derive(Debug)]
-pub(crate) struct ReplyEmpty {
+pub struct ReplyEmpty {
+    /// The inner raw reply
     reply: ReplyRaw<()>,
 }
 
 impl ReplyEmpty {
-    pub fn new(unique: u64, fd: RawFd) -> ReplyEmpty {
-        ReplyEmpty {
+    /// Create `ReplyEmpty`
+    pub fn new(unique: u64, fd: RawFd) -> Self {
+        Self {
             reply: ReplyRaw::new(unique, fd),
         }
     }
+
+    /// Reply with empty OK response
     pub async fn ok(self) -> anyhow::Result<()> {
         self.reply.send_data(()).await
     }
+
+    /// Reply with error response
     pub async fn error(self, err: c_int) -> anyhow::Result<()> {
         self.reply.send_error(err).await
     }
 }
 
+/// FUSE data response
 #[derive(Debug)]
-pub(crate) struct ReplyData {
+pub struct ReplyData {
+    /// The inner raw reply
     reply: ReplyRaw<Vec<u8>>,
 }
 
 impl ReplyData {
-    pub fn new(unique: u64, fd: RawFd) -> ReplyData {
-        ReplyData {
+    /// Create `ReplyData`
+    pub fn new(unique: u64, fd: RawFd) -> Self {
+        Self {
             reply: ReplyRaw::new(unique, fd),
         }
     }
+
+    /// Reply with byte data repsonse
     pub async fn data(self, bytes: Vec<u8>) -> anyhow::Result<()> {
         self.reply.send_bytes(bytes).await
     }
+
+    /// Reply with error response
     pub async fn error(self, err: c_int) -> anyhow::Result<()> {
         self.reply.send_error(err).await
     }
 }
 
+/// FUSE entry response
 #[derive(Debug)]
-pub(crate) struct ReplyEntry {
+pub struct ReplyEntry {
+    /// The inner raw reply
     reply: ReplyRaw<FuseEntryOut>,
 }
 
 impl ReplyEntry {
-    pub fn new(unique: u64, fd: RawFd) -> ReplyEntry {
-        ReplyEntry {
+    /// Create `ReplyEntry`
+    pub fn new(unique: u64, fd: RawFd) -> Self {
+        Self {
             reply: ReplyRaw::new(unique, fd),
         }
     }
+
     /// Reply to a request with the given entry
     pub async fn entry(self, ttl: Duration, attr: FuseAttr, generation: u64) -> anyhow::Result<()> {
         self.reply
@@ -265,14 +309,17 @@ impl ReplyEntry {
     }
 }
 
+/// FUSE attribute response
 #[derive(Debug)]
-pub(crate) struct ReplyAttr {
+pub struct ReplyAttr {
+    /// The inner raw reply
     reply: ReplyRaw<FuseAttrOut>,
 }
 
 impl ReplyAttr {
-    pub fn new(unique: u64, fd: RawFd) -> ReplyAttr {
-        ReplyAttr {
+    /// Create `ReplyAttr`
+    pub fn new(unique: u64, fd: RawFd) -> Self {
+        Self {
             reply: ReplyRaw::new(unique, fd),
         }
     }
@@ -294,21 +341,24 @@ impl ReplyAttr {
     }
 }
 
+/// FUSE extended timestamp response
 #[cfg(target_os = "macos")]
 #[derive(Debug)]
-pub(crate) struct ReplyXTimes {
+pub struct ReplyXTimes {
+    /// The inner raw reply
     reply: ReplyRaw<FuseGetXTimesOut>,
 }
 
 #[cfg(target_os = "macos")]
 impl ReplyXTimes {
-    pub fn new(unique: u64, fd: RawFd) -> ReplyXTimes {
-        ReplyXTimes {
+    /// Create `ReplyXTimes`
+    pub fn new(unique: u64, fd: RawFd) -> Self {
+        Self {
             reply: ReplyRaw::new(unique, fd),
         }
     }
+
     /// Reply to a request with the given xtimes
-    // pub async fn xtimes(self, bkuptime: SystemTime, crtime: SystemTime) {
     pub async fn xtimes(
         self,
         bkuptime_secs: u64,
@@ -316,8 +366,6 @@ impl ReplyXTimes {
         crtime_secs: u64,
         crtime_nanos: u32,
     ) -> anyhow::Result<()> {
-        // let (bkuptime_secs, bkuptime_nanos) = time_from_system_time(&bkuptime);
-        // let (crtime_secs, crtime_nanos) = time_from_system_time(&crtime);
         self.reply
             .send_data(FuseGetXTimesOut {
                 bkuptime: bkuptime_secs,
@@ -334,17 +382,21 @@ impl ReplyXTimes {
     }
 }
 
+/// FUSE open response
 #[derive(Debug)]
-pub(crate) struct ReplyOpen {
+pub struct ReplyOpen {
+    /// The inner raw reply
     reply: ReplyRaw<FuseOpenOut>,
 }
 
 impl ReplyOpen {
-    pub fn new(unique: u64, fd: RawFd) -> ReplyOpen {
-        ReplyOpen {
+    /// Create `ReplyOpen`
+    pub fn new(unique: u64, fd: RawFd) -> Self {
+        Self {
             reply: ReplyRaw::new(unique, fd),
         }
     }
+
     /// Reply to a request with the given open result
     pub async fn opened(self, fh: u64, flags: u32) -> anyhow::Result<()> {
         self.reply
@@ -363,17 +415,21 @@ impl ReplyOpen {
     }
 }
 
+/// FUSE write response
 #[derive(Debug)]
-pub(crate) struct ReplyWrite {
+pub struct ReplyWrite {
+    /// The inner raw reply
     reply: ReplyRaw<FuseWriteOut>,
 }
 
 impl ReplyWrite {
-    pub fn new(unique: u64, fd: RawFd) -> ReplyWrite {
-        ReplyWrite {
+    /// Create `ReplyWrite`
+    pub fn new(unique: u64, fd: RawFd) -> Self {
+        Self {
             reply: ReplyRaw::new(unique, fd),
         }
     }
+
     /// Reply to a request with the given open result
     pub async fn written(self, size: u32) -> anyhow::Result<()> {
         self.reply
@@ -382,46 +438,61 @@ impl ReplyWrite {
     }
 
     /// Reply to a request with the given error code
+    #[allow(dead_code)]
     pub async fn error(self, err: c_int) -> anyhow::Result<()> {
         self.reply.send_error(err).await
     }
 }
 
+/// FUSE statfs response
 #[derive(Debug)]
-pub(crate) struct ReplyStatFs {
+pub struct ReplyStatFs {
+    /// The inner raw reply
     reply: ReplyRaw<FuseStatFsOut>,
 }
 
+/// POSIX statvfs parameters
+pub struct StatFsParam {
+    /// The number of blocks in the filesystem
+    pub blocks: u64,
+    /// The number of free blocks
+    pub bfree: u64,
+    /// The number of free blocks for non-priviledge users
+    pub bavail: u64,
+    /// The number of inodes
+    pub files: u64,
+    /// The number of free inodes
+    pub f_free: u64,
+    /// Block size
+    pub bsize: u32,
+    /// Maximum file name length
+    pub namelen: u32,
+    /// Fragment size
+    pub frsize: u32,
+}
+
 impl ReplyStatFs {
-    pub fn new(unique: u64, fd: RawFd) -> ReplyStatFs {
-        ReplyStatFs {
+    /// Create `ReplyStatFs`
+    pub fn new(unique: u64, fd: RawFd) -> Self {
+        Self {
             reply: ReplyRaw::new(unique, fd),
         }
     }
 
+    /// Reply statfs response
     #[allow(dead_code)]
-    pub async fn statfs(
-        self,
-        blocks: u64,
-        bfree: u64,
-        bavail: u64,
-        files: u64,
-        ffree: u64,
-        bsize: u32,
-        namelen: u32,
-        frsize: u32,
-    ) -> anyhow::Result<()> {
+    pub async fn statfs(self, param: StatFsParam) -> anyhow::Result<()> {
         self.reply
             .send_data(FuseStatFsOut {
                 st: FuseKStatFs {
-                    blocks,
-                    bfree,
-                    bavail,
-                    files,
-                    ffree,
-                    bsize,
-                    namelen,
-                    frsize,
+                    blocks: param.blocks,
+                    bfree: param.bfree,
+                    bavail: param.bavail,
+                    files: param.files,
+                    ffree: param.f_free,
+                    bsize: param.bsize,
+                    namelen: param.namelen,
+                    frsize: param.frsize,
                     padding: 0,
                     spare: [0; 6],
                 },
@@ -429,23 +500,27 @@ impl ReplyStatFs {
             .await
     }
 
-    /// Reply to a request with the given error code
+    /// Reply error response
     pub async fn error(self, err: c_int) -> anyhow::Result<()> {
         self.reply.send_error(err).await
     }
 }
 
+/// FUSE create response
 #[derive(Debug)]
-pub(crate) struct ReplyCreate {
+pub struct ReplyCreate {
+    /// The inner raw reply
     reply: ReplyRaw<(FuseEntryOut, FuseOpenOut)>,
 }
 
 impl ReplyCreate {
-    pub fn new(unique: u64, fd: RawFd) -> ReplyCreate {
-        ReplyCreate {
+    /// Create `ReplyCreate`
+    pub fn new(unique: u64, fd: RawFd) -> Self {
+        Self {
             reply: ReplyRaw::new(unique, fd),
         }
     }
+
     /// Reply to a request with the given entry
     #[allow(dead_code)]
     pub async fn created(
@@ -482,17 +557,21 @@ impl ReplyCreate {
     }
 }
 
+/// FUSE lock response
 #[derive(Debug)]
-pub(crate) struct ReplyLock {
+pub struct ReplyLock {
+    /// The inner raw reply
     reply: ReplyRaw<FuseLockOut>,
 }
 
 impl ReplyLock {
-    pub fn new(unique: u64, fd: RawFd) -> ReplyLock {
-        ReplyLock {
+    /// Create `ReplyLock`
+    pub fn new(unique: u64, fd: RawFd) -> Self {
+        Self {
             reply: ReplyRaw::new(unique, fd),
         }
     }
+
     /// Reply to a request with the given open result
     #[allow(dead_code)]
     pub async fn locked(self, start: u64, end: u64, typ: u32, pid: u32) -> anyhow::Result<()> {
@@ -514,17 +593,21 @@ impl ReplyLock {
     }
 }
 
+/// FUSE bmap response
 #[derive(Debug)]
-pub(crate) struct ReplyBMap {
+pub struct ReplyBMap {
+    /// The inner raw reply
     reply: ReplyRaw<FuseBMapOut>,
 }
 
 impl ReplyBMap {
-    pub fn new(unique: u64, fd: RawFd) -> ReplyBMap {
-        ReplyBMap {
+    /// Create `ReplyBMap`
+    pub fn new(unique: u64, fd: RawFd) -> Self {
+        Self {
             reply: ReplyRaw::new(unique, fd),
         }
     }
+
     /// Reply to a request with the given open result
     #[allow(dead_code)]
     pub async fn bmap(self, block: u64) -> anyhow::Result<()> {
@@ -538,16 +621,19 @@ impl ReplyBMap {
     }
 }
 
+/// FUSE directory response
 #[derive(Debug)]
-pub(crate) struct ReplyDirectory {
+pub struct ReplyDirectory {
+    /// The inner raw reply
     reply: ReplyRaw<()>,
+    /// The directory data in bytes
     data: Vec<u8>,
 }
 
 impl ReplyDirectory {
-    /// Creates a new ReplyDirectory with a specified buffer size.
-    pub fn new(unique: u64, fd: RawFd, size: usize) -> ReplyDirectory {
-        ReplyDirectory {
+    /// Creates a new `ReplyDirectory` with a specified buffer size.
+    pub fn new(unique: u64, fd: RawFd, size: usize) -> Self {
+        Self {
             reply: ReplyRaw::new(unique, fd),
             data: Vec::with_capacity(size),
         }
@@ -557,25 +643,27 @@ impl ReplyDirectory {
     /// A transparent offset value can be provided for each entry. The kernel uses these
     /// value to request the next entries in further readdir calls
     pub fn add<T: AsRef<OsStr>>(&mut self, ino: u64, offset: i64, kind: SFlag, name: T) -> bool {
-        let name = name.as_ref().as_bytes();
-        let entlen = mem::size_of::<FuseDirEnt>() + name.len();
-        let entsize = (entlen + mem::size_of::<u64>() - 1) & !(mem::size_of::<u64>() - 1); // 64bit align
-        let padlen = entsize - entlen;
-        if self.data.len() + entsize > self.data.capacity() {
+        let name_bytes = name.as_ref().as_bytes();
+        let entlen = mem::size_of::<FuseDirEnt>().overflow_add(name_bytes.len());
+        let entsize = entlen.overflow_add(mem::size_of::<u64>().overflow_sub(1))
+            & !(mem::size_of::<u64>().overflow_sub(1)); // 64bit align
+        let padlen = entsize.overflow_sub(entlen);
+        if self.data.len().overflow_add(entsize) > self.data.capacity() {
             return true;
         }
+        // TODO: do not use unsafe code
         unsafe {
-            let p = self.data.as_mut_ptr().add(self.data.len());
-            let pdirent: *mut FuseDirEnt = mem::transmute(p);
+            let data_end_ptr = self.data.as_mut_ptr().add(self.data.len());
+            let pdirent: *mut FuseDirEnt = utilities::cast_to_mut_ptr(&mut *data_end_ptr);
             (*pdirent).ino = ino;
-            (*pdirent).off = offset as u64;
-            (*pdirent).namelen = name.len() as u32;
-            (*pdirent).typ = mode_from_kind_and_perm(kind, 0) >> 12;
-            let p = p.add(mem::size_of_val(&*pdirent));
-            ptr::copy_nonoverlapping(name.as_ptr(), p, name.len());
-            let p = p.add(name.len());
-            ptr::write_bytes(p, 0u8, padlen);
-            let newlen = self.data.len() + entsize;
+            (*pdirent).off = offset.cast();
+            (*pdirent).namelen = name_bytes.len().cast();
+            (*pdirent).typ = mode_from_kind_and_perm(kind, 0).overflow_shr(12);
+            let dirent_end_ptr = data_end_ptr.add(mem::size_of_val(&*pdirent));
+            ptr::copy_nonoverlapping(name_bytes.as_ptr(), dirent_end_ptr, name_bytes.len());
+            let name_end_ptr = dirent_end_ptr.add(name_bytes.len());
+            ptr::write_bytes(name_end_ptr, 0_u8, padlen);
+            let newlen = self.data.len().overflow_add(entsize);
             self.data.set_len(newlen);
         }
         false
@@ -587,22 +675,27 @@ impl ReplyDirectory {
     }
 
     /// Reply to a request with the given error code
+    #[allow(dead_code)]
     pub async fn error(self, err: c_int) -> anyhow::Result<()> {
         self.reply.send_error(err).await
     }
 }
 
+/// FUSE extended attribute response
 #[derive(Debug)]
-pub(crate) struct ReplyXAttr {
+pub struct ReplyXAttr {
+    /// The inner raw reply
     reply: ReplyRaw<FuseGetXAttrOut>,
 }
 
 impl ReplyXAttr {
-    pub fn new(unique: u64, fd: RawFd) -> ReplyXAttr {
-        ReplyXAttr {
+    /// Create `ReplyXAttr`
+    pub fn new(unique: u64, fd: RawFd) -> Self {
+        Self {
             reply: ReplyRaw::new(unique, fd),
         }
     }
+
     /// Reply to a request with the size of the xattr.
     #[allow(dead_code)]
     pub async fn size(self, size: u32) -> anyhow::Result<()> {
@@ -629,12 +722,15 @@ mod test {
     use super::super::byte_slice::ByteSlice;
     use super::super::protocol::{FuseAttr, FuseAttrOut, FuseOutHeader};
     use super::ReplyAttr;
+
+    use anyhow::Context;
     use futures::prelude::*;
     use nix::fcntl::{self, OFlag};
     use nix::sys::stat::Mode;
     use nix::unistd::{self, Whence};
     use smol::{self, blocking};
     use std::fs::File;
+    use std::os::unix::io::FromRawFd;
     use std::time::Duration;
 
     #[test]
@@ -670,20 +766,20 @@ mod test {
             let ino = 64;
             let size = 64;
             let blocks = 64;
-            let atime = 64;
-            let mtime = 64;
-            let ctime = 64;
+            let a_time = 64;
+            let m_time = 64;
+            let c_time = 64;
             #[cfg(target_os = "macos")]
             let crtime = 64;
-            let atimensec = 32;
-            let mtimensec = 32;
-            let ctimensec = 32;
+            let a_timensec = 32;
+            let m_timensec = 32;
+            let c_timensec = 32;
             #[cfg(target_os = "macos")]
             let crtimensec = 32;
             let mode = 32;
             let nlink = 32;
             let uid = 32;
-            let gid = 32;
+            let g_id = 32;
             let rdev = 32;
             #[cfg(target_os = "macos")]
             let flags = 32;
@@ -695,20 +791,20 @@ mod test {
                 ino,
                 size,
                 blocks,
-                atime,
-                mtime,
-                ctime,
+                atime: a_time,
+                mtime: m_time,
+                ctime: c_time,
                 #[cfg(target_os = "macos")]
                 crtime,
-                atimensec,
-                mtimensec,
-                ctimensec,
+                atimensec: a_timensec,
+                mtimensec: m_timensec,
+                ctimensec: c_timensec,
                 #[cfg(target_os = "macos")]
                 crtimensec,
                 mode,
                 nlink,
                 uid,
-                gid,
+                gid: g_id,
                 rdev,
                 #[cfg(target_os = "macos")]
                 flags,
@@ -724,7 +820,6 @@ mod test {
 
             // let file = blocking!(File::open(file_name))?;
             blocking!(unistd::lseek(fd, 0, Whence::SeekSet))?;
-            use std::os::unix::io::FromRawFd;
             let file = blocking!(unsafe { File::from_raw_fd(fd) });
             let mut file = smol::reader(file);
             let mut bytes = Vec::new();
@@ -734,16 +829,16 @@ mod test {
             aligned_bytes.copy_from_slice(&bytes);
 
             let mut bs = ByteSlice::new(&aligned_bytes);
-            let foh: &FuseOutHeader = bs.fetch().unwrap();
-            let fao: &FuseAttrOut = bs.fetch().unwrap();
+            let foh: &FuseOutHeader = bs.fetch().context("failed to fetch FuseOutHeader")?;
+            let fao: &FuseAttrOut = bs.fetch().context("failed to fetch FuseAttrOut")?;
 
             dbg!(foh, fao);
             debug_assert_eq!(fao.attr.ino, ino);
             debug_assert_eq!(fao.attr.size, size);
             debug_assert_eq!(fao.attr.blocks, blocks);
-            debug_assert_eq!(fao.attr.atime, atime);
-            debug_assert_eq!(fao.attr.mtime, mtime);
-            debug_assert_eq!(fao.attr.ctime, ctime);
+            debug_assert_eq!(fao.attr.mtime, m_time);
+            debug_assert_eq!(fao.attr.atime, a_time);
+            debug_assert_eq!(fao.attr.ctime, c_time);
             Ok(())
         })
     }

@@ -10,25 +10,23 @@ use super::super::{mount, session::Session};
 pub const DEFAULT_MOUNT_DIR: &str = "../fuse_test";
 pub const FILE_CONTENT: &str = "0123456789ABCDEF";
 
-pub fn setup(mount_path: impl AsRef<Path>) -> anyhow::Result<JoinHandle<()>> {
+pub fn setup(mount_dir: &Path) -> anyhow::Result<JoinHandle<()>> {
     env_logger::init();
-    let mut mount_dir = mount_path.as_ref().to_path_buf();
-    mount_dir = smol::block_on(async move {
-        let result = mount::umount(&mount_dir).await;
-        if result.is_ok() {
-            debug!("umounted {:?} before setup", mount_dir);
-        }
-        mount_dir
-    });
-
     if mount_dir.exists() {
+        smol::block_on(async move {
+            let result = mount::umount(mount_dir).await;
+            if result.is_ok() {
+                debug!("umounted {:?} before setup", mount_dir);
+            }
+        });
+
         fs::remove_dir_all(&mount_dir)?;
     }
     fs::create_dir_all(&mount_dir)?;
     let abs_root_path = fs::canonicalize(&mount_dir)?;
 
     let fs_task = Task::spawn(async move {
-        async fn run_fs(mount_point: impl AsRef<Path>) -> anyhow::Result<()> {
+        async fn run_fs(mount_point: &Path) -> anyhow::Result<()> {
             let ss = Session::new(mount_point).await?;
             ss.run().await?;
             Ok(())
@@ -51,17 +49,22 @@ pub fn setup(mount_path: impl AsRef<Path>) -> anyhow::Result<JoinHandle<()>> {
     Ok(th)
 }
 
-pub fn teardown(mount_dir: impl AsRef<Path>, th: JoinHandle<()>) -> anyhow::Result<()> {
+pub fn teardown(mount_dir: &Path, th: JoinHandle<()>) -> anyhow::Result<()> {
     info!("begin teardown");
     let seconds = 1;
     debug!("sleep {} seconds for teardown", seconds);
     thread::sleep(Duration::new(seconds, 0));
 
     smol::block_on(async {
-        mount::umount(&mount_dir).await.unwrap(); // TODO: remove unwrap()
+        mount::umount(mount_dir).await.unwrap_or_else(|err| {
+            panic!("failed to un-mount {:?}, the error is: {}", mount_dir, err,)
+        });
     });
     let abs_mount_path = fs::canonicalize(mount_dir)?;
     fs::remove_dir_all(&abs_mount_path)?;
-    th.join().unwrap(); // TODO: remove unwrap()
+
+    #[allow(box_pointers)] // thread join result involves box point
+    th.join()
+        .unwrap_or_else(|_| panic!("failed to wait the test setup thread to finish"));
     Ok(())
 }

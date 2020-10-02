@@ -27,7 +27,7 @@ memchr = "2.3.3"
 nix = "0.17.0"
 pin-project-lite ="0.1.7"
 smol = "0.1.11"
-utilities = { git = "https://github.com/datenlord/utilities" }
+utilities = { git = "https://github.com/datenlord/utilities", rev = "506eb3f" }
 
 [features]
 abi-7-9 = []

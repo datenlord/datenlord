@@ -1,3 +1,5 @@
+//! The implementation of FUSE mount and un-mount
+
 use anyhow::{self, Context};
 use log::{debug, info};
 use nix::fcntl::{self, OFlag};
@@ -5,32 +7,42 @@ use nix::sys::stat::{self, Mode};
 use smol::blocking;
 use std::ffi::CString;
 use std::fs;
-use std::os::raw::c_void;
 use std::os::unix::io::RawFd;
 use std::path::Path;
 
-use param::*;
+// use param::*;
 
+/// Linux mount flags, check the following link for details
+/// <https://github.com/torvalds/linux/blob/master/include/uapi/linux/mount.h#L11>
 #[cfg(target_os = "linux")]
 mod param {
-    // https://github.com/torvalds/linux/blob/master/include/uapi/linux/mount.h#L11
     // TODO: use mount flags from libc
-    // pub const MS_RDONLY: u64 = 1; // Mount read-only
-    pub const MS_NOSUID: u64 = 2; // Ignore suid and sgid bits
-    pub const MS_NODEV: u64 = 4; // Disallow access to device special files
-    pub const MNT_FORCE: i32 = 1; // Force un-mount
+    // /// Mount read-only
+    // pub const MS_RDONLY: u64 = 1;
+    /// Ignore suid and sgid bits
+    pub const MS_NOSUID: u64 = 2;
+    /// Disallow access to device special files
+    pub const MS_NODEV: u64 = 4;
+    /// Force un-mount
+    pub const MNT_FORCE: i32 = 1;
 }
-
+/// macOS mount flags, check the link for details
+/// <https://github.com/apple/darwin-xnu/blob/master/bsd/sys/mount.h#L288>
 #[cfg(target_os = "macos")]
 mod param {
-    // https://github.com/apple/darwin-xnu/blob/master/bsd/sys/mount.h#L288
     // TODO: use mount flags from libc
-    // pub const MNT_RDONLY: i32 = 0x00000001; // read only filesystem
-    pub const MNT_NOSUID: i32 = 0x00000008; // don't honor setuid bits on fs
-    pub const MNT_NODEV: i32 = 0x00000010; // don't interpret special files
-    pub const MNT_FORCE: i32 = 0x00080000; // force unmount or readonly change
-    pub const MNT_NOUSERXATTR: i32 = 0x01000000; // Don't allow user extended attributes
-    pub const MNT_NOATIME: i32 = 0x10000000; // disable update of file access time
+    // /// read only filesystem
+    // pub const MNT_RDONLY: i32 = 0x00000001;
+    /// don't honor setuid bits on fs
+    pub const MNT_NOSUID: i32 = 0x00000008;
+    /// don't interpret special files
+    pub const MNT_NODEV: i32 = 0x00000010;
+    /// force unmount or readonly change
+    pub const MNT_FORCE: i32 = 0x00080000;
+    /// Don't allow user extended attributes
+    pub const MNT_NOUSERXATTR: i32 = 0x01000000;
+    /// disable update of file access time
+    pub const MNT_NOATIME: i32 = 0x10000000;
 
     pub const PAGE_SIZE: u32 = 4096;
 
@@ -46,12 +58,13 @@ mod param {
     pub const FUSE_MOPT_FSNAME: u64 = 0x0000000000001000;
     pub const FUSE_MOPT_NO_APPLEXATTR: u64 = 0x0000000000800000;
 
-    use libc::size_t;
-    pub const MFSTYPENAMELEN: size_t = 16; // length of fs type name including null
-    pub const MAXPATHLEN: size_t = 1024; //PATH_MAX
+    /// length of fs type name including null
+    pub const MFSTYPENAMELEN: lib::size_t = 16;
+    ///PATH_MAX
+    pub const MAXPATHLEN: size_t = 1024;
 
     #[repr(C)]
-    pub(crate) struct FuseMountArgs {
+    pub struct FuseMountArgs {
         pub mntpath: [u8; MAXPATHLEN],        // path to the mount point
         pub fsname: [u8; MAXPATHLEN],         // file system description string
         pub fstypename: [u8; MFSTYPENAMELEN], // file system type name
@@ -67,22 +80,23 @@ mod param {
     }
 }
 
+/// Linux un-mount
 #[cfg(target_os = "linux")]
-pub async fn umount(short_path: impl AsRef<Path>) -> anyhow::Result<()> {
+pub async fn umount(short_path: &Path) -> anyhow::Result<()> {
     use nix::unistd;
     use std::process::Command;
 
-    let mount_path = short_path.as_ref().to_path_buf();
+    let mount_path = short_path.to_path_buf();
     blocking!(
         let mntpnt = mount_path.as_os_str();
 
         if unistd::geteuid().is_root() {
             // direct umount
             #[cfg(target_arch = "aarch64")]
-            let result = unsafe { libc::umount2(mntpnt as *const _ as *const u8, MNT_FORCE) };
+            let result = unsafe { libc::umount2(utilities::cast_to_ptr(mntpnt), MNT_FORCE) };
             #[cfg(target_arch = "x86_64")]
             let result =
-                unsafe { libc::umount2(mntpnt as *const _ as *const u8 as *const i8, MNT_FORCE) };
+                unsafe { libc::umount2(utilities::cast_to_ptr(mntpnt), param::MNT_FORCE) };
 
             if result == 0 {
                 Ok(())
@@ -98,7 +112,7 @@ pub async fn umount(short_path: impl AsRef<Path>) -> anyhow::Result<()> {
                 .arg("-uz") // lazy umount
                 .arg(mntpnt)
                 .output()
-                .expect("fusermount command failed to start");
+                .context("fusermount command failed to start")?;
             if umount_handle.status.success() {
                 Ok(())
             } else {
@@ -113,8 +127,9 @@ pub async fn umount(short_path: impl AsRef<Path>) -> anyhow::Result<()> {
     )
 }
 
+/// Linux mount
 #[cfg(target_os = "linux")]
-pub async fn mount(mount_point: impl AsRef<Path>) -> anyhow::Result<RawFd> {
+pub async fn mount(mount_point: &Path) -> anyhow::Result<RawFd> {
     use nix::unistd;
 
     if unistd::geteuid().is_root() {
@@ -126,8 +141,9 @@ pub async fn mount(mount_point: impl AsRef<Path>) -> anyhow::Result<RawFd> {
     }
 }
 
+/// Linux fusermount
 #[cfg(target_os = "linux")]
-async fn fuser_mount(mount_point: impl AsRef<Path>) -> anyhow::Result<RawFd> {
+async fn fuser_mount(mount_point: &Path) -> anyhow::Result<RawFd> {
     use nix::cmsg_space;
     use nix::sys::socket::{
         self, AddressFamily, ControlMessageOwned, MsgFlags, SockFlag, SockType,
@@ -135,7 +151,7 @@ async fn fuser_mount(mount_point: impl AsRef<Path>) -> anyhow::Result<RawFd> {
     use nix::sys::uio::IoVec;
     use std::process::Command;
 
-    let mount_path = mount_point.as_ref().to_path_buf();
+    let mount_path = mount_point.to_path_buf();
 
     let (local, remote) = blocking!(socket::socketpair(
         AddressFamily::Unix,
@@ -161,37 +177,51 @@ async fn fuser_mount(mount_point: impl AsRef<Path>) -> anyhow::Result<RawFd> {
     );
     info!(
         "fusermount path={:?} to FUSE device successfully!",
-        mount_point.as_ref(),
+        mount_point,
     );
 
     blocking!(
-        let mut buf = [0u8; 5];
+        let mut buf = [0_u8; 5];
         let iov = [IoVec::from_mut_slice(&mut buf[..])];
+
+        #[allow(clippy::integer_arithmetic)]
         let mut cmsgspace = cmsg_space!([RawFd; 1]);
         let msg = socket::recvmsg(local, &iov, Some(&mut cmsgspace), MsgFlags::empty())
             .context("failed to receive from fusermount")?;
 
-        let mut mount_fd = -1;
-        for cmsg in msg.cmsgs() {
-            if let ControlMessageOwned::ScmRights(fd) = cmsg {
-                debug_assert_eq!(fd.len(), 1);
-                mount_fd = fd[0];
+        let mount_fd = if let Some(cmsg) = msg.cmsgs().next() {
+            if let ControlMessageOwned::ScmRights(fds) = cmsg {
+                debug_assert_eq!(fds.len(), 1);
+                *fds.get(0).unwrap_or_else(|| panic!("failed to get the only fd"))
             } else {
-                panic!("unexpected cmsg");
+                panic!("unexpected cmsg")
             }
-        }
+        } else {
+            panic!("failed to get cmsgs")
+        };
 
-        debug_assert_ne!(mount_fd, -1);
+        // let mut mount_fd = -1;
+        // for cmsg in msg.cmsgs() {
+        //     if let ControlMessageOwned::ScmRights(fd) = cmsg {
+        //         debug_assert_eq!(fd.len(), 1);
+        //         mount_fd = fd[0];
+        //     } else {
+        //         panic!("unexpected cmsg");
+        //     }
+        // }
+
+        // debug_assert_ne!(mount_fd, -1);
         Ok(mount_fd)
     )
 }
 
+/// Linux directly mount
 #[cfg(target_os = "linux")]
-async fn direct_mount(mount_point: impl AsRef<Path>) -> anyhow::Result<RawFd> {
+async fn direct_mount(mount_point: &Path) -> anyhow::Result<RawFd> {
     use nix::sys::stat::SFlag;
     use nix::unistd;
 
-    let mount_point = mount_point.as_ref().to_path_buf();
+    let mount_point = mount_point.to_path_buf();
 
     let devpath = Path::new("/dev/fuse");
 
@@ -199,13 +229,14 @@ async fn direct_mount(mount_point: impl AsRef<Path>) -> anyhow::Result<RawFd> {
         .context("failed to open fuse device")?;
 
     let full_path = blocking!(fs::canonicalize(mount_point))?;
-    let cstr_path = full_path
+    let path_str = full_path
         .to_str()
-        .expect("full mount path to string failed");
+        .context("full mount path to string failed")?;
 
-    let mntpath = CString::new(cstr_path).expect("CString::new failed");
-    let fstype = CString::new("fuse").expect("CString::new failed");
-    let fsname = CString::new("/dev/fuse").expect("CString::new failed");
+    let mntpath =
+        CString::new(path_str).context(format!("CString::new(path_str={}) failed", path_str))?;
+    let fstype = CString::new("fuse").context("CString::new failed")?;
+    let fsname = CString::new("/dev/fuse").context("CString::new failed")?;
 
     let mnt_sb =
         blocking!(stat::stat(&full_path)).context("failed to get the file stat of mount point")?;
@@ -215,17 +246,18 @@ async fn direct_mount(mount_point: impl AsRef<Path>) -> anyhow::Result<RawFd> {
         dev_fd,
         mnt_sb.st_mode & SFlag::S_IFMT.bits(),
         unistd::getuid().as_raw(),
-        unistd::getgid().as_raw()
+        unistd::getgid().as_raw(),
     );
-    let opts = CString::new(&*opts).expect("CString::new failed");
+    let opts =
+        CString::new(opts.as_str()).context(format!("CString::new(opts={}) failed", opts))?;
     debug!("direct mount opts={:?}", &opts);
     blocking!(
         let result = unsafe { libc::mount(
             fsname.as_ptr(),
             mntpath.as_ptr(),
             fstype.as_ptr(),
-            MS_NOSUID | MS_NODEV,
-            opts.as_ptr() as *const c_void,
+            param::MS_NOSUID | param::MS_NODEV,
+            utilities::cast_to_ptr(&*opts.as_ptr()),
         )};
         if result == 0 {
             info!("mount path={:?} to FUSE device={:?} successfully!", mntpath, devpath);
@@ -247,12 +279,13 @@ async fn direct_mount(mount_point: impl AsRef<Path>) -> anyhow::Result<RawFd> {
     )
 }
 
-#[cfg(any(target_os = "macos"))]
+/// macOS un-mount
+#[cfg(target_os = "macos")]
 pub async fn umount(mount_point: impl AsRef<Path>) -> nix::Result<()> {
     let mntpnt = mount_point.as_ref().to_path_buf();
     blocking!(
         let mntpnt = mntpnt.as_os_str();
-        let res = unsafe { libc::unmount(mntpnt as *const _ as *const u8 as *const i8, MNT_FORCE) };
+        let res = unsafe { libc::unmount(utilities::cast_to_ptr(mntpnt), MNT_FORCE) };
         if res < 0 {
             Err(nix::Error::last())
         } else {
@@ -261,7 +294,8 @@ pub async fn umount(mount_point: impl AsRef<Path>) -> nix::Result<()> {
     )
 }
 
-#[cfg(any(target_os = "macos"))]
+/// macOS mount
+#[cfg(target_os = "macos")]
 pub async fn mount(mount_point: impl AsRef<Path>) -> anyhow::Result<RawFd> {
     let mount_point = mount_point.as_ref().to_path_buf();
     let devpath = Path::new("/dev/osxfuse1");
@@ -278,7 +312,7 @@ pub async fn mount(mount_point: impl AsRef<Path>) -> anyhow::Result<RawFd> {
     let drandom = blocking!(
         let mut drandom: u32 = 0;
         nix::ioctl_read!(fuse_read_random, FUSE_IOC_MAGIC, FUSE_IOC_TYPE_MODE, u32);
-        let result = unsafe { fuse_read_random(fd, &mut drandom as *mut _)? };
+        let result = unsafe { fuse_read_random(fd, utilities::cast_to_mut_ptr(&mut drandom))? };
         debug_assert_eq!(result, 0);
         debug!("successfully read drandom={}", drandom);
         Ok::<_, anyhow::Error>(drandom)
@@ -343,7 +377,7 @@ pub async fn mount(mount_point: impl AsRef<Path>) -> anyhow::Result<RawFd> {
                 fstype.as_ptr(),
                 mntpath.as_ptr(),
                 MNT_NOSUID | MNT_NODEV | MNT_NOUSERXATTR | MNT_NOATIME,
-                &mut mnt_args as *mut _ as *mut c_void,
+                utilities::cast_to_mut_ptr(&mut mnt_args),
             )
         };
         if result == 0 {

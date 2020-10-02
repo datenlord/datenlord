@@ -1,3 +1,5 @@
+//! The implementation of user space file system
+
 use anyhow::{self, Context};
 use libc::{EEXIST, EINVAL, ENODATA, ENOENT, ENOSYS, ENOTEMPTY};
 use log::debug;
@@ -7,30 +9,83 @@ use nix::unistd;
 use smol::blocking;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::{OsStr, OsString};
-use std::os::unix::io::{FromRawFd, IntoRawFd, RawFd};
+use std::os::unix::io::{FromRawFd, IntoRawFd};
 use std::path::Path;
 use std::time::{Duration, SystemTime};
+use utilities::{Cast, OverflowArithmetic};
 
-use super::fuse_reply::*;
-use super::fuse_request::*;
+use super::fuse_reply::{
+    ReplyAttr, ReplyBMap, ReplyCreate, ReplyData, ReplyDirectory, ReplyEmpty, ReplyEntry,
+    ReplyLock, ReplyOpen, ReplyStatFs, ReplyWrite, ReplyXAttr,
+};
+use super::fuse_request::Request;
 use super::protocol::{INum, FUSE_ROOT_ID};
 
 mod dir;
 mod node;
 mod util;
-use dir::*;
-use node::*;
+use dir::DirEntry;
+use node::Node;
 
+/// The time-to-live seconds of FUSE attributes
 const MY_TTL_SEC: u64 = 3600; // TODO: should be a long value, say 1 hour
+/// The generation ID of FUSE attributes
 const MY_GENERATION: u64 = 1; // TODO: find a proper way to set generation
 
+/// File system in-memory meta-data
 #[derive(Debug)]
-pub(crate) struct FileSystem {
+pub struct FileSystem {
+    /// The cache to hold opened directories and files
     cache: BTreeMap<INum, Node>,
+    /// The trash to hold deferred deleted directories and files
     trash: BTreeSet<INum>,
 }
 
+/// Set attribute parameters
+pub struct SetAttrParam {
+    /// File handler
+    pub fh: Option<u64>,
+    /// File mode
+    pub mode: Option<u32>,
+    /// User ID
+    pub u_id: Option<u32>,
+    /// Group ID
+    pub g_id: Option<u32>,
+    /// File size
+    pub size: Option<u64>,
+    /// Access time
+    pub a_time: Option<SystemTime>,
+    /// Content modified time
+    pub m_time: Option<SystemTime>,
+    /// Creation time, macOS only
+    pub crtime: Option<SystemTime>,
+    /// macOS only
+    pub chgtime: Option<SystemTime>,
+    /// Backup time, macOS only
+    pub bkuptime: Option<SystemTime>,
+    /// See chflags(2)
+    pub flags: Option<u32>,
+}
+
+/// POSIX file lock parameters
+#[derive(Debug)]
+pub struct FileLockParam {
+    /// File hander
+    pub fh: u64,
+    /// Lock owner
+    pub lock_owner: u64,
+    /// Start offset
+    pub start: u64,
+    /// End offset
+    pub end: u64,
+    /// Lock type
+    pub typ: u32,
+    /// The process ID of the lock
+    pub pid: u32,
+}
+
 impl FileSystem {
+    /// Helper function to create node
     async fn create_node_helper(
         &mut self,
         parent: u64,
@@ -40,14 +95,14 @@ impl FileSystem {
         reply: ReplyEntry,
     ) -> anyhow::Result<()> {
         // pre-check
-        let parent_node = self.cache.get_mut(&parent);
-        debug_assert!(
-            parent_node.is_some(),
-            "create_node_helper() found fs is inconsistent, \
-                parent of ino={} should be in cache before create it new child",
-            parent,
-        );
-        let parent_node = parent_node.unwrap(); // safe to use unwrap() here
+        let parent_node = self.cache.get_mut(&parent).unwrap_or_else(|| {
+            panic!(
+                "create_node_helper() found fs is inconsistent, \
+                    parent of ino={} should be in cache before create it new child",
+                parent,
+            );
+        });
+
         if let Some(occupied) = parent_node.get_entry(&node_name) {
             debug!(
                 "create_node_helper() found the directory of ino={} \
@@ -60,7 +115,7 @@ impl FileSystem {
             return Ok(());
         }
         // all checks are passed, ready to create new node
-        let mflags = util::parse_mode(mode);
+        let m_flags = util::parse_mode(mode);
         let new_ino: u64;
         let node_name_clone = node_name.clone();
         let new_node = match node_type {
@@ -68,19 +123,19 @@ impl FileSystem {
                 debug!(
                     "create_node_helper() about to \
                         create a directory with name={:?}, mode={:?}",
-                    node_name, mflags,
+                    node_name, m_flags,
                 );
-                parent_node.create_child_dir(node_name, mflags).await?
+                parent_node.create_child_dir(node_name, m_flags).await?
             }
             SFlag::S_IFREG => {
-                let oflags = OFlag::O_CREAT | OFlag::O_EXCL | OFlag::O_RDWR;
+                let o_flags = OFlag::O_CREAT | OFlag::O_EXCL | OFlag::O_RDWR;
                 debug!(
                     "helper_create_node() about to \
                         create a file with name={:?}, oflags={:?}, mode={:?}",
-                    node_name, oflags, mflags,
+                    node_name, o_flags, m_flags,
                 );
                 parent_node
-                    .create_child_file(node_name, oflags, mflags)
+                    .create_child_file(node_name, o_flags, m_flags)
                     .await?
             }
             _ => panic!(
@@ -103,21 +158,20 @@ impl FileSystem {
         Ok(())
     }
 
+    /// Helper function to delete or deferred delete node
     async fn may_deferred_delete_node_helper(&mut self, ino: u64) -> anyhow::Result<()> {
         let parent_ino: u64;
         let node_name: OsString;
         let mut deferred_deletion = false;
         {
             // pre-check whether deferred delete or not
-            let node = self.cache.get(&ino);
-            debug_assert!(
-                node.is_some(),
-                "may_deferred_delete_node_helper() failed to \
+            let node = self.cache.get(&ino).unwrap_or_else(|| {
+                panic!(
+                    "may_deferred_delete_node_helper() failed to \
                         find the i-node of ino={} to remove",
-                ino,
-            );
-            let node = node.unwrap(); // safe to use unwrap() here
-
+                    ino,
+                );
+            });
             parent_ino = node.get_parent_ino();
             node_name = node.get_name().into();
 
@@ -129,16 +183,13 @@ impl FileSystem {
         }
         {
             // remove entry from parent i-node
-            let parent_node = self.cache.get_mut(&parent_ino);
-            debug_assert!(
-                parent_node.is_some(),
-                "helper_get_parent_inode() failed to \
+            let parent_node = self.cache.get_mut(&parent_ino).unwrap_or_else(|| {
+                panic!(
+                    "helper_get_parent_inode() failed to \
                         find the parent of ino={} for i-node of ino={}",
-                parent_ino,
-                ino,
-            );
-            let parent_node = parent_node.unwrap(); // safe to use unwrap() here
-
+                    parent_ino, ino,
+                );
+            });
             let node_name_clone = node_name.clone();
             let deleted_entry = parent_node.unlink_entry(node_name).await?;
             debug_assert_eq!(&node_name_clone, deleted_entry.entry_name());
@@ -148,7 +199,13 @@ impl FileSystem {
         if deferred_deletion {
             // deferred deletion
             // TODO: support thread-safe
-            let node = self.cache.get(&ino).unwrap(); // safe to use unwrap() here
+            let node = self.cache.get(&ino).unwrap_or_else(|| {
+                panic!(
+                    "impossible case, may_deferred_delete_node_helper() \
+                        should already find the i-node of ino={} to remove",
+                    ino,
+                );
+            });
             let insert_result = self.trash.insert(ino); // check thread-safe in case of deferred deletion race
             debug_assert!(
                 insert_result,
@@ -167,7 +224,13 @@ impl FileSystem {
             );
         } else {
             // immediate deletion
-            let inode = self.cache.remove(&ino).unwrap(); // TODO: support thread-safe
+            let inode = self.cache.remove(&ino).unwrap_or_else(|| {
+                panic!(
+                    "impossible case, may_deferred_delete_node_helper() \
+                    should remove the i-node of ino={} immediately",
+                    ino,
+                );
+            }); // TODO: support thread-safe
             debug!(
                 "may_deferred_delete_node_helper() immediately removed \
                     the node name={:?} of ino={} under parent ino={}, \
@@ -182,6 +245,7 @@ impl FileSystem {
         Ok(())
     }
 
+    /// Helper function to remove node
     async fn remove_node_helper(
         &mut self,
         parent: u64,
@@ -192,14 +256,13 @@ impl FileSystem {
         let node_ino: u64;
         {
             // pre-checks
-            let parent_node = self.cache.get(&parent);
-            debug_assert!(
-                parent_node.is_some(),
-                "remove_node_helper() found fs is inconsistent, \
+            let parent_node = self.cache.get(&parent).unwrap_or_else(|| {
+                panic!(
+                    "remove_node_helper() found fs is inconsistent, \
                         parent of ino={} should be in cache before remove its child",
-                parent,
-            );
-            let parent_node = parent_node.unwrap(); // safe to use unwrap() here
+                    parent,
+                );
+            });
             match parent_node.get_entry(&node_name) {
                 None => {
                     debug!(
@@ -214,18 +277,15 @@ impl FileSystem {
                     node_ino = child_entry.ino();
                     if let SFlag::S_IFDIR = node_type {
                         // check the directory to delete is empty
-                        let dir_node = self.cache.get(&node_ino);
-                        debug_assert!(
-                            dir_node.is_some(),
-                            "remove_node_helper() found fs is inconsistent, \
+                        let dir_node = self.cache.get(&node_ino).unwrap_or_else(|| {
+                            panic!(
+                                "remove_node_helper() found fs is inconsistent, \
                                     directory name={:?} of ino={} \
                                     found under the parent of ino={}, \
                                     but no i-node found for this directory",
-                            node_name,
-                            node_ino,
-                            parent,
-                        );
-                        let dir_node = dir_node.unwrap(); // safe to use unwrap() here
+                                node_name, node_ino, parent,
+                            );
+                        });
                         if !dir_node.is_node_data_empty() {
                             debug!(
                                 "remove_node_helper() cannot remove \
@@ -263,26 +323,38 @@ impl FileSystem {
         }
     }
 
-    pub async fn new(full_mount_path: impl AsRef<Path>) -> anyhow::Result<FileSystem> {
-        let root_path = full_mount_path.as_ref();
-        let root_inode =
-            Node::open_root_node(FUSE_ROOT_ID, OsString::from("/"), &root_path).await?;
+    /// Create `FileSystem`
+    pub async fn new(root_path: &Path) -> anyhow::Result<Self> {
+        let root_inode = Node::open_root_node(FUSE_ROOT_ID, OsString::from("/"), root_path).await?;
         let mut cache = BTreeMap::new();
         cache.insert(FUSE_ROOT_ID, root_inode);
         let trash = BTreeSet::new(); // for deferred deletion
 
-        Ok(FileSystem { cache, trash })
+        Ok(Self { cache, trash })
     }
 
     /// Initialize filesystem.
     /// Called before any other filesystem method.
-    pub fn init(&mut self, _req: &Request<'_>) -> anyhow::Result<()> {
+    pub fn init(&self, req: &Request<'_>) -> anyhow::Result<()> {
+        debug!(
+            "init(req={:?}), cache size={}, trash size={}",
+            req,
+            self.cache.len(),
+            self.trash.len(),
+        );
         Ok(())
     }
 
     /// Clean up filesystem.
     /// Called on filesystem exit.
-    pub fn destroy(&mut self, _req: &Request<'_>) {}
+    pub fn destroy(&self, req: &Request<'_>) {
+        debug!(
+            "destroy(req={:?}), cache size={}, trash size={}",
+            req,
+            self.cache.len(),
+            self.trash.len(),
+        );
+    }
 
     /// Look up a directory entry by name and get its attributes.
     pub async fn lookup(
@@ -298,33 +370,29 @@ impl FileSystem {
             parent, child_name, req,
         );
 
-        let ino: u64;
+        let ino: INum;
         let child_type: SFlag;
         {
             // lookup child ino and type first
-            let parent_node = self.cache.get(&parent);
-            debug_assert!(
-                parent_node.is_some(),
-                "lookup() found fs is inconsistent, \
+            let parent_node = self.cache.get(&parent).unwrap_or_else(|| {
+                panic!(
+                    "lookup() found fs is inconsistent, \
                         the parent i-node of ino={} should be in cache",
-                parent
-            );
-            let parent_node = parent_node.unwrap(); // safe to use unwrap() here
-            match parent_node.get_entry(&child_name) {
-                Some(child_entry) => {
-                    ino = child_entry.ino();
-                    child_type = child_entry.entry_type();
-                }
-                None => {
-                    reply.error(ENOENT).await?;
-                    debug!(
-                        "lookup() failed to find the file name={:?} \
-                            under parent directory of ino={}",
-                        child_name, parent
-                    );
-                    // lookup() didn't find anything, this is normal
-                    return Ok(());
-                }
+                    parent,
+                );
+            });
+            if let Some(child_entry) = parent_node.get_entry(&child_name) {
+                ino = child_entry.ino();
+                child_type = child_entry.entry_type();
+            } else {
+                reply.error(ENOENT).await?;
+                debug!(
+                    "lookup() failed to find the file name={:?} \
+                        under parent directory of ino={}",
+                    child_name, parent
+                );
+                // lookup() didn't find anything, this is normal
+                return Ok(());
             }
         }
 
@@ -355,14 +423,13 @@ impl FileSystem {
                     and file name={:?} of ino={}",
                 parent, child_name, ino,
             );
-            let parent_node = self.cache.get_mut(&parent);
-            debug_assert!(
-                parent_node.is_some(),
-                "lookup() found fs is inconsistent, \
+            let parent_node = self.cache.get_mut(&parent).unwrap_or_else(|| {
+                panic!(
+                    "lookup() found fs is inconsistent, \
                         parent i-node of ino={} should be in cache",
-                parent,
-            );
-            let parent_node = parent_node.unwrap(); // safe to use unwrap() here
+                    parent,
+                );
+            });
             let child_node = match child_type {
                 SFlag::S_IFDIR => parent_node.open_child_dir(child_name).await?,
                 SFlag::S_IFREG => {
@@ -387,22 +454,17 @@ impl FileSystem {
     }
 
     /// Get file attributes.
-    pub async fn getattr(
-        &mut self,
-        req: &Request<'_>,
-        ino: INum,
-        reply: ReplyAttr,
-    ) -> anyhow::Result<()> {
+    pub async fn getattr(&mut self, req: &Request<'_>, reply: ReplyAttr) -> anyhow::Result<()> {
+        let ino = req.nodeid();
         debug!("getattr(ino={}, req={:?})", ino, req);
 
-        let node = self.cache.get(&ino);
-        debug_assert!(
-            node.is_some(),
-            "getattr() found fs is inconsistent, \
+        let node = self.cache.get(&ino).unwrap_or_else(|| {
+            panic!(
+                "getattr() found fs is inconsistent, \
                     the i-node of ino={} should be in cache",
-            ino,
-        );
-        let node = node.unwrap(); // safe to use unwrap() here
+                ino,
+            );
+        });
         let attr = node.get_attr();
         debug!(
             "getattr() cache hit when searching the attribute of ino={}",
@@ -419,32 +481,31 @@ impl FileSystem {
     }
 
     /// Open a file.
-    /// Open flags (with the exception of O_CREAT, O_EXCL, O_NOCTTY and O_TRUNC) are
+    /// Open flags (with the exception of `O_CREAT`, `O_EXCL`, `O_NOCTTY` and `O_TRUNC`) are
     /// available in flags. Filesystem may store an arbitrary file handle (pointer, index,
     /// etc) in fh, and use this in other all other file operations (read, write, flush,
     /// release, fsync). Filesystem may also implement stateless file I/O and not store
-    /// anything in fh. There are also some flags (direct_io, keep_cache) which the
-    /// filesystem may set, to change the way the file is opened. See fuse_file_info
-    /// structure in <fuse_common.h> for more details.
+    /// anything in fh. There are also some flags (`direct_io`, `keep_cache`) which the
+    /// filesystem may set, to change the way the file is opened. See `fuse_file_info`
+    /// structure in `fuse_common.h` for more details.
     pub async fn open(
         &mut self,
         req: &Request<'_>,
-        ino: INum,
         flags: u32,
         reply: ReplyOpen,
     ) -> anyhow::Result<()> {
+        let ino = req.nodeid();
         debug!("open(ino={}, flags={}, req={:?})", ino, flags, req);
 
-        let node = self.cache.get(&ino);
-        debug_assert!(
-            node.is_some(),
-            "open() found fs is inconsistent, the i-node of ino={} should be in cache",
-            ino,
-        );
-        let node = node.unwrap(); // safe to use unwrap() here
-        let oflags = util::parse_oflag(flags);
-        let new_fd = node.dup_fd(oflags).await?;
-        reply.opened(new_fd as u64, flags).await?;
+        let node = self.cache.get(&ino).unwrap_or_else(|| {
+            panic!(
+                "open() found fs is inconsistent, the i-node of ino={} should be in cache",
+                ino,
+            );
+        });
+        let o_flags = util::parse_oflag(flags);
+        let new_fd = node.dup_fd(o_flags).await?;
+        reply.opened(new_fd.cast(), flags).await?;
         debug!(
             "open() successfully duplicated the file handler of ino={}, fd={}, flags={:?}",
             ino, new_fd, flags,
@@ -459,22 +520,22 @@ impl FileSystem {
     /// each forget. The filesystem may ignore forget calls, if the inodes don't need to
     /// have a limited lifetime. On unmount it is not guaranteed, that all referenced
     /// inodes will receive a forget message.
-    pub fn forget(&mut self, req: &Request<'_>, ino: u64, nlookup: u64) {
+    pub fn forget(&mut self, req: &Request<'_>, nlookup: u64) {
+        let ino = req.nodeid();
         debug!("forget(ino={}, nlookup={}, req={:?})", ino, nlookup, req,);
         let current_count: i64;
         {
-            let node = self.cache.get(&ino);
-            debug_assert!(
-                node.is_some(),
-                "forget() found fs is inconsistent, \
+            let node = self.cache.get(&ino).unwrap_or_else(|| {
+                panic!(
+                    "forget() found fs is inconsistent, \
                         the i-node of ino={} should be in cache",
-                ino,
-            );
-            let node = node.unwrap(); // safe to use unwrap() here
+                    ino,
+                );
+            });
             let previous_count = node.dec_lookup_count_by(nlookup);
             current_count = node.get_lookup_count();
             debug_assert!(current_count >= 0);
-            debug_assert_eq!(previous_count - current_count, nlookup as i64); // assert no race forget
+            debug_assert_eq!(previous_count.overflow_sub(current_count), nlookup.cast()); // assert no race forget
             debug!(
                 "forget() successfully reduced lookup count of ino={} from {} to {}",
                 ino, previous_count, current_count,
@@ -485,14 +546,13 @@ impl FileSystem {
                 // TODO: support thread-safe
                 if self.trash.contains(&ino) {
                     // deferred deletion
-                    let deleted_node = self.cache.remove(&ino);
-                    debug_assert!(
-                        deleted_node.is_some(),
-                        "forget() found fs is inconsistent, node of ino={} \
+                    let deleted_node = self.cache.remove(&ino).unwrap_or_else(|| {
+                        panic!(
+                            "forget() found fs is inconsistent, node of ino={} \
                                 found in trash, but no i-node found for deferred deletion",
-                        ino,
-                    );
-                    let deleted_node = deleted_node.unwrap(); // safe to use unwrap() here
+                            ino,
+                        );
+                    });
                     self.trash.remove(&ino);
                     debug_assert_eq!(deleted_node.get_lookup_count(), 0);
                     debug!(
@@ -508,36 +568,36 @@ impl FileSystem {
     pub async fn setattr(
         &mut self,
         req: &Request<'_>,
-        ino: u64,
-        mode: Option<u32>,
-        uid: Option<u32>,
-        gid: Option<u32>,
-        size: Option<u64>,
-        atime: Option<SystemTime>,
-        mtime: Option<SystemTime>,
-        fh: Option<u64>,
-        crtime: Option<SystemTime>,
-        chgtime: Option<SystemTime>,
-        bkuptime: Option<SystemTime>,
-        flags: Option<u32>,
+        param: SetAttrParam,
         reply: ReplyAttr,
     ) -> anyhow::Result<()> {
+        let ino = req.nodeid();
+        let fh = param.fh;
+        let mode = param.mode;
+        let u_id = param.u_id;
+        let g_id = param.g_id;
+        let size = param.size;
+        let a_time = param.a_time;
+        let m_time = param.m_time;
+        let crtime = param.crtime;
+        let chgtime = param.chgtime;
+        let bkuptime = param.bkuptime;
+        let flags = param.flags;
         debug!(
             "setattr(ino={}, mode={:?}, uid={:?}, gid={:?}, size={:?}, \
                 atime={:?}, mtime={:?}, fh={:?}, crtime={:?}, chgtime={:?}, \
                 bkuptime={:?}, flags={:?}, req={:?})",
-            ino, mode, uid, gid, size, atime, mtime, fh, crtime, chgtime, bkuptime, flags, req,
+            ino, mode, u_id, g_id, size, a_time, m_time, fh, crtime, chgtime, bkuptime, flags, req,
         );
 
-        let node = self.cache.get_mut(&ino);
-        debug_assert!(
-            node.is_some(),
-            "setattr() found fs is inconsistent, \
+        let i_node = self.cache.get_mut(&ino).unwrap_or_else(|| {
+            panic!(
+                "setattr() found fs is inconsistent, \
                     the i-node of ino={} should be in cache",
-            ino,
-        );
-        let node = node.unwrap(); // safe to use unwrap() here
-        let mut attr = node.get_attr();
+                ino,
+            );
+        });
+        let mut attr = i_node.get_attr();
         let ttl = Duration::new(MY_TTL_SEC, 0);
         let ts = SystemTime::now();
 
@@ -549,20 +609,20 @@ impl FileSystem {
             debug_assert_eq!(kind, attr.kind);
         }
         // no replace
-        attr.uid = uid.unwrap_or(attr.uid);
-        attr.gid = gid.unwrap_or(attr.gid);
+        attr.uid = u_id.unwrap_or(attr.uid);
+        attr.gid = g_id.unwrap_or(attr.gid);
         attr.size = size.unwrap_or(attr.size);
-        attr.atime = atime.unwrap_or(attr.atime);
-        attr.mtime = mtime.unwrap_or(attr.mtime);
+        attr.atime = a_time.unwrap_or(attr.atime);
+        attr.mtime = m_time.unwrap_or(attr.mtime);
         attr.crtime = crtime.unwrap_or(attr.crtime);
         attr.flags = flags.unwrap_or(attr.flags);
 
         if mode.is_some()
-            || uid.is_some()
-            || gid.is_some()
+            || u_id.is_some()
+            || g_id.is_some()
             || size.is_some()
-            || atime.is_some()
-            || mtime.is_some()
+            || a_time.is_some()
+            || m_time.is_some()
             || crtime.is_some()
             || chgtime.is_some()
             || bkuptime.is_some()
@@ -570,7 +630,7 @@ impl FileSystem {
         {
             attr.ctime = ts; // update ctime, since meta data might change in setattr
             let fuse_attr = util::convert_to_fuse_attr(attr)?;
-            node.set_attr(attr);
+            i_node.set_attr(attr);
             reply.attr(ttl, fuse_attr).await?;
             debug!(
                 "setattr() successfully set the attribute of ino={}, the set attr={:?}",
@@ -589,12 +649,7 @@ impl FileSystem {
     }
 
     /// Read symbolic link.
-    pub async fn readlink(
-        &mut self,
-        _req: &Request<'_>,
-        _ino: u64,
-        reply: ReplyData,
-    ) -> anyhow::Result<()> {
+    pub async fn readlink(&mut self, _req: &Request<'_>, reply: ReplyData) -> anyhow::Result<()> {
         reply.error(ENOSYS).await
     }
 
@@ -695,7 +750,6 @@ impl FileSystem {
     pub async fn link(
         &mut self,
         _req: &Request<'_>,
-        _ino: u64,
         _newparent: u64,
         _newname: &OsStr,
         reply: ReplyEntry,
@@ -706,37 +760,57 @@ impl FileSystem {
     /// Read data.
     /// Read should send exactly the number of bytes requested except on EOF or error,
     /// otherwise the rest of the data will be substituted with zeroes. An exception to
-    /// this is when the file has been opened in 'direct_io' mode, in which case the
+    /// this is when the file has been opened in `direct_io` mode, in which case the
     /// return value of the read system call will reflect the return value of this
     /// operation. fh will contain the value set by the open method, or will be undefined
     /// if the open method didn't set any value.
     pub async fn read(
         &mut self,
         req: &Request<'_>,
-        ino: u64,
         fh: u64,
         offset: i64,
         size: u32,
         reply: ReplyData,
     ) -> anyhow::Result<()> {
+        let ino = req.nodeid();
         debug!(
             "read(ino={}, fh={}, offset={}, size={}, req={:?})",
             ino, fh, offset, size, req,
         );
+        debug_assert!(
+            !offset.is_negative(),
+            "offset={} cannot be negative",
+            offset
+        );
 
         let read_helper = |content: &Vec<u8>| -> anyhow::Result<Vec<u8>> {
-            match content.len().cmp(&(offset as usize)) {
+            match content.len().cmp(&(offset.cast())) {
                 std::cmp::Ordering::Greater => {
-                    let read_data = if ((offset + size as i64) as usize) <= content.len() {
+                    let read_data = if offset.overflow_add(size.cast()).cast::<usize>()
+                        <= content.len()
+                    {
                         debug!("read exact {} bytes", size);
-                        &content[(offset as usize)..(offset + size as i64) as usize]
+                        content
+                            .get(offset.cast()..offset.overflow_add(size.cast()).cast::<usize>())
+                            .ok_or_else(|| {
+                                anyhow::anyhow!(
+                                    "failed to get file content from offset={} and size={}",
+                                    offset,
+                                    size,
+                                )
+                            })?
                     } else {
                         debug!(
                             "read {} bytes only, less than expected size={}",
-                            ((offset + size as i64) as usize) - content.len(),
+                            offset
+                                .overflow_add(size.cast())
+                                .cast::<usize>()
+                                .overflow_sub(content.len()),
                             size,
                         );
-                        &content[(offset as usize)..]
+                        content.get(offset.cast()..).ok_or_else(|| {
+                            anyhow::anyhow!("failed to get file content from offset={}", offset)
+                        })?
                     };
                     // TODO: consider zero copy
                     Ok(read_data.to_vec())
@@ -757,13 +831,13 @@ impl FileSystem {
             }
         };
 
-        let node = self.cache.get_mut(&ino);
-        debug_assert!(
-            node.is_some(),
-            "read() found fs is inconsistent, the i-node of ino={} should be in cache",
-            ino,
-        );
-        let node = node.unwrap(); // safe to use unwrap() here
+        let node = self.cache.get_mut(&ino).unwrap_or_else(|| {
+            panic!(
+                "read() found fs is inconsistent, \
+                    the i-node of ino={} should be in cache",
+                ino,
+            );
+        });
         if node.need_load_file_data() {
             node.load_data().await?;
         }
@@ -790,20 +864,20 @@ impl FileSystem {
 
     /// Write data.
     /// Write should return exactly the number of bytes requested except on error. An
-    /// exception to this is when the file has been opened in 'direct_io' mode, in
+    /// exception to this is when the file has been opened in `direct_io` mode, in
     /// which case the return value of the write system call will reflect the return
     /// value of this operation. fh will contain the value set by the open method, or
-    /// will be undefined if the open method didn't set any value.
+    /// will be undefined if the open method did not set any value.
     pub async fn write(
         &mut self,
-        _req: &Request<'_>,
-        ino: u64,
+        req: &Request<'_>,
         fh: u64,
         offset: i64,
         data: Vec<u8>,
         flags: u32,
         reply: ReplyWrite,
     ) -> anyhow::Result<()> {
+        let ino = req.nodeid();
         debug!(
             "write(ino={}, fh={}, offset={}, data-size={}, flags={})",
             // "write(ino={}, fh={}, offset={}, data-size={}, req={:?})",
@@ -815,21 +889,20 @@ impl FileSystem {
             // req.request,
         );
 
-        let inode = self.cache.get_mut(&ino);
-        debug_assert!(
-            inode.is_some(),
-            "write() found fs is inconsistent, \
+        let inode = self.cache.get_mut(&ino).unwrap_or_else(|| {
+            panic!(
+                "write() found fs is inconsistent, \
                     the i-node of ino={} should be in cache",
-            ino,
-        );
-        let inode = inode.unwrap(); // safe to use unwrap() here
-        let oflags = util::parse_oflag(flags);
+                ino,
+            );
+        });
+        let o_flags = util::parse_oflag(flags);
         let write_to_disk = true;
         let data_len = data.len();
         let written_size = inode
-            .write_file(fh, offset, data, oflags, write_to_disk)
+            .write_file(fh, offset, data, o_flags, write_to_disk)
             .await?;
-        reply.written(written_size as u32).await?;
+        reply.written(written_size.cast()).await?;
         debug!(
             "write() successfully wrote {} byte data to file ino={} at offset={}",
             data_len, ino, offset,
@@ -840,21 +913,21 @@ impl FileSystem {
     /// Flush method.
     /// This is called on each close() of the opened file. Since file descriptors can
     /// be duplicated (dup, dup2, fork), for one open call there may be many flush
-    /// calls. Filesystems shouldn't assume that flush will always be called after some
+    /// calls. Filesystems should not assume that flush will always be called after some
     /// writes, or that if will be called at all. fh will contain the value set by the
-    /// open method, or will be undefined if the open method didn't set any value.
+    /// open method, or will be undefined if the open method did not set any value.
     /// NOTE: the name of the method is misleading, since (unlike fsync) the filesystem
     /// is not forced to flush pending writes. One reason to flush data, is if the
     /// filesystem wants to return write errors. If the filesystem supports file locking
-    /// operations (setlk, getlk) it should remove all locks belonging to 'lock_owner'.
+    /// operations (setlk, getlk) it should remove all locks belonging to `lock_owner`.
     pub async fn flush(
         &mut self,
         req: &Request<'_>,
-        ino: u64,
         fh: u64,
         lock_owner: u64,
         reply: ReplyEmpty,
     ) -> anyhow::Result<()> {
+        let ino = req.nodeid();
         debug!(
             "flush(ino={}, fh={}, lock_owner={}, req={:?})",
             ino, fh, lock_owner, req,
@@ -865,7 +938,7 @@ impl FileSystem {
         // called multiple times for an open file, this must not really
         // close the file.  This is important if used on a network
         // filesystem like NFS which flush the data/metadata on close()
-        let new_fd = blocking!(unistd::dup(fh as RawFd)).context(format!(
+        let new_fd = blocking!(unistd::dup(fh.cast())).context(format!(
             "flush() failed to duplicate the handler ino={} fh={:?}",
             ino, fh,
         ))?;
@@ -887,27 +960,26 @@ impl FileSystem {
     pub async fn release(
         &mut self,
         req: &Request<'_>,
-        ino: u64,
         fh: u64,
         flags: u32, // same as the open flags
         lock_owner: u64,
         flush: bool,
         reply: ReplyEmpty,
     ) {
+        let ino = req.nodeid();
         debug!(
             "release(ino={}, fh={}, flags={}, lock_owner={}, flush={}, req={:?})",
             ino, fh, flags, lock_owner, flush, req,
         );
         // TODO: handle lock_owner
-        let node = self.cache.get(&ino);
-        debug_assert!(
-            node.is_some(),
-            "release() found fs is inconsistent, \
+        let node = self.cache.get(&ino).unwrap_or_else(|| {
+            panic!(
+                "release() found fs is inconsistent, \
                     the i-node of ino={} should be in cache",
-            ino,
-        );
-        let node = node.unwrap(); // safe to use unwrap() here
-        let fd = fh as RawFd;
+                ino,
+            );
+        });
+        let fd = fh.cast();
         if flush {
             // TODO: double check the meaning of the flush flag
             blocking!(unistd::fsync(fd))
@@ -920,16 +992,19 @@ impl FileSystem {
             )
         });
         node.dec_open_count(); // decrease open count before reply in case reply failed
-        reply
-            .ok()
-            .await
-            .expect("release() failed to send the FUSE reply");
+        reply.ok().await.unwrap_or_else(|err| {
+            panic!(
+                "release() failed to send the FUSE reply, the error is: {}",
+                err,
+            )
+        });
         debug!(
             "release() successfully closed the file handler={} of ino={}",
             fh, ino,
         );
     }
 
+    /// Helper function of fsync
     async fn fsync_helper(
         ino: u64,
         fh: u64,
@@ -940,12 +1015,12 @@ impl FileSystem {
         {
             // attributes are not allowed on if expressions
             if datasync {
-                blocking!(unistd::fdatasync(fh as RawFd)).context(format!(
+                blocking!(unistd::fdatasync(fh.cast())).context(format!(
                     "fsync_helper() failed to flush the node of ino={}",
                     ino
                 ))?;
             } else {
-                blocking!(unistd::fsync(fh as RawFd)).context(format!(
+                blocking!(unistd::fsync(fh.cast())).context(format!(
                     "fsync_helper() failed to flush the node of ino={}",
                     ino
                 ))?;
@@ -953,7 +1028,7 @@ impl FileSystem {
         }
         #[cfg(target_os = "macos")]
         {
-            blocking!(unistd::fsync(fh as RawFd)).context(format!(
+            blocking!(unistd::fsync(fh.cast())).context(format!(
                 "fsync_helper() failed to flush the node of ino={}",
                 ino
             ))?;
@@ -973,16 +1048,16 @@ impl FileSystem {
     pub async fn fsync(
         &mut self,
         req: &Request<'_>,
-        ino: u64,
         fh: u64,
         datasync: bool,
         reply: ReplyEmpty,
     ) -> anyhow::Result<()> {
+        let ino = req.nodeid();
         debug!(
             "fsync(ino={}, fh={}, datasync={}, req={:?})",
             ino, fh, datasync, req,
         );
-        FileSystem::fsync_helper(ino, fh, datasync, reply).await
+        Self::fsync_helper(ino, fh, datasync, reply).await
     }
 
     /// Open a directory.
@@ -995,26 +1070,27 @@ impl FileSystem {
     pub async fn opendir(
         &mut self,
         req: &Request<'_>,
-        ino: u64,
         flags: u32,
         reply: ReplyOpen,
     ) -> anyhow::Result<()> {
+        let ino = req.nodeid();
         debug!("opendir(ino={}, flags={}, req={:?})", ino, flags, req,);
 
-        let node = self.cache.get(&ino);
-        debug_assert!(
-            node.is_some(),
-            "opendir() found fs is inconsistent, the i-node of ino={} should be in cache",
-            ino,
-        );
-        let node = node.unwrap(); // safe to use unwrap() here
-        let oflags = util::parse_oflag(flags);
-        let new_fd = node.dup_fd(oflags).await?;
+        let node = self.cache.get(&ino).unwrap_or_else(|| {
+            panic!(
+                "opendir() found fs is inconsistent, \
+                    the i-node of ino={} should be in cache",
+                ino,
+            );
+        });
 
-        reply.opened(new_fd as u64, flags).await?;
+        let o_flags = util::parse_oflag(flags);
+        let new_fd = node.dup_fd(o_flags).await?;
+
+        reply.opened(new_fd.cast(), flags).await?;
         debug!(
             "opendir() successfully duplicated the file handler of ino={}, new fd={}, flags={:?}",
-            ino, new_fd, oflags,
+            ino, new_fd, o_flags,
         );
         Ok(())
     }
@@ -1027,11 +1103,11 @@ impl FileSystem {
     pub async fn readdir(
         &mut self,
         req: &Request<'_>,
-        ino: u64,
         fh: u64,
         offset: i64,
         mut reply: ReplyDirectory,
     ) -> anyhow::Result<()> {
+        let ino = req.nodeid();
         debug!(
             "readdir(ino={}, fh={}, offset={}, req={:?})",
             ino, fh, offset, req,
@@ -1039,21 +1115,21 @@ impl FileSystem {
 
         let readdir_helper = |data: &BTreeMap<OsString, DirEntry>| -> usize {
             let mut num_child_entries = 0;
-            for (i, (child_name, child_entry)) in data.iter().enumerate().skip(offset as usize) {
+            for (i, (child_name, child_entry)) in data.iter().enumerate().skip(offset.cast()) {
                 let child_ino = child_entry.ino();
                 reply.add(
                     child_ino,
-                    offset + i as i64 + 1, // i + 1 means the index of the next entry
+                    offset.overflow_add(i.cast()).overflow_add(1), // i + 1 means the index of the next entry
                     child_entry.entry_type(),
                     child_name,
                 );
-                num_child_entries += 1;
+                num_child_entries = num_child_entries.overflow_add(1);
                 debug!(
                     "readdir() found one child name={:?} ino={} offset={} entry={:?} \
                         under the directory of ino={}",
                     child_name,
                     child_ino,
-                    offset + i as i64 + 1,
+                    offset.overflow_add(i.cast()).overflow_add(1),
                     child_entry,
                     ino,
                 );
@@ -1061,14 +1137,13 @@ impl FileSystem {
             num_child_entries
         };
 
-        let node = self.cache.get(&ino);
-        debug_assert!(
-            node.is_some(),
-            "readdir() found fs is inconsistent, \
+        let node = self.cache.get(&ino).unwrap_or_else(|| {
+            panic!(
+                "readdir() found fs is inconsistent, \
                     the i-node of ino={} should be in cache",
-            ino,
-        );
-        let node = node.unwrap(); // safe to use unwrap() here
+                ino,
+            );
+        });
         let num_child_entries = node.read_dir(readdir_helper);
         reply.ok().await?;
         debug!(
@@ -1083,38 +1158,33 @@ impl FileSystem {
     /// For every opendir call there will be exactly one releasedir call. fh will
     /// contain the value set by the opendir method, or will be undefined if the
     /// opendir method didn't set any value.
-    pub async fn releasedir(
-        &mut self,
-        req: &Request<'_>,
-        ino: u64,
-        fh: u64,
-        flags: u32,
-        reply: ReplyEmpty,
-    ) {
+    pub async fn releasedir(&mut self, req: &Request<'_>, fh: u64, flags: u32, reply: ReplyEmpty) {
+        let ino = req.nodeid();
         debug!(
             "releasedir(ino={}, fh={}, flags={}, req={:?})",
             ino, fh, flags, req,
         );
         // TODO: handle flags
-        let node = self.cache.get(&ino);
-        debug_assert!(
-            node.is_some(),
-            "releasedir() found fs is inconsistent, \
+        let node = self.cache.get(&ino).unwrap_or_else(|| {
+            panic!(
+                "releasedir() found fs is inconsistent, \
                     the i-node of ino={} should be in cache",
-            ino,
-        );
-        let node = node.unwrap(); // safe to use unwrap() here
-        blocking!(unistd::close(fh as RawFd)).unwrap_or_else(|_| {
+                ino,
+            );
+        });
+        blocking!(unistd::close(fh.cast())).unwrap_or_else(|_| {
             panic!(
                 "releasedir() failed to close the file handler={} of ino={}",
                 fh, ino
             )
         });
         node.dec_open_count();
-        reply
-            .ok()
-            .await
-            .expect("releasedir() failed to send the FUSE reply");
+        reply.ok().await.unwrap_or_else(|err| {
+            panic!(
+                "releasedir() failed to send the FUSE reply, the error is: {}",
+                err,
+            );
+        });
         debug!(
             "releasedir() successfully closed the file handler={} of ino={}",
             fh, ino,
@@ -1128,46 +1198,41 @@ impl FileSystem {
     pub async fn fsyncdir(
         &mut self,
         req: &Request<'_>,
-        ino: u64,
         fh: u64,
         datasync: bool,
         reply: ReplyEmpty,
     ) -> anyhow::Result<()> {
+        let ino = req.nodeid();
         debug!(
             "fsyncdir(ino={}, fh={}, datasync={}, req={:?})",
             ino, fh, datasync, req,
         );
-        FileSystem::fsync_helper(ino, fh, datasync, reply).await
+        Self::fsync_helper(ino, fh, datasync, reply).await
     }
 
     /// Get file system statistics.
-    /// The 'f_favail', 'f_fsid' and 'f_flag' fields are ignored
-    pub async fn statfs(
-        &mut self,
-        req: &Request<'_>,
-        mut ino: u64,
-        reply: ReplyStatFs,
-    ) -> anyhow::Result<()> {
+    /// The `f_favail`, `f_fsid` and `f_flag` fields are ignored
+    pub async fn statfs(&mut self, req: &Request<'_>, reply: ReplyStatFs) -> anyhow::Result<()> {
+        let ino = if req.nodeid() == 0 {
+            FUSE_ROOT_ID
+        } else {
+            req.nodeid()
+        };
         debug!("statfs(ino={}, req={:?})", ino, req);
 
-        if ino == 0 {
-            ino = FUSE_ROOT_ID;
-        }
-
-        let node = self.cache.get(&ino);
-        debug_assert!(
-            node.is_some(),
-            "statfs() found fs is inconsistent, \
+        let node = self.cache.get(&ino).unwrap_or_else(|| {
+            panic!(
+                "statfs() found fs is inconsistent, \
                     the i-node of ino={} should be in cache",
-            ino,
-        );
-        let node = node.unwrap(); // safe to use unwrap() here
+                ino,
+            );
+        });
         let fd = node.get_fd();
         let statvfs = blocking!(
             let file = unsafe { std::fs::File::from_raw_fd(fd) };
-            let res = statvfs::fstatvfs(&file); // statvfs is POSIX, whereas statfs is not
+            let stat_res = statvfs::fstatvfs(&file); // statvfs is POSIX, whereas statfs is not
             let _fd = file.into_raw_fd(); // prevent fd to be closed by File
-            res
+            stat_res
         )
         .context("statfs() failed to run statvfs()")?;
         // reply
@@ -1195,7 +1260,6 @@ impl FileSystem {
     pub async fn setxattr(
         &mut self,
         _req: &Request<'_>,
-        _ino: u64,
         _name: &OsStr,
         _value: &[u8],
         _flags: u32,
@@ -1212,7 +1276,6 @@ impl FileSystem {
     pub async fn getxattr(
         &mut self,
         _req: &Request<'_>,
-        _ino: u64,
         _name: &OsStr,
         _size: u32,
         reply: ReplyXAttr,
@@ -1227,7 +1290,6 @@ impl FileSystem {
     pub async fn listxattr(
         &mut self,
         _req: &Request<'_>,
-        _ino: u64,
         _size: u32,
         reply: ReplyXAttr,
     ) -> anyhow::Result<()> {
@@ -1238,7 +1300,6 @@ impl FileSystem {
     pub async fn removexattr(
         &mut self,
         _req: &Request<'_>,
-        _ino: u64,
         _name: &OsStr,
         reply: ReplyEmpty,
     ) -> anyhow::Result<()> {
@@ -1246,13 +1307,12 @@ impl FileSystem {
     }
 
     /// Check file access permissions.
-    /// This will be called for the access() system call. If the 'default_permissions'
+    /// This will be called for the `access()` system call. If the `default_permissions`
     /// mount option is given, this method is not called. This method is not called
     /// under Linux kernel versions 2.4.x
     pub async fn access(
         &mut self,
         _req: &Request<'_>,
-        _ino: u64,
         _mask: u32,
         reply: ReplyEmpty,
     ) -> anyhow::Result<()> {
@@ -1261,12 +1321,12 @@ impl FileSystem {
 
     /// Create and open a file.
     /// If the file does not exist, first create it with the specified mode, and then
-    /// open it. Open flags (with the exception of O_NOCTTY) are available in flags.
+    /// open it. Open flags (with the exception of `O_NOCTTY`) are available in flags.
     /// Filesystem may store an arbitrary file handle (pointer, index, etc) in fh,
     /// and use this in other all other file operations (read, write, flush, release,
-    /// fsync). There are also some flags (direct_io, keep_cache) which the
-    /// filesystem may set, to change the way the file is opened. See fuse_file_info
-    /// structure in <fuse_common.h> for more details. If this method is not
+    /// fsync). There are also some flags (`direct_io`, `keep_cache`) which the
+    /// filesystem may set, to change the way the file is opened. See `fuse_file_info`
+    /// structure in `fuse_common.h` for more details. If this method is not
     /// implemented or under Linux kernel versions earlier than 2.6.15, the mknod()
     /// and open() methods will be called instead.
     pub async fn create(
@@ -1285,13 +1345,7 @@ impl FileSystem {
     pub async fn getlk(
         &mut self,
         _req: &Request<'_>,
-        _ino: u64,
-        _fh: u64,
-        _lock_owner: u64,
-        _start: u64,
-        _end: u64,
-        _typ: u32,
-        _pid: u32,
+        _lk_param: FileLockParam,
         reply: ReplyLock,
     ) -> anyhow::Result<()> {
         reply.error(ENOSYS).await
@@ -1300,20 +1354,14 @@ impl FileSystem {
     /// Acquire, modify or release a POSIX file lock.
     /// For POSIX threads (NPTL) there's a 1-1 relation between pid and owner, but
     /// otherwise this is not always the case.  For checking lock ownership,
-    /// 'fi->owner' must be used. The l_pid field in 'struct flock' should only be
-    /// used to fill in this field in getlk(). Note: if the locking methods are not
+    /// `fi->owner` must be used. The `l_pid` field in `struct flock` should only be
+    /// used to fill in this field in `getlk()`. Note: if the locking methods are not
     /// implemented, the kernel will still allow file locking to work locally.
     /// Hence these are only interesting for network filesystems and similar.
     pub async fn setlk(
         &mut self,
         _req: &Request<'_>,
-        _ino: u64,
-        _fh: u64,
-        _lock_owner: u64,
-        _start: u64,
-        _end: u64,
-        _typ: u32,
-        _pid: u32,
+        _lk_param: FileLockParam,
         _sleep: bool,
         reply: ReplyEmpty,
     ) -> anyhow::Result<()> {
@@ -1322,11 +1370,10 @@ impl FileSystem {
 
     /// Map block index within file to block index within device.
     /// Note: This makes sense only for block device backed filesystems mounted
-    /// with the 'blkdev' option
+    /// with the `blkdev` option
     pub async fn bmap(
         &mut self,
         _req: &Request<'_>,
-        _ino: u64,
         _blocksize: u32,
         _idx: u64,
         reply: ReplyBMap,
@@ -1334,8 +1381,8 @@ impl FileSystem {
         reply.error(ENOSYS).await
     }
 
-    /// macOS only: Rename the volume. Set fuse_init_out.flags during init to
-    /// FUSE_VOL_RENAME to enable
+    /// macOS only: Rename the volume. Set `fuse_init_out.flags` during init to
+    /// `FUSE_VOL_RENAME` to enable
     #[cfg(target_os = "macos")]
     pub async fn setvolname(
         &mut self,
@@ -1361,13 +1408,12 @@ impl FileSystem {
         reply.error(ENOSYS).await
     }
 
-    /// macOS only: Query extended times (bkuptime and crtime). Set fuse_init_out.flags
-    /// during init to FUSE_XTIMES to enable
+    /// macOS only: Query extended times (`bkuptime` and `crtime`). Set `fuse_init_out.flags`
+    /// during init to `FUSE_XTIMES` to enable
     #[cfg(target_os = "macos")]
     pub async fn getxtimes(
         &mut self,
         _req: &Request<'_>,
-        _ino: u64,
         reply: ReplyXTimes,
     ) -> anyhow::Result<()> {
         reply.error(ENOSYS).await

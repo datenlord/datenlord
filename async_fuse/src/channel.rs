@@ -1,3 +1,5 @@
+//! The implementation of FUSE channel
+
 use anyhow::{anyhow, Context, Result};
 use nix::{
     fcntl::{self, FcntlArg, FdFlag, OFlag},
@@ -6,18 +8,21 @@ use nix::{
     unistd::close,
 };
 use std::os::unix::io::RawFd;
+use utilities::Cast;
 
 use super::session::Session;
 
+/// FUSE channel
 #[derive(Debug)]
-pub(crate) struct Channel {
-    // channel fd cloned from session fd
+pub struct Channel {
+    /// FUSE channel fd cloned from session fd
     chan_fd: RawFd,
 }
 
 impl Channel {
+    /// Create FUSE channel
     #[allow(dead_code)]
-    pub async fn new(session: &Session) -> Result<Channel> {
+    pub async fn new(session: &Session) -> Result<Self> {
         let devname = "/dev/fuse";
         let clonefd = smol::blocking!(fcntl::open(
             devname,
@@ -42,8 +47,8 @@ impl Channel {
         }
 
         ioctl_read!(clone, 229, 0, u32);
-        let masterfd = session.fd();
-        let mut masterfd_u32 = masterfd as u32;
+        let masterfd = session.dev_fd();
+        let mut masterfd_u32 = masterfd.cast();
         let res = smol::blocking!(unsafe { clone(clonefd, &mut masterfd_u32) });
         if let Err(err) = res {
             close(clonefd).context("fuse: failed to close clone device")?;
@@ -53,11 +58,12 @@ impl Channel {
             ));
         }
 
-        Ok(Channel { chan_fd: clonefd })
+        Ok(Self { chan_fd: clonefd })
     }
 
+    /// Get channel fd
     #[allow(dead_code)]
-    pub fn fd(&self) -> RawFd {
+    pub const fn fd(&self) -> RawFd {
         self.chan_fd
     }
 }

@@ -1,6 +1,3 @@
-#![deny(missing_debug_implementations)]
-#![deny(missing_docs)]
-
 //! Inline crate from <https://crates.io/crates/aligned-bytes/0.1.1>
 //!
 //! A continuous fixed-length byte array with a specified alignment.
@@ -16,11 +13,14 @@ use core::ops::{Deref, DerefMut};
 use core::ptr::NonNull;
 use core::slice;
 use std::alloc::{self as alloc_api, Layout};
+use utilities::OverflowArithmetic;
 
 /// A continuous fixed-length byte array with a specified alignment.
 #[derive(Debug)]
 pub struct AlignedBytes {
+    /// Alignment size
     align: usize,
+    /// Byte data
     bytes: NonNull<[u8]>,
 }
 
@@ -36,15 +36,19 @@ impl AlignedBytes {
     pub fn new_zeroed(len: usize, align: usize) -> Self {
         let layout = match Layout::from_size_align(len, align) {
             Ok(layout) => layout,
-            Err(_) => panic!("Invalid layout: size = {}, align = {}", len, align),
+            Err(e) => panic!(
+                "Invalid layout: size = {}, align = {}, the error is: {}",
+                len, align, e
+            ),
         };
         let bytes = unsafe {
             let ptr = alloc_api::alloc_zeroed(layout);
             if ptr.is_null() {
                 alloc_api::handle_alloc_error(layout);
             }
+            let address = std::mem::transmute::<*mut u8, usize>(ptr);
             debug_assert!(
-                (ptr as usize) % align == 0,
+                address.overflow_rem(align) == 0,
                 "pointer = {:p} is not a multiple of alignment = {}",
                 ptr,
                 align
@@ -55,7 +59,8 @@ impl AlignedBytes {
     }
 
     /// Returns the alignment of the byte array.
-    pub fn alignment(&self) -> usize {
+    #[allow(dead_code)]
+    pub const fn alignment(&self) -> usize {
         self.align
     }
 }
@@ -105,7 +110,8 @@ mod tests {
         let align = 4096;
         let bytes = AlignedBytes::new_zeroed(8, align);
         assert_eq!(bytes.alignment(), align);
-        assert!(bytes.as_ptr() as usize % align == 0);
+        let address = unsafe { std::mem::transmute::<*const u8, usize>(bytes.as_ptr()) };
+        assert!(address % align == 0);
     }
 
     #[should_panic(expected = "Invalid layout: size = 1, align = 0")]
@@ -124,6 +130,6 @@ mod tests {
     #[test]
     fn check_layout_overflow() {
         let size = core::mem::size_of::<usize>() * 8;
-        AlignedBytes::new_zeroed((1usize << (size - 1)) + 1, 1usize << (size - 1));
+        AlignedBytes::new_zeroed((1_usize << (size - 1)) + 1, 1_usize << (size - 1));
     }
 }

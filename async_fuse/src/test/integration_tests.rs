@@ -7,6 +7,7 @@ use std::collections::HashSet;
 use std::fs;
 use std::iter;
 use std::path::Path;
+use utilities::OverflowArithmetic;
 
 use super::test_util::{self, DEFAULT_MOUNT_DIR, FILE_CONTENT};
 
@@ -43,7 +44,7 @@ fn test_file_manipulation_nix_way(mount_dir: &Path) -> anyhow::Result<()> {
     );
 
     unistd::lseek(fd, 0, Whence::SeekSet)?;
-    let mut buffer: Vec<u8> = iter::repeat(0u8).take(FILE_CONTENT.len()).collect();
+    let mut buffer: Vec<u8> = iter::repeat(0_u8).take(FILE_CONTENT.len()).collect();
     let read_size = unistd::read(fd, &mut *buffer)?;
     assert_eq!(
         read_size,
@@ -90,27 +91,48 @@ fn test_dir_manipulation_nix_way(mount_dir: &Path) -> anyhow::Result<()> {
     let mut dir_fd = Dir::open(&dir_path, oflags, Mode::empty())?;
     let count = dir_fd
         .iter()
-        .filter(nix::Result::is_ok)
-        .map(|e| -> nix::dir::Entry {
-            e.unwrap() // safe to use unwrap() here
-        })
-        .filter(|e| {
+        .filter_map(nix::Result::ok)
+        .filter_map(|e| {
             let bytes = e.file_name().to_bytes();
-            !bytes.starts_with(&[b'.']) // skip hidden entries, '.' and '..'
-        })
-        .map(|e| -> anyhow::Result<()> {
-            let bytes = e.file_name().to_bytes(); // safe to use unwrap() here
-            let byte_vec = Vec::from(bytes);
-            let str_name = String::from_utf8(byte_vec)?;
-            assert!(
-                sub_dirs.contains(&str_name),
-                "the sub directory name {} should be in the hashmap {:?}",
-                str_name,
-                sub_dirs,
-            );
-            Ok(())
+            if bytes.starts_with(&[b'.']) {
+                // skip hidden entries, '.' and '..'
+                None
+            } else {
+                let byte_vec = Vec::from(bytes);
+                let str_name = String::from_utf8(byte_vec).ok()?;
+                assert!(
+                    sub_dirs.contains(&str_name),
+                    "the sub directory name {} should be in the hashmap {:?}",
+                    str_name,
+                    sub_dirs,
+                );
+                Some(str_name)
+            }
         })
         .count();
+    // let count = dir_fd
+    //     .iter()
+    //     .filter(nix::Result::is_ok)
+    //     .map(|e| -> nix::dir::Entry {
+    //         e.unwrap() // safe to use unwrap() here
+    //     })
+    //     .filter(|e| {
+    //         let bytes = e.file_name().to_bytes();
+    //         !bytes.starts_with(&[b'.']) // skip hidden entries, '.' and '..'
+    //     })
+    //     .map(|e| -> anyhow::Result<()> {
+    //         let bytes = e.file_name().to_bytes(); // safe to use unwrap() here
+    //         let byte_vec = Vec::from(bytes);
+    //         let str_name = String::from_utf8(byte_vec)?;
+    //         assert!(
+    //             sub_dirs.contains(&str_name),
+    //             "the sub directory name {} should be in the hashmap {:?}",
+    //             str_name,
+    //             sub_dirs,
+    //         );
+    //         Ok(())
+    //     })
+    //     .count();
     assert_eq!(
         count,
         sub_dirs.len(),
@@ -145,8 +167,8 @@ fn test_deferred_deletion(mount_dir: &Path) -> anyhow::Result<()> {
     }
     unistd::fsync(fd)?;
 
-    let mut buffer: Vec<u8> = iter::repeat(0u8)
-        .take(FILE_CONTENT.len() * repeat_times)
+    let mut buffer: Vec<u8> = iter::repeat(0_u8)
+        .take(FILE_CONTENT.len().overflow_mul(repeat_times))
         .collect();
     unistd::lseek(fd, 0, Whence::SeekSet)?;
     let read_size = unistd::read(fd, &mut *buffer)?;
@@ -155,10 +177,10 @@ fn test_deferred_deletion(mount_dir: &Path) -> anyhow::Result<()> {
 
     assert_eq!(
         read_size,
-        FILE_CONTENT.len() * repeat_times,
+        FILE_CONTENT.len().overflow_mul(repeat_times),
         "the file read size {} is not the same as the expected size {}",
         read_size,
-        FILE_CONTENT.len() * repeat_times,
+        FILE_CONTENT.len().overflow_mul(repeat_times),
     );
     let str_content: String = iter::repeat(FILE_CONTENT).take(repeat_times).collect();
     assert_eq!(
@@ -174,6 +196,7 @@ fn test_deferred_deletion(mount_dir: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+#[allow(dead_code)]
 fn test_rename_file(mount_dir: &Path) -> anyhow::Result<()> {
     info!("rename file");
     let from_dir = Path::new(&mount_dir).join("from_dir");
@@ -219,6 +242,7 @@ fn test_rename_file(mount_dir: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+#[allow(dead_code)]
 fn test_rename_file_no_replace(mount_dir: &Path) -> anyhow::Result<()> {
     info!("rename file no replace");
     let oflags = OFlag::O_CREAT | OFlag::O_EXCL | OFlag::O_RDWR;
@@ -226,38 +250,38 @@ fn test_rename_file_no_replace(mount_dir: &Path) -> anyhow::Result<()> {
 
     let old_file = Path::new(&mount_dir).join("old.txt");
     let old_fd = fcntl::open(&old_file, oflags, file_mode)?;
-    let write_size = unistd::write(old_fd, FILE_CONTENT.as_bytes())?;
+    let old_file_write_size = unistd::write(old_fd, FILE_CONTENT.as_bytes())?;
     assert_eq!(
-        write_size,
+        old_file_write_size,
         FILE_CONTENT.len(),
         "the file write size {} is not the same as the expected size {}",
-        write_size,
+        old_file_write_size,
         FILE_CONTENT.len(),
     );
 
     let new_file = Path::new(&mount_dir).join("new.txt");
     let new_fd = fcntl::open(&new_file, oflags, file_mode)?;
-    let write_size = unistd::write(new_fd, FILE_CONTENT.as_bytes())?;
+    let new_file_write_size = unistd::write(new_fd, FILE_CONTENT.as_bytes())?;
     assert_eq!(
-        write_size,
+        new_file_write_size,
         FILE_CONTENT.len(),
         "the file write size {} is not the same as the expected size {}",
-        write_size,
+        new_file_write_size,
         FILE_CONTENT.len(),
     );
 
-    fs::rename(&old_file, &new_file).expect_err(&"rename no replace should fail".to_string());
+    fs::rename(&old_file, &new_file).expect_err("rename no replace should fail");
 
-    let mut buffer: Vec<u8> = iter::repeat(0u8).take(FILE_CONTENT.len()).collect();
+    let mut buffer: Vec<u8> = iter::repeat(0_u8).take(FILE_CONTENT.len()).collect();
     unistd::lseek(old_fd, 0, Whence::SeekSet)?;
-    let read_size = unistd::read(old_fd, &mut *buffer)?;
+    let old_file_read_size = unistd::read(old_fd, &mut *buffer)?;
     let content = String::from_utf8(buffer)?;
     unistd::close(old_fd)?;
     assert_eq!(
-        read_size,
+        old_file_read_size,
         FILE_CONTENT.len(),
         "the file read size {} is not the same as the expected size {}",
-        read_size,
+        old_file_read_size,
         FILE_CONTENT.len(),
     );
     assert_eq!(
@@ -265,16 +289,16 @@ fn test_rename_file_no_replace(mount_dir: &Path) -> anyhow::Result<()> {
         "the file read result is not the same as the expected content",
     );
 
-    let mut buffer: Vec<u8> = iter::repeat(0u8).take(FILE_CONTENT.len()).collect();
+    let mut buffer: Vec<u8> = iter::repeat(0_u8).take(FILE_CONTENT.len()).collect();
     unistd::lseek(new_fd, 0, Whence::SeekSet)?;
-    let read_size = unistd::read(new_fd, &mut *buffer)?;
+    let new_file_read_size = unistd::read(new_fd, &mut *buffer)?;
     let content = String::from_utf8(buffer)?;
     unistd::close(new_fd)?;
     assert_eq!(
-        read_size,
+        new_file_read_size,
         FILE_CONTENT.len(),
         "the file read size {} is not the same as the expected size {}",
-        read_size,
+        new_file_read_size,
         FILE_CONTENT.len(),
     );
     assert_eq!(
@@ -299,6 +323,7 @@ fn test_rename_file_no_replace(mount_dir: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+#[allow(dead_code)]
 fn test_rename_dir(mount_dir: &Path) -> anyhow::Result<()> {
     info!("rename directory");
     let from_dir = Path::new(&mount_dir).join("from_dir");
@@ -339,18 +364,18 @@ fn test_rename_dir(mount_dir: &Path) -> anyhow::Result<()> {
 fn run_test() -> anyhow::Result<()> {
     let mount_dir = Path::new(DEFAULT_MOUNT_DIR);
 
-    let th = test_util::setup(&mount_dir)?;
+    let th = test_util::setup(mount_dir)?;
 
     info!("begin integration test");
-    test_file_manipulation_rust_way(&mount_dir)?;
-    test_file_manipulation_nix_way(&mount_dir)?;
-    test_dir_manipulation_nix_way(&mount_dir)?;
-    test_deferred_deletion(&mount_dir)?;
+    test_file_manipulation_rust_way(mount_dir)?;
+    test_file_manipulation_nix_way(mount_dir)?;
+    test_dir_manipulation_nix_way(mount_dir)?;
+    test_deferred_deletion(mount_dir)?;
     // TODO: enable thiese test after implemented rename()
-    // test_rename_file_no_replace(&mount_dir)?;
-    // test_rename_file(&mount_dir)?;
-    // test_rename_dir(&mount_dir)?;
+    // test_rename_file_no_replace(mount_dir)?;
+    // test_rename_file(mount_dir)?;
+    // test_rename_dir(mount_dir)?;
 
-    test_util::teardown(&mount_dir, th)?;
+    test_util::teardown(mount_dir, th)?;
     Ok(())
 }
