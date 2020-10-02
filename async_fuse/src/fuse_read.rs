@@ -8,7 +8,7 @@ use std::pin::Pin;
 
 pin_project! {
     #[derive(Debug)]
-    pub(crate) struct FuseBufReadStream<R> {
+    pub struct FuseBufReadStream<R> {
         #[pin]
         reader: R,
         buf: Vec<u8>,
@@ -21,7 +21,7 @@ impl<R: AsyncRead> FuseBufReadStream<R> {
     pub fn with_capacity(capacity: usize, reader: R) -> FuseBufReadStream<R> {
         FuseBufReadStream {
             reader,
-            buf: iter::repeat(0u8).take(capacity).collect(),
+            buf: iter::repeat(0_u8).take(capacity).collect(),
             cap: capacity,
         }
     }
@@ -48,7 +48,7 @@ impl<R: AsyncRead> Stream for FuseBufReadStream<R> {
         Poll::Ready(Some(Ok(std::mem::replace(
             this.buf,
             // TODO: FIXME! It should preallocate all Vec<u8> buffers before reading
-            iter::repeat(0u8).take(*this.cap).collect(),
+            iter::repeat(0_u8).take(*this.cap).collect(),
         ))))
     }
 }

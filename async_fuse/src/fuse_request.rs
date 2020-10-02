@@ -1,229 +1,311 @@
+//! The implementation fo FUSE request
+
 use std::ffi::OsStr;
 use std::fmt;
+use utilities::Cast;
 
 use super::byte_slice::ByteSlice;
-use super::protocol::*;
+#[cfg(feature = "abi-7-19")]
+use super::protocol::FuseFAllocateIn;
+use super::protocol::{
+    FuseAccessIn, FuseBMapIn, FuseCreateIn, FuseFSyncIn, FuseFlushIn, FuseForgetIn, FuseGetXAttrIn,
+    FuseInHeader, FuseInitIn, FuseInterruptIn, FuseLinkIn, FuseLockIn, FuseMkDirIn, FuseMkNodIn,
+    FuseOpCode, FuseOpenIn, FuseReadIn, FuseReleaseIn, FuseRenameIn, FuseSetAttrIn, FuseSetXAttrIn,
+    FuseWriteIn,
+};
+#[cfg(feature = "abi-7-16")]
+use super::protocol::{FuseBatchForgetIn, FuseForgetOne};
+#[cfg(feature = "abi-7-11")]
+use super::protocol::{FuseIoCtlIn, FusePollIn};
 
+/// FUSE operation
 #[derive(Debug)]
-pub(crate) enum Operation<'a> {
+pub enum Operation<'a> {
+    /// FUSE_LOOKUP = 1
     Lookup {
-        // FUSE_LOOKUP = 1
+        /// The directory name to look up
         name: &'a OsStr,
     },
+    /// FUSE_FORGET = 2
     Forget {
-        // FUSE_FORGET = 2
+        /// The number of lookups to forget
         arg: &'a FuseForgetIn,
     },
-    GetAttr, // FUSE_GETATTR = 3
+    /// FUSE_GETATTR = 3
+    GetAttr,
+    /// FUSE_SETATTR = 4
     SetAttr {
-        // FUSE_SETATTR = 4
+        /// The attributes to be set
         arg: &'a FuseSetAttrIn,
     },
-    ReadLink, // FUSE_READLINK = 5
+    /// FUSE_READLINK = 5
+    ReadLink,
+    /// FUSE_SYMLINK = 6
     SymLink {
-        // FUSE_SYMLINK = 6
+        /// The link name to create
         name: &'a OsStr,
+        /// The contents of the symbolic link
         link: &'a OsStr,
     },
+    /// FUSE_MKNOD = 8
     MkNod {
-        // FUSE_MKNOD = 8
+        /// The FUSE mknod request
         arg: &'a FuseMkNodIn,
+        /// The file name to create
         name: &'a OsStr,
     },
+    /// FUSE_MKDIR = 9
     MkDir {
-        // FUSE_MKDIR = 9
+        /// The FUSE mkdir request input
         arg: &'a FuseMkDirIn,
+        /// The directory name to create
         name: &'a OsStr,
     },
+    /// FUSE_UNLINK = 10
     Unlink {
-        // FUSE_UNLINK = 10
+        /// The file name to remove
         name: &'a OsStr,
     },
+    /// FUSE_RMDIR = 11
     RmDir {
-        // FUSE_RMDIR = 11
+        /// The directory name to remove
         name: &'a OsStr,
     },
+    /// FUSE_RENAME = 12
     #[cfg(target_os = "macos")]
     Rename {
-        // FUSE_RENAME = 12
         arg: &'a FuseRenameIn,
         oldname: &'a OsStr,
         newname: &'a OsStr,
     },
+    /// FUSE_RENAME = 12
     #[cfg(target_os = "linux")]
     Rename {
-        // FUSE_RENAME = 12
+        /// The FUSE rename request
         arg: &'a FuseRenameIn, // TODO: verify abi protocal
+        /// The old name
         oldname: &'a OsStr,
+        /// The new name
         newname: &'a OsStr,
     },
+    /// FUSE_LINK = 13
     Link {
-        // FUSE_LINK = 13
+        /// The FUSE link request
         arg: &'a FuseLinkIn,
+        /// The new name
         name: &'a OsStr,
     },
+    /// FUSE_OPEN = 14
     Open {
-        // FUSE_OPEN = 14
+        /// The FUSE open request
         arg: &'a FuseOpenIn,
     },
+    /// FUSE_READ = 15
     Read {
-        // FUSE_READ = 15
+        /// The FUSE read request
         arg: &'a FuseReadIn,
     },
+    /// FUSE_WRITE = 16
     Write {
-        // FUSE_WRITE = 16
+        /// The FUSE write request
         arg: &'a FuseWriteIn,
+        /// The FUSE write request data
         data: &'a [u8],
     },
-    StatFs, // FUSE_STATFS = 17
+    /// FUSE_STATFS = 17
+    StatFs,
+    /// FUSE_RELEASE = 18
     Release {
-        // FUSE_RELEASE = 18
+        /// The FUSE release request
         arg: &'a FuseReleaseIn,
     },
+    /// FUSE_FSYNC = 20
     FSync {
-        // FUSE_FSYNC = 20
+        /// The FUSE fsync request
         arg: &'a FuseFSyncIn,
     },
+    /// FUSE_SETXATTR = 21
     SetXAttr {
-        // FUSE_SETXATTR = 21
+        /// The FUSE set extended attribute request
         arg: &'a FuseSetXAttrIn,
+        /// The extended attribute name
         name: &'a OsStr,
+        /// The extended attribute value
         value: &'a [u8],
     },
+    /// FUSE_GETXATTR = 22
     GetXAttr {
-        // FUSE_GETXATTR = 22
+        /// The FUSE get extended attribute request
         arg: &'a FuseGetXAttrIn,
+        /// The extended attribute name
         name: &'a OsStr,
     },
+    /// FUSE_LISTXATTR = 23
     ListXAttr {
-        // FUSE_LISTXATTR = 23
+        /// The FUSE list extended attribute request
         arg: &'a FuseGetXAttrIn,
     },
+    /// FUSE_REMOVEXATTR = 24
     RemoveXAttr {
-        // FUSE_REMOVEXATTR = 24
+        /// The name of the extended attribute to remove
         name: &'a OsStr,
     },
+    /// FUSE_FLUSH = 25
     Flush {
-        // FUSE_FLUSH = 25
+        /// The FUSE flush request
         arg: &'a FuseFlushIn,
     },
+    /// FUSE_INIT = 26
     Init {
-        // FUSE_INIT = 26
+        /// The FUSE init request
         arg: &'a FuseInitIn,
     },
+    /// FUSE_OPENDIR = 27
     OpenDir {
-        // FUSE_OPENDIR = 27
+        /// The FUSE open directory request
         arg: &'a FuseOpenIn,
     },
+    /// FUSE_READDIR = 28
     ReadDir {
-        // FUSE_READDIR = 28
+        /// The FUSE read directory request
         arg: &'a FuseReadIn,
     },
+    /// FUSE_RELEASEDIR = 29
     ReleaseDir {
-        // FUSE_RELEASEDIR = 29
+        /// The FUSE release directory request
         arg: &'a FuseReleaseIn,
     },
+    /// FUSE_FSYNCDIR = 30
     FSyncDir {
-        // FUSE_FSYNCDIR = 30
+        /// The FUSE fsync directory request
         arg: &'a FuseFSyncIn,
     },
+    /// FUSE_GETLK = 31
     GetLk {
-        // FUSE_GETLK = 31
+        /// The FUSE get lock request
         arg: &'a FuseLockIn,
     },
+    /// FUSE_SETLK = 32
     SetLk {
-        // FUSE_SETLK = 32
+        /// The FUSE set lock request
         arg: &'a FuseLockIn,
     },
+    /// FUSE_SETLKW = 33
     SetLkW {
-        // FUSE_SETLKW = 33
+        /// The FUSE set lock wait request
         arg: &'a FuseLockIn,
     },
+    /// FUSE_ACCESS = 34
     Access {
-        // FUSE_ACCESS = 34
+        /// The FUSE access request
         arg: &'a FuseAccessIn,
     },
+    /// FUSE_CREATE = 35
     Create {
-        // FUSE_CREATE = 35
+        /// The FUSE create request
         arg: &'a FuseCreateIn,
+        /// The file name to create
         name: &'a OsStr,
     },
+    /// FUSE_INTERRUPT = 36
     Interrupt {
-        // FUSE_INTERRUPT = 36
+        /// The FUSE interrupt request
         arg: &'a FuseInterruptIn,
     },
+    /// FUSE_BMAP = 37
     BMap {
-        // FUSE_BMAP = 37
+        /// The FUSE bmap request
         arg: &'a FuseBMapIn,
     },
-    Destroy, // FUSE_DESTROY = 38
+    /// FUSE_DESTROY = 38
+    Destroy,
+    /// FUSE_IOCTL = 39
     #[cfg(feature = "abi-7-11")]
     IoCtl {
-        // FUSE_IOCTL = 39
+        /// The FUSE ioctl request
         arg: &'a FuseIoCtlIn,
+        /// The ioctl request data
         data: &'a [u8],
     },
+    /// FUSE_POLL = 40
     #[cfg(feature = "abi-7-11")]
     Poll {
-        // FUSE_POLL = 40
+        /// The FUSE poll request
         arg: &'a FusePollIn,
     },
+    /// FUSE_NOTIFY_REPLY = 41
     #[cfg(feature = "abi-7-15")]
-    NotifyReply {
-        // FUSE_NOTIFY_REPLY = 41
-        data: &'a [u8],
-    },
+    NotifyReply { data: &'a [u8] },
+    /// FUSE_BATCH_FORGET = 42
     #[cfg(feature = "abi-7-16")]
     BatchForget {
-        // FUSE_BATCH_FORGET = 42
+        /// The FUSE batch forget request
         arg: &'a FuseBatchForgetIn,
+        /// The slice of nodes to forget
         nodes: &'a [FuseForgetOne],
     },
+    /// FUSE_FALLOCATE = 43
     #[cfg(feature = "abi-7-19")]
     FAllocate {
-        // FUSE_FALLOCATE = 43
+        /// The FUSE fallocate request
         arg: &'a FuseFAllocateIn,
     },
+    /// FUSE_READDIRPLUS = 44,
     #[cfg(feature = "abi-7-21")]
     ReadDirPlus {
-        // FUSE_READDIRPLUS = 44,
+        /// The FUSE read directory plus request
         arg: &'a FuseReadIn,
     },
+    /// FUSE_RENAME2 = 45,
     #[cfg(feature = "abi-7-23")]
     Rename2 {
-        // FUSE_RENAME2 = 45,
+        /// The FUSE rename2 request
         arg: &'a FuseRename2In,
+        /// The old file name
         oldname: &'a OsStr,
+        /// The new file name
         newname: &'a OsStr,
     },
-    // TODO: find out the input args
-    // #[cfg(feature = "abi-7-24")]
     // FUSE_LSEEK = 46,
-    // #[cfg(feature = "abi-7-28")]
-    // FUSE_COPY_FILE_RANGE = 47,
-    #[cfg(target_os = "macos")]
-    SetVolName {
-        // FUSE_SETVOLNAME = 61
-        name: &'a OsStr,
+    #[cfg(feature = "abi-7-24")]
+    LSeek {
+        /// The FUSE lseek request
+        arg: &'a FuseLSeekIn,
     },
+    // FUSE_COPY_FILE_RANGE = 47,
+    #[cfg(feature = "abi-7-28")]
+    CopyFileRange {
+        /// The FUSE copy file range request
+        arg: &'a FuseCopyFileRangeIn,
+    },
+    /// FUSE_SETVOLNAME = 61
     #[cfg(target_os = "macos")]
-    GetXTimes, // FUSE_GETXTIMES = 62
+    SetVolName { name: &'a OsStr },
+    /// FUSE_GETXTIMES = 62
+    #[cfg(target_os = "macos")]
+    GetXTimes,
+    /// FUSE_EXCHANGE = 63
     #[cfg(target_os = "macos")]
     Exchange {
-        // FUSE_EXCHANGE = 63
+        /// The FUSE exchange request
         arg: &'a FuseExchangeIn,
+        /// The old file name
         oldname: &'a OsStr,
+        /// The new file name
         newname: &'a OsStr,
     },
 
+    /// CUSE_INIT = 4096
     #[cfg(feature = "abi-7-11")]
     CuseInit {
-        // CUSE_INIT = 4096
+        /// The CUSE init request
         arg: &'a FuseInitIn,
     },
 }
 
 impl<'a> Operation<'a> {
+    /// Build FUSE operation from op-code
+    #[allow(clippy::too_many_lines)]
     fn parse(n: u32, data: &mut ByteSlice<'a>) -> anyhow::Result<Self> {
         let opcode = match n {
             1 => FuseOpCode::FUSE_LOOKUP,
@@ -398,7 +480,9 @@ impl<'a> Operation<'a> {
     }
 }
 
-impl<'a> fmt::Display for Operation<'a> {
+impl fmt::Display for Operation<'_> {
+    /// Format FUSE operation to display
+    #[allow(clippy::too_many_lines)]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Operation::Lookup { name } => write!(f, "LOOKUP name={:?}", name),
@@ -505,18 +589,18 @@ impl<'a> fmt::Display for Operation<'a> {
             #[cfg(feature = "abi-7-11")]
             Operation::IoCtl { arg, data } => write!(
                 f,
-                "IOCTL fh={}, flags {:#x}, cmd={}, arg={}",
-                arg.fh, arg.flags, arg.cmd, arg.arg,
+                "IOCTL fh={}, flags {:#x}, cmd={}, arg={}, data={:?}",
+                arg.fh, arg.flags, arg.cmd, arg.arg, data,
             ),
             #[cfg(feature = "abi-7-11")]
             Operation::Poll { arg } => {
                 write!(f, "POLL fh={}, kh={}, flags={:#x} ", arg.fh, arg.kh, arg.flags)
             }
             #[cfg(feature = "abi-7-15")]
-            Operation::NotifyReply { data } => write!(f, "NOTIFY REPLY"),
+            Operation::NotifyReply { data } => write!(f, "NOTIFY REPLY data={:?}", data),
             #[cfg(feature = "abi-7-16")]
             Operation::BatchForget { arg, nodes } => {
-                write!(f, "BATCH FORGOT count={}", arg.count)
+                write!(f, "BATCH FORGOT count={}, nodes={:?}", arg.count, nodes)
             }
             #[cfg(feature = "abi-7-19")]
             Operation::FAllocate { arg } => write!(
@@ -562,13 +646,16 @@ impl<'a> fmt::Display for Operation<'a> {
     }
 }
 
+/// FUSE request
 #[derive(Debug)]
-pub(crate) struct Request<'a> {
+pub struct Request<'a> {
+    /// FUSE request header
     header: &'a FuseInHeader,
+    /// FUSE request operation
     operation: Operation<'a>,
 }
 
-impl<'a> fmt::Display for Request<'a> {
+impl fmt::Display for Request<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
@@ -579,6 +666,7 @@ impl<'a> fmt::Display for Request<'a> {
 }
 
 impl<'a> Request<'a> {
+    /// Build FUSE request
     pub fn new(bytes: &'a [u8]) -> anyhow::Result<Self> {
         let data_len = bytes.len();
         let mut data = ByteSlice::new(bytes);
@@ -586,7 +674,7 @@ impl<'a> Request<'a> {
         let header = data.fetch::<FuseInHeader>()?;
         // Check data size
         debug_assert!(
-            data_len >= header.len as usize, // TODO: why not daten_len == header.len?
+            data_len >= header.len.cast(), // TODO: why not daten_len == header.len?
             "failed to assert {} >= {}",
             data_len,
             header.len,
@@ -602,47 +690,47 @@ impl<'a> Request<'a> {
     /// distinguish between multiple concurrent requests. The unique id of a request may be
     /// reused in later requests after it has completed.
     #[inline]
-    pub fn unique(&self) -> u64 {
+    pub const fn unique(&self) -> u64 {
         self.header.unique
     }
 
-    /// Returns the node id of the inode this request is targeted to.
+    /// Returns the node ID of the inode this request is targeted to.
     #[inline]
-    pub fn nodeid(&self) -> u64 {
+    pub const fn nodeid(&self) -> u64 {
         self.header.nodeid
     }
 
     /// Returns the UID that the process that triggered this request runs under.
     #[allow(dead_code)]
     #[inline]
-    pub fn uid(&self) -> u32 {
+    pub const fn uid(&self) -> u32 {
         self.header.uid
     }
 
     /// Returns the GID that the process that triggered this request runs under.
     #[allow(dead_code)]
     #[inline]
-    pub fn gid(&self) -> u32 {
+    pub const fn gid(&self) -> u32 {
         self.header.gid
     }
 
     /// Returns the PID of the process that triggered this request.
     #[allow(dead_code)]
     #[inline]
-    pub fn pid(&self) -> u32 {
+    pub const fn pid(&self) -> u32 {
         self.header.pid
     }
 
     /// Returns the byte length of this request.
     #[allow(dead_code)]
     #[inline]
-    pub fn len(&self) -> u32 {
+    pub const fn len(&self) -> u32 {
         self.header.len
     }
 
     /// Returns the filesystem operation (and its arguments) of this request.
     #[inline]
-    pub fn operation(&self) -> &Operation<'_> {
+    pub const fn operation(&self) -> &Operation<'_> {
         &self.operation
     }
 }
@@ -650,6 +738,7 @@ impl<'a> Request<'a> {
 #[cfg(test)]
 mod test {
     use super::*;
+    use log::debug;
 
     #[repr(align(8))]
     struct Align8<T: Sized>(T);
@@ -714,14 +803,24 @@ mod test {
 
     #[test]
     fn short_read_header() {
-        let err = Request::new(&INIT_REQUEST[..20]).expect_err("Unexpected request parsing result");
+        let idx = 20;
+        let err = Request::new(INIT_REQUEST.get(..20).unwrap_or_else(|| {
+            panic!("faile to get the first {} elements from INIT_REQUEST", idx)
+        }))
+        .expect_err("Unexpected request parsing result");
         let mut chain = err.chain();
         assert_eq!(
-            chain.next().unwrap().to_string(),
+            chain
+                .next()
+                .unwrap_or_else(|| panic!("failed to get next error"))
+                .to_string(),
             "failed to build FUSE request payload type async_fuse::protocol::FuseInHeader"
         );
         assert_eq!(
-            chain.next().unwrap().to_string(),
+            chain
+                .next()
+                .unwrap_or_else(|| panic!("failed to get next error"))
+                .to_string(),
             "no enough bytes to fetch, remaining 20 bytes but to fetch 40 bytes"
         );
         assert!(chain.next().is_none());
@@ -730,13 +829,19 @@ mod test {
     #[test]
     #[should_panic(expected = "failed to assert 48 >= 56")]
     fn short_read() {
-        let req = Request::new(&INIT_REQUEST[..48]);
-        let _ = dbg!(req);
+        let idx = 48;
+        let req =
+            Request::new(INIT_REQUEST.get(..idx).unwrap_or_else(|| {
+                panic!("failed to get first {} elements from INIT_REQUEST", idx)
+            }))
+            .unwrap_or_else(|err| panic!("failed to build FUSE request, the error is: {}", err));
+        debug!("short read request={:?}", req);
     }
 
     #[test]
     fn init() {
-        let req = Request::new(&INIT_REQUEST[..]).unwrap();
+        let req = Request::new(&INIT_REQUEST[..])
+            .unwrap_or_else(|err| panic!("failed to build FUSE request, the error is: {}", err));
         assert_eq!(req.header.len, 56);
         assert_eq!(req.header.opcode, 26);
         assert_eq!(req.unique(), 0xdead_beef_baad_f00d);
@@ -756,7 +861,8 @@ mod test {
 
     #[test]
     fn mknod() {
-        let req = Request::new(&MKNOD_REQUEST[..]).unwrap();
+        let req = Request::new(&MKNOD_REQUEST[..])
+            .unwrap_or_else(|err| panic!("failed to build FUSE request, the error is: {}", err));
         assert_eq!(req.header.len, 56);
         assert_eq!(req.header.opcode, 8);
         assert_eq!(req.unique(), 0xdead_beef_baad_f00d);

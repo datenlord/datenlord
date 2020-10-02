@@ -1,3 +1,5 @@
+//! The implementation of directory related functionalities
+
 use nix::sys::stat::SFlag;
 use std::ffi::{CStr, OsStr, OsString};
 use std::os::unix::ffi::OsStrExt;
@@ -9,38 +11,45 @@ use super::super::protocol::INum;
 #[cfg(target_os = "linux")]
 use libc::{dirent64 as dirent, readdir64_r as readdir_r};
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "macos")]
 use libc::{dirent, readdir_r};
 
+/// Directory meta-data
 #[derive(Debug)]
-pub(crate) struct Dir(ptr::NonNull<libc::DIR>);
+pub struct Dir(ptr::NonNull<libc::DIR>);
 
 impl Dir {
     /// Converts from a file descriptor, closing it on success or failure.
     pub fn from_fd(fd: RawFd) -> nix::Result<Self> {
         let d = unsafe { libc::fdopendir(fd) };
-        if d.is_null() {
+        let ptr_res = ptr::NonNull::new(d);
+        if let Some(non_null_ptr) = ptr_res {
+            Ok(Self(non_null_ptr))
+        } else {
             let e = nix::Error::last();
             unsafe { libc::close(fd) };
-            return Err(e);
-        };
-        // Always guaranteed to be non-null by the previous check
-        Ok(Dir(ptr::NonNull::new(d).unwrap()))
+            Err(e)
+        }
     }
 }
 
 // `Dir` is safe to pass from one thread to another, as it's not reference-counted.
 unsafe impl Send for Dir {}
 
+/// Directory entry
 #[derive(Debug)]
-pub(crate) struct DirEntry {
+pub struct DirEntry {
+    /// The i-number of the entry
     ino: INum,
+    /// The `SFlag` type of the entry
     entry_type: SFlag,
+    /// The entry name
     name: OsString,
 }
 
 impl DirEntry {
-    pub fn new(ino: INum, name: OsString, entry_type: SFlag) -> Self {
+    /// Create `DirEntry`
+    pub const fn new(ino: INum, name: OsString, entry_type: SFlag) -> Self {
         Self {
             ino,
             name,
@@ -48,7 +57,7 @@ impl DirEntry {
         }
     }
     /// Returns the inode number (`d_ino`) of the underlying `dirent`.
-    pub fn ino(&self) -> u64 {
+    pub const fn ino(&self) -> u64 {
         self.ino
     }
 
@@ -62,10 +71,11 @@ impl DirEntry {
     /// See platform `readdir(3)` or `dirent(5)` manpage for when the file type is known;
     /// notably, some Linux filesystems don't implement this. The caller should use `stat` or
     /// `fstat` if this returns `None`.
-    pub fn entry_type(&self) -> SFlag {
+    pub const fn entry_type(&self) -> SFlag {
         self.entry_type
     }
 
+    /// Build `DirEntry` from `libc::dirent`
     fn from_dirent(de: dirent) -> Self {
         let ino = de.d_ino;
 
