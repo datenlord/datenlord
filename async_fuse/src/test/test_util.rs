@@ -64,7 +64,12 @@ pub fn teardown(mount_dir: &Path, th: JoinHandle<()>) -> anyhow::Result<()> {
     fs::remove_dir_all(&abs_mount_path)?;
 
     #[allow(box_pointers)] // thread join result involves box point
-    th.join()
-        .unwrap_or_else(|_| panic!("failed to wait the test setup thread to finish"));
+    th.join().unwrap_or_else(|res| {
+        panic!(
+            "failed to wait the test setup thread to finish, \
+                the thread result is: {:?}",
+            res,
+        );
+    });
     Ok(())
 }

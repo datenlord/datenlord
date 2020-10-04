@@ -54,9 +54,14 @@ jobs:
           profile: minimal
           toolchain: ${{ env.CI_RUST_TOOLCHAIN }}
           override: true
-      - uses: actions-rs/cargo@v1
-        with:
-          command: test
+      #- uses: actions-rs/cargo@v1
+      #  with:
+      #    command: test
+      - name: Run cargo test with non-root and root
+        run: |
+          cargo test |& tee cargo_test.log
+          TEST_CMD=`grep Running cargo_test.log | awk '{print $2}'`
+          sudo $TEST_CMD
 
   fmt:
     name: Fmt
@@ -89,6 +94,80 @@ jobs:
         with:
           command: clippy
           args: --all -- -D warnings
+
+  e2e:
+    name: E2E
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v2
+      - name: Install toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: ${{ env.CI_RUST_TOOLCHAIN }}
+          override: true
+      - name: Build DatenLord
+        uses: actions-rs/cargo@v1
+        with:
+          command: build
+      #- name: Check out xfstest code
+      #  uses: actions/checkout@v2
+      #  with:
+      #    repository: kdave/xfstests
+      #    path: ./xfstests
+      #- name: Build xfstests
+      #  run: |
+      #    cd xfstests
+      #    make
+      #    cd -
+      - name: Check out fuse-xfstests code
+        uses: actions/checkout@v2
+        with:
+          repository: pwang7/fuse-xfstests
+          path: ./fuse-xfstests
+      - name: Run fuse-xfstests
+        run: |
+          sudo apt update
+          sudo apt install xfslibs-dev uuid-dev libtool-bin \
+              e2fsprogs automake gcc libuuid1 quota attr libattr1-dev make \
+              libacl1-dev libaio-dev xfsprogs libgdbm-dev gawk fio dbench \
+              uuid-runtime python sqlite3 # liburing-dev
+          sudo useradd -m fsgqa
+          sudo groupadd fsgqa || true
+          sudo useradd 123456-fsgqa
+          sudo useradd fsgqa2
+          cd fuse-xfstests
+          make
+          #sudo ./check-datenlord
+          cd -
+      #- name: Check out pjdfstest code
+      #  uses: actions/checkout@v2
+      #  with:
+      #    repository: pjd/pjdfstest
+      #    path: ./pjdfstest
+      - name: Run ntfs-3g-pjd-fstest
+        run: |
+          git clone https://git.code.sf.net/p/ntfs-3g/pjd-fstest ntfs-3g-pjd-fstest
+          cd ntfs-3g-pjd-fstest
+          cp tests/conf tests/conf.bak
+          cat >tests/conf <<END
+            # fstest configuration file
+            # Known operating systems: FreeBSD, SunOS, Linux
+            os=`uname`
+            # Known file systems: UFS, ZFS, ext3, ext4, ntfs-3g, xfs, btrfs, glusterfs
+            fs="ext4"
+          END
+          cat tests/conf
+          gcc -Wall -DHAS_TRUNCATE64 -DHAS_STAT64 fstest.c -o fstest
+          cd -
+          mkdir fuse_mount_dir
+          RUST_LOG=debug target/debug/async_fuse -m ./fuse_mount_dir &>datenlord.log &
+          cd fuse_mount_dir
+          #prove -rv ../ntfs-3g-pjd-fstest
+      #- name: Setup tmate session
+      #  if: ${{ always() }}
+      #  uses: mxschmitt/action-tmate@v3
 
 #  coverage:
 #    name: Coverage

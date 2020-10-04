@@ -1,6 +1,6 @@
 //! The implementation of FUSE channel
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, Context};
 use nix::{
     fcntl::{self, FcntlArg, FdFlag, OFlag},
     ioctl_read,
@@ -22,7 +22,7 @@ pub struct Channel {
 impl Channel {
     /// Create FUSE channel
     #[allow(dead_code)]
-    pub async fn new(session: &Session) -> Result<Self> {
+    pub async fn new(session: &Session) -> anyhow::Result<Self> {
         let devname = "/dev/fuse";
         let clonefd = smol::blocking!(fcntl::open(
             devname,
@@ -40,9 +40,9 @@ impl Channel {
         if let Err(err) =
             smol::blocking!(fcntl::fcntl(clonefd, FcntlArg::F_SETFD(FdFlag::FD_CLOEXEC)))
         {
-            return Err(anyhow::anyhow!(
+            return Err(anyhow!(
                 "fuse: failed to set clonefd to FD_CLOEXEC: {:?}",
-                err
+                err,
             ));
         }
 
@@ -52,10 +52,7 @@ impl Channel {
         let res = smol::blocking!(unsafe { clone(clonefd, &mut masterfd_u32) });
         if let Err(err) = res {
             close(clonefd).context("fuse: failed to close clone device")?;
-            return Err(anyhow::anyhow!(
-                "fuse: failed to clone device fd: {:?}\n",
-                err
-            ));
+            return Err(anyhow!("fuse: failed to clone device fd: {:?}", err,));
         }
 
         Ok(Self { chan_fd: clonefd })

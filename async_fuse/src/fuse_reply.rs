@@ -1,6 +1,5 @@
 //! The implementation of FUSE response
 
-use anyhow::{self, Context};
 use log::debug;
 use nix::sys::stat::SFlag;
 use nix::sys::uio::{self, IoVec};
@@ -16,27 +15,13 @@ use std::time::Duration;
 use std::{mem, ptr, slice};
 use utilities::{Cast, OverflowArithmetic};
 
+use super::fs;
+#[cfg(target_os = "macos")]
+use super::protocol::FuseGetXTimesOut;
 use super::protocol::{
     FuseAttr, FuseAttrOut, FuseBMapOut, FuseDirEnt, FuseEntryOut, FuseFileLock, FuseGetXAttrOut,
     FuseInitOut, FuseKStatFs, FuseLockOut, FuseOpenOut, FuseOutHeader, FuseStatFsOut, FuseWriteOut,
 };
-
-// TODO: remove it
-/// Build file mode from `SFlag` and file permission
-fn mode_from_kind_and_perm(kind: SFlag, perm: u16) -> u32 {
-    let file_type: u32 = match kind {
-        SFlag::S_IFIFO => libc::S_IFIFO,
-        SFlag::S_IFCHR => libc::S_IFCHR,
-        SFlag::S_IFBLK => libc::S_IFBLK,
-        SFlag::S_IFDIR => libc::S_IFDIR,
-        SFlag::S_IFREG => libc::S_IFREG,
-        SFlag::S_IFLNK => libc::S_IFLNK,
-        SFlag::S_IFSOCK => libc::S_IFSOCK,
-        _ => panic!("unknown SFlag type={:?}", kind),
-    };
-    let file_perm: u32 = perm.into();
-    file_type | file_perm
-}
 
 /// The FUSE response data
 #[derive(Debug)]
@@ -71,7 +56,7 @@ impl<T: Send + Sync + 'static> ReplyRaw<T> {
     }
 
     /// Send response to FUSE kernel
-    async fn send(self, to_bytes: ToBytes<T>, err: c_int) -> anyhow::Result<usize> {
+    async fn send(self, to_bytes: ToBytes<T>, err: c_int) -> nix::Result<usize> {
         let fd = self.fd;
         let wsize = blocking!(
             let mut send_error = false;
@@ -119,43 +104,132 @@ impl<T: Send + Sync + 'static> ReplyRaw<T> {
             } else {
                 debug_assert_eq!(err, 0);
             }
-            uio::writev(fd, &iovecs).context(format!(
-                "failed to send to FUSE, the reply header is: {:?}", header,
-            ))
+            uio::writev(fd, &iovecs)
+            // .context(format!(
+            //     "failed to send to FUSE, the reply header is: {:?}", header,
+            // ))
         )?;
 
         debug!("sent {} bytes to fuse device successfully", wsize);
         Ok(wsize)
     }
 
-    /// Send byte array response to FUSE
-    async fn send_bytes(self, byte_vec: Vec<u8>) -> anyhow::Result<()> {
-        let _reply_size = self
-            .send(ToBytes::Bytes(byte_vec), 0)
-            .await
-            .context("send_bytes() failed to send bytes")?;
-        Ok(())
+    /// Send byte array response to FUSE kernel
+    async fn send_bytes(self, byte_vec: Vec<u8>) -> nix::Result<usize> {
+        self.send(ToBytes::Bytes(byte_vec), 0).await
+        // .context("send_bytes() failed to send bytes")
     }
 
-    /// Send structure response to FUSE
-    async fn send_data(self, instance: T) -> anyhow::Result<()> {
-        let _reply_size = self
-            .send(ToBytes::Struct(instance), 0)
-            .await
-            .context("send_data() failed to send data")?;
-        Ok(())
+    /// Send structure response to FUSE kernel
+    async fn send_data(self, instance: T) -> nix::Result<usize> {
+        self.send(ToBytes::Struct(instance), 0).await
+        // .context("send_data() failed to send data")
     }
 
-    /// Send error response to FUSE
-    async fn send_error(self, err: c_int) -> anyhow::Result<()> {
-        let _reply_size = self
-            .send(ToBytes::Error, err)
-            .await
-            .context("send_error() failed to send error")?;
-        Ok(())
+    /// Send error code response to FUSE kernel
+    async fn send_error_code(self, error_code: c_int) -> nix::Result<usize> {
+        self.send(ToBytes::Error, error_code).await
+        // .context("send_error_code() failed to send error")
+    }
+
+    /// Send error response to FUSE kernel
+    async fn send_error(self, err: anyhow::Error) -> nix::Result<usize> {
+        let error_code = if let Some(nix_err) = err.root_cause().downcast_ref::<nix::Error>() {
+            if let Some(error_code) = nix_err.as_errno() {
+                if let nix::errno::Errno::UnknownErrno = error_code {
+                    panic!(
+                        "should not send nix::errno::Errno::UnknownErrno to FUSE kernel, \
+                            the error is: {}",
+                        fs::util::format_anyhow_error(&err),
+                    );
+                } else {
+                    error_code
+                }
+            } else {
+                panic!(
+                    "should not send non-nix::Error::Sys to FUSE kernel, the error is: {}",
+                    fs::util::format_anyhow_error(&err),
+                )
+            }
+        } else {
+            panic!(
+                "should not send non-nix error to FUSE kernel, the error is: {}",
+                fs::util::format_anyhow_error(&err),
+            );
+        };
+        #[allow(clippy::as_conversions)]
+        self.send_error_code(error_code as c_int).await
     }
 }
 
+macro_rules! impl_fuse_reply_new_for{
+    {$($t:ty,)+} => {
+        $(impl $t {
+            pub fn new(unique: u64, fd: RawFd) -> Self {
+                Self {
+                    reply: ReplyRaw::new(unique, fd),
+                }
+            }
+        })+
+    }
+}
+
+impl_fuse_reply_new_for! {
+    ReplyAttr,
+    ReplyBMap,
+    ReplyCreate,
+    ReplyData,
+    ReplyEmpty,
+    ReplyEntry,
+    ReplyInit,
+    ReplyLock,
+    ReplyOpen,
+    ReplyStatFs,
+    ReplyWrite,
+    ReplyXAttr,
+}
+
+#[cfg(target_os = "macos")]
+impl_fuse_reply_new_for! {
+    ReplyXTimes,
+}
+
+macro_rules! impl_fuse_reply_error_for{
+    {$($t:ty,)+} => {
+        $(impl $t {
+            #[allow(dead_code)]
+            pub async fn error(self, err: anyhow::Error) -> nix::Result<usize> {
+                self.reply.send_error(err).await
+            }
+
+            #[allow(dead_code)]
+            pub async fn error_code(self, error_code: c_int) -> nix::Result<usize> {
+                self.reply.send_error_code(error_code).await
+            }
+        })+
+    }
+}
+
+impl_fuse_reply_error_for! {
+    ReplyAttr,
+    ReplyBMap,
+    ReplyCreate,
+    ReplyData,
+    ReplyDirectory,
+    ReplyEmpty,
+    ReplyEntry,
+    ReplyInit,
+    ReplyLock,
+    ReplyOpen,
+    ReplyStatFs,
+    ReplyWrite,
+    ReplyXAttr,
+}
+
+#[cfg(target_os = "macos")]
+impl_fuse_reply_error_for! {
+    ReplyXTimes,
+}
 /// FUSE init response
 #[derive(Debug)]
 pub struct ReplyInit {
@@ -164,13 +238,6 @@ pub struct ReplyInit {
 }
 
 impl ReplyInit {
-    /// Create `ReplyInit`
-    pub fn new(unique: u64, fd: RawFd) -> Self {
-        Self {
-            reply: ReplyRaw::new(unique, fd),
-        }
-    }
-
     /// Reply init response
     pub async fn init(
         self,
@@ -187,7 +254,7 @@ impl ReplyInit {
         #[cfg(feature = "abi-7-28")] max_pages: u16,
         #[cfg(feature = "abi-7-28")] padding: u16,
         #[cfg(feature = "abi-7-28")] unused: [u32; 8],
-    ) -> anyhow::Result<()> {
+    ) -> nix::Result<usize> {
         self.reply
             .send_data(FuseInitOut {
                 major,
@@ -214,11 +281,6 @@ impl ReplyInit {
             })
             .await
     }
-
-    /// Reply with error response
-    pub async fn error(self, err: c_int) -> anyhow::Result<()> {
-        self.reply.send_error(err).await
-    }
 }
 
 /// FUSE empty response
@@ -229,21 +291,9 @@ pub struct ReplyEmpty {
 }
 
 impl ReplyEmpty {
-    /// Create `ReplyEmpty`
-    pub fn new(unique: u64, fd: RawFd) -> Self {
-        Self {
-            reply: ReplyRaw::new(unique, fd),
-        }
-    }
-
     /// Reply with empty OK response
-    pub async fn ok(self) -> anyhow::Result<()> {
+    pub async fn ok(self) -> nix::Result<usize> {
         self.reply.send_data(()).await
-    }
-
-    /// Reply with error response
-    pub async fn error(self, err: c_int) -> anyhow::Result<()> {
-        self.reply.send_error(err).await
     }
 }
 
@@ -255,21 +305,9 @@ pub struct ReplyData {
 }
 
 impl ReplyData {
-    /// Create `ReplyData`
-    pub fn new(unique: u64, fd: RawFd) -> Self {
-        Self {
-            reply: ReplyRaw::new(unique, fd),
-        }
-    }
-
     /// Reply with byte data repsonse
-    pub async fn data(self, bytes: Vec<u8>) -> anyhow::Result<()> {
+    pub async fn data(self, bytes: Vec<u8>) -> nix::Result<usize> {
         self.reply.send_bytes(bytes).await
-    }
-
-    /// Reply with error response
-    pub async fn error(self, err: c_int) -> anyhow::Result<()> {
-        self.reply.send_error(err).await
     }
 }
 
@@ -281,15 +319,8 @@ pub struct ReplyEntry {
 }
 
 impl ReplyEntry {
-    /// Create `ReplyEntry`
-    pub fn new(unique: u64, fd: RawFd) -> Self {
-        Self {
-            reply: ReplyRaw::new(unique, fd),
-        }
-    }
-
     /// Reply to a request with the given entry
-    pub async fn entry(self, ttl: Duration, attr: FuseAttr, generation: u64) -> anyhow::Result<()> {
+    pub async fn entry(self, ttl: Duration, attr: FuseAttr, generation: u64) -> nix::Result<usize> {
         self.reply
             .send_data(FuseEntryOut {
                 nodeid: attr.ino,
@@ -302,11 +333,6 @@ impl ReplyEntry {
             })
             .await
     }
-
-    /// Reply to a request with the given error code
-    pub async fn error(self, err: c_int) -> anyhow::Result<()> {
-        self.reply.send_error(err).await
-    }
 }
 
 /// FUSE attribute response
@@ -317,14 +343,8 @@ pub struct ReplyAttr {
 }
 
 impl ReplyAttr {
-    /// Create `ReplyAttr`
-    pub fn new(unique: u64, fd: RawFd) -> Self {
-        Self {
-            reply: ReplyRaw::new(unique, fd),
-        }
-    }
     /// Reply to a request with the given attribute
-    pub async fn attr(self, ttl: Duration, attr: FuseAttr) -> anyhow::Result<()> {
+    pub async fn attr(self, ttl: Duration, attr: FuseAttr) -> nix::Result<usize> {
         self.reply
             .send_data(FuseAttrOut {
                 attr_valid: ttl.as_secs(),
@@ -333,11 +353,6 @@ impl ReplyAttr {
                 attr,
             })
             .await
-    }
-
-    /// Reply to a request with the given error code
-    pub async fn error(self, err: c_int) -> anyhow::Result<()> {
-        self.reply.send_error(err).await
     }
 }
 
@@ -351,21 +366,15 @@ pub struct ReplyXTimes {
 
 #[cfg(target_os = "macos")]
 impl ReplyXTimes {
-    /// Create `ReplyXTimes`
-    pub fn new(unique: u64, fd: RawFd) -> Self {
-        Self {
-            reply: ReplyRaw::new(unique, fd),
-        }
-    }
-
     /// Reply to a request with the given xtimes
+    #[allow(dead_code)]
     pub async fn xtimes(
         self,
         bkuptime_secs: u64,
         bkuptime_nanos: u32,
         crtime_secs: u64,
         crtime_nanos: u32,
-    ) -> anyhow::Result<()> {
+    ) -> nix::Result<usize> {
         self.reply
             .send_data(FuseGetXTimesOut {
                 bkuptime: bkuptime_secs,
@@ -374,11 +383,6 @@ impl ReplyXTimes {
                 crtimensec: crtime_nanos,
             })
             .await
-    }
-
-    /// Reply to a request with the given error code
-    pub async fn error(self, err: c_int) -> anyhow::Result<()> {
-        self.reply.send_error(err).await
     }
 }
 
@@ -390,28 +394,15 @@ pub struct ReplyOpen {
 }
 
 impl ReplyOpen {
-    /// Create `ReplyOpen`
-    pub fn new(unique: u64, fd: RawFd) -> Self {
-        Self {
-            reply: ReplyRaw::new(unique, fd),
-        }
-    }
-
     /// Reply to a request with the given open result
-    pub async fn opened(self, fh: u64, flags: u32) -> anyhow::Result<()> {
+    pub async fn opened(self, fh: RawFd, flags: u32) -> nix::Result<usize> {
         self.reply
             .send_data(FuseOpenOut {
-                fh,
+                fh: fh.cast(),
                 open_flags: flags,
                 padding: 0,
             })
             .await
-    }
-
-    /// Reply to a request with the given error code
-    #[allow(dead_code)]
-    pub async fn error(self, err: c_int) -> anyhow::Result<()> {
-        self.reply.send_error(err).await
     }
 }
 
@@ -423,24 +414,11 @@ pub struct ReplyWrite {
 }
 
 impl ReplyWrite {
-    /// Create `ReplyWrite`
-    pub fn new(unique: u64, fd: RawFd) -> Self {
-        Self {
-            reply: ReplyRaw::new(unique, fd),
-        }
-    }
-
     /// Reply to a request with the given open result
-    pub async fn written(self, size: u32) -> anyhow::Result<()> {
+    pub async fn written(self, size: u32) -> nix::Result<usize> {
         self.reply
             .send_data(FuseWriteOut { size, padding: 0 })
             .await
-    }
-
-    /// Reply to a request with the given error code
-    #[allow(dead_code)]
-    pub async fn error(self, err: c_int) -> anyhow::Result<()> {
-        self.reply.send_error(err).await
     }
 }
 
@@ -472,16 +450,9 @@ pub struct StatFsParam {
 }
 
 impl ReplyStatFs {
-    /// Create `ReplyStatFs`
-    pub fn new(unique: u64, fd: RawFd) -> Self {
-        Self {
-            reply: ReplyRaw::new(unique, fd),
-        }
-    }
-
     /// Reply statfs response
     #[allow(dead_code)]
-    pub async fn statfs(self, param: StatFsParam) -> anyhow::Result<()> {
+    pub async fn statfs(self, param: StatFsParam) -> nix::Result<usize> {
         self.reply
             .send_data(FuseStatFsOut {
                 st: FuseKStatFs {
@@ -499,11 +470,6 @@ impl ReplyStatFs {
             })
             .await
     }
-
-    /// Reply error response
-    pub async fn error(self, err: c_int) -> anyhow::Result<()> {
-        self.reply.send_error(err).await
-    }
 }
 
 /// FUSE create response
@@ -514,13 +480,6 @@ pub struct ReplyCreate {
 }
 
 impl ReplyCreate {
-    /// Create `ReplyCreate`
-    pub fn new(unique: u64, fd: RawFd) -> Self {
-        Self {
-            reply: ReplyRaw::new(unique, fd),
-        }
-    }
-
     /// Reply to a request with the given entry
     #[allow(dead_code)]
     pub async fn created(
@@ -530,7 +489,7 @@ impl ReplyCreate {
         generation: u64,
         fh: u64,
         flags: u32,
-    ) -> anyhow::Result<()> {
+    ) -> nix::Result<usize> {
         self.reply
             .send_data((
                 FuseEntryOut {
@@ -550,11 +509,6 @@ impl ReplyCreate {
             ))
             .await
     }
-
-    /// Reply to a request with the given error code
-    pub async fn error(self, err: c_int) -> anyhow::Result<()> {
-        self.reply.send_error(err).await
-    }
 }
 
 /// FUSE lock response
@@ -565,16 +519,9 @@ pub struct ReplyLock {
 }
 
 impl ReplyLock {
-    /// Create `ReplyLock`
-    pub fn new(unique: u64, fd: RawFd) -> Self {
-        Self {
-            reply: ReplyRaw::new(unique, fd),
-        }
-    }
-
     /// Reply to a request with the given open result
     #[allow(dead_code)]
-    pub async fn locked(self, start: u64, end: u64, typ: u32, pid: u32) -> anyhow::Result<()> {
+    pub async fn locked(self, start: u64, end: u64, typ: u32, pid: u32) -> nix::Result<usize> {
         self.reply
             .send_data(FuseLockOut {
                 lk: FuseFileLock {
@@ -586,11 +533,6 @@ impl ReplyLock {
             })
             .await
     }
-
-    /// Reply to a request with the given error code
-    pub async fn error(self, err: c_int) -> anyhow::Result<()> {
-        self.reply.send_error(err).await
-    }
 }
 
 /// FUSE bmap response
@@ -601,23 +543,10 @@ pub struct ReplyBMap {
 }
 
 impl ReplyBMap {
-    /// Create `ReplyBMap`
-    pub fn new(unique: u64, fd: RawFd) -> Self {
-        Self {
-            reply: ReplyRaw::new(unique, fd),
-        }
-    }
-
     /// Reply to a request with the given open result
     #[allow(dead_code)]
-    pub async fn bmap(self, block: u64) -> anyhow::Result<()> {
+    pub async fn bmap(self, block: u64) -> nix::Result<usize> {
         self.reply.send_data(FuseBMapOut { block }).await
-    }
-
-    /// Reply to a request with the given error code
-    #[allow(dead_code)]
-    pub async fn error(self, err: c_int) -> anyhow::Result<()> {
-        self.reply.send_error(err).await
     }
 }
 
@@ -651,14 +580,14 @@ impl ReplyDirectory {
         if self.data.len().overflow_add(entsize) > self.data.capacity() {
             return true;
         }
-        // TODO: do not use unsafe code
+        // TODO: refactory this, do not use unsafe code
         unsafe {
             let data_end_ptr = self.data.as_mut_ptr().add(self.data.len());
             let pdirent: *mut FuseDirEnt = utilities::cast_to_mut_ptr(&mut *data_end_ptr);
             (*pdirent).ino = ino;
             (*pdirent).off = offset.cast();
             (*pdirent).namelen = name_bytes.len().cast();
-            (*pdirent).typ = mode_from_kind_and_perm(kind, 0).overflow_shr(12);
+            (*pdirent).typ = fs::util::mode_from_kind_and_perm(kind, 0).overflow_shr(12);
             let dirent_end_ptr = data_end_ptr.add(mem::size_of_val(&*pdirent));
             ptr::copy_nonoverlapping(name_bytes.as_ptr(), dirent_end_ptr, name_bytes.len());
             let name_end_ptr = dirent_end_ptr.add(name_bytes.len());
@@ -670,14 +599,8 @@ impl ReplyDirectory {
     }
 
     /// Reply to a request with the filled directory buffer
-    pub async fn ok(self) -> anyhow::Result<()> {
+    pub async fn ok(self) -> nix::Result<usize> {
         self.reply.send_bytes(self.data).await
-    }
-
-    /// Reply to a request with the given error code
-    #[allow(dead_code)]
-    pub async fn error(self, err: c_int) -> anyhow::Result<()> {
-        self.reply.send_error(err).await
     }
 }
 
@@ -689,16 +612,9 @@ pub struct ReplyXAttr {
 }
 
 impl ReplyXAttr {
-    /// Create `ReplyXAttr`
-    pub fn new(unique: u64, fd: RawFd) -> Self {
-        Self {
-            reply: ReplyRaw::new(unique, fd),
-        }
-    }
-
     /// Reply to a request with the size of the xattr.
     #[allow(dead_code)]
-    pub async fn size(self, size: u32) -> anyhow::Result<()> {
+    pub async fn size(self, size: u32) -> nix::Result<usize> {
         self.reply
             .send_data(FuseGetXAttrOut { size, padding: 0 })
             .await
@@ -706,13 +622,8 @@ impl ReplyXAttr {
 
     /// Reply to a request with the data in the xattr.
     #[allow(dead_code)]
-    pub async fn data(self, bytes: Vec<u8>) -> anyhow::Result<()> {
+    pub async fn data(self, bytes: Vec<u8>) -> nix::Result<usize> {
         self.reply.send_bytes(bytes).await
-    }
-
-    /// Reply to a request with the given error code.
-    pub async fn error(self, err: c_int) -> anyhow::Result<()> {
-        self.reply.send_error(err).await
     }
 }
 
@@ -770,12 +681,12 @@ mod test {
             let m_time = 64;
             let c_time = 64;
             #[cfg(target_os = "macos")]
-            let crtime = 64;
+            let creat_time = 64;
             let a_timensec = 32;
             let m_timensec = 32;
             let c_timensec = 32;
             #[cfg(target_os = "macos")]
-            let crtimensec = 32;
+            let creat_timensec = 32;
             let mode = 32;
             let nlink = 32;
             let uid = 32;
@@ -795,12 +706,12 @@ mod test {
                 mtime: m_time,
                 ctime: c_time,
                 #[cfg(target_os = "macos")]
-                crtime,
+                crtime: creat_time,
                 atimensec: a_timensec,
                 mtimensec: m_timensec,
                 ctimensec: c_timensec,
                 #[cfg(target_os = "macos")]
-                crtimensec,
+                crtimensec: creat_timensec,
                 mode,
                 nlink,
                 uid,

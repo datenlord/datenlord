@@ -173,37 +173,48 @@ pub struct FuseFileLock {
 }
 
 /// Bitmasks for `fuse_setattr_in.valid`
-///
-/// File mode
-pub const FATTR_MODE: u32 = 1 << 0;
-/// File user ID
-pub const FATTR_UID: u32 = 1 << 1;
-/// File group ID
-pub const FATTR_GID: u32 = 1 << 2;
-/// File size
-pub const FATTR_SIZE: u32 = 1 << 3;
-/// File access time
-pub const FATTR_ATIME: u32 = 1 << 4;
-/// File modified time
-pub const FATTR_MTIME: u32 = 1 << 5;
-/// File handler
-pub const FATTR_FH: u32 = 1 << 6;
-#[cfg(feature = "abi-7-9")]
-pub const FATTR_ATIME_NOW: u32 = 1 << 7;
-#[cfg(feature = "abi-7-9")]
-pub const FATTR_MTIME_NOW: u32 = 1 << 8;
-#[cfg(feature = "abi-7-9")]
-pub const FATTR_LOCKOWNER: u32 = 1 << 9;
-#[cfg(feature = "abi-7-23")]
-pub const FATTR_CTIME: u32 = 1 << 10;
-#[cfg(target_os = "macos")]
-pub const FATTR_CRTIME: u32 = 1 << 28;
-#[cfg(target_os = "macos")]
-pub const FATTR_CHGTIME: u32 = 1 << 29;
-#[cfg(target_os = "macos")]
-pub const FATTR_BKUPTIME: u32 = 1 << 30;
-#[cfg(target_os = "macos")]
-pub const FATTR_FLAGS: u32 = 1 << 31;
+pub mod setattr_flags {
+    /// To set file mode
+    pub const FATTR_MODE: u32 = 1 << 0;
+    /// To set file user ID
+    pub const FATTR_UID: u32 = 1 << 1;
+    /// To set file group ID
+    pub const FATTR_GID: u32 = 1 << 2;
+    /// To set file size
+    pub const FATTR_SIZE: u32 = 1 << 3;
+    /// To set file access time
+    pub const FATTR_ATIME: u32 = 1 << 4;
+    /// To set content modified time
+    pub const FATTR_MTIME: u32 = 1 << 5;
+    /// To set file handler
+    pub const FATTR_FH: u32 = 1 << 6;
+    /// To set atime as of now
+    #[cfg(feature = "abi-7-9")]
+    pub const FATTR_ATIME_NOW: u32 = 1 << 7;
+    /// To set mtime as of now
+    #[cfg(feature = "abi-7-9")]
+    pub const FATTR_MTIME_NOW: u32 = 1 << 8;
+    /// To set file lock owner
+    #[cfg(feature = "abi-7-9")]
+    pub const FATTR_LOCKOWNER: u32 = 1 << 9;
+    /// To set meta-data change time
+    #[cfg(feature = "abi-7-23")]
+    pub const FATTR_CTIME: u32 = 1 << 10;
+    /// To set creation time
+    #[cfg(target_os = "macos")]
+    pub const FATTR_CRTIME: u32 = 1 << 28;
+    /// To set change time
+    #[cfg(target_os = "macos")]
+    pub const FATTR_CHGTIME: u32 = 1 << 29;
+    /// To set backup time
+    #[cfg(target_os = "macos")]
+    pub const FATTR_BKUPTIME: u32 = 1 << 30;
+    /// To set flags, see chflags(2)
+    #[cfg(target_os = "macos")]
+    pub const FATTR_FLAGS: u32 = 1 << 31;
+}
+
+pub use setattr_flags::*;
 
 /// Flags returned by the OPEN request
 ///
@@ -494,31 +505,31 @@ pub enum FuseOpCode {
     /// Clean up filesystem
     FUSE_DESTROY = 38,
     /// Ioctl
-    #[cfg(feature = "abi-7-11")]
+    // #[cfg(feature = "abi-7-11")]
     FUSE_IOCTL = 39,
     /// Poll for IO readiness
-    #[cfg(feature = "abi-7-11")]
+    // #[cfg(feature = "abi-7-11")]
     FUSE_POLL = 40,
     /// A reply to a NOTIFY_RETRIEVE notification
-    #[cfg(feature = "abi-7-15")]
+    // #[cfg(feature = "abi-7-15")]
     FUSE_NOTIFY_REPLY = 41,
     /// Batch forget i-nodes
-    #[cfg(feature = "abi-7-16")]
+    // #[cfg(feature = "abi-7-16")]
     FUSE_BATCH_FORGET = 42,
     /// Allocate requested space
-    #[cfg(feature = "abi-7-19")]
+    // #[cfg(feature = "abi-7-19")]
     FUSE_FALLOCATE = 43,
     /// Read directory with attributes
-    #[cfg(feature = "abi-7-21")]
+    // #[cfg(feature = "abi-7-21")]
     FUSE_READDIRPLUS = 44,
     /// Rename2
-    #[cfg(feature = "abi-7-23")]
+    // #[cfg(feature = "abi-7-23")]
     FUSE_RENAME2 = 45,
     /// Find next data or hole after the specified offset
-    #[cfg(feature = "abi-7-24")]
+    // #[cfg(feature = "abi-7-24")]
     FUSE_LSEEK = 46,
     /// Copy a range of data from an opened file to another
-    #[cfg(feature = "abi-7-28")]
+    // #[cfg(feature = "abi-7-28")]
     FUSE_COPY_FILE_RANGE = 47,
 
     #[cfg(target_os = "macos")]
@@ -619,7 +630,7 @@ pub struct FuseForgetIn {
 }
 
 /// FUSE forget request input `fuse_forget_one`
-#[cfg(feature = "abi-7-16")]
+// #[cfg(feature = "abi-7-16")]
 #[repr(C)]
 #[derive(Debug)]
 pub struct FuseForgetOne {
@@ -630,12 +641,16 @@ pub struct FuseForgetOne {
 }
 
 /// FUSE batch forget request input `fuse_batch_forget_in`
-#[cfg(feature = "abi-7-16")]
+// #[cfg(feature = "abi-7-16")]
 #[repr(C)]
 #[derive(Debug)]
 pub struct FuseBatchForgetIn {
+    /// Batch count
     pub count: u32,
+    /// Alignment padding
     pub dummy: u32,
+    // Followed by `count` number of FuseForgetOne
+    // forgets: &[FuseForgetOne]
 }
 
 /// FUSE get attribute request input `fuse_getattr_in`
@@ -643,8 +658,11 @@ pub struct FuseBatchForgetIn {
 #[repr(C)]
 #[derive(Debug)]
 pub struct FuseGetAttrIn {
+    /// Get attribute flags
     pub getattr_flags: u32,
+    /// Alignment padding
     pub dummy: u32,
+    /// File handler
     pub fh: u64,
 }
 
@@ -667,9 +685,13 @@ pub struct FuseAttrOut {
 #[repr(C)]
 #[derive(Debug)]
 pub struct FuseGetXTimesOut {
+    /// Backup time seconds
     pub bkuptime: u64,
+    /// Creation time seconds
     pub crtime: u64,
+    /// Backup time nano-seconds
     pub bkuptimensec: u32,
+    /// Creation time nano-seconds
     pub crtimensec: u32,
 }
 
@@ -712,10 +734,10 @@ pub struct FuseRenameIn {
 }
 
 /// FUSE rename2 request input `fuse_rename2_in`
-#[cfg(feature = "abi-7-23")]
+// #[cfg(feature = "abi-7-23")]
 #[repr(C)]
 #[derive(Debug)]
-struct FuseRename2In {
+pub struct FuseRename2In {
     /// The new directory i-number
     pub newdir: u64,
     /// The flags maybe either `RENAME_NOREPLACE`=1 or `RENAME_EXCHANGE`=2
@@ -729,8 +751,11 @@ struct FuseRename2In {
 #[repr(C)]
 #[derive(Debug)]
 pub struct FuseExchangeIn {
+    /// Old directory i-number
     pub olddir: u64,
+    /// New directory i-number
     pub newdir: u64,
+    /// Exchange options
     pub options: u64,
 }
 
@@ -746,7 +771,7 @@ pub struct FuseLinkIn {
 #[repr(C)]
 #[derive(Debug)]
 pub struct FuseSetAttrIn {
-    ///
+    /// FUSE set attribute bit mask
     pub valid: u32,
     /// Alignment padding
     pub padding: u32,
@@ -790,20 +815,27 @@ pub struct FuseSetAttrIn {
     pub gid: u32,
     /// Alignment padding
     pub unused5: u32,
+    /// Backup time seconds
     #[cfg(target_os = "macos")]
     pub bkuptime: u64,
+    /// Change time seconds
     #[cfg(target_os = "macos")]
     pub chgtime: u64,
+    /// Creation time seconds
     #[cfg(target_os = "macos")]
     pub crtime: u64,
+    /// Backup time nano-seconds
     #[cfg(target_os = "macos")]
     pub bkuptimensec: u32,
+    /// Change time nano-seconds
     #[cfg(target_os = "macos")]
     pub chgtimensec: u32,
+    /// Creation time nano-seconds
     #[cfg(target_os = "macos")]
     pub crtimensec: u32,
+    /// See chflags(2)
     #[cfg(target_os = "macos")]
-    pub flags: u32, // see chflags(2)
+    pub flags: u32,
 }
 
 /// FUSE open request input `fuse_open_in`
@@ -1090,9 +1122,13 @@ pub const CUSE_INIT_INFO_MAX: u32 = 4096;
 #[repr(C)]
 #[derive(Debug)]
 pub struct CuseInitIn {
+    /// Protocol major version
     pub major: u32,
+    /// Protocol minor version
     pub minor: u32,
+    /// Alignment padding
     pub unused: u32,
+    /// CUSE flags
     pub flags: u32,
 }
 
@@ -1101,14 +1137,23 @@ pub struct CuseInitIn {
 #[repr(C)]
 #[derive(Debug)]
 pub struct CuseInitOut {
+    /// Protocol major version
     pub major: u32,
+    /// Protocol minor version
     pub minor: u32,
+    /// Alignment padding
     pub unused: u32,
+    /// CUSE flags
     pub flags: u32,
+    /// Max read size
     pub max_read: u32,
+    /// Max write size
     pub max_write: u32,
-    pub dev_major: u32, // chardev major
-    pub dev_minor: u32, // chardev minor
+    /// Device major version
+    pub dev_major: u32,
+    /// Device minor version
+    pub dev_minor: u32,
+    /// For future use
     pub spare: [u32; 10],
 }
 
@@ -1124,9 +1169,9 @@ pub struct FuseInterruptIn {
 #[repr(C)]
 #[derive(Debug)]
 pub struct FuseBMapIn {
-    /// The block index to be mapped
+    /// The block index within file to be mapped
     pub block: u64,
-    /// Block size
+    /// The unit of block index
     pub blocksize: u32,
     /// Alignment padding
     pub padding: u32,
@@ -1140,16 +1185,22 @@ pub struct FuseBMapOut {
     pub block: u64,
 }
 
-#[cfg(feature = "abi-7-11")]
+/// FUSE ioctl request input `fuse_ioctl_in`
+// #[cfg(feature = "abi-7-11")]
 #[repr(C)]
 #[derive(Debug)]
 pub struct FuseIoCtlIn {
-    // fuse_ioctl_in
+    /// File handler
     pub fh: u64,
+    /// FUSE ioctl flags
     pub flags: u32,
+    /// FUSE ioctl command
     pub cmd: u32,
+    /// FUSE ioctl command argument
     pub arg: u64,
+    /// The number of fetched bytes
     pub in_size: u32,
+    /// The maximum size of output data
     pub out_size: u32,
 }
 
@@ -1173,16 +1224,21 @@ pub struct FuseIoCtlOut {
     pub out_iovs: u32,
 }
 
-#[cfg(feature = "abi-7-11")]
+/// FUSE poll request input `fuse_poll_in`
+// #[cfg(feature = "abi-7-11")]
 #[repr(C)]
 #[derive(Debug)]
 pub struct FusePollIn {
-    // fuse_poll_in
+    /// File handler
     pub fh: u64,
+    /// Wakeup handler
     pub kh: u64,
+    /// Poll flags
     pub flags: u32,
+    /// Alignment padding
     #[cfg(feature = "abi-7-11")]
     pub padding: u32,
+    /// Poll events
     #[cfg(feature = "abi-7-21")]
     pub events: u32,
 }
@@ -1204,15 +1260,20 @@ pub struct FuseNotifyPollWakeUpOut {
     pub kh: u64,
 }
 
-#[cfg(feature = "abi-7-19")]
+/// FUSE file allocate request input `fuse_fallocate_in`
+// #[cfg(feature = "abi-7-19")]
 #[repr(C)]
 #[derive(Debug)]
 pub struct FuseFAllocateIn {
-    // fuse_fallocate_in
+    /// File handler
     pub fh: u64,
+    /// File allocate offset
     pub offset: u64,
+    /// File allocate length
     pub length: u64,
+    /// File mode
     pub mode: u32,
+    /// Alignment padding
     pub padding: u32,
 }
 
@@ -1262,8 +1323,8 @@ pub struct FuseDirEnt {
     pub namelen: u32,
     /// Entry type
     pub typ: u32,
-    // followed by name of namelen bytes
-    // TODO: char name[],
+    // Followed by name of namelen bytes
+    // char name[],
 }
 
 // TODO: re-define it
@@ -1273,12 +1334,15 @@ pub struct FuseDirEnt {
 // #define FUSE_DIRENT_SIZE(d) \
 //     FUSE_DIRENT_ALIGN(FUSE_NAME_OFFSET + (d)->namelen)
 
+/// FUSE directory entry plus `fuse_direntplus`
+/// used in `readdirplus()`
 #[cfg(feature = "abi-7-21")]
 #[repr(C)]
 #[derive(Debug)]
 pub struct FuseDirEntPlus {
-    // fuse_direntplus
+    /// FUSE directory entry extra info
     pub entry_out: FuseEntryOut,
+    /// FUSE directory entry
     pub dirent: FuseDirEnt,
 }
 
@@ -1362,36 +1426,48 @@ pub struct FuseNotifyRetrieveIn {
 // Device ioctls:
 // #define FUSE_DEV_IOC_CLONE    _IOR(229, 0, uint32_t)
 
-#[cfg(feature = "abi-7-24")]
+/// FUSE lseek request input `fuse_lseek_in`
+// #[cfg(feature = "abi-7-24")]
 #[repr(C)]
 #[derive(Debug)]
-struct FuseLSeekIn {
-    // fuse_lseek_in
+pub struct FuseLSeekIn {
+    /// File handler
     pub fh: u64,
+    /// Seek offset
     pub offset: u64,
+    /// The directive that tells lseek what the offset is relative to
     pub whence: u32,
+    /// Alignment padding
     pub padding: u32,
 }
 
-#[cfg(feature = "abi-7-24")]
+/// FUSE lseek response `fuse_lseek_out`
+// #[cfg(feature = "abi-7-24")]
 #[repr(C)]
 #[derive(Debug)]
-struct FuseLSeekOut {
-    // fuse_lseek_out
+pub struct FuseLSeekOut {
+    /// Seek offset
     pub offset: u64,
 }
 
-#[cfg(feature = "abi-7-28")]
+/// FUSE copy file range request input `fuse_copy_file_range_in`
+// #[cfg(feature = "abi-7-28")]
 #[repr(C)]
 #[derive(Debug)]
-struct FuseCopyFileRangeIn {
-    // fuse_copy_file_range_in
+pub struct FuseCopyFileRangeIn {
+    /// The file handler of the source file
     pub fh_in: u64,
+    /// The starting point from were the data should be read
     pub off_in: u64,
+    /// The i-number or the destination file
     pub nodeid_out: u64,
+    /// The file handler of the destination file
     pub fh_out: u64,
+    /// The starting point where the data should be written
     pub off_out: u64,
+    /// The maximum size of the data to copy
     pub len: u64,
+    /// The flags passed along with the `copy_file_range()` syscall
     pub flags: u64,
 }
 
@@ -1448,6 +1524,14 @@ unsafe_impl_fuse_abi_data_for! {
     FuseDirEnt,
 }
 
+// TODO: remove this after implement corresponding FUSE operations
+unsafe_impl_fuse_abi_data_for! {
+    FuseIoCtlIn,
+    FusePollIn,
+    FuseBatchForgetIn,
+    FuseForgetOne,
+}
+
 #[cfg(feature = "abi-7-9")]
 unsafe_impl_fuse_abi_data_for! {
     FuseGetAttrIn,
@@ -1457,9 +1541,9 @@ unsafe_impl_fuse_abi_data_for! {
 unsafe_impl_fuse_abi_data_for! {
     CuseInitIn,
     CuseInitOut,
-    FuseIoCtlIn,
+    // FuseIoCtlIn,
     FuseIoCtlOut,
-    FusePollIn,
+    // FusePollIn,
     FusePollOut,
     FuseNotifyPollWakeUpOut,
 }
@@ -1479,21 +1563,19 @@ unsafe_impl_fuse_abi_data_for! {
 
 #[cfg(feature = "abi-7-16")]
 unsafe_impl_fuse_abi_data_for! {
-    FuseForgetOne,
-    FuseBatchForgetIn,
+    // FuseForgetOne,
+    // FuseBatchForgetIn,
     FuseIoCtlIoVec,
 }
 
 #[cfg(feature = "abi-7-18")]
 unsafe_impl_fuse_abi_data_for! {
     FuseNotifyDeleteOut,
-
 }
 
-#[cfg(feature = "abi-7-19")]
+// #[cfg(feature = "abi-7-19")]
 unsafe_impl_fuse_abi_data_for! {
     FuseFAllocateIn,
-
 }
 
 #[cfg(feature = "abi-7-21")]
@@ -1501,18 +1583,18 @@ unsafe_impl_fuse_abi_data_for! {
     FuseDirEntPlus,
 }
 
-#[cfg(feature = "abi-7-23")]
+// #[cfg(feature = "abi-7-23")]
 unsafe_impl_fuse_abi_data_for! {
     FuseRename2In,
 }
 
-#[cfg(feature = "abi-7-24")]
+// #[cfg(feature = "abi-7-24")]
 unsafe_impl_fuse_abi_data_for! {
     FuseLSeekIn,
     FuseLSeekOut,
 }
 
-#[cfg(feature = "abi-7-28")]
+// #[cfg(feature = "abi-7-28")]
 unsafe_impl_fuse_abi_data_for! {
     FuseCopyFileRangeIn,
 }

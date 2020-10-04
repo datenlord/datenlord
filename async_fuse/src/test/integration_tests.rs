@@ -1,7 +1,8 @@
 use anyhow::Context;
-use log::info; // debug, warn
+use log::info;
 use nix::dir::Dir;
 use nix::fcntl::{self, OFlag};
+use nix::mount::MsFlags;
 use nix::sys::stat::Mode;
 use nix::unistd::{self, Whence};
 use std::collections::HashSet;
@@ -79,7 +80,7 @@ fn test_dir_manipulation_nix_way(mount_dir: &Path) -> anyhow::Result<()> {
     }
     unistd::mkdir(&dir_path, dir_mode)?;
 
-    let repeat_times = 3;
+    let repeat_times = 100;
     let mut sub_dirs = HashSet::new();
     for i in 0..repeat_times {
         let sub_dir_name = format!("test_sub_dir_{}", i);
@@ -111,29 +112,6 @@ fn test_dir_manipulation_nix_way(mount_dir: &Path) -> anyhow::Result<()> {
             }
         })
         .count();
-    // let count = dir_fd
-    //     .iter()
-    //     .filter(nix::Result::is_ok)
-    //     .map(|e| -> nix::dir::Entry {
-    //         e.unwrap() // safe to use unwrap() here
-    //     })
-    //     .filter(|e| {
-    //         let bytes = e.file_name().to_bytes();
-    //         !bytes.starts_with(&[b'.']) // skip hidden entries, '.' and '..'
-    //     })
-    //     .map(|e| -> anyhow::Result<()> {
-    //         let bytes = e.file_name().to_bytes(); // safe to use unwrap() here
-    //         let byte_vec = Vec::from(bytes);
-    //         let str_name = String::from_utf8(byte_vec)?;
-    //         assert!(
-    //             sub_dirs.contains(&str_name),
-    //             "the sub directory name {} should be in the hashmap {:?}",
-    //             str_name,
-    //             sub_dirs,
-    //         );
-    //         Ok(())
-    //     })
-    //     .count();
     assert_eq!(
         count,
         sub_dirs.len(),
@@ -359,20 +337,79 @@ fn test_rename_dir(mount_dir: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Test bind mount a FUSE directory to a tmpfs directory
+/// this test case need root privilege
+fn test_bind_mount(fuse_mount_dir: &Path) -> anyhow::Result<()> {
+    pub fn cleanup_dir(directory: &Path) -> anyhow::Result<()> {
+        let umount_res =
+            smol::block_on(async move { super::super::mount::umount(directory).await });
+        if umount_res.is_err() {
+            info!("cleanup_dir() failed to un-mount {:?}", directory);
+        }
+        fs::remove_dir_all(directory)
+            .context(format!("cleanup_dir() failed to remove {:?}", directory))?;
+        Ok(())
+    }
+
+    let from_dir = Path::new(fuse_mount_dir).join("bind_from_dir");
+    if from_dir.exists() {
+        cleanup_dir(&from_dir).context(format!("failed to cleanup {:?}", from_dir))?;
+    }
+    fs::create_dir(&from_dir).context(format!("failed to create {:?}", from_dir))?;
+
+    let target_dir = Path::new("/tmp/bind_target_dir");
+    if target_dir.exists() {
+        cleanup_dir(target_dir).context(format!("failed to cleanup {:?}", target_dir))?;
+    }
+    fs::create_dir(&target_dir).context(format!("failed to create {:?}", from_dir))?;
+
+    nix::mount::mount::<Path, Path, Path, Path>(
+        Some(&from_dir),
+        target_dir,
+        None, // fstype
+        MsFlags::MS_BIND | MsFlags::MS_NOSUID | MsFlags::MS_NODEV | MsFlags::MS_NOEXEC,
+        None, // mount option data
+    )
+    .context(format!(
+        "failed to bind mount {:?} to {:?}",
+        from_dir, target_dir,
+    ))?;
+
+    let file_path = Path::new(&target_dir).join("tmp.txt");
+    fs::write(&file_path, FILE_CONTENT)?;
+    let content = fs::read_to_string(&file_path)?;
+    fs::remove_file(&file_path)?; // immediate deletion
+    assert_eq!(content, FILE_CONTENT, "file content not match");
+
+    nix::mount::umount(target_dir).context(format!("failed to un-mount {:?}", target_dir))?;
+
+    // cleanup_dir(&from_dir)?;
+    // cleanup_dir(target_dir)?
+    fs::remove_dir_all(&from_dir).context(format!("failed to remove {:?}", from_dir))?;
+    fs::remove_dir_all(target_dir).context(format!("failed to remove {:?}", target_dir))?;
+    Ok(())
+}
+
 #[test]
 fn run_test() -> anyhow::Result<()> {
     let mount_dir = Path::new(DEFAULT_MOUNT_DIR);
 
     let th = test_util::setup(mount_dir)?;
-
     info!("begin integration test");
-    test_file_manipulation_rust_way(mount_dir)?;
-    test_file_manipulation_nix_way(mount_dir)?;
-    test_dir_manipulation_nix_way(mount_dir)?;
-    test_deferred_deletion(mount_dir)?;
-    test_rename_file_replace(mount_dir)?;
-    test_rename_file(mount_dir)?;
-    test_rename_dir(mount_dir)?;
+
+    if unistd::geteuid().is_root() {
+        info!("test bind mount with root user");
+        test_bind_mount(mount_dir).context("test_bind_mount() failed")?
+    }
+
+    test_file_manipulation_rust_way(mount_dir)
+        .context("test_file_manipulation_rust_way() failed")?;
+    test_file_manipulation_nix_way(mount_dir).context("test_file_manipulation_nix_way() failed")?;
+    test_dir_manipulation_nix_way(mount_dir).context("test_dir_manipulation_nix_way() failed")?;
+    test_deferred_deletion(mount_dir).context("test_deferred_deletion() failed")?;
+    test_rename_file_replace(mount_dir).context("test_rename_file_replace() failed")?;
+    test_rename_file(mount_dir).context("test_rename_file() failed")?;
+    test_rename_dir(mount_dir).context("test_rename_dir() failed")?;
 
     test_util::teardown(mount_dir, th)?;
     Ok(())

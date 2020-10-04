@@ -1,10 +1,11 @@
 //! The implementation of filesystem related utilities
 
-use anyhow::{self, Context};
+use anyhow::Context;
 use log::debug;
 use nix::fcntl::{self, OFlag};
 use nix::sys::stat::{self, FileStat, Mode, SFlag};
 use smol::blocking;
+use std::error::Error;
 use std::ffi::OsString;
 use std::os::unix::io::RawFd;
 use std::path::Path;
@@ -12,6 +13,37 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use utilities::Cast;
 
 use super::super::protocol::{FuseAttr, INum};
+
+/// Format `anyhow::Error`
+// TODO: refactor this
+pub fn format_anyhow_error(error: &anyhow::Error) -> String {
+    let err_msg_vec = error
+        .chain()
+        .map(std::string::ToString::to_string)
+        .collect::<Vec<_>>();
+    let mut err_msg = err_msg_vec.as_slice().join(", caused by: ");
+    err_msg.push_str(&format!(", root cause: {}", error.root_cause()));
+    err_msg
+}
+
+/// Format `nix::Error`
+// TODO: refactor this
+pub fn format_nix_error(error: nix::Error) -> String {
+    format!("{}, root cause: {:?}", error, error.source())
+}
+
+/// Build `nix::Error::Sys(..)` from `libc` error code
+pub fn build_sys_error_from_errno(error_code: std::os::raw::c_int) -> nix::Error {
+    nix::Error::from_errno(nix::errno::from_i32(error_code))
+}
+
+/// Build error result from `libc` error code
+pub fn build_error_result_from_errno<T>(
+    error_code: std::os::raw::c_int,
+    err_msg: String,
+) -> anyhow::Result<T> {
+    Err(build_sys_error_from_errno(error_code)).context(err_msg)
+}
 
 /// File attributes
 #[derive(Clone, Copy, Debug)]
@@ -69,7 +101,7 @@ pub fn parse_mode(mode: u32) -> Mode {
     #[cfg(target_os = "linux")]
     let file_mode = Mode::from_bits_truncate(mode);
     #[cfg(target_os = "macos")]
-    let file_mode = Mode::from_bits_truncate(mode as u16);
+    let file_mode = Mode::from_bits_truncate(mode.cast());
     debug!("helper_parse_mode() read file mode={:?}", file_mode);
     file_mode
 }
@@ -95,39 +127,46 @@ pub fn parse_sflag(flags: u32) -> SFlag {
     #[cfg(target_os = "linux")]
     let sflag = SFlag::from_bits_truncate(flags);
     #[cfg(target_os = "macos")]
-    let sflag = SFlag::from_bits_truncate(flags as u16);
+    let sflag = SFlag::from_bits_truncate(flags.cast());
     debug!("convert_sflag() read file type={:?}", sflag);
     sflag
 }
 
 /// Open directory
-pub async fn open_dir(path: &Path) -> nix::Result<RawFd> {
+pub async fn open_dir(path: &Path) -> anyhow::Result<RawFd> {
+    let dir_path = path.to_path_buf();
     let oflags = OFlag::O_RDONLY | OFlag::O_DIRECTORY;
     let path = path.to_path_buf();
-    let dfd = blocking!(fcntl::open(path.as_os_str(), oflags, Mode::empty()))?;
+    let dfd = blocking!(fcntl::open(dir_path.as_os_str(), oflags, Mode::empty()))
+        .context(format!("open_dir() failed to open directory={:?}", path))?;
     Ok(dfd)
 }
 
 /// Open directory relative to current working directory
-pub async fn open_dir_at(dfd: RawFd, child_name: OsString) -> nix::Result<RawFd> {
+pub async fn open_dir_at(dfd: RawFd, child_name: OsString) -> anyhow::Result<RawFd> {
+    let sub_dir_name = child_name.clone();
     let oflags = OFlag::O_RDONLY | OFlag::O_DIRECTORY;
     let dir_fd = blocking!(fcntl::openat(
         dfd,
-        child_name.as_os_str(),
+        sub_dir_name.as_os_str(),
         oflags,
         Mode::empty()
+    ))
+    .context(format!(
+        "open_dir_at() failed to open sub-directory={:?} under parent fd={}",
+        child_name, dfd
     ))?;
     Ok(dir_fd)
 }
 
 /// Load file attribute by fd
-pub async fn load_attr(fd: RawFd) -> nix::Result<FileAttr> {
+pub async fn load_attr(fd: RawFd) -> anyhow::Result<FileAttr> {
     /// Build creation timestamp
     #[cfg(target_os = "macos")]
-    const fn build_crtime(st: &FileStat) -> Option<SystemTime> {
+    fn build_crtime(st: &FileStat) -> Option<SystemTime> {
         UNIX_EPOCH.checked_add(Duration::new(
-            st.st_birthtime as u64,
-            st.st_birthtime_nsec as u32,
+            st.st_birthtime.cast(),
+            st.st_birthtime_nsec.cast(),
         ))
     }
     /// Build creation timestamp
@@ -136,16 +175,27 @@ pub async fn load_attr(fd: RawFd) -> nix::Result<FileAttr> {
         None
     }
 
-    let st = blocking!(stat::fstat(fd))?;
+    let st = blocking!(stat::fstat(fd)).context(format!(
+        "load_attr() failed get the file attribute of fd={}",
+        fd,
+    ))?;
 
     let a_time = UNIX_EPOCH.checked_add(Duration::new(st.st_atime.cast(), st.st_atime_nsec.cast()));
     let m_time = UNIX_EPOCH.checked_add(Duration::new(st.st_mtime.cast(), st.st_mtime_nsec.cast()));
     let c_time = UNIX_EPOCH.checked_add(Duration::new(st.st_ctime.cast(), st.st_ctime_nsec.cast()));
     let creation_time = build_crtime(&st);
 
-    let perm = parse_mode_bits(st.st_mode);
-    debug!("load_attr() got file permission={}", perm);
-    let kind = parse_sflag(st.st_mode);
+    #[cfg(target_os = "linux")]
+    let (perm, kind) = (parse_mode_bits(st.st_mode), parse_sflag(st.st_mode));
+    #[cfg(target_os = "macos")]
+    let (perm, kind) = (
+        parse_mode_bits(st.st_mode.cast()),
+        parse_sflag(st.st_mode.cast()),
+    );
+    debug!(
+        "load_attr() got file permission={} and kind={:?}",
+        perm, kind
+    );
 
     let nt = SystemTime::now();
     let attr = FileAttr {
@@ -174,17 +224,27 @@ pub async fn load_attr(fd: RawFd) -> nix::Result<FileAttr> {
 }
 
 /// Convert system time to timestamp in seconds and nano-seconds
-pub fn time_from_system_time(system_time: &SystemTime) -> anyhow::Result<(u64, u32)> {
-    let duration = system_time.duration_since(UNIX_EPOCH).context(format!(
-        "failed to convert SystemTime={:?} to Duration",
-        system_time
-    ))?;
-    Ok((duration.as_secs(), duration.subsec_nanos()))
+pub fn time_from_system_time(system_time: &SystemTime) -> (u64, u32) {
+    let duration = system_time
+        .duration_since(UNIX_EPOCH)
+        .context(format!(
+            "failed to convert SystemTime={:?} to Duration",
+            system_time
+        ))
+        .unwrap_or_else(|e| {
+            panic!(
+                "time_from_system_time() failed to convert SystemTime={:?} \
+                to timestamp(seconds, nano-seconds), the error is: {}",
+                system_time,
+                format_anyhow_error(&e),
+            )
+        });
+    (duration.as_secs(), duration.subsec_nanos())
 }
 
 /// Build file mode from `SFlag` and file permission
 pub fn mode_from_kind_and_perm(kind: SFlag, perm: u16) -> u32 {
-    let file_type: u32 = match kind {
+    let file_type = match kind {
         SFlag::S_IFIFO => libc::S_IFIFO,
         SFlag::S_IFCHR => libc::S_IFCHR,
         SFlag::S_IFBLK => libc::S_IFBLK,
@@ -195,18 +255,27 @@ pub fn mode_from_kind_and_perm(kind: SFlag, perm: u16) -> u32 {
         _ => panic!("unknown SFlag type={:?}", kind),
     };
     let file_perm: u32 = perm.into();
-    file_type | file_perm
+
+    #[cfg(target_os = "linux")]
+    {
+        file_type | file_perm
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let ftype: u32 = file_type.into();
+        file_perm | ftype
+    }
 }
 
 /// Convert `FileAttr` to `FuseAttr`
-pub fn convert_to_fuse_attr(attr: FileAttr) -> anyhow::Result<FuseAttr> {
-    let (a_time_secs, a_time_nanos) = time_from_system_time(&attr.atime)?;
-    let (m_time_secs, m_time_nanos) = time_from_system_time(&attr.mtime)?;
-    let (c_time_secs, c_time_nanos) = time_from_system_time(&attr.ctime)?;
+pub fn convert_to_fuse_attr(attr: FileAttr) -> FuseAttr {
+    let (a_time_secs, a_time_nanos) = time_from_system_time(&attr.atime);
+    let (m_time_secs, m_time_nanos) = time_from_system_time(&attr.mtime);
+    let (c_time_secs, c_time_nanos) = time_from_system_time(&attr.ctime);
     #[cfg(target_os = "macos")]
-    let (cr_time_secs, cr_time_nanos) = time_from_system_time(&attr.crtime)?;
+    let (creat_time_secs, creat_time_nanos) = time_from_system_time(&attr.crtime);
 
-    Ok(FuseAttr {
+    FuseAttr {
         ino: attr.ino,
         size: attr.size,
         blocks: attr.blocks,
@@ -214,12 +283,12 @@ pub fn convert_to_fuse_attr(attr: FileAttr) -> anyhow::Result<FuseAttr> {
         mtime: m_time_secs,
         ctime: c_time_secs,
         #[cfg(target_os = "macos")]
-        crtime: cr_time_secs,
+        crtime: creat_time_secs,
         atimensec: a_time_nanos,
         mtimensec: m_time_nanos,
         ctimensec: c_time_nanos,
         #[cfg(target_os = "macos")]
-        crtimensec: cr_time_nanos,
+        crtimensec: creat_time_nanos,
         mode: mode_from_kind_and_perm(attr.kind, attr.perm),
         nlink: attr.nlink,
         uid: attr.uid,
@@ -231,5 +300,5 @@ pub fn convert_to_fuse_attr(attr: FileAttr) -> anyhow::Result<FuseAttr> {
         blksize: 0, // TODO: find a proper way to set block size
         #[cfg(feature = "abi-7-9")]
         padding: 0,
-    })
+    }
 }
