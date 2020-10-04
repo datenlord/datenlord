@@ -18,7 +18,7 @@ use utilities::Cast;
 
 use super::aligned_bytes::AlignedBytes;
 //use super::channel::Channel;
-use super::fs::{FileLockParam, FileSystem, SetAttrParam};
+use super::fs::{FileLockParam, FileSystem, RenameParam, SetAttrParam};
 use super::fuse_reply::{
     ReplyAttr, ReplyBMap, ReplyCreate, ReplyData, ReplyDirectory, ReplyEmpty, ReplyEntry,
     ReplyInit, ReplyLock, ReplyOpen, ReplyStatFs, ReplyWrite, ReplyXAttr,
@@ -692,9 +692,14 @@ async fn dispatch<'a>(
             newname,
         } => {
             let reply = ReplyEmpty::new(req.unique(), fd);
-            filesystem
-                .rename(req, req.nodeid(), oldname, arg.newdir, newname, reply)
-                .await?;
+            let param = RenameParam {
+                old_parent: req.nodeid(),
+                old_name: oldname.to_os_string(),
+                new_parent: arg.newdir,
+                new_name: newname.to_os_string(),
+                flags: 0,
+            };
+            filesystem.rename(req, param, reply).await?;
         }
         Operation::Link { arg, name } => {
             let reply = ReplyEntry::new(req.unique(), fd);
@@ -893,12 +898,15 @@ async fn dispatch<'a>(
             oldname,
             newname,
         } => {
-            todo!(
-                "Rename2 arg={:?}, oldname={:?}, newname={}",
-                arg,
-                oldname,
-                newname
-            );
+            let reply = ReplyEmpty::new(req.unique(), fd);
+            let param = RenameParam {
+                old_parent: req.nodeid(),
+                old_name: oldname.to_owned(),
+                new_parent: arg.newdir,
+                new_name: new_name.to_owned(),
+                flags: arg.flags,
+            };
+            filesystem.rename(req, param, reply).await?;
         }
 
         #[cfg(target_os = "macos")]

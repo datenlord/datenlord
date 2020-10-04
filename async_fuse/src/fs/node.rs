@@ -79,8 +79,7 @@ impl Node {
     }
 
     /// Set node parent
-    #[allow(dead_code)]
-    fn set_parent_ino(&mut self, parent: u64) -> INum {
+    pub fn set_parent_ino(&mut self, parent: u64) -> INum {
         let old_parent = self.parent;
         self.parent = parent;
         old_parent
@@ -92,8 +91,7 @@ impl Node {
     }
 
     /// Set node name
-    #[allow(dead_code)]
-    fn set_name(&mut self, name: OsString) {
+    pub fn set_name(&mut self, name: OsString) {
         self.name = name;
     }
 
@@ -160,9 +158,8 @@ impl Node {
             .fetch_sub(nlookup.cast(), atomic::Ordering::Relaxed)
     }
 
-    #[allow(dead_code)]
     /// Load attribute
-    async fn load_attribute(&self) -> anyhow::Result<FileAttr> {
+    pub async fn load_attribute(&self) -> anyhow::Result<FileAttr> {
         let attr = util::load_attr(self.fd).await.context(format!(
             "load_attribute() failed to get the attribute of the node ino={}",
             self.get_ino(),
@@ -246,6 +243,17 @@ impl Node {
             NodeData::FileData(..) => panic!("forbidden to get entry from FileData"),
         }
     }
+
+    // /// Get a mutable directory entry by name
+    // pub fn get_entry_mut(&mut self, name: &OsStr) -> Option<&mut DirEntry> {
+    //     match &mut self.data {
+    //         NodeData::DirData(dir_data) => match dir_data.get_mut(name) {
+    //             Some(dir_entry) => Some(dir_entry),
+    //             None => None,
+    //         },
+    //         NodeData::FileData(..) => panic!("forbidden to get entry from FileData"),
+    //     }
+    // }
 
     /// Helper function to create or open sub-directory in a directory
     async fn open_child_dir_helper(
@@ -527,8 +535,7 @@ impl Node {
     }
 
     /// Insert directory entry
-    #[allow(dead_code)]
-    fn insert_entry(&mut self, child_entry: DirEntry) -> Option<DirEntry> {
+    pub fn insert_entry(&mut self, child_entry: DirEntry) -> Option<DirEntry> {
         let dir_data = match &mut self.data {
             NodeData::DirData(dir_data) => dir_data,
             NodeData::FileData(..) => panic!("forbidden to load DirData from file node"),
@@ -544,16 +551,17 @@ impl Node {
         previous_entry
     }
 
-    // fn remove_entry(&mut self, child_name: OsString) -> Option<DirEntry> {
-    //     let dir_data = match &mut self.data {
-    //         NodeData::DirData(dir_data) => dir_data,
-    //         NodeData::FileData(..) => panic!("forbidden to load DirData from file node"),
-    //     };
+    /// Remove directory entry from cache only
+    pub fn remove_entry(&mut self, child_name: &OsStr) -> Option<DirEntry> {
+        let dir_data = match &mut self.data {
+            NodeData::DirData(dir_data) => dir_data,
+            NodeData::FileData(..) => panic!("forbidden to load DirData from file node"),
+        };
 
-    //     dir_data.remove(child_name.as_os_str())
-    // }
+        dir_data.remove(child_name)
+    }
 
-    /// Unlink directory entry
+    /// Unlink directory entry from both cache and disk
     pub async fn unlink_entry(&mut self, child_name: OsString) -> anyhow::Result<DirEntry> {
         let dir_data = match &mut self.data {
             NodeData::DirData(dir_data) => dir_data,
