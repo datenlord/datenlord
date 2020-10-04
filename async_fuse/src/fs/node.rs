@@ -1,6 +1,6 @@
 //! The implementation of filesystem node
 
-use anyhow::{self, Context};
+use anyhow::Context;
 use log::debug;
 use nix::fcntl::{self, FcntlArg, OFlag};
 use nix::sys::stat::SFlag;
@@ -50,12 +50,12 @@ pub struct Node {
 impl Drop for Node {
     fn drop(&mut self) {
         // TODO: check unsaved data in cache
-        unistd::close(self.fd).unwrap_or_else(|_| {
+        unistd::close(self.fd).unwrap_or_else(|err| {
             panic!(
                 "DirNode::drop() failed to clode the file handler \
-                of the node name={:?} ino={}",
-                self.name, self.attr.ino
-            )
+                    of the node name={:?} ino={}, the error is: {}",
+                self.name, self.attr.ino, err,
+            );
         });
     }
 }
@@ -295,10 +295,10 @@ impl Node {
             ))?;
 
         // get new directory attribute
-        let child_attr = util::load_attr(child_raw_fd).await.context(
-            "open_child_dir_helper() failed to get the attribute of the new child directory"
-                .to_string(),
-        )?;
+        let child_attr = util::load_attr(child_raw_fd).await.context(format!(
+            "open_child_dir_helper() failed to get the attribute of the new child directory={:?}",
+            child_dir_name,
+        ))?;
         debug_assert_eq!(SFlag::S_IFDIR, child_attr.kind);
 
         if create_dir {
@@ -451,9 +451,10 @@ impl Node {
 
     // TODO: to remove
     /// Helper funtion to load directory data
-    async fn load_dir_data_helper(&self) -> nix::Result<BTreeMap<OsString, DirEntry>> {
+    async fn load_dir_data_helper(&self) -> anyhow::Result<BTreeMap<OsString, DirEntry>> {
         let fd = self.fd;
-        let dir = blocking!(Dir::from_fd(fd))?;
+        let dir =
+            blocking!(Dir::from_fd(fd)).context(format!("failed to build Dir from fd={}", fd))?;
         let dir_entry_map = blocking!(
             let dir_entry_map: BTreeMap<OsString, DirEntry> = dir
                 .filter_map(std::result::Result::ok) // filter out error result
@@ -501,13 +502,13 @@ impl Node {
             }
             let read_size = unistd::read(fd, &mut *file_data_vec).context(format!(
                 "load_file_data_helper() failed to \
-                    read the file of ino={} from disk",
+                    read the file data of ino={} from disk",
                 ino,
             ))?;
             unsafe {
                 file_data_vec.set_len(read_size);
             }
-            // TODO: should explicitly highlight the error type?
+            // Should explicitly highlight the error type
             Ok::<Vec<u8>, anyhow::Error>(file_data_vec)
         )?;
         debug_assert_eq!(file_data_vec.len(), file_size.cast());
@@ -628,22 +629,12 @@ impl Node {
 
     // File only methods
 
-    // TODO: maybe this function is not needed, consider refactory
-    /// Read from file
-    pub fn read_file(
-        &self,
-        func: impl FnOnce(&Vec<u8>) -> anyhow::Result<Vec<u8>>,
-    ) -> anyhow::Result<Vec<u8>> {
-        debug_assert!(
-            !self.need_load_file_data(),
-            "file data should be load before read".to_string(),
-        );
-        let file_data = match &self.data {
+    /// Get file data
+    pub fn get_file_data(&self) -> &Vec<u8> {
+        match &self.data {
             NodeData::DirData(..) => panic!("forbidden to load FileData from dir node"),
             NodeData::FileData(file_data) => file_data,
-        };
-
-        func(file_data)
+        }
     }
 
     /// Write to file
@@ -746,30 +737,6 @@ impl Node {
         root_node.load_data().await?;
 
         Ok(root_node)
-    }
-
-    /// Move file
-    #[allow(dead_code)]
-    fn move_file(
-        old_parent_node: &Self,
-        old_name: &OsStr,
-        new_parent_node: &Self,
-        new_name: &OsStr,
-    ) -> nix::Result<()> {
-        debug!(
-            "move_file() about to move file of old name={:?} \
-                from directory={:?} to directory={:?} with new name={:?}",
-            old_name,
-            old_parent_node.get_name(),
-            new_parent_node.get_name(),
-            new_name,
-        );
-        fcntl::renameat(
-            Some(old_parent_node.get_fd()),
-            Path::new(old_name),
-            Some(new_parent_node.get_fd()),
-            Path::new(new_name),
-        )
     }
 }
 

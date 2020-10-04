@@ -58,17 +58,33 @@ mod session;
 
 use session::Session;
 
+/// Argument name of FUSE mount point
+const MOUNT_POINT_ARG_NAME: &str = "mountpoint";
+
 fn main() -> anyhow::Result<()> {
     env_logger::init();
-    let mount_point = if let Some(path) = std::env::args_os().nth(1) {
-        path
-    } else {
-        return Err(anyhow::anyhow!(
-            "no mount point input, input args={}, the usage: [command name] <MOUNT_POINT>",
-            std::env::args().collect::<Vec<_>>().as_slice().join(" "),
-        ));
+
+    let matches = clap::App::new("DatenLord")
+        .about("Cloud Native Storage")
+        .arg(
+            clap::Arg::with_name(MOUNT_POINT_ARG_NAME)
+                .short("m")
+                .long(MOUNT_POINT_ARG_NAME)
+                .value_name("MOUNT_DIR")
+                .takes_value(true)
+                .required(true)
+                .help(
+                    "Set the mount point of FUSE, \
+                        required argument, no default value",
+                ),
+        )
+        .get_matches();
+    let mount_point = match matches.value_of(MOUNT_POINT_ARG_NAME) {
+        Some(mp) => mp,
+        None => panic!("No mount point input"),
     };
-    debug!("mount point: {:?}", mount_point);
+
+    debug!("FUSE mount point: {}", mount_point);
 
     smol::run(async move {
         let ss = Session::new(std::path::Path::new(&mount_point)).await?;

@@ -38,7 +38,7 @@ impl AlignedBytes {
             Ok(layout) => layout,
             Err(e) => panic!(
                 "Invalid layout: size = {}, align = {}, the error is: {}",
-                len, align, e
+                len, align, e,
             ),
         };
         let bytes = unsafe {

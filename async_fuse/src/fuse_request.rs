@@ -5,18 +5,15 @@ use std::fmt;
 use utilities::Cast;
 
 use super::byte_slice::ByteSlice;
-#[cfg(feature = "abi-7-19")]
-use super::protocol::FuseFAllocateIn;
+#[cfg(target_os = "macos")]
+use super::protocol::FuseExchangeIn;
 use super::protocol::{
-    FuseAccessIn, FuseBMapIn, FuseCreateIn, FuseFSyncIn, FuseFlushIn, FuseForgetIn, FuseGetXAttrIn,
-    FuseInHeader, FuseInitIn, FuseInterruptIn, FuseLinkIn, FuseLockIn, FuseMkDirIn, FuseMkNodIn,
-    FuseOpCode, FuseOpenIn, FuseReadIn, FuseReleaseIn, FuseRenameIn, FuseSetAttrIn, FuseSetXAttrIn,
-    FuseWriteIn,
+    FuseAccessIn, FuseBMapIn, FuseBatchForgetIn, FuseCopyFileRangeIn, FuseCreateIn,
+    FuseFAllocateIn, FuseFSyncIn, FuseFlushIn, FuseForgetIn, FuseForgetOne, FuseGetXAttrIn,
+    FuseInHeader, FuseInitIn, FuseInterruptIn, FuseIoCtlIn, FuseLSeekIn, FuseLinkIn, FuseLockIn,
+    FuseMkDirIn, FuseMkNodIn, FuseOpCode, FuseOpenIn, FusePollIn, FuseReadIn, FuseReleaseIn,
+    FuseRename2In, FuseRenameIn, FuseSetAttrIn, FuseSetXAttrIn, FuseWriteIn,
 };
-#[cfg(feature = "abi-7-16")]
-use super::protocol::{FuseBatchForgetIn, FuseForgetOne};
-#[cfg(feature = "abi-7-11")]
-use super::protocol::{FuseIoCtlIn, FusePollIn};
 
 /// FUSE operation
 #[derive(Debug)]
@@ -72,17 +69,9 @@ pub enum Operation<'a> {
         name: &'a OsStr,
     },
     /// FUSE_RENAME = 12
-    #[cfg(target_os = "macos")]
-    Rename {
-        arg: &'a FuseRenameIn,
-        oldname: &'a OsStr,
-        newname: &'a OsStr,
-    },
-    /// FUSE_RENAME = 12
-    #[cfg(target_os = "linux")]
     Rename {
         /// The FUSE rename request
-        arg: &'a FuseRenameIn, // TODO: verify abi protocal
+        arg: &'a FuseRenameIn,
         /// The old name
         oldname: &'a OsStr,
         /// The new name
@@ -220,7 +209,7 @@ pub enum Operation<'a> {
     /// FUSE_DESTROY = 38
     Destroy,
     /// FUSE_IOCTL = 39
-    #[cfg(feature = "abi-7-11")]
+    // #[cfg(feature = "abi-7-11")]
     IoCtl {
         /// The FUSE ioctl request
         arg: &'a FuseIoCtlIn,
@@ -228,16 +217,19 @@ pub enum Operation<'a> {
         data: &'a [u8],
     },
     /// FUSE_POLL = 40
-    #[cfg(feature = "abi-7-11")]
+    // #[cfg(feature = "abi-7-11")]
     Poll {
         /// The FUSE poll request
         arg: &'a FusePollIn,
     },
     /// FUSE_NOTIFY_REPLY = 41
-    #[cfg(feature = "abi-7-15")]
-    NotifyReply { data: &'a [u8] },
+    // #[cfg(feature = "abi-7-15")]
+    NotifyReply {
+        /// FUSE notify reply data
+        data: &'a [u8],
+    },
     /// FUSE_BATCH_FORGET = 42
-    #[cfg(feature = "abi-7-16")]
+    // #[cfg(feature = "abi-7-16")]
     BatchForget {
         /// The FUSE batch forget request
         arg: &'a FuseBatchForgetIn,
@@ -245,19 +237,19 @@ pub enum Operation<'a> {
         nodes: &'a [FuseForgetOne],
     },
     /// FUSE_FALLOCATE = 43
-    #[cfg(feature = "abi-7-19")]
+    // #[cfg(feature = "abi-7-19")]
     FAllocate {
         /// The FUSE fallocate request
         arg: &'a FuseFAllocateIn,
     },
     /// FUSE_READDIRPLUS = 44,
-    #[cfg(feature = "abi-7-21")]
+    // #[cfg(feature = "abi-7-21")]
     ReadDirPlus {
         /// The FUSE read directory plus request
         arg: &'a FuseReadIn,
     },
     /// FUSE_RENAME2 = 45,
-    #[cfg(feature = "abi-7-23")]
+    // #[cfg(feature = "abi-7-23")]
     Rename2 {
         /// The FUSE rename2 request
         arg: &'a FuseRename2In,
@@ -266,14 +258,14 @@ pub enum Operation<'a> {
         /// The new file name
         newname: &'a OsStr,
     },
-    // FUSE_LSEEK = 46,
-    #[cfg(feature = "abi-7-24")]
+    /// FUSE_LSEEK = 46,
+    // #[cfg(feature = "abi-7-24")]
     LSeek {
         /// The FUSE lseek request
         arg: &'a FuseLSeekIn,
     },
-    // FUSE_COPY_FILE_RANGE = 47,
-    #[cfg(feature = "abi-7-28")]
+    /// FUSE_COPY_FILE_RANGE = 47,
+    // #[cfg(feature = "abi-7-28")]
     CopyFileRange {
         /// The FUSE copy file range request
         arg: &'a FuseCopyFileRangeIn,
@@ -344,16 +336,24 @@ impl<'a> Operation<'a> {
             36 => FuseOpCode::FUSE_INTERRUPT,
             37 => FuseOpCode::FUSE_BMAP,
             38 => FuseOpCode::FUSE_DESTROY,
-            #[cfg(feature = "abi-7-11")]
+            // #[cfg(feature = "abi-7-11")]
             39 => FuseOpCode::FUSE_IOCTL,
-            #[cfg(feature = "abi-7-11")]
+            // #[cfg(feature = "abi-7-11")]
             40 => FuseOpCode::FUSE_POLL,
-            #[cfg(feature = "abi-7-15")]
+            // #[cfg(feature = "abi-7-15")]
             41 => FuseOpCode::FUSE_NOTIFY_REPLY,
-            #[cfg(feature = "abi-7-16")]
+            // #[cfg(feature = "abi-7-16")]
             42 => FuseOpCode::FUSE_BATCH_FORGET,
-            #[cfg(feature = "abi-7-19")]
+            // #[cfg(feature = "abi-7-19")]
             43 => FuseOpCode::FUSE_FALLOCATE,
+            // #[cfg(feature = "abi-7-21")]
+            44 => FuseOpCode::FUSE_READDIRPLUS,
+            // #[cfg(feature = "abi-7-23")]
+            45 => FuseOpCode::FUSE_RENAME2,
+            // #[cfg(feature = "abi-7-24")]
+            46 => FuseOpCode::FUSE_LSEEK,
+            // #[cfg(feature = "abi-7-28")]
+            47 => FuseOpCode::FUSE_COPY_FILE_RANGE,
 
             #[cfg(target_os = "macos")]
             61 => FuseOpCode::FUSE_SETVOLNAME,
@@ -442,24 +442,36 @@ impl<'a> Operation<'a> {
             FuseOpCode::FUSE_INTERRUPT => Operation::Interrupt { arg: data.fetch()? },
             FuseOpCode::FUSE_BMAP => Operation::BMap { arg: data.fetch()? },
             FuseOpCode::FUSE_DESTROY => Operation::Destroy,
-            #[cfg(feature = "abi-7-11")]
+            // #[cfg(feature = "abi-7-11")]
             FuseOpCode::FUSE_IOCTL => Operation::IoCtl {
                 arg: data.fetch()?,
                 data: data.fetch_all(),
             },
-            #[cfg(feature = "abi-7-11")]
+            // #[cfg(feature = "abi-7-11")]
             FuseOpCode::FUSE_POLL => Operation::Poll { arg: data.fetch()? },
-            #[cfg(feature = "abi-7-15")]
+            // #[cfg(feature = "abi-7-15")]
             FuseOpCode::FUSE_NOTIFY_REPLY => Operation::NotifyReply {
                 data: data.fetch_all(),
             },
-            #[cfg(feature = "abi-7-16")]
+            // #[cfg(feature = "abi-7-16")]
             FuseOpCode::FUSE_BATCH_FORGET => Operation::BatchForget {
                 arg: data.fetch()?,
                 nodes: data.fetch_all_as_slice()?,
             },
-            #[cfg(feature = "abi-7-19")]
+            // #[cfg(feature = "abi-7-19")]
             FuseOpCode::FUSE_FALLOCATE => Operation::FAllocate { arg: data.fetch()? },
+            // #[cfg(feature = "abi-7-21")]
+            FuseOpCode::FUSE_READDIRPLUS => Operation::ReadDirPlus { arg: data.fetch()? },
+            // #[cfg(feature = "abi-7-23")]
+            FuseOpCode::FUSE_RENAME2 => Operation::Rename2 {
+                arg: data.fetch()?,
+                oldname: data.fetch_os_str()?,
+                newname: data.fetch_os_str()?,
+            },
+            // #[cfg(feature = "abi-7-24")]
+            FuseOpCode::FUSE_LSEEK => Operation::LSeek { arg: data.fetch()? },
+            // #[cfg(feature = "abi-7-28")]
+            FuseOpCode::FUSE_COPY_FILE_RANGE => Operation::CopyFileRange { arg: data.fetch()? },
 
             #[cfg(target_os = "macos")]
             FuseOpCode::FUSE_SETVOLNAME => Operation::SetVolName {
@@ -586,44 +598,52 @@ impl fmt::Display for Operation<'_> {
             }
             Operation::Destroy => write!(f, "DESTROY"),
 
-            #[cfg(feature = "abi-7-11")]
+            // #[cfg(feature = "abi-7-11")]
             Operation::IoCtl { arg, data } => write!(
                 f,
                 "IOCTL fh={}, flags {:#x}, cmd={}, arg={}, data={:?}",
                 arg.fh, arg.flags, arg.cmd, arg.arg, data,
             ),
-            #[cfg(feature = "abi-7-11")]
+            // #[cfg(feature = "abi-7-11")]
             Operation::Poll { arg } => {
                 write!(f, "POLL fh={}, kh={}, flags={:#x} ", arg.fh, arg.kh, arg.flags)
             }
-            #[cfg(feature = "abi-7-15")]
+            // #[cfg(feature = "abi-7-15")]
             Operation::NotifyReply { data } => write!(f, "NOTIFY REPLY data={:?}", data),
-            #[cfg(feature = "abi-7-16")]
+            // #[cfg(feature = "abi-7-16")]
             Operation::BatchForget { arg, nodes } => {
                 write!(f, "BATCH FORGOT count={}, nodes={:?}", arg.count, nodes)
             }
-            #[cfg(feature = "abi-7-19")]
+            // #[cfg(feature = "abi-7-19")]
             Operation::FAllocate { arg } => write!(
                 f,
                 "FALLOCATE fh={}, offset={}, length={}, mode={:#05o}",
                 arg.fh, arg.offset, arg.length, arg.mode,
             ),
-            #[cfg(feature = "abi-7-21")]
+            // #[cfg(feature = "abi-7-21")]
             Operation::ReadDirPlus { arg } => write!(
                 f,
                 "READDIRPLUS fh={}, offset={}, size={}",
                 arg.fh, arg.offset, arg.size,
             ),
-            #[cfg(feature = "abi-7-23")]
+            // #[cfg(feature = "abi-7-23")]
             Operation::Rename2 { arg, oldname, newname } => write!(
                 f,
                 "RENAME2 name={:?}, newdir={:#018x}, newname={:?}, flags={:#x}",
                 oldname, arg.newdir, newname, arg.flags,
             ),
             // #[cfg(feature = "abi-7-24")]
-            // FUSE_LSEEK = 46,
+            Operation::LSeek { arg } => write!(
+                f,
+                "LSEEK fh={}, offset={}, whence={}",
+                arg.fh, arg.offset, arg.whence,
+            ),
             // #[cfg(feature = "abi-7-28")]
-            // FUSE_COPY_FILE_RANGE = 47,
+            Operation::CopyFileRange { arg } => write!(
+                f,
+                "COPYFILERANGE src fh={}, dst fh={}, flags={:#?}",
+                arg.fh_in, arg.fh_out, arg.flags,
+            ),
 
             #[cfg(target_os = "macos")]
             Operation::SetVolName { name } => write!(f, "SETVOLNAME name={:?}", name),

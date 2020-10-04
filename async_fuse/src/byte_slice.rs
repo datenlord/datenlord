@@ -88,7 +88,6 @@ impl<'a> ByteSlice<'a> {
     }
 
     /// Fetch remaining bytes and build a slice of target instances
-    #[allow(dead_code)]
     pub fn fetch_all_as_slice<T: FuseAbiData>(&mut self) -> anyhow::Result<&'a [T]> {
         let elem_len: usize = mem::size_of::<T>();
 
