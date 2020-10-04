@@ -718,7 +718,7 @@ pub struct FuseRenameIn {
 struct FuseRename2In {
     /// The new directory i-number
     pub newdir: u64,
-    /// The flags maybe either `RENAME_EXCHANGE` or `RENAME_NOREPLACE`
+    /// The flags maybe either `RENAME_NOREPLACE`=1 or `RENAME_EXCHANGE`=2
     pub flags: u32,
     /// Alignment padding
     pub padding: u32,

@@ -9,7 +9,7 @@ use nix::unistd;
 use smol::blocking;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::{OsStr, OsString};
-use std::os::unix::io::{FromRawFd, IntoRawFd};
+use std::os::unix::io::{FromRawFd, IntoRawFd, RawFd};
 use std::path::Path;
 use std::time::{Duration, SystemTime};
 use utilities::{Cast, OverflowArithmetic};
@@ -65,6 +65,20 @@ pub struct SetAttrParam {
     pub bkuptime: Option<SystemTime>,
     /// See chflags(2)
     pub flags: Option<u32>,
+}
+
+/// Rename parameters
+pub struct RenameParam {
+    /// Old parent directory i-number
+    pub old_parent: u64,
+    /// Old name
+    pub old_name: OsString,
+    /// New parent directory i-number
+    pub new_parent: u64,
+    /// New name
+    pub new_name: OsString,
+    /// Rename flags
+    pub flags: u32,
 }
 
 /// POSIX file lock parameters
@@ -319,6 +333,11 @@ impl FileSystem {
             // when deferred deletion, remove entry from directory first
             self.may_deferred_delete_node_helper(node_ino).await?;
             reply.ok().await?;
+            debug!(
+                "remove_node_helper() successfully removed child node of ino={}, \
+                    name={:?} and type={:?} under parent ino={}",
+                node_ino, node_name, node_type, parent,
+            );
             Ok(())
         }
     }
@@ -733,17 +752,212 @@ impl FileSystem {
         reply.error(ENOSYS).await
     }
 
-    /// Rename a file.
+    /// Rename a file
+    ///
+    /// If the target exists it should be atomically replaced. If
+    /// the target's inode's lookup count is non-zero, the file
+    /// system is expected to postpone any removal of the inode
+    /// until the lookup count reaches zero (see description of the
+    /// forget function).
+    ///
+    /// *flags* may be `RENAME_EXCHANGE` or `RENAME_NOREPLACE`. If
+    /// `RENAME_NOREPLACE` is specified, the filesystem must not
+    /// overwrite *newname* if it exists and return an error
+    /// instead. If `RENAME_EXCHANGE` is specified, the filesystem
+    /// must atomically exchange the two files, i.e. both must
+    /// exist and neither may be deleted.
+    #[allow(clippy::too_many_lines)]
     pub async fn rename(
         &mut self,
-        _req: &Request<'_>,
-        _parent: u64,
-        _name: &OsStr,
-        _newparent: u64,
-        _newname: &OsStr,
+        req: &Request<'_>,
+        param: RenameParam,
         reply: ReplyEmpty,
     ) -> anyhow::Result<()> {
-        reply.error(ENOSYS).await
+        let old_parent = param.old_parent;
+        let old_name = param.old_name;
+        let new_parent = param.new_parent;
+        let new_name = param.new_name;
+        let flags = param.flags;
+        debug!(
+            "rename(old parent={}, old name={:?}, new parent={}, new name={:?}, req={:?})",
+            old_parent, old_name, new_parent, new_name, req,
+        );
+        let no_replace = flags == 1; // RENAME_NOREPLACE
+        let exchange = flags == 2; // RENAME_EXCHANGE
+
+        let new_entry_ino = {
+            // Pre-check
+            let old_parent_node = self.cache.get(&old_parent).unwrap_or_else(|| {
+                panic!(
+                    "rename() found fs is inconsistent, \
+                        the parent i-node of ino={} should be in cache",
+                    old_parent,
+                );
+            });
+            match old_parent_node.get_entry(&old_name) {
+                None => {
+                    debug!(
+                        "rename() failed to find child entry of name={:?} under parent directory ino={}",
+                        old_name, old_parent,
+                    );
+                    return reply.error(ENOENT).await;
+                }
+                Some(old_entry) => {
+                    if self.cache.get(&old_entry.ino()).is_none() {
+                        panic!(
+                            "rename() found fs is inconsistent, the i-node of name={:?} and ino={} to rename should be in cache",
+                            old_name, old_entry.ino(),
+                        );
+                        // return;
+                    }
+                }
+            }
+
+            let new_parent_node = self.cache.get(&new_parent).unwrap_or_else(|| {
+                panic!(
+                    "rename() found fs is inconsistent, \
+                        the new parent i-node of ino={} should be in cache",
+                    new_parent,
+                );
+            });
+            if let Some(new_entry) = new_parent_node.get_entry(&new_name) {
+                debug_assert_eq!(&new_name, &new_entry.entry_name());
+                if no_replace {
+                    return reply.error(EEXIST).await; // RENAME_NOREPLACE
+                }
+                debug!(
+                    "rename() found the new parent directory of ino={} already has a child with name={:?}",
+                    new_parent, new_name,
+                );
+                new_entry.ino()
+            } else {
+                0
+            }
+        };
+
+        let old_parent_fd: RawFd;
+        let new_parent_fd: RawFd;
+        // all checks passed, ready to rename
+        let entry_to_move = {
+            // TODO: support thread-safe
+            let old_parent_node = self.cache.get_mut(&old_parent).unwrap_or_else(|| {
+                panic!(
+                    "impossible case, the parent i-node of ino={} should be in cache",
+                    old_parent,
+                )
+            });
+            old_parent_fd = old_parent_node.get_fd();
+            match old_parent_node.remove_entry(&old_name) {
+                None => panic!(
+                    "impossible case, the child entry of name={:?} \
+                        should be under parent directory ino={}",
+                    old_name, old_parent
+                ),
+                Some(old_entry) => {
+                    DirEntry::new(old_entry.ino(), new_name.clone(), old_entry.entry_type())
+                }
+            }
+        };
+        let old_entry_ino = entry_to_move.ino();
+        let replace_res = {
+            // Just replace, may deferred delete
+            if (!exchange) && new_entry_ino > 0 {
+                self.may_deferred_delete_node_helper(new_entry_ino).await?;
+            }
+
+            // TODO: support thread-safe
+            let new_parent_node = self.cache.get_mut(&new_parent).unwrap_or_else(|| {
+                panic!(
+                    "impossible case, the new parent i-node of ino={} should be in cache",
+                    new_parent
+                )
+            });
+            new_parent_fd = new_parent_node.get_fd();
+            new_parent_node.insert_entry(entry_to_move)
+        };
+        if exchange && new_entry_ino > 0 {
+            // RENAME_EXCHANGE
+            if let Some(existing_entry) = replace_res {
+                let exchange_entry = DirEntry::new(
+                    existing_entry.ino(),
+                    old_name.clone(),
+                    existing_entry.entry_type(),
+                );
+
+                // TODO: support thread-safe
+                let old_parent_node = self.cache.get_mut(&old_parent).unwrap_or_else(|| {
+                    panic!(
+                        "impossible case, the parent i-node of ino={} should be in cache",
+                        old_parent,
+                    )
+                });
+                let insert_res = old_parent_node.insert_entry(exchange_entry);
+                debug_assert!(
+                    insert_res.is_none(),
+                    "impossible case, the child entry of name={:?} should have been \
+                            moved out of old parent directory ino={}",
+                    old_name,
+                    old_parent,
+                );
+                let exchanged_node = self.cache.get_mut(&new_entry_ino).unwrap_or_else(|| {
+                    panic!(
+                        "impossible case, the new entry i-node of ino={} should be in cache",
+                        new_entry_ino,
+                    )
+                });
+                exchanged_node.set_parent_ino(new_parent);
+                exchanged_node.set_name(new_name.clone());
+                let exchanged_attr = exchanged_node.load_attribute().await.context(format!(
+                    "failed to load attribute of new entry i-node of ino={}",
+                    new_entry_ino,
+                ))?;
+                debug_assert_eq!(exchanged_attr.ino, exchanged_node.get_ino());
+                debug_assert_eq!(exchanged_attr.ino, new_entry_ino);
+                todo!(
+                    "rename2 system call has not been supported in libc to exchange two nodes yet!"
+                );
+            } else {
+                panic!(
+                    "impossible case, the child entry of name={:?} to be exchanged \
+                        should be under new parent directory ino={}",
+                    new_name, new_parent,
+                );
+            }
+        } else {
+            nix::fcntl::renameat(
+                Some(old_parent_fd),
+                Path::new(&old_name),
+                Some(new_parent_fd),
+                Path::new(&new_name),
+            )
+            .context(format!(
+                "rename() failed to move the old file name={:?} under old parent ino={}
+                    to the new file name={:?} under new parent ino={}",
+                old_name, old_parent, new_name, new_parent,
+            ))?;
+
+            let moved_node = self.cache.get_mut(&old_entry_ino).unwrap_or_else(|| {
+                panic!(
+                    "impossible case, the old entry i-node of ino={} should be in cache",
+                    old_entry_ino,
+                )
+            });
+            moved_node.set_parent_ino(new_parent);
+            moved_node.set_name(new_name.clone());
+            let moved_attr = moved_node.load_attribute().await.context(format!(
+                "failed to load attribute of old entry i-node of ino={}",
+                old_entry_ino,
+            ))?;
+            debug_assert_eq!(moved_attr.ino, moved_node.get_ino());
+            debug_assert_eq!(moved_attr.ino, old_entry_ino);
+            debug!(
+                "rename() successfully moved the old file name={:?} of ino={} under old parent ino={}
+                    to the new file name={:?} of ino={} under new parent ino={}",
+                old_name, old_entry_ino, old_parent, new_name, old_entry_ino, new_parent,
+            );
+        }
+
+        reply.ok().await
     }
 
     /// Create a hard link.

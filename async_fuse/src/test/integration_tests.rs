@@ -1,3 +1,4 @@
+use anyhow::Context;
 use log::info; // debug, warn
 use nix::dir::Dir;
 use nix::fcntl::{self, OFlag};
@@ -196,7 +197,6 @@ fn test_deferred_deletion(mount_dir: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-#[allow(dead_code)]
 fn test_rename_file(mount_dir: &Path) -> anyhow::Result<()> {
     info!("rename file");
     let from_dir = Path::new(&mount_dir).join("from_dir");
@@ -242,8 +242,7 @@ fn test_rename_file(mount_dir: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-#[allow(dead_code)]
-fn test_rename_file_no_replace(mount_dir: &Path) -> anyhow::Result<()> {
+fn test_rename_file_replace(mount_dir: &Path) -> anyhow::Result<()> {
     info!("rename file no replace");
     let oflags = OFlag::O_CREAT | OFlag::O_EXCL | OFlag::O_RDWR;
     let file_mode = Mode::from_bits_truncate(0o644);
@@ -270,7 +269,8 @@ fn test_rename_file_no_replace(mount_dir: &Path) -> anyhow::Result<()> {
         FILE_CONTENT.len(),
     );
 
-    fs::rename(&old_file, &new_file).expect_err("rename no replace should fail");
+    // fs::rename(&old_file, &new_file).expect_err("rename no replace should fail");
+    fs::rename(&old_file, &new_file).context("rename replace should not fail")?;
 
     let mut buffer: Vec<u8> = iter::repeat(0_u8).take(FILE_CONTENT.len()).collect();
     unistd::lseek(old_fd, 0, Whence::SeekSet)?;
@@ -307,8 +307,8 @@ fn test_rename_file_no_replace(mount_dir: &Path) -> anyhow::Result<()> {
     );
 
     assert!(
-        old_file.exists(),
-        "the old file {:?} should exist",
+        !old_file.exists(),
+        "the old file {:?} should not exist",
         new_file,
     );
     assert!(
@@ -318,12 +318,11 @@ fn test_rename_file_no_replace(mount_dir: &Path) -> anyhow::Result<()> {
     );
 
     // Clean up
-    fs::remove_file(&old_file)?;
+    // fs::remove_file(&old_file)?;
     fs::remove_file(&new_file)?;
     Ok(())
 }
 
-#[allow(dead_code)]
 fn test_rename_dir(mount_dir: &Path) -> anyhow::Result<()> {
     info!("rename directory");
     let from_dir = Path::new(&mount_dir).join("from_dir");
@@ -371,10 +370,9 @@ fn run_test() -> anyhow::Result<()> {
     test_file_manipulation_nix_way(mount_dir)?;
     test_dir_manipulation_nix_way(mount_dir)?;
     test_deferred_deletion(mount_dir)?;
-    // TODO: enable thiese test after implemented rename()
-    // test_rename_file_no_replace(mount_dir)?;
-    // test_rename_file(mount_dir)?;
-    // test_rename_dir(mount_dir)?;
+    test_rename_file_replace(mount_dir)?;
+    test_rename_file(mount_dir)?;
+    test_rename_dir(mount_dir)?;
 
     test_util::teardown(mount_dir, th)?;
     Ok(())
