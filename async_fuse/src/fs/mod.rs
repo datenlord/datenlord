@@ -2155,7 +2155,7 @@ impl FileSystem {
         &mut self,
         _req: &Request<'_>,
         reply: ReplyXTimes,
-    ) -> anyhow::Result<()> {
+    ) -> nix::Result<usize> {
         reply.error_code(libc::ENOSYS).await
     }
 }

@@ -143,7 +143,7 @@ async fn fuser_mount(mount_point: &Path) -> anyhow::Result<RawFd> {
     let mount_handle = blocking!(Command::new("fusermount")
         .arg("-o")
         // fusermount option allow_other only allowed if user_allow_other is set in /etc/fuse.conf
-        .arg("nosuid,nodev") // rw,async,noatime,noexec,nonempty,auto_unmount,allow_other
+        .arg("nosuid,nodev,nonempty") // rw,async,noatime,noexec,auto_unmount,allow_other
         .arg(mount_path.as_os_str())
         .env("_FUSE_COMMFD", remote.to_string())
         .output())

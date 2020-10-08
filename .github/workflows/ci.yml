@@ -164,7 +164,8 @@ jobs:
           mkdir fuse_mount_dir
           RUST_LOG=debug target/debug/async_fuse -m ./fuse_mount_dir &>datenlord.log &
           cd fuse_mount_dir
-          #prove -rv ../ntfs-3g-pjd-fstest
+          prove -rv ../ntfs-3g-pjd-fstest/tests/chflags
+          prove -rv ../ntfs-3g-pjd-fstest/tests/xacl
       #- name: Setup tmate session
       #  if: ${{ always() }}
       #  uses: mxschmitt/action-tmate@v3
