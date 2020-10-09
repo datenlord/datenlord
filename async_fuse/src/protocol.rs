@@ -100,6 +100,7 @@ pub struct FuseAttr {
     pub mtime: u64,
     /// Meta-data changed time seconds
     pub ctime: u64,
+    /// Creation time seconds
     #[cfg(target_os = "macos")]
     pub crtime: u64,
     /// Access time nano-seconds
@@ -108,8 +109,8 @@ pub struct FuseAttr {
     pub mtimensec: u32,
     /// Meta-data changed time nano-seconds
     pub ctimensec: u32,
+    /// Creation time nano-seconds
     #[cfg(target_os = "macos")]
-    /// Creation time seconds
     pub crtimensec: u32,
     /// File mode
     pub mode: u32,
@@ -247,11 +248,9 @@ pub mod fopen_flags {
     #[cfg(feature = "abi-7-31")]
     pub const FOPEN_STREAM: u32 = 1 << 4;
 
-    /// TODO: write documentation for FOPEN_PURGE_ATTR
     #[cfg(target_os = "macos")]
     pub const FOPEN_PURGE_ATTR: u32 = 1 << 30;
 
-    /// TODO: write documentation for FOPEN_PURGE_UBC
     #[cfg(target_os = "macos")]
     pub const FOPEN_PURGE_UBC: u32 = 1 << 31;
 }
@@ -532,10 +531,13 @@ pub enum FuseOpCode {
     // #[cfg(feature = "abi-7-28")]
     FUSE_COPY_FILE_RANGE = 47,
 
+    /// Set volume name
     #[cfg(target_os = "macos")]
     FUSE_SETVOLNAME = 61,
+    /// Get extended times
     #[cfg(target_os = "macos")]
     FUSE_GETXTIMES = 62,
+    /// Rename exchange
     #[cfg(target_os = "macos")]
     FUSE_EXCHANGE = 63,
 
@@ -988,6 +990,7 @@ pub struct FuseSetXAttrIn {
     pub size: u32,
     /// The flags that specifies the meanings of this operation
     pub flags: u32,
+    /// Attribute position
     #[cfg(target_os = "macos")]
     pub position: u32,
     /// Alignment padding
@@ -1003,6 +1006,7 @@ pub struct FuseGetXAttrIn {
     pub size: u32,
     /// Alignment padding
     pub padding: u32,
+    /// Attribute position
     #[cfg(target_os = "macos")]
     pub position: u32,
     /// Alignment padding

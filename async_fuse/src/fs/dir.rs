@@ -22,14 +22,21 @@ impl Dir {
     /// Converts from a file descriptor, closing it on success or failure.
     pub fn from_fd(fd: RawFd) -> nix::Result<Self> {
         let d = unsafe { libc::fdopendir(fd) };
-        let ptr_res = ptr::NonNull::new(d);
-        if let Some(non_null_ptr) = ptr_res {
-            Ok(Self(non_null_ptr))
-        } else {
-            let e = nix::Error::last();
-            unsafe { libc::close(fd) };
-            Err(e)
-        }
+        ptr::NonNull::new(d).map_or_else(
+            || {
+                let e = nix::Error::last();
+                unsafe { libc::close(fd) };
+                Err(e)
+            },
+            |non_null_ptr| Ok(Self(non_null_ptr)),
+        )
+        // if let Some(non_null_ptr) = ptr_res {
+        //     Ok(Self(non_null_ptr))
+        // } else {
+        //     let e = nix::Error::last();
+        //     unsafe { libc::close(fd) };
+        //     Err(e)
+        // }
     }
 }
 

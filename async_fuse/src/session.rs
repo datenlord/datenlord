@@ -56,10 +56,10 @@ const INIT_FLAGS: u32 = FUSE_ASYNC_READ | FUSE_CASE_INSENSITIVE | FUSE_VOL_RENAM
 // TODO: Add FUSE_EXPORT_SUPPORT and FUSE_BIG_WRITES (requires ABI 7.10)
 
 /// The max size of write requests from the kernel. The absolute minimum is 4k,
-/// FUSE recommends at least 128k, max 16M. The FUSE default is 16M on macOS
-/// and 128k on other systems.
+/// FUSE recommends at least 128k, max 16M. The FUSE default is  128k on Linux.
 #[cfg(target_os = "linux")]
 const MAX_WRITE_SIZE: u32 = 128 * 1024;
+/// The FUSE default max size of write requests is 16M on macOS
 #[cfg(target_os = "macos")]
 const MAX_WRITE_SIZE: u32 = 16 * 1024 * 1024;
 
@@ -732,20 +732,14 @@ async fn dispatch<'a>(
             filesystem.flush(req, arg.fh, arg.lock_owner, reply).await
         }
         Operation::Release { arg } => {
-            let flush = match arg.release_flags & FUSE_RELEASE_FLUSH {
-                0 => false,
-                _ => true,
-            };
+            let flush = !matches!(arg.release_flags & FUSE_RELEASE_FLUSH, 0);
             let reply = ReplyEmpty::new(req.unique(), fd);
             filesystem
                 .release(req, arg.fh, arg.flags, arg.lock_owner, flush, reply)
                 .await
         }
         Operation::FSync { arg } => {
-            let datasync = match arg.fsync_flags & 1 {
-                0 => false,
-                _ => true,
-            };
+            let datasync = !matches!(arg.fsync_flags & 1, 0);
             let reply = ReplyEmpty::new(req.unique(), fd);
             filesystem.fsync(req, arg.fh, datasync, reply).await
         }
@@ -764,10 +758,7 @@ async fn dispatch<'a>(
             filesystem.releasedir(req, arg.fh, arg.flags, reply).await
         }
         Operation::FSyncDir { arg } => {
-            let datasync = match arg.fsync_flags & 1 {
-                0 => false,
-                _ => true,
-            };
+            let datasync = !matches!(arg.fsync_flags & 1, 0);
             let reply = ReplyEmpty::new(req.unique(), fd);
             filesystem.fsyncdir(req, arg.fh, datasync, reply).await
         }
@@ -909,7 +900,10 @@ async fn dispatch<'a>(
                 old_name: oldname.to_os_string(),
                 new_parent: arg.newdir,
                 new_name: newname.to_os_string(),
+                #[cfg(target_os = "linux")]
                 flags: arg.flags,
+                #[cfg(target_os = "macos")]
+                flags: arg.flags.cast(),
             };
             filesystem.rename(req, param, reply).await
         }
@@ -927,7 +921,7 @@ async fn dispatch<'a>(
         #[cfg(target_os = "macos")]
         Operation::SetVolName { name } => {
             let reply = ReplyEmpty::new(req.unique(), fd);
-            filesystem.setvolname(&req, name, reply).await
+            filesystem.setvolname(req, name, reply).await
         }
         #[cfg(target_os = "macos")]
         Operation::Exchange {
@@ -936,22 +930,19 @@ async fn dispatch<'a>(
             newname,
         } => {
             let reply = ReplyEmpty::new(req.unique(), fd);
-            filesystem
-                .exchange(
-                    &req,
-                    arg.olddir,
-                    &oldname,
-                    arg.newdir,
-                    &newname,
-                    arg.options,
-                    reply,
-                )
-                .await
+            let param = RenameParam {
+                old_parent: req.nodeid(),
+                old_name: oldname.to_os_string(),
+                new_parent: arg.newdir,
+                new_name: newname.to_os_string(),
+                flags: arg.options,
+            };
+            filesystem.exchange(req, param, reply).await
         }
         #[cfg(target_os = "macos")]
         Operation::GetXTimes => {
             let reply = ReplyXTimes::new(req.unique(), fd);
-            filesystem.getxtimes(&req, reply).await
+            filesystem.getxtimes(req, reply).await
         }
 
         #[cfg(feature = "abi-7-11")]

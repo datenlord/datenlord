@@ -2,7 +2,6 @@ use anyhow::Context;
 use log::info;
 use nix::dir::Dir;
 use nix::fcntl::{self, OFlag};
-use nix::mount::MsFlags;
 use nix::sys::stat::Mode;
 use nix::unistd::{self, Whence};
 use std::collections::HashSet;
@@ -339,7 +338,16 @@ fn test_rename_dir(mount_dir: &Path) -> anyhow::Result<()> {
 
 /// Test bind mount a FUSE directory to a tmpfs directory
 /// this test case need root privilege
+#[cfg(target_os = "linux")]
 fn test_bind_mount(fuse_mount_dir: &Path) -> anyhow::Result<()> {
+    use nix::mount::MsFlags;
+
+    if unistd::geteuid().is_root() {
+        info!("test bind mount with root user");
+    } else {
+        // Skip bind mount test for non-root user
+        return Ok(());
+    }
     pub fn cleanup_dir(directory: &Path) -> anyhow::Result<()> {
         let umount_res =
             smol::block_on(async move { super::super::mount::umount(directory).await });
@@ -397,11 +405,8 @@ fn run_test() -> anyhow::Result<()> {
     let th = test_util::setup(mount_dir)?;
     info!("begin integration test");
 
-    if unistd::geteuid().is_root() {
-        info!("test bind mount with root user");
-        test_bind_mount(mount_dir).context("test_bind_mount() failed")?
-    }
-
+    #[cfg(target_os = "linux")]
+    test_bind_mount(mount_dir).context("test_bind_mount() failed")?;
     test_file_manipulation_rust_way(mount_dir)
         .context("test_file_manipulation_rust_way() failed")?;
     test_file_manipulation_nix_way(mount_dir).context("test_file_manipulation_nix_way() failed")?;
