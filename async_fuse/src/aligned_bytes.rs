@@ -46,7 +46,8 @@ impl AlignedBytes {
             if ptr.is_null() {
                 alloc_api::handle_alloc_error(layout);
             }
-            let address = std::mem::transmute::<*mut u8, usize>(ptr);
+            // std::mem::transmute::<*mut u8, usize>(ptr);
+            let address = utilities::mut_ptr_to_usize(ptr);
             debug_assert!(
                 address.overflow_rem(align) == 0,
                 "pointer = {:p} is not a multiple of alignment = {}",

@@ -19,50 +19,73 @@ mod param {
     // TODO: use mount flags from libc
     // /// read only filesystem
     // pub const MNT_RDONLY: i32 = 0x00000001;
-    /// don't honor setuid bits on fs
+    /// Do not honor setuid bits on fs
     pub const MNT_NOSUID: i32 = 0x0000_0008;
-    /// don't interpret special files
+    /// Do not interpret special files
     pub const MNT_NODEV: i32 = 0x0000_0010;
-    /// force unmount or readonly change
+    /// Force unmount or readonly change
     pub const MNT_FORCE: i32 = 0x0008_0000;
-    /// Don't allow user extended attributes
+    /// Do not allow user extended attributes
     pub const MNT_NOUSERXATTR: i32 = 0x0100_0000;
-    /// disable update of file access time
+    /// Disable update of file access time
     pub const MNT_NOATIME: i32 = 0x1000_0000;
 
+    /// Page size
     pub const PAGE_SIZE: u32 = 4096;
 
+    /// FUSE default block size
     pub const FUSE_DEFAULT_BLOCKSIZE: u32 = 4096;
+    /// FUSE default time out seconds
     pub const FUSE_DEFAULT_DAEMON_TIMEOUT: u32 = 60; // seconds
+    /// FUSE default IO size
     pub const FUSE_DEFAULT_IOSIZE: u32 = 16 * PAGE_SIZE;
 
+    /// FUSE ioctl magic number
     pub const FUSE_IOC_MAGIC: u8 = b'F';
+    /// FUSE ioctl type mode
     pub const FUSE_IOC_TYPE_MODE: u8 = 5;
 
+    /// FUSE unknow filesystem sub-type
     pub const FUSE_FSSUBTYPE_UNKNOWN: u32 = 0;
+    /// FUSE debug mode
     pub const FUSE_MOPT_DEBUG: u64 = 0x0000_0000_0000_0040;
+    /// FUSE filesystem name
     pub const FUSE_MOPT_FSNAME: u64 = 0x0000_0000_0000_1000;
+    /// FUSE no macOS extended attributes
     pub const FUSE_MOPT_NO_APPLEXATTR: u64 = 0x0000_0000_0080_0000;
 
-    /// length of fs type name including null
+    /// The length of fs type name including null
     pub const MFSTYPENAMELEN: libc::size_t = 16;
-    ///PATH_MAX
+    /// Max path length
     pub const MAXPATHLEN: libc::size_t = 1024;
 
+    /// FUSE mount arguments
     #[repr(C)]
     pub struct FuseMountArgs {
-        pub mntpath: [u8; MAXPATHLEN],        // path to the mount point
-        pub fsname: [u8; MAXPATHLEN],         // file system description string
-        pub fstypename: [u8; MFSTYPENAMELEN], // file system type name
-        pub volname: [u8; MAXPATHLEN],        // volume name
-        pub altflags: u64,                    // see mount-time flags below
-        pub blocksize: u32,                   // fictitious block size of our "storage"
-        pub daemon_timeout: u32,              // timeout in seconds for upcalls to daemon
-        pub fsid: u32,                        // optional custom value for part of fsid[0]
-        pub fssubtype: u32,                   // file system sub type id
-        pub iosize: u32,                      // maximum size for reading or writing
-        pub random: u32,                      // random "secret" from device
-        pub rdev: u32,                        // dev_t for the /dev/osxfuse{n} in question
+        /// path to the mount point
+        pub mntpath: [u8; MAXPATHLEN],
+        /// file system description string
+        pub fsname: [u8; MAXPATHLEN],
+        /// file system type name
+        pub fstypename: [u8; MFSTYPENAMELEN],
+        /// volume name
+        pub volname: [u8; MAXPATHLEN],
+        /// see mount-time flags below
+        pub altflags: u64,
+        /// fictitious block size of our "storage"
+        pub blocksize: u32,
+        /// timeout in seconds for upcalls to daemon
+        pub daemon_timeout: u32,
+        /// optional custom value for part of fsid[0]
+        pub fsid: u32,
+        /// file system sub type id
+        pub fssubtype: u32,
+        /// maximum size for reading or writing
+        pub iosize: u32,
+        /// random "secret" from device
+        pub random: u32,
+        /// dev_t for the /dev/osxfuse{n} in question
+        pub rdev: u32,
     }
 }
 
@@ -227,10 +250,10 @@ async fn direct_mount(mount_point: &Path) -> anyhow::Result<RawFd> {
 
 /// macOS un-mount
 #[cfg(target_os = "macos")]
-pub async fn umount(mount_point: impl AsRef<Path>) -> anyhow::Result<()> {
-    let mntpnt = mount_point.as_ref().to_path_buf();
+pub async fn umount(mount_path: &Path) -> anyhow::Result<()> {
+    let mount_point = mount_path.to_path_buf();
     blocking!(
-        let mntpnt = mntpnt.as_os_str();
+        let mntpnt = mount_point.as_os_str();
         let res = unsafe { libc::unmount(utilities::cast_to_ptr(mntpnt), param::MNT_FORCE) };
         if res < 0 {
             Err(nix::Error::last())
@@ -238,22 +261,31 @@ pub async fn umount(mount_point: impl AsRef<Path>) -> anyhow::Result<()> {
             Ok(())
         }
     )
-    .context(format!("failed to un-mount {:?}", mount_point.as_ref()))
+    .context(format!("failed to un-mount {:?}", mount_path))
 }
 
 /// macOS mount
+#[allow(clippy::integer_arithmetic)] // ioctl macro involves integer arithmetic
 #[cfg(target_os = "macos")]
-pub async fn mount(mount_point: impl AsRef<Path>) -> anyhow::Result<RawFd> {
-    use param::*;
+pub async fn mount(mount_path: &Path) -> anyhow::Result<RawFd> {
+    use param::{
+        FuseMountArgs, FUSE_DEFAULT_BLOCKSIZE, FUSE_DEFAULT_DAEMON_TIMEOUT, FUSE_DEFAULT_IOSIZE,
+        FUSE_FSSUBTYPE_UNKNOWN, FUSE_IOC_MAGIC, FUSE_IOC_TYPE_MODE, FUSE_MOPT_DEBUG,
+        FUSE_MOPT_FSNAME, FUSE_MOPT_NO_APPLEXATTR, MAXPATHLEN, MFSTYPENAMELEN, MNT_NOATIME,
+        MNT_NODEV, MNT_NOSUID, MNT_NOUSERXATTR,
+    };
     use std::ffi::CString;
     use utilities::Cast;
 
+    /// Copy slice
     fn copy_slice<T: Copy>(from: &[T], to: &mut [T]) {
         debug_assert!(to.len() >= from.len());
-        to[..from.len()].copy_from_slice(&from);
+        to.get_mut(..from.len())
+            .unwrap_or_else(|| panic!("failed to get {} elements of the target array", from.len()))
+            .copy_from_slice(from);
     }
 
-    let mount_point = mount_point.as_ref().to_path_buf();
+    let mount_point = mount_path.to_path_buf();
     let devpath = Path::new("/dev/osxfuse1");
 
     let fd = blocking!(fcntl::open(devpath, OFlag::O_RDWR, Mode::empty()))
@@ -275,9 +307,10 @@ pub async fn mount(mount_point: impl AsRef<Path>) -> anyhow::Result<RawFd> {
     )?;
 
     let full_path = blocking!(fs::canonicalize(mount_point))?;
-    let cstr_path = full_path
-        .to_str()
-        .expect("full mount path to string failed");
+    let cstr_path = full_path.to_str().context(format!(
+        "failed to convert full mount path={:?} to string",
+        full_path
+    ))?;
 
     let mntpath = CString::new(cstr_path)?;
     let fstype = CString::new("osxfuse")?;

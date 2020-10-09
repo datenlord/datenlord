@@ -91,7 +91,11 @@ pub struct RenameParam {
     /// New name
     pub new_name: OsString,
     /// Rename flags
+    #[cfg(target_os = "linux")]
     pub flags: u32,
+    /// Rename exchange options
+    #[cfg(target_os = "macos")]
+    pub flags: u64,
 }
 
 /// Rename helper parameters
@@ -701,7 +705,7 @@ impl FileSystem {
             debug_assert_eq!(exchanged_attr.ino, exchanged_node.get_ino());
             debug_assert_eq!(exchanged_attr.ino, new_entry_ino);
             // TODO: finish rename exchange when libc::rename2 is available
-            todo!("rename2 system call has not been supported in libc to exchange two nodes yet!");
+            panic!("rename2 system call has not been supported in libc to exchange two nodes yet!");
         } else {
             panic!(
                 "impossible case, the child entry of name={:?} to be exchanged \
@@ -2133,16 +2137,12 @@ impl FileSystem {
         reply.error_code(libc::ENOSYS).await
     }
 
-    /// macOS only (undocumented)
+    /// macOS only: Rename exchange
     #[cfg(target_os = "macos")]
     pub async fn exchange(
         &mut self,
         _req: &Request<'_>,
-        _parent: u64,
-        _name: &OsStr,
-        _newparent: u64,
-        _newname: &OsStr,
-        _options: u64,
+        _param: RenameParam,
         reply: ReplyEmpty,
     ) -> nix::Result<usize> {
         reply.error_code(libc::ENOSYS).await

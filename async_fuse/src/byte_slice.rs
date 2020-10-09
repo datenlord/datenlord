@@ -65,7 +65,8 @@ impl<'a> ByteSlice<'a> {
     pub fn fetch<T: FuseAbiData>(&mut self) -> anyhow::Result<&'a T> {
         let elem_len: usize = mem::size_of::<T>();
 
-        let address = unsafe { mem::transmute::<*const u8, usize>(self.data.as_ptr()) };
+        // unsafe { mem::transmute::<*const u8, usize>(self.data.as_ptr()) };
+        let address = utilities::ptr_to_usize(self.data.as_ptr());
         if address.overflow_rem(mem::align_of::<T>()) != 0 {
             anyhow::bail!(
                 "failed to convert bytes to type {}, \
@@ -101,7 +102,8 @@ impl<'a> ByteSlice<'a> {
             );
         }
 
-        let address = unsafe { mem::transmute::<*const u8, usize>(self.data.as_ptr()) };
+        // unsafe { mem::transmute::<*const u8, usize>(self.data.as_ptr()) };
+        let address = utilities::ptr_to_usize(self.data.as_ptr());
         if address.overflow_rem(mem::align_of::<T>()) != 0 {
             anyhow::bail!(
                 "failed to convert bytes to a slice of type={}, \
