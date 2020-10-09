@@ -40,11 +40,8 @@
 
 use log::debug;
 
-#[allow(unsafe_code)] // verified
+#[allow(unsafe_code)]
 mod byte_slice;
-
-#[allow(unsafe_code)] // verified
-mod aligned_bytes;
 
 // ioctl_read!() macro involves inter arithmetic
 #[allow(clippy::integer_arithmetic)]
