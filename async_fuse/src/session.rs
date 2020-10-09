@@ -1,5 +1,6 @@
 //! The implementation of FUSE session
 
+use aligned_bytes::AlignedBytes;
 use anyhow::{anyhow, Context};
 use crossbeam_channel::{Receiver, Sender};
 use futures::lock::Mutex;
@@ -18,7 +19,6 @@ use std::time::SystemTime;
 use std::time::{Duration, UNIX_EPOCH};
 use utilities::Cast;
 
-use super::aligned_bytes::AlignedBytes;
 //use super::channel::Channel;
 use super::fs::{self, FileLockParam, FileSystem, RenameParam, SetAttrParam};
 #[cfg(target_os = "macos")]

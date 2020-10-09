@@ -629,11 +629,11 @@ impl ReplyXAttr {
 
 #[cfg(test)]
 mod test {
-    use super::super::aligned_bytes::AlignedBytes;
     use super::super::byte_slice::ByteSlice;
     use super::super::protocol::{FuseAttr, FuseAttrOut, FuseOutHeader};
     use super::ReplyAttr;
 
+    use aligned_bytes::AlignedBytes;
     use anyhow::Context;
     use futures::prelude::*;
     use nix::fcntl::{self, OFlag};
