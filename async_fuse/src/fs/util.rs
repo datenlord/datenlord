@@ -2,17 +2,21 @@
 
 use anyhow::Context;
 use log::debug;
+use nix::errno::Errno;
 use nix::fcntl::{self, OFlag};
 use nix::sys::stat::{self, FileStat, Mode, SFlag};
 use smol::blocking;
+use std::collections::BTreeMap;
 use std::error::Error;
 use std::ffi::OsString;
-use std::os::unix::io::RawFd;
+use std::os::raw::c_int;
+use std::os::unix::{ffi::OsStrExt, io::RawFd};
 use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use utilities::Cast;
 
 use super::super::protocol::{FuseAttr, INum};
+use super::dir::{Dir, DirEntry};
 
 /// Format `anyhow::Error`
 // TODO: refactor this
@@ -33,16 +37,19 @@ pub fn format_nix_error(error: nix::Error) -> String {
 }
 
 /// Build `nix::Error::Sys(..)` from `libc` error code
-pub fn build_sys_error_from_errno(error_code: std::os::raw::c_int) -> nix::Error {
-    nix::Error::from_errno(nix::errno::from_i32(error_code))
+pub fn build_sys_error_from_errno(error_code: Errno) -> nix::Error {
+    nix::Error::from_errno(error_code)
 }
 
-/// Build error result from `libc` error code
-pub fn build_error_result_from_errno<T>(
-    error_code: std::os::raw::c_int,
-    err_msg: String,
-) -> anyhow::Result<T> {
+/// Build error result from `nix` error code
+pub fn build_error_result_from_errno<T>(error_code: Errno, err_msg: String) -> anyhow::Result<T> {
     Err(build_sys_error_from_errno(error_code)).context(err_msg)
+}
+
+/// Convert `nix::errno::Errno` to `c_int`
+#[allow(clippy::as_conversions)]
+pub const fn convert_nix_errno_to_cint(error_no: Errno) -> c_int {
+    error_no as c_int
 }
 
 /// File attributes
@@ -132,10 +139,15 @@ pub fn parse_sflag(flags: u32) -> SFlag {
     sflag
 }
 
+/// Get directory open flags
+pub fn get_dir_oflags() -> OFlag {
+    OFlag::O_RDONLY | OFlag::O_DIRECTORY
+}
+
 /// Open directory
 pub async fn open_dir(path: &Path) -> anyhow::Result<RawFd> {
     let dir_path = path.to_path_buf();
-    let oflags = OFlag::O_RDONLY | OFlag::O_DIRECTORY;
+    let oflags = get_dir_oflags();
     let path = path.to_path_buf();
     let dfd = blocking!(fcntl::open(dir_path.as_os_str(), oflags, Mode::empty()))
         .context(format!("open_dir() failed to open directory={:?}", path))?;
@@ -145,7 +157,7 @@ pub async fn open_dir(path: &Path) -> anyhow::Result<RawFd> {
 /// Open directory relative to current working directory
 pub async fn open_dir_at(dfd: RawFd, child_name: OsString) -> anyhow::Result<RawFd> {
     let sub_dir_name = child_name.clone();
-    let oflags = OFlag::O_RDONLY | OFlag::O_DIRECTORY;
+    let oflags = get_dir_oflags();
     let dir_fd = blocking!(fcntl::openat(
         dfd,
         sub_dir_name.as_os_str(),
@@ -159,8 +171,8 @@ pub async fn open_dir_at(dfd: RawFd, child_name: OsString) -> anyhow::Result<Raw
     Ok(dir_fd)
 }
 
-/// Load file attribute by fd
-pub async fn load_attr(fd: RawFd) -> anyhow::Result<FileAttr> {
+/// Convert `FileStat` to `FileAttr`
+fn convert_to_file_attr(st: FileStat) -> FileAttr {
     /// Build creation timestamp
     #[cfg(target_os = "macos")]
     fn build_crtime(st: &FileStat) -> Option<SystemTime> {
@@ -174,11 +186,6 @@ pub async fn load_attr(fd: RawFd) -> anyhow::Result<FileAttr> {
     const fn build_crtime(_st: &FileStat) -> Option<SystemTime> {
         None
     }
-
-    let st = blocking!(stat::fstat(fd)).context(format!(
-        "load_attr() failed get the file attribute of fd={}",
-        fd,
-    ))?;
 
     let a_time = UNIX_EPOCH.checked_add(Duration::new(st.st_atime.cast(), st.st_atime_nsec.cast()));
     let m_time = UNIX_EPOCH.checked_add(Duration::new(st.st_mtime.cast(), st.st_mtime_nsec.cast()));
@@ -198,7 +205,7 @@ pub async fn load_attr(fd: RawFd) -> anyhow::Result<FileAttr> {
     );
 
     let nt = SystemTime::now();
-    let attr = FileAttr {
+    FileAttr {
         ino: st.st_ino,
         size: st.st_size.cast(),
         blocks: st.st_blocks.cast(),
@@ -219,8 +226,30 @@ pub async fn load_attr(fd: RawFd) -> anyhow::Result<FileAttr> {
         flags: 0,
         #[cfg(target_os = "macos")]
         flags: st.st_flags,
-    };
-    Ok(attr)
+    }
+}
+
+// /// Load symlink target attribute
+// pub async fn load_symlink_target_attr(
+//     symlink_fd: RawFd,
+//     target_path: PathBuf,
+// ) -> anyhow::Result<FileAttr> {
+//     let nix_attr = blocking!(stat::fstatat(
+//         symlink_fd,
+//         target_path.as_os_str(),
+//         fcntl::AtFlags::AT_SYMLINK_FOLLOW
+//     ))?;
+//     Ok(convert_to_file_attr(nix_attr))
+// }
+
+/// Load file attribute by fd
+pub async fn load_attr(fd: RawFd) -> anyhow::Result<FileAttr> {
+    let st = blocking!(stat::fstat(fd)).context(format!(
+        "load_attr() failed get the file attribute of fd={}",
+        fd,
+    ))?;
+
+    Ok(convert_to_file_attr(st))
 }
 
 /// Convert system time to timestamp in seconds and nano-seconds
@@ -301,4 +330,42 @@ pub fn convert_to_fuse_attr(attr: FileAttr) -> FuseAttr {
         #[cfg(feature = "abi-7-9")]
         padding: 0,
     }
+}
+
+/// Helper funtion to load directory data
+pub async fn load_dir_data(fd: RawFd) -> anyhow::Result<BTreeMap<OsString, DirEntry>> {
+    let dir = blocking!(Dir::from_fd(fd)).context(format!("failed to build Dir from fd={}", fd))?;
+    let dir_entry_map = blocking!(
+        let dir_entry_map: BTreeMap<OsString, DirEntry> = dir
+            .filter_map(std::result::Result::ok) // filter out error result
+            .filter(|e| {
+                let bytes = e.entry_name().as_bytes();
+                !bytes.starts_with(&[b'.']) // skip hidden entries, '.' and '..'
+            })
+            .filter_map(|e| match e.entry_type() {
+                SFlag::S_IFDIR | SFlag::S_IFREG | SFlag::S_IFLNK => Some((e.entry_name().into(), e)),
+                _ => None,
+            })
+            .collect();
+        dir_entry_map
+    );
+    Ok(dir_entry_map)
+}
+
+/// Helper function to load file data
+pub async fn load_file_data(fd: RawFd, file_size: usize) -> anyhow::Result<Vec<u8>> {
+    let file_data_vec = blocking!(
+        let mut file_data_vec: Vec<u8> = Vec::with_capacity(file_size);
+        unsafe {
+            file_data_vec.set_len(file_data_vec.capacity());
+        }
+        let read_size = nix::unistd::read(fd, &mut *file_data_vec)?;
+        unsafe {
+            file_data_vec.set_len(read_size);
+        }
+        // Should explicitly highlight the error type
+        Ok::<Vec<u8>, anyhow::Error>(file_data_vec)
+    )?;
+    debug_assert_eq!(file_data_vec.len(), file_size.cast());
+    Ok(file_data_vec)
 }

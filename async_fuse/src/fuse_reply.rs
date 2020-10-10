@@ -1,6 +1,7 @@
 //! The implementation of FUSE response
 
 use log::debug;
+use nix::errno::Errno;
 use nix::sys::stat::SFlag;
 use nix::sys::uio::{self, IoVec};
 use smol::blocking;
@@ -127,8 +128,12 @@ impl<T: Send + Sync + 'static> ReplyRaw<T> {
     }
 
     /// Send error code response to FUSE kernel
-    async fn send_error_code(self, error_code: c_int) -> nix::Result<usize> {
-        self.send(ToBytes::Error, error_code).await
+    async fn send_error_code(self, error_code: Errno) -> nix::Result<usize> {
+        self.send(
+            ToBytes::Error,
+            fs::util::convert_nix_errno_to_cint(error_code),
+        )
+        .await
         // .context("send_error_code() failed to send error")
     }
 
@@ -157,8 +162,7 @@ impl<T: Send + Sync + 'static> ReplyRaw<T> {
                 fs::util::format_anyhow_error(&err),
             );
         };
-        #[allow(clippy::as_conversions)]
-        self.send_error_code(error_code as c_int).await
+        self.send_error_code(error_code).await
     }
 }
 
@@ -203,7 +207,7 @@ macro_rules! impl_fuse_reply_error_for{
             }
 
             #[allow(dead_code)]
-            pub async fn error_code(self, error_code: c_int) -> nix::Result<usize> {
+            pub async fn error_code(self, error_code: Errno) -> nix::Result<usize> {
                 self.reply.send_error_code(error_code).await
             }
         })+

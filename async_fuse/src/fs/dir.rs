@@ -30,13 +30,6 @@ impl Dir {
             },
             |non_null_ptr| Ok(Self(non_null_ptr)),
         )
-        // if let Some(non_null_ptr) = ptr_res {
-        //     Ok(Self(non_null_ptr))
-        // } else {
-        //     let e = nix::Error::last();
-        //     unsafe { libc::close(fd) };
-        //     Err(e)
-        // }
     }
 }
 
@@ -137,16 +130,17 @@ impl Iterator for Dir {
 #[cfg(test)]
 mod test {
     use futures::stream::StreamExt;
-    use nix::fcntl::{self, OFlag};
+    use nix::fcntl;
     use nix::sys::stat::Mode;
     use smol::blocking;
 
+    use super::super::util;
     use super::Dir;
 
     #[test]
     fn test_dir() -> nix::Result<()> {
         smol::run(async {
-            let oflags = OFlag::O_RDONLY | OFlag::O_DIRECTORY;
+            let oflags = util::get_dir_oflags();
             let fd = blocking!(fcntl::open(".", oflags, Mode::empty()))?;
             let dir = Dir::from_fd(fd)?;
             let mut dir = smol::iter(dir);

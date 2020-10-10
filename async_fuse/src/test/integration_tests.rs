@@ -14,7 +14,7 @@ use super::test_util::{self, DEFAULT_MOUNT_DIR, FILE_CONTENT};
 
 fn test_file_manipulation_rust_way(mount_dir: &Path) -> anyhow::Result<()> {
     info!("file manipulation Rust style");
-    let file_path = Path::new(&mount_dir).join("tmp.txt");
+    let file_path = Path::new(mount_dir).join("tmp.txt");
     fs::write(&file_path, FILE_CONTENT)?;
     let bytes = fs::read(&file_path)?;
     let content = String::from_utf8(bytes)?;
@@ -31,7 +31,7 @@ fn test_file_manipulation_rust_way(mount_dir: &Path) -> anyhow::Result<()> {
 
 fn test_file_manipulation_nix_way(mount_dir: &Path) -> anyhow::Result<()> {
     info!("file manipulation C style");
-    let file_path = Path::new(&mount_dir).join("tmp.test");
+    let file_path = Path::new(mount_dir).join("tmp.test");
     let oflags = OFlag::O_CREAT | OFlag::O_EXCL | OFlag::O_RDWR;
     let fd = fcntl::open(&file_path, oflags, Mode::empty())?;
 
@@ -72,7 +72,7 @@ fn test_file_manipulation_nix_way(mount_dir: &Path) -> anyhow::Result<()> {
 
 fn test_dir_manipulation_nix_way(mount_dir: &Path) -> anyhow::Result<()> {
     info!("directory manipulation C style");
-    let dir_path = Path::new(&mount_dir).join("test_dir");
+    let dir_path = Path::new(mount_dir).join("test_dir");
     let dir_mode = Mode::from_bits_truncate(0o755);
     if dir_path.exists() {
         fs::remove_dir_all(&dir_path)?;
@@ -126,7 +126,7 @@ fn test_dir_manipulation_nix_way(mount_dir: &Path) -> anyhow::Result<()> {
 
 fn test_deferred_deletion(mount_dir: &Path) -> anyhow::Result<()> {
     info!("file deletion deferred");
-    let file_path = Path::new(&mount_dir).join("test_file.txt");
+    let file_path = Path::new(mount_dir).join("test_file.txt");
     let oflags = OFlag::O_CREAT | OFlag::O_EXCL | OFlag::O_RDWR;
     let file_mode = Mode::from_bits_truncate(0o644);
     let fd = fcntl::open(&file_path, oflags, file_mode)?;
@@ -176,7 +176,7 @@ fn test_deferred_deletion(mount_dir: &Path) -> anyhow::Result<()> {
 
 fn test_rename_file(mount_dir: &Path) -> anyhow::Result<()> {
     info!("rename file");
-    let from_dir = Path::new(&mount_dir).join("from_dir");
+    let from_dir = Path::new(mount_dir).join("from_dir");
     if from_dir.exists() {
         fs::remove_dir_all(&from_dir)?;
     }
@@ -224,7 +224,7 @@ fn test_rename_file_replace(mount_dir: &Path) -> anyhow::Result<()> {
     let oflags = OFlag::O_CREAT | OFlag::O_EXCL | OFlag::O_RDWR;
     let file_mode = Mode::from_bits_truncate(0o644);
 
-    let old_file = Path::new(&mount_dir).join("old.txt");
+    let old_file = Path::new(mount_dir).join("old.txt");
     let old_fd = fcntl::open(&old_file, oflags, file_mode)?;
     let old_file_write_size = unistd::write(old_fd, FILE_CONTENT.as_bytes())?;
     assert_eq!(
@@ -302,7 +302,7 @@ fn test_rename_file_replace(mount_dir: &Path) -> anyhow::Result<()> {
 
 fn test_rename_dir(mount_dir: &Path) -> anyhow::Result<()> {
     info!("rename directory");
-    let from_dir = Path::new(&mount_dir).join("from_dir");
+    let from_dir = Path::new(mount_dir).join("from_dir");
     if from_dir.exists() {
         fs::remove_dir_all(&from_dir)?;
     }
@@ -336,18 +336,107 @@ fn test_rename_dir(mount_dir: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn test_symlink_dir(mount_dir: &Path) -> anyhow::Result<()> {
+    info!("create and read symlink to directory");
+    let src_dir = Path::new(mount_dir).join("src_dir");
+    if src_dir.exists() {
+        fs::remove_dir_all(&src_dir)?;
+    }
+    fs::create_dir(&src_dir).context(format!("failed to create directory={:?}", src_dir))?;
+
+    let src_file_name = "src.txt";
+    let src_path = Path::new(&src_dir).join(src_file_name);
+
+    let dst_dir = Path::new(mount_dir).join("dst_dir");
+    unistd::symlinkat(&src_dir, None, &dst_dir).context("create symlink failed")?;
+    // std::os::unix::fs::symlink(&src_path, &dst_path).context("create symlink failed")?;
+    let target_path = std::fs::read_link(&dst_dir).context("read symlink failed ")?;
+    assert_eq!(src_dir, target_path, "symlink target path not match");
+
+    let dst_path = Path::new(&dst_dir).join(src_file_name);
+    fs::write(&dst_path, FILE_CONTENT)
+        .context(format!("failed to write to file={:?}", src_path))?;
+    let content = fs::read_to_string(&src_path).context("read symlink target file failed")?;
+    assert_eq!(
+        content, FILE_CONTENT,
+        "symlink target file content not match"
+    );
+
+    let md = std::fs::symlink_metadata(&dst_dir).context("read symlink metadata failed")?;
+    assert!(
+        md.file_type().is_symlink(),
+        "file type should be symlink other than {:?}",
+        md.file_type(),
+    );
+
+    let entries = fs::read_dir(&dst_dir)
+        .context("ready symlink target directory failed")?
+        .filter_map(|e| {
+            if let Ok(entry) = e {
+                Some(entry.file_name())
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(entries.len(), 1, "the directory entry number not match");
+    assert_eq!(
+        std::ffi::OsStr::new(src_file_name),
+        entries
+            .get(0)
+            .unwrap_or_else(|| panic!("failed to get the first entry")),
+        "directory entry name not match",
+    );
+
+    fs::remove_dir_all(&src_dir)?; // immediate deletion
+    fs::remove_dir_all(&dst_dir)?; // immediate deletion
+    assert!(!src_dir.exists());
+    assert!(!dst_dir.exists());
+    Ok(())
+}
+
+fn test_symlink_file(mount_dir: &Path) -> anyhow::Result<()> {
+    info!("create and read symlink to file");
+
+    let src_path = Path::new(mount_dir).join("src.txt");
+    fs::write(&src_path, FILE_CONTENT)?;
+
+    let dst_path = Path::new(mount_dir).join("dst.txt");
+    unistd::symlinkat(&src_path, None, &dst_path).context("create symlink failed")?;
+    // std::os::unix::fs::symlink(&src_path, &dst_path).context("create symlink failed")?;
+    let target_path = std::fs::read_link(&dst_path).context("read symlink failed ")?;
+    assert_eq!(src_path, target_path, "symlink target path not match");
+
+    let content = fs::read_to_string(&dst_path).context("read symlink target file failed")?;
+    assert_eq!(
+        content, FILE_CONTENT,
+        "symlink target file content not match"
+    );
+
+    // let oflags = OFlag::O_RDWR;
+    // let fd = fcntl::open(&dst_path, oflags, Mode::empty())
+    //     .context("open symlink target file failed ")?;
+    // unistd::close(fd).context("failed to close symlink target file")?;
+
+    let md = std::fs::symlink_metadata(&dst_path).context("read symlink metadata failed")?;
+    assert!(
+        md.file_type().is_symlink(),
+        "file type should be symlink other than {:?}",
+        md.file_type(),
+    );
+    fs::remove_file(&src_path)?; // immediate deletion
+    fs::remove_file(&dst_path)?; // immediate deletion
+    assert!(!src_path.exists());
+    assert!(!dst_path.exists());
+    Ok(())
+}
+
 /// Test bind mount a FUSE directory to a tmpfs directory
 /// this test case need root privilege
 #[cfg(target_os = "linux")]
 fn test_bind_mount(fuse_mount_dir: &Path) -> anyhow::Result<()> {
     use nix::mount::MsFlags;
 
-    if unistd::geteuid().is_root() {
-        info!("test bind mount with root user");
-    } else {
-        // Skip bind mount test for non-root user
-        return Ok(());
-    }
     pub fn cleanup_dir(directory: &Path) -> anyhow::Result<()> {
         let umount_res =
             smol::block_on(async move { super::super::mount::umount(directory).await });
@@ -359,6 +448,12 @@ fn test_bind_mount(fuse_mount_dir: &Path) -> anyhow::Result<()> {
         Ok(())
     }
 
+    if unistd::geteuid().is_root() {
+        info!("test bind mount with root user");
+    } else {
+        // Skip bind mount test for non-root user
+        return Ok(());
+    }
     let from_dir = Path::new(fuse_mount_dir).join("bind_from_dir");
     if from_dir.exists() {
         cleanup_dir(&from_dir).context(format!("failed to cleanup {:?}", from_dir))?;
@@ -401,10 +496,11 @@ fn test_bind_mount(fuse_mount_dir: &Path) -> anyhow::Result<()> {
 #[test]
 fn run_test() -> anyhow::Result<()> {
     let mount_dir = Path::new(DEFAULT_MOUNT_DIR);
-
     let th = test_util::setup(mount_dir)?;
     info!("begin integration test");
 
+    test_symlink_dir(mount_dir).context("test_symlink_dir() failed")?;
+    test_symlink_file(mount_dir).context("test_symlink_file() failed")?;
     #[cfg(target_os = "linux")]
     test_bind_mount(mount_dir).context("test_bind_mount() failed")?;
     test_file_manipulation_rust_way(mount_dir)
