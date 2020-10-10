@@ -2,14 +2,18 @@
 
 use anyhow::Context;
 use log::{debug, warn};
+use nix::errno::Errno;
 use nix::fcntl::OFlag;
 use nix::sys::{stat::SFlag, statvfs};
 use nix::unistd;
 use smol::blocking;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::{OsStr, OsString};
-use std::os::unix::io::{FromRawFd, IntoRawFd, RawFd};
-use std::path::Path;
+use std::os::unix::{
+    ffi::OsStringExt,
+    io::{FromRawFd, IntoRawFd, RawFd},
+};
+use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 use utilities::{Cast, OverflowArithmetic};
 
@@ -36,6 +40,8 @@ const MY_GENERATION: u64 = 1; // TODO: find a proper way to set generation
 /// File system in-memory meta-data
 #[derive(Debug)]
 pub struct FileSystem {
+    /// The root path and the mount point of the FUSE filesystem
+    root_path: PathBuf,
     /// The cache to hold opened directories and files
     cache: BTreeMap<INum, Node>,
     /// The trash to hold deferred deleted directories and files
@@ -135,15 +141,27 @@ pub struct FileLockParam {
 
 impl FileSystem {
     /// Create `FileSystem`
-    pub async fn new(root_path: &Path) -> anyhow::Result<Self> {
-        let root_inode = Node::open_root_node(FUSE_ROOT_ID, OsString::from("/"), root_path)
+    pub async fn new(mount_point: &Path) -> anyhow::Result<Self> {
+        let root_path = mount_point
+            .canonicalize()
+            .with_context(|| format!("failed to canonicalize the mount path={:?}", mount_point))?;
+        let root_inode = Node::open_root_node(FUSE_ROOT_ID, OsString::from("/"), &root_path)
             .await
             .context("failed to open FUSE root node")?;
         let mut cache = BTreeMap::new();
         cache.insert(FUSE_ROOT_ID, root_inode);
-        let trash = BTreeSet::new(); // for deferred deletion
+        let trash = BTreeSet::new(); // for deferred deletion nodes
 
-        Ok(Self { cache, trash })
+        Ok(Self {
+            root_path,
+            cache,
+            trash,
+        })
+    }
+
+    /// Get the root path and the mount point of the FUSE filesystem
+    pub fn get_root_path(&self) -> &Path {
+        &self.root_path
     }
 
     // FUSE operation helper functions
@@ -155,7 +173,7 @@ impl FileSystem {
         node_name: OsString,
         mode: u32,
         node_type: SFlag,
-        // reply: ReplyEntry,
+        target_path: Option<&Path>,
     ) -> anyhow::Result<(Duration, FuseAttr, u64)> {
         // pre-check
         let parent_node = self.cache.get_mut(&parent).unwrap_or_else(|| {
@@ -175,7 +193,7 @@ impl FileSystem {
                 occupied.ino(),
             );
             return util::build_error_result_from_errno(
-                libc::EEXIST,
+                Errno::EEXIST,
                 format!(
                     "create_node_helper() found the directory of ino={} \
                         already exists a child with name={:?} and ino={}",
@@ -184,8 +202,6 @@ impl FileSystem {
                     occupied.ino(),
                 ),
             );
-            // reply.error_code(libc::EEXIST).await?;
-            // return Ok(());
         }
         // all checks are passed, ready to create new node
         let m_flags = util::parse_mode(mode);
@@ -216,8 +232,28 @@ impl FileSystem {
                     .create_child_file(node_name.clone(), o_flags, m_flags)
                     .await
                     .context(format!(
-                        "create_node_helper() failed to create node with name={:?}, mode={:?}",
+                        "create_node_helper() failed to create file with name={:?}, mode={:?}",
                         node_name, m_flags,
+                    ))?
+            }
+            SFlag::S_IFLNK => {
+                debug!(
+                    "create_node_helper() about to \
+                        create a symlink with name={:?} to target path={:?}",
+                    node_name, target_path,
+                );
+                parent_node
+                    .create_child_symlink(
+                        node_name.clone(),
+                        target_path.unwrap_or_else(|| panic!(
+                            "create_node_helper() failed to \
+                                get target path when create symlink",
+                        )).to_owned(),
+                    )
+                    .await
+                    .context(format!(
+                        "create_node_helper() failed to create symlink with name={:?} to target path={:?}",
+                        node_name, target_path,
                     ))?
             }
             _ => panic!(
@@ -341,7 +377,6 @@ impl FileSystem {
         parent: INum,
         node_name: OsString,
         node_type: SFlag,
-        // reply: ReplyEmpty,
     ) -> anyhow::Result<()> {
         let node_ino: INum;
         {
@@ -361,15 +396,13 @@ impl FileSystem {
                         node_name, parent,
                     );
                     return util::build_error_result_from_errno(
-                        libc::ENOENT,
+                        Errno::ENOENT,
                         format!(
                             "remove_node_helper() failed to find node name={:?} \
                                 under parent of ino={}",
                             node_name, parent,
                         ),
                     );
-                    // reply.error_code(ENOENT).await?;
-                    // return Ok(());
                 }
                 Some(child_entry) => {
                     node_ino = child_entry.ino();
@@ -392,7 +425,7 @@ impl FileSystem {
                                 node_name, node_ino, parent,
                             );
                             return util::build_error_result_from_errno(
-                                libc::ENOTEMPTY,
+                                Errno::ENOTEMPTY,
                                 format!(
                                     "remove_node_helper() cannot remove \
                                         the non-empty directory name={:?} of ino={} \
@@ -400,16 +433,14 @@ impl FileSystem {
                                     node_name, node_ino, parent,
                                 ),
                             );
-                            // reply.error_code(ENOTEMPTY).await?;
-                            // return Ok(());
                         }
                     }
 
                     let child_inode = self.cache.get(&node_ino).unwrap_or_else(|| {
                         panic!(
                             "remove_node_helper() found fs is inconsistent, \
-                            node name={:?} of ino={} found under the parent of ino={}, \
-                            but no i-node found for this node",
+                                node name={:?} of ino={} found under the parent of ino={}, \
+                                but no i-node found for this node",
                             node_name, node_ino, parent
                         )
                     });
@@ -441,46 +472,47 @@ impl FileSystem {
         }
     }
 
+    /// Lookup helper function to pre-check
+    fn lookup_pre_check(&self, parent: INum, name: &OsStr) -> anyhow::Result<(INum, SFlag)> {
+        // lookup child ino and type first
+        let parent_node = self.cache.get(&parent).unwrap_or_else(|| {
+            panic!(
+                "lookup_helper() found fs is inconsistent, \
+                        the parent i-node of ino={} should be in cache",
+                parent,
+            );
+        });
+        if let Some(child_entry) = parent_node.get_entry(name) {
+            let ino = child_entry.ino();
+            let child_type = child_entry.entry_type();
+            Ok((ino, child_type))
+        } else {
+            debug!(
+                "lookup_helper() failed to find the file name={:?} \
+                        under parent directory of ino={}",
+                name, parent
+            );
+            // lookup() didn't find anything, this is normal
+            util::build_error_result_from_errno(
+                Errno::ENOENT,
+                format!(
+                    "lookup_helper() failed to find the file name={:?} \
+                        under parent directory of ino={}",
+                    name, parent,
+                ),
+            )
+        }
+    }
+
     /// Helper function to lookup
     async fn lookup_helper(
         &mut self,
         parent: INum,
+        ino: INum,
         name: &OsStr,
+        child_type: SFlag,
     ) -> anyhow::Result<(Duration, FuseAttr, u64)> {
         let child_name = OsString::from(name);
-
-        let ino: INum;
-        let child_type: SFlag;
-        {
-            // lookup child ino and type first
-            let parent_node = self.cache.get(&parent).unwrap_or_else(|| {
-                panic!(
-                    "lookup_helper() found fs is inconsistent, \
-                        the parent i-node of ino={} should be in cache",
-                    parent,
-                );
-            });
-            if let Some(child_entry) = parent_node.get_entry(&child_name) {
-                ino = child_entry.ino();
-                child_type = child_entry.entry_type();
-            } else {
-                debug!(
-                    "lookup_helper() failed to find the file name={:?} \
-                        under parent directory of ino={}",
-                    child_name, parent
-                );
-                // lookup() didn't find anything, this is normal
-                return util::build_error_result_from_errno(
-                    libc::ENOENT,
-                    format!(
-                        "lookup_helper() failed to find the file name={:?} \
-                            under parent directory of ino={}",
-                        child_name, parent,
-                    ),
-                );
-            }
-        }
-
         let ttl = Duration::new(MY_TTL_SEC, 0);
         {
             // cache hit
@@ -520,7 +552,7 @@ impl FileSystem {
                     .await
                     .context(format!(
                         "lookup_helper() failed to open sub-directory name={:?}",
-                        name
+                        name,
                     ))?,
                 SFlag::S_IFREG => {
                     let oflags = OFlag::O_RDWR;
@@ -529,24 +561,27 @@ impl FileSystem {
                         .await
                         .context(format!(
                             "lookup_helper() failed to open child file name={:?} with flags={:?}",
-                            name, oflags
+                            name, oflags,
+                        ))?
+                }
+                SFlag::S_IFLNK => {
+                    parent_node
+                        .load_child_symlink(child_name)
+                        .await
+                        .context(format!(
+                            "lookup_helper() failed to read child symlink name={:?}",
+                            name,
                         ))?
                 }
                 _ => panic!(
                     "lookup_helper() found unsupported file type={:?}",
-                    child_type
+                    child_type,
                 ),
             };
-
             let child_ino = child_node.get_ino();
             let attr = child_node.lookup_attr();
             self.cache.insert(child_ino, child_node);
             let fuse_attr = util::convert_to_fuse_attr(attr);
-            debug!(
-                "lookup_helper() successfully found the file name={:?} of ino={} \
-                under parent ino={}, the attr={:?}",
-                name, ino, parent, &attr,
-            );
             Ok((ttl, fuse_attr, MY_GENERATION))
         }
     }
@@ -575,7 +610,7 @@ impl FileSystem {
                     old_name, old_parent,
                 );
                 return util::build_error_result_from_errno(
-                    libc::ENOENT,
+                    Errno::ENOENT,
                     format!(
                         "rename_pre_check() failed to find child entry of name={:?} \
                             under parent directory ino={}",
@@ -622,7 +657,7 @@ impl FileSystem {
                     new_ino, new_name, new_parent,
                 );
                 return util::build_error_result_from_errno(
-                    libc::EEXIST, // RENAME_NOREPLACE
+                    Errno::EEXIST, // RENAME_NOREPLACE
                     format!(
                         "rename() found i-node of ino={} and name={:?} under new parent ino={}, \
                             but RENAME_NOREPLACE is specified",
@@ -890,6 +925,55 @@ impl FileSystem {
         Ok(())
     }
 
+    /// Read helper
+    fn read_helper(content: &[u8], offset: usize, size: usize) -> anyhow::Result<Vec<u8>> {
+        match content.len().cmp(&(offset.cast())) {
+            std::cmp::Ordering::Greater => {
+                let read_data = if offset.overflow_add(size) <= content.len() {
+                    debug!("read exact {} bytes", size);
+                    content
+                        .get(offset..offset.overflow_add(size))
+                        .ok_or_else(|| util::build_sys_error_from_errno(Errno::EINVAL))
+                        .context(format!(
+                            "read_helper() failed to get file content from offset={} and size={}",
+                            offset, size,
+                        ))?
+                } else {
+                    debug!(
+                        "read_helper() read {} bytes only, less than expected size={}",
+                        offset.overflow_add(size).overflow_sub(content.len()),
+                        size,
+                    );
+                    content
+                        .get(offset..)
+                        .ok_or_else(|| util::build_sys_error_from_errno(Errno::EINVAL))
+                        .context(format!(
+                            "read_helper() failed to get file content from offset={}",
+                            offset
+                        ))?
+                };
+                // TODO: consider zero copy
+                Ok(read_data.to_vec())
+            }
+            std::cmp::Ordering::Equal => {
+                debug!(
+                    "read_helper() found offset={} equals file length={}, nothing to read",
+                    offset,
+                    content.len(),
+                );
+                Ok(Vec::new())
+            }
+            std::cmp::Ordering::Less => util::build_error_result_from_errno(
+                Errno::EINVAL,
+                format!(
+                    "read_helper() failed to read, offset={} beyond file length={}",
+                    offset,
+                    content.len(),
+                ),
+            ),
+        }
+    }
+
     /// Return ENOSYS for not implemented operations
     pub async fn not_implement_helper(
         &mut self,
@@ -897,7 +981,7 @@ impl FileSystem {
         fd: RawFd,
     ) -> nix::Result<usize> {
         let reply = ReplyEmpty::new(req.unique(), fd);
-        reply.error_code(libc::ENOSYS).await
+        reply.error_code(Errno::ENOSYS).await
     }
 
     // Implemented FUSE operations
@@ -933,11 +1017,28 @@ impl FileSystem {
         name: &OsStr,
         reply: ReplyEntry,
     ) -> nix::Result<usize> {
-        // let child_name = OsString::from(name);
         debug!("lookup(parent={}, name={:?}, req={:?})", parent, name, req,);
-        let lookup_res = self.lookup_helper(parent, name).await;
+        let pre_check_res = self.lookup_pre_check(parent, name);
+        let (ino, child_type) = match pre_check_res {
+            Ok((ino, child_type)) => (ino, child_type),
+            Err(e) => {
+                debug!(
+                    "lookup() failed to pre-check, the error is: {}",
+                    util::format_anyhow_error(&e),
+                );
+                return reply.error(e).await;
+            }
+        };
+        let lookup_res = self.lookup_helper(parent, ino, name, child_type).await;
         match lookup_res {
-            Ok((ttl, fuse_attr, generation)) => reply.entry(ttl, fuse_attr, generation).await,
+            Ok((ttl, fuse_attr, generation)) => {
+                debug!(
+                    "lookup() successfully found the file name={:?} of ino={} \
+                        under parent ino={}, the attr={:?}",
+                    name, ino, parent, &fuse_attr,
+                );
+                reply.entry(ttl, fuse_attr, generation).await
+            }
             Err(e) => {
                 debug!(
                     "lookup() failed to find the file name={:?} under parent ino={}, \
@@ -1001,25 +1102,37 @@ impl FileSystem {
             );
         });
         let o_flags = util::parse_oflag(flags);
-        let new_fd = node
-            .dup_fd(o_flags)
-            .await
-            .context(format!(
-                "failed to duplicate the fd of file name={:?} and ino={}",
-                node.get_name(),
-                node.get_ino(),
-            ))
-            .unwrap_or_else(|e| {
-                panic!(
+        // TODO: handle open flags
+        // <https://pubs.opengroup.org/onlinepubs/9699919799/functions/open.html>
+        // let open_res = if let SFlag::S_IFLNK = node.get_type() {
+        //     node.open_symlink_target(o_flags).await.context(format!(
+        //         "open() failed to open symlink target={:?} with flags={}",
+        //         node.get_symlink_target(),
+        //         flags,
+        //     ))
+        // } else {
+        let dup_res = node.dup_fd(o_flags).await.context(format!(
+            "open() failed to duplicate the fd of file name={:?} and ino={}",
+            node.get_name(),
+            node.get_ino(),
+        ));
+        // };
+        match dup_res {
+            Ok(new_fd) => {
+                debug!(
+                    "open() successfully duplicated the file handler of ino={}, fd={}, flags={:?}",
+                    ino, new_fd, flags,
+                );
+                reply.opened(new_fd, flags).await
+            }
+            Err(e) => {
+                debug!(
                     "open() failed, the error is: {}",
                     util::format_anyhow_error(&e)
-                )
-            });
-        debug!(
-            "open() successfully duplicated the file handler of ino={}, fd={}, flags={:?}",
-            ino, new_fd, flags,
-        );
-        reply.opened(new_fd, flags).await
+                );
+                reply.error(e).await
+            }
+        }
     }
 
     /// Forget about an inode.
@@ -1176,7 +1289,6 @@ impl FileSystem {
             // Nothing chagned, just reply the attribute
             reply.attr(ttl, fuse_attr).await
         } else {
-            // reply.error_code(ENODATA).await?;
             panic!(
                 "setattr() found all the input attributes are empty for the file of ino={}",
                 ino,
@@ -1202,7 +1314,7 @@ impl FileSystem {
         );
 
         let mknod_res = self
-            .create_node_helper(parent, name.into(), mode, SFlag::S_IFREG)
+            .create_node_helper(parent, name.into(), mode, SFlag::S_IFREG, None)
             .await
             .context(format!(
                 "mknod() failed to create a node name={:?} and mode={:?} under parent ino={},",
@@ -1239,7 +1351,7 @@ impl FileSystem {
         );
 
         let mkdir_res = self
-            .create_node_helper(parent, name.into(), mode, SFlag::S_IFDIR)
+            .create_node_helper(parent, name.into(), mode, SFlag::S_IFDIR, None)
             .await
             .context(format!(
                 "mkdir() failed to create a directory name={:?} and mode={:?} under parent ino={}",
@@ -1270,8 +1382,34 @@ impl FileSystem {
         reply: ReplyEmpty,
     ) -> nix::Result<usize> {
         debug!("unlink(parent={}, name={:?}, req={:?}", parent, name, req,);
+        let entry_type = {
+            let parent_node = self.cache.get(&parent).unwrap_or_else(|| {
+                panic!(
+                    "unlink() found fs is inconsistent, \
+                        parent of ino={} should be in cache before remove its child",
+                    parent,
+                );
+            });
+            let child_entry = parent_node.get_entry(name).unwrap_or_else(|| {
+                panic!(
+                    "unlink() found fs is inconsistent, \
+                        the child entry name={:?} to remove is not under parent of ino={}",
+                    name, parent,
+                );
+            });
+            let entry_type = child_entry.entry_type();
+            debug_assert_ne!(
+                SFlag::S_IFDIR,
+                entry_type,
+                "unlink() should not remove sub-directory name={:?} under parent ino={}",
+                name,
+                parent,
+            );
+            entry_type
+        };
+
         let unlink_res = self
-            .remove_node_helper(parent, name.into(), SFlag::S_IFREG)
+            .remove_node_helper(parent, name.into(), entry_type)
             .await
             .context(format!(
                 "unlink() failed to remove file name={:?} under parent ino={}",
@@ -1436,59 +1574,6 @@ impl FileSystem {
             offset
         );
 
-        let read_helper = |content: &Vec<u8>| -> anyhow::Result<Vec<u8>> {
-            match content.len().cmp(&(offset.cast())) {
-                std::cmp::Ordering::Greater => {
-                    let read_data = if offset.overflow_add(size.cast()).cast::<usize>()
-                        <= content.len()
-                    {
-                        debug!("read exact {} bytes", size);
-                        content
-                            .get(offset.cast()..offset.overflow_add(size.cast()).cast::<usize>())
-                            .ok_or_else(|| util::build_sys_error_from_errno(libc::EINVAL))
-                            .context(format!(
-                                "read_helper() failed to get file content from offset={} and size={}",
-                                offset, size,
-                            ))?
-                    } else {
-                        debug!(
-                            "read_helper() read {} bytes only, less than expected size={}",
-                            offset
-                                .overflow_add(size.cast())
-                                .cast::<usize>()
-                                .overflow_sub(content.len()),
-                            size,
-                        );
-                        content
-                            .get(offset.cast()..)
-                            .ok_or_else(|| util::build_sys_error_from_errno(libc::EINVAL))
-                            .context(format!(
-                                "read_helper() failed to get file content from offset={}",
-                                offset
-                            ))?
-                    };
-                    // TODO: consider zero copy
-                    Ok(read_data.to_vec())
-                }
-                std::cmp::Ordering::Equal => {
-                    debug!(
-                        "read_helper() found offset={} equals file length={}, nothing to read",
-                        offset,
-                        content.len(),
-                    );
-                    Ok(Vec::new())
-                }
-                std::cmp::Ordering::Less => util::build_error_result_from_errno(
-                    libc::EINVAL,
-                    format!(
-                        "read_helper() failed to read, offset={} beyond file length={}",
-                        offset,
-                        content.len(),
-                    ),
-                ),
-            }
-        };
-
         let node = self.cache.get_mut(&ino).unwrap_or_else(|| {
             panic!(
                 "read() found fs is inconsistent, \
@@ -1496,6 +1581,8 @@ impl FileSystem {
                 ino,
             );
         });
+        // let node_type = node.get_type();
+        // let file_data = if SFlag::S_IFREG == node_type {
         if node.need_load_file_data() {
             let load_res = node.load_data().await;
             if let Err(e) = load_res {
@@ -1507,7 +1594,32 @@ impl FileSystem {
             }
         }
         let file_data = node.get_file_data();
-        match read_helper(file_data) {
+        // } else if SFlag::S_IFLNK == node_type {
+        //     if node.need_load_symlink_target_data() {
+        //         let load_res = node.load_data().await;
+        //         if let Err(e) = load_res {
+        //             debug!(
+        //                 "read() failed to load symlink target data, the error is: {}",
+        //                 util::format_anyhow_error(&e)
+        //             );
+        //             return reply.error(e).await;
+        //         }
+        //     }
+        //     let target_path = node.get_symlink_target();
+        //     let target_data_res = node.get_symlink_target_data();
+        //     if let Some(target_data) = target_data_res {
+        //         target_data.get_file_data()
+        //     } else {
+        //         panic!(
+        //             "read() found fs is inconsistent, \
+        //                 the symlink target path={:?} should not be broken",
+        //             target_path,
+        //         );
+        //     }
+        // } else {
+        //     panic!("read() cannot read directory data");
+        // };
+        match Self::read_helper(file_data, offset.cast(), size.cast()) {
             Ok(read_data_vec) => {
                 debug!(
                     "read() successfully read {} bytes from the file of ino={}",
@@ -1812,13 +1924,23 @@ impl FileSystem {
             num_child_entries
         };
 
-        let node = self.cache.get(&ino).unwrap_or_else(|| {
+        let node = self.cache.get_mut(&ino).unwrap_or_else(|| {
             panic!(
                 "readdir() found fs is inconsistent, \
                     the i-node of ino={} should be in cache",
                 ino,
             );
         });
+        if node.need_load_dir_data() {
+            let load_res = node.load_data().await;
+            if let Err(e) = load_res {
+                debug!(
+                    "readdir() failed to load directory data, the error is: {}",
+                    util::format_anyhow_error(&e)
+                );
+                return reply.error(e).await;
+            }
+        }
         let num_child_entries = node.read_dir(readdir_helper);
         debug!(
             "readdir() successfully read {} children \
@@ -1973,20 +2095,61 @@ impl FileSystem {
     }
 
     /// Read symbolic link.
-    pub async fn readlink(&mut self, _req: &Request<'_>, reply: ReplyData) -> nix::Result<usize> {
-        reply.error_code(libc::ENOSYS).await
+    pub async fn readlink(&mut self, req: &Request<'_>, reply: ReplyData) -> nix::Result<usize> {
+        let ino = req.nodeid();
+        debug!("readlink(ino={}, req={:?})", ino, req,);
+        let symlink_node = self.cache.get(&ino).unwrap_or_else(|| {
+            panic!(
+                "readlink() found fs is inconsistent, \
+                    the symlink i-node of ino={} should be in cache",
+                ino,
+            );
+        });
+        let target_path = symlink_node.get_symlink_target();
+        reply
+            .data(target_path.as_os_str().to_owned().into_vec())
+            .await
     }
 
     /// Create a symbolic link.
     pub async fn symlink(
         &mut self,
-        _req: &Request<'_>,
-        _parent: INum,
-        _name: &OsStr,
-        _link: &Path,
+        req: &Request<'_>,
+        parent: INum,
+        name: &OsStr,
+        target_path: &Path,
         reply: ReplyEntry,
     ) -> nix::Result<usize> {
-        reply.error_code(libc::ENOSYS).await
+        debug!(
+            "symlink(parent={}, name={:?}, target_path={:?}, req={:?})",
+            parent, name, target_path, req
+        );
+        let symlink_res = self.create_node_helper(
+            parent,
+            name.to_owned(),
+            nix::sys::stat::Mode::all().bits(), // TODO: should set mode bits as all?
+            SFlag::S_IFLNK,
+            Some(target_path),
+        )
+        .await
+        .context(format!(
+            "symlink() failed to create a symlink name={:?} to target path={:?} under parent ino={}",
+            name, target_path, parent,
+        ));
+        match symlink_res {
+            Ok((ttl, fuse_attr, generation)) => reply.entry(ttl, fuse_attr, generation).await,
+            Err(e) => {
+                debug!(
+                    "symlink() failed to create a symlink name={:?} to target path={:?} under parent ino={}, \
+                        the error is: {}",
+                    name,
+                    target_path,
+                    parent,
+                    util::format_anyhow_error(&e),
+                );
+                reply.error(e).await
+            }
+        }
     }
 
     /// Create a hard link.
@@ -1997,7 +2160,7 @@ impl FileSystem {
         _newname: &OsStr,
         reply: ReplyEntry,
     ) -> nix::Result<usize> {
-        reply.error_code(libc::ENOSYS).await
+        reply.error_code(Errno::ENOSYS).await
     }
 
     /// Set an extended attribute.
@@ -2010,7 +2173,7 @@ impl FileSystem {
         _position: u32,
         reply: ReplyEmpty,
     ) -> nix::Result<usize> {
-        reply.error_code(libc::ENOSYS).await
+        reply.error_code(Errno::ENOSYS).await
     }
 
     /// Get an extended attribute.
@@ -2024,7 +2187,7 @@ impl FileSystem {
         _size: u32,
         reply: ReplyXAttr,
     ) -> nix::Result<usize> {
-        reply.error_code(libc::ENOSYS).await
+        reply.error_code(Errno::ENOSYS).await
     }
 
     /// List extended attribute names.
@@ -2037,7 +2200,7 @@ impl FileSystem {
         _size: u32,
         reply: ReplyXAttr,
     ) -> nix::Result<usize> {
-        reply.error_code(libc::ENOSYS).await
+        reply.error_code(Errno::ENOSYS).await
     }
 
     /// Remove an extended attribute.
@@ -2047,7 +2210,7 @@ impl FileSystem {
         _name: &OsStr,
         reply: ReplyEmpty,
     ) -> nix::Result<usize> {
-        reply.error_code(libc::ENOSYS).await
+        reply.error_code(Errno::ENOSYS).await
     }
 
     /// Check file access permissions.
@@ -2060,7 +2223,7 @@ impl FileSystem {
         _mask: u32,
         reply: ReplyEmpty,
     ) -> nix::Result<usize> {
-        reply.error_code(libc::ENOSYS).await
+        reply.error_code(Errno::ENOSYS).await
     }
 
     /// Create and open a file.
@@ -2082,7 +2245,7 @@ impl FileSystem {
         _flags: u32,
         reply: ReplyCreate,
     ) -> nix::Result<usize> {
-        reply.error_code(libc::ENOSYS).await
+        reply.error_code(Errno::ENOSYS).await
     }
 
     /// Test for a POSIX file lock.
@@ -2092,7 +2255,7 @@ impl FileSystem {
         _lk_param: FileLockParam,
         reply: ReplyLock,
     ) -> nix::Result<usize> {
-        reply.error_code(libc::ENOSYS).await
+        reply.error_code(Errno::ENOSYS).await
     }
 
     /// Acquire, modify or release a POSIX file lock.
@@ -2109,7 +2272,7 @@ impl FileSystem {
         _sleep: bool,
         reply: ReplyEmpty,
     ) -> nix::Result<usize> {
-        reply.error_code(libc::ENOSYS).await
+        reply.error_code(Errno::ENOSYS).await
     }
 
     /// Map block index within file to block index within device.
@@ -2122,7 +2285,7 @@ impl FileSystem {
         _idx: u64,
         reply: ReplyBMap,
     ) -> nix::Result<usize> {
-        reply.error_code(libc::ENOSYS).await
+        reply.error_code(Errno::ENOSYS).await
     }
 
     /// macOS only: Rename the volume. Set `fuse_init_out.flags` during init to
@@ -2134,7 +2297,7 @@ impl FileSystem {
         _name: &OsStr,
         reply: ReplyEmpty,
     ) -> nix::Result<usize> {
-        reply.error_code(libc::ENOSYS).await
+        reply.error_code(Errno::ENOSYS).await
     }
 
     /// macOS only: Rename exchange
@@ -2145,7 +2308,7 @@ impl FileSystem {
         _param: RenameParam,
         reply: ReplyEmpty,
     ) -> nix::Result<usize> {
-        reply.error_code(libc::ENOSYS).await
+        reply.error_code(Errno::ENOSYS).await
     }
 
     /// macOS only: Query extended times (`bkuptime` and `crtime`). Set `fuse_init_out.flags`
@@ -2156,7 +2319,7 @@ impl FileSystem {
         _req: &Request<'_>,
         reply: ReplyXTimes,
     ) -> nix::Result<usize> {
-        reply.error_code(libc::ENOSYS).await
+        reply.error_code(Errno::ENOSYS).await
     }
 }
 

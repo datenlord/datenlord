@@ -9,7 +9,7 @@ use nix::errno::Errno;
 use nix::unistd;
 use smol::{self, blocking, Task};
 use std::os::unix::io::RawFd;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::{
     atomic::{AtomicBool, AtomicU32, Ordering},
     Arc,
@@ -80,8 +80,6 @@ static FUSE_DESTROYED: AtomicBool = AtomicBool::new(false);
 /// FUSE session
 #[derive(Debug)]
 pub struct Session {
-    /// FUSE mount point
-    mountpoint: PathBuf,
     /// FUSE device fd
     fuse_fd: RawFd,
     /// FUSE protocol major version
@@ -95,14 +93,21 @@ pub struct Session {
 impl Drop for Session {
     fn drop(&mut self) {
         if !FUSE_DESTROYED.load(Ordering::Acquire) {
-            let res = smol::block_on(async { mount::umount(&self.mountpoint).await });
-            match res {
-                Ok(..) => info!("Session::drop() successfully umount {:?}", self.mountpoint),
-                Err(e) => error!(
-                    "Session::drop() failed to umount {:?}, the error is: {}",
-                    self.mountpoint, e,
-                ),
-            };
+            smol::block_on(async {
+                let fs = self.filesystem.lock().await;
+                let res = mount::umount(fs.get_root_path()).await;
+                match res {
+                    Ok(..) => info!(
+                        "Session::drop() successfully umount {:?}",
+                        fs.get_root_path()
+                    ),
+                    Err(e) => error!(
+                        "Session::drop() failed to umount {:?}, the error is: {}",
+                        fs.get_root_path(),
+                        e,
+                    ),
+                };
+            });
         }
     }
 }
@@ -123,16 +128,12 @@ impl Session {
             mount_path
         );
 
-        let full_mount_path = mount_path
-            .canonicalize()
-            .with_context(|| format!("failed to find the mount path={:?}", mount_path))?;
-        let filesystem = FileSystem::new(&full_mount_path).await?;
+        let filesystem = FileSystem::new(mount_path).await?;
         // Must create filesystem before mount
-        let fuse_fd = mount::mount(&full_mount_path)
+        let fuse_fd = mount::mount(mount_path)
             .await
             .context("failed to mount fuse device")?;
         Ok(Self {
-            mountpoint: full_mount_path,
             fuse_fd,
             proto_major: AtomicU32::new(7),
             proto_minor: AtomicU32::new(8),
@@ -146,43 +147,6 @@ impl Session {
             .setup_buffer_pool()
             .await
             .context("failed to setup buffer pool")?;
-        // let (pool_sender, pool_receiver) =
-        //     crossbeam_channel::bounded::<(u16, AlignedBytes)>(MAX_BACKGROUND.into());
-
-        // (0..MAX_BACKGROUND).for_each(|i| {
-        //     let buf = AlignedBytes::new_zeroed(BUFFER_SIZE.cast(), PAGE_SIZE);
-        //     let res = pool_sender.send((i, buf));
-        //     if let Err(e) = res {
-        //         panic!(
-        //             "failed to insert buffer idx={} to buffer pool when initializing, the error is: {}",
-        //             i, e,
-        //         );
-        //     }
-        // });
-
-        // let chan = Channel::new(self).await?;
-        // let fuse_fd = chan.fd();
-        // let (idx, mut byte_vec) = pool_receiver.recv()?;
-        // let read_result = blocking!(
-        //     let res = unistd::read(fuse_fd, &mut *byte_vec);
-        //     (res, byte_vec)
-        // );
-        // byte_vec = read_result.1;
-        // if let Ok(read_size) = read_result.0 {
-        //     debug!("read successfully {} byte data from FUSE device", read_size);
-        //     if let Ok(req) = Request::new(&byte_vec) {
-        //         if let Operation::Init { arg } = req.operation() {
-        //             let filesystem = Arc::clone(&self.filesystem);
-        //             self.init(arg, &req, filesystem, fuse_fd).await?;
-        //         }
-        //     }
-        // }
-        // pool_sender.send((idx, byte_vec)).context(format!(
-        //     "failed to put buffer idx={} back to buffer pool after FUSE init",
-        //     idx,
-        // ))?;
-        // debug_assert!(FUSE_INITIALIZED.load(Ordering::Acquire));
-
         let fuse_dev_fd = self.dev_fd();
         loop {
             let (buffer_idx, mut byte_buffer) = pool_receiver.recv()?;
@@ -200,65 +164,6 @@ impl Session {
                     let fuse_fd = fuse_dev_fd;
                     let fs = Arc::clone(&self.filesystem);
                     let sender = pool_sender.clone();
-                    // Task::spawn(async move {
-                    //     let bytes = byte_buffer.get(..read_size).unwrap_or_else(|| {
-                    //         panic!(
-                    //             "failed to read {} bytes from the {}-th buffer",
-                    //             read_size, buffer_idx,
-                    //         )
-                    //     });
-                    //     let fuse_req = match Request::new(bytes) {
-                    //         // Dispatch request
-                    //         Ok(r) => r,
-                    //         // Quit on illegal request
-                    //         Err(e) => {
-                    //             // TODO: graceful handle request build failure
-                    //             panic!("failed to build FUSE request, the error is: {}", e);
-                    //         }
-                    //     };
-                    //     debug!("received {}", fuse_req);
-                    //     let res = dispatch(&fuse_req, fuse_fd, fs).await;
-                    //     if let Err(e) = res {
-                    //         error!("failed to process request, the error is: {}", e);
-                    //         let unique = fuse_req.unique();
-                    //         let reply_error_to_fuse = ReplyEmpty::new(unique, fuse_fd);
-                    //         let error_num = match e.downcast_ref::<nix::Error>() {
-                    //             Some(nix_error) => match nix_error.as_errno() {
-                    //                 Some(nix_errno) => {
-                    //                     let std_io_error = std::io::Error::from(nix_errno);
-                    //                     match std_io_error.raw_os_error() {
-                    //                         Some(error_num) => error_num,
-                    //                         // TODO: consider more meaningful error code
-                    //                         None => libc::EINVAL,
-                    //                     }
-                    //                 }
-                    //                 None => libc::EINVAL,
-                    //             },
-                    //             None => libc::EINVAL,
-                    //         };
-                    //         // TODO: there is a bug!
-                    //         // If the error from dispatch() is related to IO error with FUSE device,
-                    //         // then it'll fail to reply error to FUSE again.
-                    //         reply_error_to_fuse
-                    //             .error(error_num)
-                    //             .await
-                    //             .unwrap_or_else(|_| {
-                    //                 panic!(
-                    //                     "failed to send error reply for request, unique={}",
-                    //                     unique
-                    //                 );
-                    //             });
-                    //         // TODO: this panic is for fast fail, can be removed when stable
-                    //         panic!("failed to process request, the error is: {}", e);
-                    //     }
-                    //     let res = sender.send((buffer_idx, byte_buffer));
-                    //     if let Err(e) = res {
-                    //         panic!(
-                    //             "failed to put the {}-th buffer back to buffer pool, the error is: {}",
-                    //             buffer_idx, e,
-                    //         );
-                    //     }
-                    // })
                     Task::spawn(Self::process_fuse_request(
                         buffer_idx,
                         byte_buffer,
@@ -412,14 +317,14 @@ impl Session {
         // We don't support ABI versions before 7.8
         if arg.major < 7 || (arg.major == 7 && arg.minor < 8) {
             error!("Unsupported FUSE ABI version={}.{}", arg.major, arg.minor);
-            reply.error_code(libc::EPROTO).await?;
+            reply.error_code(Errno::EPROTO).await?;
             return Err(anyhow!("FUSE ABI version too low"));
         }
         // Call filesystem init method and give it a chance to return an error
         let filesystem = fs.lock().await;
         let init_res = filesystem.init(req);
         if let Err(err) = init_res {
-            reply.error_code(libc::ENOSYS).await?;
+            reply.error_code(Errno::ENOSYS).await?;
             return Err(anyhow!("user defined init failed, the error is: {}", err,));
         }
         debug_assert!(
@@ -509,7 +414,7 @@ async fn dispatch<'a>(
         _ if !FUSE_INITIALIZED.load(Ordering::Acquire) => {
             warn!("ignoring FUSE operation before init, the request={}", req);
             let reply = ReplyEmpty::new(req.unique(), fd);
-            reply.error_code(libc::EIO).await
+            reply.error_code(Errno::EIO).await
         }
         // Filesystem destroyed
         Operation::Destroy => {
@@ -522,7 +427,7 @@ async fn dispatch<'a>(
         _ if FUSE_DESTROYED.load(Ordering::Acquire) => {
             warn!("ignoring FUSE operation after destroy, the request={}", req);
             let reply = ReplyEmpty::new(req.unique(), fd);
-            reply.error_code(libc::EIO).await
+            reply.error_code(Errno::EIO).await
         }
 
         Operation::Interrupt { arg } => {

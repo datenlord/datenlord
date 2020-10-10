@@ -9,23 +9,168 @@ use nix::unistd;
 use smol::blocking;
 use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
-use std::os::unix::{ffi::OsStrExt, io::RawFd};
-use std::path::Path;
+use std::os::unix::io::RawFd;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{self, AtomicI64};
 use std::time::SystemTime;
 use utilities::{Cast, OverflowArithmetic};
 
 use super::super::protocol::INum;
-use super::dir::{Dir, DirEntry};
+use super::dir::DirEntry;
 use super::util::{self, FileAttr};
+
+// /// The symlink target node data
+// #[derive(Debug)]
+// pub enum SymLinkTargetData {
+//     /// Target directory entry data
+//     Dir(RawFd, FileAttr, BTreeMap<OsString, DirEntry>),
+//     /// Target file content data
+//     File(RawFd, FileAttr, Vec<u8>),
+// }
+
+// impl SymLinkTargetData {
+//     /// Get the size of symlink target data
+//     fn size(&self) -> usize {
+//         match &self {
+//             Self::Dir(_, _, m) => m.len(),
+//             Self::File(_, _, v) => v.len(),
+//         }
+//     }
+
+//     // /// Get the attribute of target node
+//     // const fn get_attr(&self) -> FileAttr {
+//     //     match self {
+//     //         Self::Dir(_, attr, _) => *attr,
+//     //         Self::File(_, attr, _) => *attr,
+//     //     }
+//     // }
+
+//     /// Get symlink target file data
+//     pub fn get_file_data(&self) -> &Vec<u8> {
+//         match self {
+//             Self::Dir(..) => panic!("forbidden to get file data from symlink target directory"),
+//             Self::File(_, _, v) => v,
+//         }
+//     }
+
+//     // /// Get symlink target directory data
+//     // pub fn get_dir_data(&self) -> &BTreeMap<OsString, DirEntry> {
+//     //     match self {
+//     //         Self::Dir(_, _, m) => m,
+//     //         Self::File(..) => panic!("forbidden to get directory data from symlink target file"),
+//     //     }
+//     // }
+// }
+
+// /// The symlink node data
+// #[derive(Debug)]
+// struct SymLinkData {
+//     /// The target path of symlink
+//     target_path: PathBuf,
+//     /// The target node data of symlink, could be none for broken symlink
+//     target_data: Option<SymLinkTargetData>,
+// }
+
+// impl SymLinkData {
+//     /// Create `SymLinkData`
+//     async fn new(symlink_fd: RawFd, target_path: PathBuf) -> Self {
+//         let target_attr_res = util::load_symlink_target_attr(symlink_fd, target_path.clone()).await;
+//         match target_attr_res {
+//             Ok(target_attr) => {
+//                 let target_data = match target_attr.kind {
+//                     SFlag::S_IFDIR => {
+//                         let oflags = util::get_dir_oflags();
+//                         let target_path_clone = target_path.clone();
+//                         let target_dir_fd = blocking!(fcntl::openat(
+//                             symlink_fd,
+//                             target_path_clone.as_os_str(),
+//                             oflags,
+//                             Mode::empty()
+//                         ))
+//                         .context(format!(
+//                             "SymLinkData::new() failed to open symlink target directory={:?}",
+//                             target_path,
+//                         ))
+//                         .unwrap_or_else(|err| {
+//                             panic!(
+//                                 "SymLinkData::new() failed, the error is: {}",
+//                                 util::format_anyhow_error(&err)
+//                             )
+//                         });
+//                         Some(SymLinkTargetData::Dir(
+//                             target_dir_fd,
+//                             target_attr,
+//                             BTreeMap::new(),
+//                         ))
+//                     }
+//                     SFlag::S_IFREG => {
+//                         let oflags = OFlag::O_RDWR;
+//                         let target_path_clone = target_path.clone();
+//                         let target_file_fd = blocking!(fcntl::openat(
+//                             symlink_fd,
+//                             target_path_clone.as_os_str(),
+//                             oflags,
+//                             Mode::empty()
+//                         ))
+//                         .context(format!(
+//                             "SymLinkData::new() failed to open symlink target file={:?}",
+//                             target_path,
+//                         ))
+//                         .unwrap_or_else(|err| {
+//                             panic!(
+//                                 "SymLinkData::new() failed, the error is: {}",
+//                                 util::format_anyhow_error(&err)
+//                             )
+//                         });
+//                         Some(SymLinkTargetData::File(
+//                             target_file_fd,
+//                             target_attr,
+//                             Vec::new(),
+//                         ))
+//                     }
+//                     _ => {
+//                         panic!("unsupported symlink target type={:?}", target_attr.kind);
+//                         // None
+//                     }
+//                 };
+//                 Self {
+//                     target_path,
+//                     target_data,
+//                 }
+//             }
+//             Err(e) => {
+//                 debug!(
+//                     "SymLinkData::new() failed to get the symlink target node attribute, \
+//                     the error is: {}",
+//                     util::format_anyhow_error(&e),
+//                 );
+//                 Self {
+//                     target_path,
+//                     target_data: None,
+//                 }
+//             }
+//         }
+//     }
+
+//     /// Build `SymLinkData`
+//     const fn from(target_path: PathBuf, target_data: SymLinkTargetData) -> Self {
+//         Self {
+//             target_path,
+//             target_data: Some(target_data),
+//         }
+//     }
+// }
 
 /// A file node data or a directory node data
 #[derive(Debug)]
 enum NodeData {
     /// Directory entry data
-    DirData(BTreeMap<OsString, DirEntry>),
+    Directory(BTreeMap<OsString, DirEntry>),
     /// File content data
-    FileData(Vec<u8>),
+    RegFile(Vec<u8>),
+    /// Symlink target data
+    // SymLink(Box<SymLinkData>),
+    SymLink(PathBuf),
 }
 
 /// A file node or a directory node
@@ -49,18 +194,43 @@ pub struct Node {
 
 impl Drop for Node {
     fn drop(&mut self) {
+        // if INVALID_RAW_FD == self.fd {
+        //     debug_assert_eq!(
+        //         self.get_type(),
+        //         SFlag::S_IFLNK,
+        //         "only symlink should have invalid fd, other than {:?} type",
+        //         self.get_type(),
+        //     );
+        //     debug!("no need to close the fd of symlink");
+        // } else {
         // TODO: check unsaved data in cache
         unistd::close(self.fd).unwrap_or_else(|err| {
             panic!(
-                "DirNode::drop() failed to clode the file handler \
+                "Node::drop() failed to clode the file handler \
                     of the node name={:?} ino={}, the error is: {}",
                 self.name, self.attr.ino, err,
             );
         });
+        // }
     }
 }
 
 impl Node {
+    /// Create `Node`
+    const fn new(parent: u64, name: OsString, attr: FileAttr, data: NodeData, fd: RawFd) -> Self {
+        Self {
+            parent,
+            name,
+            attr,
+            data,
+            fd,
+            // lookup count set to 1 by creation
+            open_count: AtomicI64::new(1),
+            // open count set to 1 by creation
+            lookup_count: AtomicI64::new(1),
+        }
+    }
+
     /// Get node i-number
     #[inline]
     pub const fn get_ino(&self) -> INum {
@@ -98,8 +268,9 @@ impl Node {
     /// Get node type, directory or file
     pub const fn get_type(&self) -> SFlag {
         match &self.data {
-            NodeData::DirData(..) => SFlag::S_IFDIR,
-            NodeData::FileData(..) => SFlag::S_IFREG,
+            NodeData::Directory(..) => SFlag::S_IFDIR,
+            NodeData::RegFile(..) => SFlag::S_IFREG,
+            NodeData::SymLink(..) => SFlag::S_IFLNK,
         }
     }
 
@@ -112,8 +283,9 @@ impl Node {
     pub fn set_attr(&mut self, new_attr: FileAttr) -> FileAttr {
         let old_attr = self.get_attr();
         match &self.data {
-            NodeData::DirData(..) => debug_assert_eq!(new_attr.kind, SFlag::S_IFDIR),
-            NodeData::FileData(..) => debug_assert_eq!(new_attr.kind, SFlag::S_IFREG),
+            NodeData::Directory(..) => debug_assert_eq!(new_attr.kind, SFlag::S_IFDIR),
+            NodeData::RegFile(..) => debug_assert_eq!(new_attr.kind, SFlag::S_IFREG),
+            NodeData::SymLink(..) => debug_assert_eq!(new_attr.kind, SFlag::S_IFLNK),
         }
         self.attr = new_attr;
         old_attr
@@ -165,8 +337,9 @@ impl Node {
             self.get_ino(),
         ))?;
         match &self.data {
-            NodeData::DirData(..) => debug_assert_eq!(SFlag::S_IFDIR, attr.kind),
-            NodeData::FileData(..) => debug_assert_eq!(SFlag::S_IFREG, attr.kind),
+            NodeData::Directory(..) => debug_assert_eq!(SFlag::S_IFDIR, attr.kind),
+            NodeData::RegFile(..) => debug_assert_eq!(SFlag::S_IFREG, attr.kind),
+            NodeData::SymLink(..) => debug_assert_eq!(SFlag::S_IFLNK, attr.kind),
         };
         Ok(attr)
     }
@@ -183,10 +356,17 @@ impl Node {
         self.inc_open_count();
 
         let fcntl_oflags = FcntlArg::F_SETFL(oflags);
-        blocking!(fcntl::fcntl(new_fd, fcntl_oflags)).context(format!(
-            "dup_fd() failed to set the flags={:?} of duplicated handler of ino={}",
-            oflags, ino,
-        ))?;
+        blocking!(fcntl::fcntl(new_fd, fcntl_oflags))
+            .context(format!(
+                "dup_fd() failed to set the flags={:?} of duplicated handler of ino={}",
+                oflags, ino,
+            ))
+            .unwrap_or_else(|err| {
+                panic!(
+                    "failed to duplicate fd, the error is: {}",
+                    util::format_anyhow_error(&err),
+                )
+            });
         // blocking!(unistd::dup3(raw_fd, new_fd, oflags)).context(format!(
         //     "dup_fd() failed to set the flags={:?} of duplicated handler of ino={}",
         //     oflags, ino,
@@ -194,19 +374,20 @@ impl Node {
         Ok(new_fd)
     }
 
-    /// Check whether a node is an empty filr or an empty directory
+    /// Check whether a node is an empty file or an empty directory
     pub fn is_node_data_empty(&self) -> bool {
         match &self.data {
-            NodeData::DirData(dir_node) => dir_node.is_empty(),
-            NodeData::FileData(file_node) => file_node.is_empty(),
+            NodeData::Directory(dir_node) => dir_node.is_empty(),
+            NodeData::RegFile(file_node) => file_node.is_empty(),
+            NodeData::SymLink(..) => panic!("forbidden to check symlink is empty or not"),
         }
     }
 
-    /// Check whether to load file content data or not
-    pub fn need_load_file_data(&self) -> bool {
+    /// Helper function to check need to load node data or not
+    fn need_load_node_data_helper(&self) -> bool {
         if !self.is_node_data_empty() {
             debug!(
-                "need_load_file_data() found node data of name={:?} \
+                "need_load_node_data_helper() found node data of name={:?} \
                     and ino={} is in cache, no need to load",
                 self.get_name(),
                 self.get_ino(),
@@ -214,7 +395,7 @@ impl Node {
             false
         } else if self.get_attr().size > 0 {
             debug!(
-                "need_load_file_data() found node size of name={:?} \
+                "need_load_node_data_helper() found node size of name={:?} \
                     and ino={} is non-zero, need to load",
                 self.get_name(),
                 self.get_ino(),
@@ -222,7 +403,7 @@ impl Node {
             true
         } else {
             debug!(
-                "need_load_file_data() found node size of name={:?} \
+                "need_load_node_data_helper() found node size of name={:?} \
                     and ino={} is zero, no need to load",
                 self.get_name(),
                 self.get_ino(),
@@ -231,29 +412,163 @@ impl Node {
         }
     }
 
+    /// check whether to load directory entry data or not
+    pub fn need_load_dir_data(&self) -> bool {
+        debug_assert_eq!(
+            self.attr.kind,
+            SFlag::S_IFDIR,
+            "fobidden to check non-directory node need load data or not",
+        );
+        self.need_load_node_data_helper()
+    }
+
+    /// Check whether to load file content data or not
+    pub fn need_load_file_data(&self) -> bool {
+        debug_assert_eq!(
+            self.attr.kind,
+            SFlag::S_IFREG,
+            "fobidden to check non-file node need load data or not",
+        );
+        self.need_load_node_data_helper()
+    }
+
+    // /// Check whether to load symlink target data or not
+    // pub fn need_load_symlink_target_data(&self) -> bool {
+    //     debug_assert_eq!(
+    //         self.attr.kind,
+    //         SFlag::S_IFLNK,
+    //         "fobidden to check non-symlink node need load data or not",
+    //     );
+    //     self.need_load_node_data_helper()
+    // }
+
     // Directory only methods
 
-    /// Get a directory entry by name
-    pub fn get_entry(&self, name: &OsStr) -> Option<&DirEntry> {
+    /// Get directory data
+    fn get_dir_data(&self) -> &BTreeMap<OsString, DirEntry> {
         match &self.data {
-            NodeData::DirData(dir_data) => match dir_data.get(name) {
-                Some(dir_entry) => Some(dir_entry),
-                None => None,
-            },
-            NodeData::FileData(..) => panic!("forbidden to get entry from FileData"),
+            NodeData::Directory(dir_data) => dir_data,
+            NodeData::RegFile(..) | NodeData::SymLink(..) => {
+                panic!("forbidden to get DirData from non-directory node")
+            }
         }
     }
 
-    // /// Get a mutable directory entry by name
-    // pub fn get_entry_mut(&mut self, name: &OsStr) -> Option<&mut DirEntry> {
-    //     match &mut self.data {
-    //         NodeData::DirData(dir_data) => match dir_data.get_mut(name) {
-    //             Some(dir_entry) => Some(dir_entry),
-    //             None => None,
-    //         },
-    //         NodeData::FileData(..) => panic!("forbidden to get entry from FileData"),
-    //     }
-    // }
+    /// Get mutable directory data
+    fn get_dir_data_mut(&mut self) -> &mut BTreeMap<OsString, DirEntry> {
+        match &mut self.data {
+            NodeData::Directory(dir_data) => dir_data,
+            NodeData::RegFile(..) | NodeData::SymLink(..) => {
+                panic!("forbidden to get DirData from non-directory node")
+            }
+        }
+    }
+
+    /// Get a directory entry by name
+    pub fn get_entry(&self, name: &OsStr) -> Option<&DirEntry> {
+        self.get_dir_data().get(name)
+    }
+
+    /// Helper function to create or read symlink itself in a directory
+    pub async fn create_or_load_child_symlink_helper(
+        &mut self,
+        child_symlink_name: OsString,
+        target_path_opt: Option<PathBuf>, // If not None, create symlink
+    ) -> anyhow::Result<Self> {
+        let ino = self.get_ino();
+        let fd = self.fd;
+        let dir_data = self.get_dir_data_mut();
+        if let Some(target_path) = &target_path_opt {
+            debug_assert!(
+                !dir_data.contains_key(&child_symlink_name),
+                "create_or_load_child_symlink_helper() cannot create duplicated symlink name={:?}",
+                child_symlink_name,
+            );
+            let child_symlink_name_clone = child_symlink_name.clone();
+            let target_path_clone = target_path.clone();
+            blocking!(unistd::symlinkat(
+                &target_path_clone,
+                Some(fd),
+                child_symlink_name_clone.as_os_str()
+            ))
+            .context(format!(
+                "create_or_load_child_symlink_helper() failed to create symlink \
+                    name={:?} to target path={:?} under parent ino={}",
+                child_symlink_name, target_path, ino,
+            ))?;
+        };
+
+        let child_symlink_name_clone = child_symlink_name.clone();
+        let child_fd = blocking!(fcntl::openat(
+            fd,
+            child_symlink_name_clone.as_os_str(),
+            OFlag::O_PATH | OFlag::O_NOFOLLOW,
+            Mode::all(),
+        ))
+        .context(format!(
+            "create_or_load_child_symlink_helper() failed to open symlink itself with name={:?} \
+                under parent ino={}",
+            child_symlink_name, ino,
+        ))?;
+        let child_attr = util::load_attr(child_fd)
+            // let child_attr = util::load_symlink_attr(fd, child_symlink_name.clone())
+            .await
+            .context(format!(
+                "create_or_load_child_symlink_helper() failed to get the attribute of the new symlink={:?}",
+                child_symlink_name,
+            ))?;
+        debug_assert_eq!(SFlag::S_IFLNK, child_attr.kind);
+
+        let target_path = if let Some(target_path) = target_path_opt {
+            // insert new entry to parent directory
+            // TODO: support thread-safe
+            let previous_value = dir_data.insert(
+                child_symlink_name.clone(),
+                DirEntry::new(child_attr.ino, child_symlink_name.clone(), SFlag::S_IFLNK),
+            );
+            debug_assert!(previous_value.is_none()); // double check creation race
+            target_path
+        } else {
+            let child_symlink_name_clone = child_symlink_name.clone();
+            let target_path_osstr =
+                blocking!(fcntl::readlinkat(fd, child_symlink_name_clone.as_os_str())).context(
+                    format!(
+                        "create_or_load_child_symlink_helper() failed to open \
+                            the new directory name={:?} under parent ino={}",
+                        child_symlink_name, ino,
+                    ),
+                )?;
+            Path::new(&target_path_osstr).to_owned()
+        };
+
+        Ok(Self::new(
+            self.get_ino(),
+            child_symlink_name,
+            child_attr,
+            // NodeData::SymLink(Box::new(SymLinkData::new(child_fd, target_path).await)),
+            NodeData::SymLink(target_path),
+            child_fd,
+        ))
+    }
+
+    /// Create symlink in a directory
+    pub async fn create_child_symlink(
+        &mut self,
+        child_symlink_name: OsString,
+        target_path: PathBuf,
+    ) -> anyhow::Result<Self> {
+        self.create_or_load_child_symlink_helper(child_symlink_name, Some(target_path))
+            .await
+    }
+
+    /// Read symlink itself in a directory, not follow symlink
+    pub async fn load_child_symlink(
+        &mut self,
+        child_symlink_name: OsString,
+    ) -> anyhow::Result<Self> {
+        self.create_or_load_child_symlink_helper(child_symlink_name, None)
+            .await
+    }
 
     /// Helper function to create or open sub-directory in a directory
     async fn open_child_dir_helper(
@@ -264,11 +579,7 @@ impl Node {
     ) -> anyhow::Result<Self> {
         let ino = self.get_ino();
         let fd = self.fd;
-        let dir_data = match &mut self.data {
-            NodeData::DirData(dir_data) => dir_data,
-            NodeData::FileData(..) => panic!("forbidden to load DirData from file node"),
-        };
-
+        let dir_data = self.get_dir_data_mut();
         if create_dir {
             debug_assert!(
                 !dir_data.contains_key(&child_dir_name),
@@ -312,21 +623,21 @@ impl Node {
         }
 
         // lookup count and open count are increased to 1 by creation
-        let mut child_node = Self {
-            parent: self.get_ino(),
-            name: child_dir_name,
-            attr: child_attr,
-            data: NodeData::DirData(BTreeMap::new()),
-            fd: child_raw_fd,
-            open_count: AtomicI64::new(1),
-            lookup_count: AtomicI64::new(1),
-        };
+        let child_node = Self::new(
+            self.get_ino(),
+            child_dir_name,
+            child_attr,
+            NodeData::Directory(BTreeMap::new()),
+            child_raw_fd,
+        );
 
-        if !create_dir {
-            // load directory data on open
-            child_node.load_data().await?;
-        }
-
+        // if !create_dir {
+        //     // load directory data on open
+        //     child_node
+        //         .load_data()
+        //         .await
+        //         .context("open_child_dir_helper() failed to load child directory entry data")?;
+        // }
         Ok(child_node)
     }
 
@@ -364,11 +675,7 @@ impl Node {
     ) -> anyhow::Result<Self> {
         let ino = self.get_ino();
         let fd = self.fd;
-        let dir_data = match &mut self.data {
-            NodeData::DirData(dir_data) => dir_data,
-            NodeData::FileData(..) => panic!("forbidden to load DirData from file node"),
-        };
-
+        let dir_data = self.get_dir_data_mut();
         if create_file {
             debug_assert!(
                 !dir_data.contains_key(&child_file_name),
@@ -386,7 +693,7 @@ impl Node {
         ))
         .context(format!(
             "open_child_file_helper() failed to open a file name={:?} \
-                    under parent ino={} with oflags={:?} and mode={:?}",
+                under parent ino={} with oflags={:?} and mode={:?}",
             child_file_name, ino, oflags, mode,
         ))?;
 
@@ -406,16 +713,13 @@ impl Node {
             debug_assert!(previous_value.is_none()); // double check creation race
         }
 
-        // lookup count and open count are increased to 1 by creation
-        Ok(Self {
-            parent: self.get_ino(),
-            name: child_file_name,
-            attr: child_attr,
-            data: NodeData::FileData(Vec::new()),
-            fd: child_fd,
-            open_count: AtomicI64::new(1),
-            lookup_count: AtomicI64::new(1),
-        })
+        Ok(Self::new(
+            self.get_ino(),
+            child_file_name,
+            child_attr,
+            NodeData::RegFile(Vec::new()),
+            child_fd,
+        ))
     }
 
     /// Open file in a directory
@@ -449,99 +753,57 @@ impl Node {
         .await
     }
 
-    // TODO: to remove
-    /// Helper funtion to load directory data
-    async fn load_dir_data_helper(&self) -> anyhow::Result<BTreeMap<OsString, DirEntry>> {
-        let fd = self.fd;
-        let dir =
-            blocking!(Dir::from_fd(fd)).context(format!("failed to build Dir from fd={}", fd))?;
-        let dir_entry_map = blocking!(
-            let dir_entry_map: BTreeMap<OsString, DirEntry> = dir
-                .filter_map(std::result::Result::ok) // filter out error result
-                .filter(|e| {
-                    let bytes = e.entry_name().as_bytes();
-                    !bytes.starts_with(&[b'.']) // skip hidden entries, '.' and '..'
-                })
-                .filter_map(|e| match e.entry_type() {
-                    SFlag::S_IFDIR | SFlag::S_IFREG => Some((e.entry_name().into(), e)),
-                    _ => None,
-                })
-                .collect();
-            dir_entry_map
-        );
-        // let dir_entry_map = blocking!(
-        //     let dir_entry_map: BTreeMap<OsString, DirEntry> = dir
-        //         .filter(|e| e.is_ok()) // filter out error result
-        //         .map(|e| e.unwrap()) // safe to use unwrap() here
-        //         .filter(|e| {
-        //             let bytes = e.entry_name().as_bytes();
-        //             !bytes.starts_with(&[b'.']) // skip hidden entries, '.' and '..'
-        //         })
-        //         .filter(|e| match e.entry_type() {
-        //             SFlag::S_IFDIR | SFlag::S_IFREG => true,
-        //             _ => false,
-        //         })
-        //         .map(|e| (e.entry_name().into(), e))
-        //         .collect();
-        //     dir_entry_map
-        // );
-        Ok(dir_entry_map)
-    }
-
-    // TODO: to remove
-    /// Helper function to load file data
-    async fn load_file_data_helper(&self) -> anyhow::Result<Vec<u8>> {
-        let ino = self.get_ino();
-        let fd = self.fd;
-        let file_size = self.attr.size;
-        // TODO: load file data to cache
-        let file_data_vec = blocking!(
-            let mut file_data_vec: Vec<u8> = Vec::with_capacity(file_size.cast());
-            unsafe {
-                file_data_vec.set_len(file_data_vec.capacity());
-            }
-            let read_size = unistd::read(fd, &mut *file_data_vec).context(format!(
-                "load_file_data_helper() failed to \
-                    read the file data of ino={} from disk",
-                ino,
-            ))?;
-            unsafe {
-                file_data_vec.set_len(read_size);
-            }
-            // Should explicitly highlight the error type
-            Ok::<Vec<u8>, anyhow::Error>(file_data_vec)
-        )?;
-        debug_assert_eq!(file_data_vec.len(), file_size.cast());
-        Ok(file_data_vec)
-    }
-
-    /// Load data from directory or file
+    // TODO: improve `load_data`, do not load all file content and directory entries at once
+    /// Load data from directory, file or symlink target
     pub async fn load_data(&mut self) -> anyhow::Result<usize> {
         match &mut self.data {
-            NodeData::DirData(..) => {
-                let dir_entry_map = self.load_dir_data_helper().await?;
+            NodeData::Directory(..) => {
+                // let dir_entry_map = self.load_dir_data_helper().await?;
+                let dir_entry_map = util::load_dir_data(self.get_fd())
+                    .await
+                    .context("load_data() failed to load directory entry data")?;
                 let entry_count = dir_entry_map.len();
-                debug!("load_data() successfully load {} entries", entry_count,);
-                self.data = NodeData::DirData(dir_entry_map);
+                self.data = NodeData::Directory(dir_entry_map);
+                debug!(
+                    "load_data() successfully load {} directory entries",
+                    entry_count
+                );
                 Ok(entry_count)
             }
-            NodeData::FileData(..) => {
-                let file_data_vec = self.load_file_data_helper().await?;
+            NodeData::RegFile(..) => {
+                // let file_data_vec = self.load_file_data_helper().await?;
+                let file_data_vec =
+                    util::load_file_data(self.get_fd(), self.get_attr().size.cast())
+                        .await
+                        .context("load_data() failed to load file content data")?;
                 let read_size = file_data_vec.len();
-                debug!("load_data() successfully load {} byte data", read_size,);
-                self.data = NodeData::FileData(file_data_vec);
+                self.data = NodeData::RegFile(file_data_vec);
+                debug!(
+                    "load_data() successfully load {} byte file content data",
+                    read_size
+                );
                 Ok(read_size)
+            }
+            NodeData::SymLink(..) => {
+                panic!("forbidden to load symlink target data");
+                // let target_data = self
+                //     .load_symlink_target_helper()
+                //     .await
+                //     .context("load_data() failed to load symlink target node data")?;
+                // let data_size = target_data.size();
+                // self.data = NodeData::SymLink(Box::new(SymLinkData::from(
+                //     self.get_symlink_target().to_owned(),
+                //     target_data,
+                // )));
+                // debug!("load_data() successfully load symlink target node data");
+                // Ok(data_size)
             }
         }
     }
 
     /// Insert directory entry
     pub fn insert_entry(&mut self, child_entry: DirEntry) -> Option<DirEntry> {
-        let dir_data = match &mut self.data {
-            NodeData::DirData(dir_data) => dir_data,
-            NodeData::FileData(..) => panic!("forbidden to load DirData from file node"),
-        };
-
+        let dir_data = self.get_dir_data_mut();
         let previous_entry = dir_data.insert(child_entry.entry_name().into(), child_entry);
         debug!(
             "insert_entry() successfully inserted new entry \
@@ -554,21 +816,13 @@ impl Node {
 
     /// Remove directory entry from cache only
     pub fn remove_entry(&mut self, child_name: &OsStr) -> Option<DirEntry> {
-        let dir_data = match &mut self.data {
-            NodeData::DirData(dir_data) => dir_data,
-            NodeData::FileData(..) => panic!("forbidden to load DirData from file node"),
-        };
-
+        let dir_data = self.get_dir_data_mut();
         dir_data.remove(child_name)
     }
 
     /// Unlink directory entry from both cache and disk
     pub async fn unlink_entry(&mut self, child_name: OsString) -> anyhow::Result<DirEntry> {
-        let dir_data = match &mut self.data {
-            NodeData::DirData(dir_data) => dir_data,
-            NodeData::FileData(..) => panic!("forbidden to load DirData from file node"),
-        };
-
+        let dir_data = self.get_dir_data_mut();
         let removed_entry = dir_data.remove(child_name.as_os_str()).unwrap_or_else(|| {
             panic!(
                 "unlink_entry() found fs is inconsistent, the entry of name={:?} \
@@ -593,7 +847,7 @@ impl Node {
                     child_name_clone,
                 ))?;
             }
-            SFlag::S_IFREG => {
+            SFlag::S_IFREG | SFlag::S_IFLNK => {
                 blocking!(unistd::unlinkat(
                     Some(fd),
                     child_name.as_os_str(),
@@ -615,25 +869,116 @@ impl Node {
 
     /// Read directory
     pub fn read_dir(&self, func: impl FnOnce(&BTreeMap<OsString, DirEntry>) -> usize) -> usize {
-        // debug_assert!(
-        //     !self.need_load_file_data(),
-        //     "directory data should be load before read",
-        // );
-        let dir_data = match &self.data {
-            NodeData::DirData(dir_data) => dir_data,
-            NodeData::FileData(..) => panic!("forbidden to load DirData from file node"),
-        };
-
+        let dir_data = self.get_dir_data();
         func(dir_data)
     }
+
+    // Symlink only methods
+
+    /// Get symlink target path
+    pub fn get_symlink_target(&self) -> &Path {
+        match &self.data {
+            NodeData::Directory(..) | NodeData::RegFile(..) => {
+                panic!("forbidden to read target path from non-symlink node")
+            }
+            // NodeData::SymLink(symlink_data) => &symlink_data.target_path,
+            NodeData::SymLink(target_path) => target_path,
+        }
+    }
+
+    // /// Get symlink target node data
+    // pub fn get_symlink_target_data(&self) -> Option<&SymLinkTargetData> {
+    //     match &self.data {
+    //         NodeData::Directory(..) | NodeData::RegFile(..) => {
+    //             panic!("forbidden to get target data from non-symlink node")
+    //         }
+    //         NodeData::SymLink(symlink_data) => symlink_data.target_data.as_ref(),
+    //     }
+    // }
+
+    // /// Helper function to load symlink target node data
+    // async fn load_symlink_target_helper(&self) -> anyhow::Result<SymLinkTargetData> {
+    //     let target_path = self.get_symlink_target().to_owned();
+    //     let target_data_res = self.get_symlink_target_data();
+
+    //     if let Some(target_data) = target_data_res {
+    //         match target_data {
+    //             SymLinkTargetData::Dir(target_dir_fd, target_attr, _) => {
+    //                 debug_assert_eq!(
+    //                     target_attr.kind,
+    //                     SFlag::S_IFDIR,
+    //                     "symlink target node should be a directory",
+    //                 );
+    //                 let target_dir_data =
+    //                     util::load_dir_data(*target_dir_fd).await.context(format!(
+    //                         "load_symlink_target_helper() failed to load entry data from \
+    //                             symlink target directory={:?}",
+    //                         target_path,
+    //                     ))?;
+    //                 Ok(SymLinkTargetData::Dir(
+    //                     *target_dir_fd,
+    //                     *target_attr,
+    //                     target_dir_data,
+    //                 ))
+    //             }
+    //             SymLinkTargetData::File(target_file_fd, target_attr, _) => {
+    //                 debug_assert_eq!(
+    //                     target_attr.kind,
+    //                     SFlag::S_IFREG,
+    //                     "symlink target node should be a file",
+    //                 );
+    //                 let target_file_data =
+    //                     util::load_file_data(*target_file_fd, target_attr.size.cast())
+    //                         .await
+    //                         .context(format!(
+    //                     "load_symlink_target_helper() failed to load file content data from \
+    //                                 symlink target directory={:?}",
+    //                     target_path,
+    //                 ))?;
+    //                 Ok(SymLinkTargetData::File(
+    //                     *target_file_fd,
+    //                     *target_attr,
+    //                     target_file_data,
+    //                 ))
+    //             }
+    //         }
+    //     } else {
+    //         util::build_error_result_from_errno(
+    //             nix::errno::Errno::ENOENT,
+    //             format!(
+    //                 "load_symlink_target_helper() failed to open broken symlink target={:?}",
+    //                 target_path,
+    //             ),
+    //         )
+    //     }
+    // }
+
+    // /// Open symlink target path
+    // pub async fn open_symlink_target(&self, oflags: OFlag) -> anyhow::Result<RawFd> {
+    //     let target_path = self.get_symlink_target().to_owned();
+    //     let fd = self.get_fd();
+    //     let target_fd = blocking!(fcntl::openat(
+    //         fd,
+    //         target_path.as_os_str(),
+    //         oflags,
+    //         Mode::empty()
+    //     ))
+    //     .context(format!(
+    //         "open_symlink_target() failed to open symlink target path={:?}",
+    //         self.get_symlink_target(),
+    //     ))?;
+    //     Ok(target_fd)
+    // }
 
     // File only methods
 
     /// Get file data
     pub fn get_file_data(&self) -> &Vec<u8> {
         match &self.data {
-            NodeData::DirData(..) => panic!("forbidden to load FileData from dir node"),
-            NodeData::FileData(file_data) => file_data,
+            NodeData::Directory(..) | NodeData::SymLink(..) => {
+                panic!("forbidden to load FileData from non-file node")
+            }
+            NodeData::RegFile(file_data) => file_data,
         }
     }
 
@@ -648,8 +993,10 @@ impl Node {
     ) -> anyhow::Result<usize> {
         let ino = self.get_ino();
         let file_data_vec = match &mut self.data {
-            NodeData::DirData(..) => panic!("forbidden to load FileData from dir node"),
-            NodeData::FileData(file_data) => file_data,
+            NodeData::Directory(..) | NodeData::SymLink(..) => {
+                panic!("forbidden to load FileData from non-file node")
+            }
+            NodeData::RegFile(file_data) => file_data,
         };
 
         let size_after_write = data.len().overflow_add(offset.cast::<usize>());
@@ -722,19 +1069,18 @@ impl Node {
         let mut attr = util::load_attr(dir_fd).await?;
         attr.ino = root_ino; // replace root ino with 1
 
-        let mut root_node = Self {
-            parent: root_ino,
+        let root_node = Self::new(
+            root_ino,
             name,
             attr,
-            data: NodeData::DirData(BTreeMap::new()),
-            fd: dir_fd,
-            // lookup count set to 1 by creation
-            open_count: AtomicI64::new(1),
-            // open count set to 1 by creation
-            lookup_count: AtomicI64::new(1),
-        };
-        // load root directory data on open
-        root_node.load_data().await?;
+            NodeData::Directory(BTreeMap::new()),
+            dir_fd,
+        );
+        // // load root directory data on open
+        // root_node
+        //     .load_data()
+        //     .await
+        //     .context("open_root_node() failed to load root directory entry data")?;
 
         Ok(root_node)
     }
