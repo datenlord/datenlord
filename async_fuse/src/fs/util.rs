@@ -109,7 +109,7 @@ pub fn parse_mode(mode: u32) -> Mode {
     let file_mode = Mode::from_bits_truncate(mode);
     #[cfg(target_os = "macos")]
     let file_mode = Mode::from_bits_truncate(mode.cast());
-    debug!("helper_parse_mode() read file mode={:?}", file_mode);
+    debug!("parse_mode() read mode={:?}", file_mode);
     file_mode
 }
 
@@ -200,8 +200,8 @@ fn convert_to_file_attr(st: FileStat) -> FileAttr {
         parse_sflag(st.st_mode.cast()),
     );
     debug!(
-        "load_attr() got file permission={} and kind={:?}",
-        perm, kind
+        "load_attr() got file permission={:#o}={} and kind={:?} from mode bits={:#o}={}",
+        perm, perm, kind, st.st_mode, st.st_mode,
     );
 
     let nt = SystemTime::now();

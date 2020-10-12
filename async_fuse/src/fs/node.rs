@@ -291,6 +291,15 @@ impl Node {
         old_attr
     }
 
+    /// Update mtime and ctime to now
+    fn update_mtime_ctime_to_now(&mut self) {
+        let mut attr = self.get_attr();
+        let st_now = SystemTime::now();
+        attr.mtime = st_now;
+        attr.ctime = st_now;
+        self.set_attr(attr);
+    }
+
     /// Get node attribute and increase lookup count
     pub fn lookup_attr(&self) -> FileAttr {
         let attr = self.get_attr();
@@ -557,8 +566,13 @@ impl Node {
         child_symlink_name: OsString,
         target_path: PathBuf,
     ) -> anyhow::Result<Self> {
-        self.create_or_load_child_symlink_helper(child_symlink_name, Some(target_path))
-            .await
+        let create_res = self
+            .create_or_load_child_symlink_helper(child_symlink_name, Some(target_path))
+            .await;
+        if create_res.is_ok() {
+            self.update_mtime_ctime_to_now();
+        }
+        create_res
     }
 
     /// Read symlink itself in a directory, not follow symlink
@@ -657,12 +671,17 @@ impl Node {
         child_dir_name: OsString,
         mode: Mode,
     ) -> anyhow::Result<Self> {
-        self.open_child_dir_helper(
-            child_dir_name,
-            mode,
-            true, // create_dir
-        )
-        .await
+        let create_res = self
+            .open_child_dir_helper(
+                child_dir_name,
+                mode,
+                true, // create_dir
+            )
+            .await;
+        if create_res.is_ok() {
+            self.update_mtime_ctime_to_now();
+        }
+        create_res
     }
 
     /// Helper function to open or create file in a directory
@@ -744,13 +763,18 @@ impl Node {
         oflags: OFlag,
         mode: Mode,
     ) -> anyhow::Result<Self> {
-        self.open_child_file_helper(
-            child_file_name,
-            oflags,
-            mode,
-            true, // create
-        )
-        .await
+        let create_res = self
+            .open_child_file_helper(
+                child_file_name,
+                oflags,
+                mode,
+                true, // create
+            )
+            .await;
+        if create_res.is_ok() {
+            self.update_mtime_ctime_to_now();
+        }
+        create_res
     }
 
     // TODO: improve `load_data`, do not load all file content and directory entries at once
@@ -801,12 +825,13 @@ impl Node {
         }
     }
 
-    /// Insert directory entry
-    pub fn insert_entry(&mut self, child_entry: DirEntry) -> Option<DirEntry> {
+    /// Insert directory entry for rename()
+    pub fn insert_entry_for_rename(&mut self, child_entry: DirEntry) -> Option<DirEntry> {
         let dir_data = self.get_dir_data_mut();
         let previous_entry = dir_data.insert(child_entry.entry_name().into(), child_entry);
+        self.update_mtime_ctime_to_now();
         debug!(
-            "insert_entry() successfully inserted new entry \
+            "insert_entry_for_rename() successfully inserted new entry \
                 and replaced previous entry={:?}",
             previous_entry,
         );
@@ -814,10 +839,14 @@ impl Node {
         previous_entry
     }
 
-    /// Remove directory entry from cache only
-    pub fn remove_entry(&mut self, child_name: &OsStr) -> Option<DirEntry> {
+    /// Remove directory entry from cache only for rename()
+    pub fn remove_entry_for_rename(&mut self, child_name: &OsStr) -> Option<DirEntry> {
         let dir_data = self.get_dir_data_mut();
-        dir_data.remove(child_name)
+        let remove_res = dir_data.remove(child_name);
+        if remove_res.is_some() {
+            self.update_mtime_ctime_to_now();
+        }
+        remove_res
     }
 
     /// Unlink directory entry from both cache and disk
@@ -863,7 +892,7 @@ impl Node {
                 removed_entry.entry_type()
             ),
         }
-
+        self.update_mtime_ctime_to_now();
         Ok(removed_entry)
     }
 
@@ -1053,8 +1082,7 @@ impl Node {
         }
         // update the attribute of the written file
         self.attr.size = file_data_vec.len().cast();
-        let ts = SystemTime::now();
-        self.attr.mtime = ts;
+        self.update_mtime_ctime_to_now();
 
         Ok(written_size)
     }
