@@ -2394,7 +2394,7 @@ impl FileSystem {
         let symlink_res = self.create_node_helper(
             parent,
             name.to_owned(),
-            nix::sys::stat::Mode::all().bits(), // TODO: should set mode bits as all?
+            0o777, // Symbolic links have no permissions
             SFlag::S_IFLNK,
             Some(target_path),
         )
