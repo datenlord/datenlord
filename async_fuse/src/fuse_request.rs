@@ -272,7 +272,10 @@ pub enum Operation<'a> {
     },
     /// FUSE_SETVOLNAME = 61
     #[cfg(target_os = "macos")]
-    SetVolName { name: &'a OsStr },
+    SetVolName {
+        /// Volume name to set
+        name: &'a OsStr,
+    },
     /// FUSE_GETXTIMES = 62
     #[cfg(target_os = "macos")]
     GetXTimes,

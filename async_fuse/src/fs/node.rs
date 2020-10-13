@@ -508,13 +508,42 @@ impl Node {
         };
 
         let child_symlink_name_clone = child_symlink_name.clone();
-        let child_fd = blocking!(fcntl::openat(
+        #[cfg(target_os = "macos")]
+        let open_res = {
+            use std::os::unix::ffi::OsStrExt;
+            let symlink_name_cstr =
+                std::ffi::CString::new(child_symlink_name_clone.as_os_str().as_bytes())?;
+            let fd_res = blocking!(unsafe {
+                libc::openat(
+                    fd,
+                    symlink_name_cstr.as_ptr(),
+                    libc::O_SYMLINK | libc::O_NOFOLLOW,
+                )
+            });
+            if 0 == fd_res {
+                debug!(
+                    "create_or_load_child_symlink_helper() successfully opened symlink={:?} itselt",
+                    child_symlink_name_clone
+                );
+                Ok(fd_res)
+            } else {
+                util::build_error_result_from_errno(
+                    nix::errno::Errno::last(),
+                    format!(
+                        "failed to open symlink={:?} itself",
+                        child_symlink_name_clone,
+                    ),
+                )
+            }
+        };
+        #[cfg(target_os = "linux")]
+        let open_res = blocking!(fcntl::openat(
             fd,
             child_symlink_name_clone.as_os_str(),
             OFlag::O_PATH | OFlag::O_NOFOLLOW,
             Mode::all(),
-        ))
-        .context(format!(
+        ));
+        let child_fd = open_res.context(format!(
             "create_or_load_child_symlink_helper() failed to open symlink itself with name={:?} \
                 under parent ino={}",
             child_symlink_name, ino,

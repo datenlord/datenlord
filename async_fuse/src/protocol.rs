@@ -248,9 +248,11 @@ pub mod fopen_flags {
     #[cfg(feature = "abi-7-31")]
     pub const FOPEN_STREAM: u32 = 1 << 4;
 
+    /// macOS purge attribute
     #[cfg(target_os = "macos")]
     pub const FOPEN_PURGE_ATTR: u32 = 1 << 30;
 
+    /// macOS purge UBC
     #[cfg(target_os = "macos")]
     pub const FOPEN_PURGE_UBC: u32 = 1 << 31;
 }
@@ -339,14 +341,19 @@ pub mod init_flags {
     #[cfg(feature = "abi-7-30")]
     pub const FUSE_EXPLICIT_INVAL_DATA: u32 = 1 << 25;
 
+    /// macOS allocate
     #[cfg(target_os = "macos")]
     pub const FUSE_ALLOCATE: u32 = 1 << 27;
+    /// macOS exchange data
     #[cfg(target_os = "macos")]
     pub const FUSE_EXCHANGE_DATA: u32 = 1 << 28;
+    /// macOS case insensitive
     #[cfg(target_os = "macos")]
     pub const FUSE_CASE_INSENSITIVE: u32 = 1 << 29;
+    /// macOS volume rename
     #[cfg(target_os = "macos")]
     pub const FUSE_VOL_RENAME: u32 = 1 << 30;
+    /// macOS extended times
     #[cfg(target_os = "macos")]
     pub const FUSE_XTIMES: u32 = 1 << 31;
 }

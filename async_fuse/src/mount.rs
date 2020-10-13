@@ -1,6 +1,6 @@
 //! The implementation of FUSE mount and un-mount
 
-use anyhow::{anyhow, Context};
+use anyhow::Context;
 use log::{debug, info};
 use nix::fcntl::{self, OFlag};
 use nix::sys::stat::{self, Mode};
@@ -120,7 +120,7 @@ pub async fn umount(short_path: &Path) -> anyhow::Result<()> {
             } else {
                 let stderr = String::from_utf8_lossy(&umount_handle.stderr);
                 debug!("fusermount failed to umount, the error is: {}", &stderr);
-                Err(anyhow!(
+                Err(anyhow::anyhow!(
                     "fusermount failed to umount fuse device, the error is: {}",
                     &stderr,
                 ))
@@ -365,19 +365,18 @@ pub async fn mount(mount_path: &Path) -> anyhow::Result<RawFd> {
                 utilities::cast_to_mut_ptr(&mut mnt_args),
             )
         };
-        if result == 0 {
+        if 0 == result {
             info!("mount path={:?} to FUSE device={:?} successfully!", mntpath, devpath);
             Ok(fd)
         } else {
-            // let e = Errno::from_i32(errno::errno());
-            // error!("errno={}, the error is: {:?}", errno::errno(), e);
-            // let mount_fail_str = "mount failed!";
-            // unsafe { libc::perror(mount_fail_str.as_ptr() as *const i8); }
-
-            Err(anyhow!(
-                "failed to mount to fuse device, the error is: {}",
-                nix::Error::last(),
-            ))
+            // Err(anyhow!(
+            //     "failed to mount to fuse device, the error is: {}",
+            //     nix::Error::last(),
+            // ));
+            super::fs::util::build_error_result_from_errno(
+                nix::errno::Errno::last(),
+                "failed to mount to fuse device".to_owned(),
+            )
         }
     )
 }
