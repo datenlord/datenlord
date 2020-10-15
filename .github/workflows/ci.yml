@@ -4,7 +4,7 @@ on:
     branches: [master]
 
 env:
-  CI_RUST_TOOLCHAIN: 1.46.0
+  CI_RUST_TOOLCHAIN: 1.47.0
 
 jobs:
   outdated:
@@ -162,10 +162,10 @@ jobs:
           gcc -Wall -DHAS_TRUNCATE64 -DHAS_STAT64 fstest.c -o fstest
           cd -
           mkdir fuse_mount_dir
-          RUST_LOG=debug target/debug/async_fuse -m ./fuse_mount_dir &>datenlord.log &
+          sudo RUST_LOG=debug target/debug/async_fuse -m ./fuse_mount_dir &>datenlord.log &
           cd fuse_mount_dir
-          prove -rv ../ntfs-3g-pjd-fstest/tests/chflags
-          prove -rv ../ntfs-3g-pjd-fstest/tests/xacl
+          sudo prove -rv ../ntfs-3g-pjd-fstest/tests/chflags
+          sudo prove -rv ../ntfs-3g-pjd-fstest/tests/xacl
       #- name: Setup tmate session
       #  if: ${{ always() }}
       #  uses: mxschmitt/action-tmate@v3

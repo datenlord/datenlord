@@ -22,20 +22,21 @@ use std::time::{Duration, SystemTime};
 use utilities::{Cast, OverflowArithmetic};
 
 #[cfg(target_os = "macos")]
-use super::fuse_reply::ReplyXTimes;
-use super::fuse_reply::{
+use crate::fuse::fuse_reply::ReplyXTimes;
+use crate::fuse::fuse_reply::{
     ReplyAttr, ReplyBMap, ReplyCreate, ReplyData, ReplyDirectory, ReplyEmpty, ReplyEntry,
     ReplyLock, ReplyOpen, ReplyStatFs, ReplyWrite, ReplyXAttr, StatFsParam,
 };
-use super::fuse_request::Request;
-use super::protocol::{FuseAttr, INum, FUSE_ROOT_ID};
+use crate::fuse::fuse_request::Request;
+use crate::fuse::protocol::{FuseAttr, INum, FUSE_ROOT_ID};
+use crate::util;
 
 mod dir;
+mod fs_util;
 mod node;
-pub mod util;
 use dir::DirEntry;
+use fs_util::FileAttr;
 use node::Node;
-use util::FileAttr;
 
 /// The time-to-live seconds of FUSE attributes
 const MY_TTL_SEC: u64 = 3600; // TODO: should be a long value, say 1 hour
@@ -223,7 +224,7 @@ impl FileSystem {
             .context("create_node_helper() failed to pre check")?;
         let parent_name = parent_node.get_name().to_owned();
         // all checks are passed, ready to create new node
-        let m_flags = util::parse_mode(mode);
+        let m_flags = fs_util::parse_mode(mode);
         let new_ino: u64;
         let node_name_clone = node_name.clone();
         let new_node = match node_type {
@@ -306,7 +307,7 @@ impl FileSystem {
         self.cache.insert(new_ino, new_node);
 
         let ttl = Duration::new(MY_TTL_SEC, 0);
-        let fuse_attr = util::convert_to_fuse_attr(new_node_attr);
+        let fuse_attr = fs_util::convert_to_fuse_attr(new_node_attr);
         debug!(
             "create_node_helper() successfully created the new child name={:?} \
                 of ino={} and type={:?} under parent ino={} and name={:?}",
@@ -566,7 +567,7 @@ impl FileSystem {
                     ino, child_name, parent,
                 );
                 let attr = node.lookup_attr();
-                let fuse_attr = util::convert_to_fuse_attr(attr);
+                let fuse_attr = fs_util::convert_to_fuse_attr(attr);
                 debug!(
                     "lookup_helper() successfully found in cache the i-node of \
                         ino={} name={:?} under parent ino={}, the attr={:?}",
@@ -628,7 +629,7 @@ impl FileSystem {
             let child_ino = child_node.get_ino();
             let attr = child_node.lookup_attr();
             self.cache.insert(child_ino, child_node);
-            let fuse_attr = util::convert_to_fuse_attr(attr);
+            let fuse_attr = fs_util::convert_to_fuse_attr(attr);
             debug!(
                 "lookup_helper() successfully found the i-node of ino={} and name={:?} \
                 under parent of ino={} and name={:?}",
@@ -1055,7 +1056,7 @@ impl FileSystem {
         let mut attr_changed = false;
         let mut mtime_ctime_changed = false;
         if let Some(mode_bits) = param.mode {
-            let nix_mode = util::parse_mode(mode_bits);
+            let nix_mode = fs_util::parse_mode(mode_bits);
             debug!(
                 "setattr_helper() successfully parsed mode={:?} from bits={:#o}",
                 nix_mode, mode_bits,
@@ -1064,12 +1065,12 @@ impl FileSystem {
                 "setattr_helper() failed to chmod with mode={}",
                 mode_bits,
             ))?;
-            attr.perm = util::parse_mode_bits(mode_bits);
+            attr.perm = fs_util::parse_mode_bits(mode_bits);
             debug!(
                 "setattr_helper() set permission={:#o}={} from input bits={:#o}={}",
                 attr.perm, attr.perm, mode_bits, mode_bits,
             );
-            let kind = util::parse_sflag(mode_bits);
+            let kind = fs_util::parse_sflag(mode_bits);
             debug_assert_eq!(kind, attr.kind);
 
             // Change mode also need to change ctime
@@ -1114,7 +1115,7 @@ impl FileSystem {
                         tv_nsec: libc::UTIME_OMIT,
                     }),
                     |st_atime| {
-                        let (seconds, nanoseconds) = util::time_from_system_time(&st_atime);
+                        let (seconds, nanoseconds) = fs_util::time_from_system_time(&st_atime);
                         TimeSpec::from(libc::timespec {
                             tv_sec: seconds.cast(),
                             tv_nsec: nanoseconds.cast(),
@@ -1127,7 +1128,7 @@ impl FileSystem {
                         tv_nsec: libc::UTIME_OMIT,
                     }),
                     |st_mtime| {
-                        let (seconds, nanoseconds) = util::time_from_system_time(&st_mtime);
+                        let (seconds, nanoseconds) = fs_util::time_from_system_time(&st_mtime);
                         TimeSpec::from(libc::timespec {
                             tv_sec: seconds.cast(),
                             tv_nsec: nanoseconds.cast(),
@@ -1260,7 +1261,7 @@ impl FileSystem {
             node.get_name(),
         );
         let ttl = Duration::new(MY_TTL_SEC, 0);
-        let fuse_attr = util::convert_to_fuse_attr(attr);
+        let fuse_attr = fs_util::convert_to_fuse_attr(attr);
         debug!(
             "getattr() successfully got the attribute of ino={}, name={:?} and attr={:?}",
             ino,
@@ -1293,7 +1294,7 @@ impl FileSystem {
                 ino,
             );
         });
-        let o_flags = util::parse_oflag(flags);
+        let o_flags = fs_util::parse_oflag(flags);
         // TODO: handle open flags
         // <https://pubs.opengroup.org/onlinepubs/9699919799/functions/open.html>
         // let open_res = if let SFlag::S_IFLNK = node.get_type() {
@@ -1445,10 +1446,10 @@ impl FileSystem {
         let ttl = Duration::new(MY_TTL_SEC, 0);
 
         // if let Some(b) = mode {
-        //     attr.perm = util::parse_mode_bits(b);
+        //     attr.perm = fs_util::parse_mode_bits(b);
         //     debug!("setattr() set permission={}", attr.perm);
 
-        //     let kind = util::parse_sflag(b);
+        //     let kind = fs_util::parse_sflag(b);
         //     debug_assert_eq!(kind, attr.kind);
         // }
         // // no replace
@@ -1483,7 +1484,7 @@ impl FileSystem {
         //     || bkuptime.is_some()
         //     || flags.is_some();
 
-        // let fuse_attr = util::convert_to_fuse_attr(attr);
+        // let fuse_attr = fs_util::convert_to_fuse_attr(attr);
         // if sth_changed {
         //     // update ctime, since meta data might change in setattr
         //     // attr.ctime = SystemTime::now();
@@ -1521,7 +1522,7 @@ impl FileSystem {
                         inode.get_name(),
                     );
                 }
-                let fuse_attr = util::convert_to_fuse_attr(file_attr);
+                let fuse_attr = fs_util::convert_to_fuse_attr(file_attr);
                 reply.attr(ttl, fuse_attr).await
             }
             Err(e) => {
@@ -1916,7 +1917,7 @@ impl FileSystem {
                 ino,
             );
         });
-        let o_flags = util::parse_oflag(flags);
+        let o_flags = fs_util::parse_oflag(flags);
         let write_to_disk = true;
         let data_len = data.len();
         let write_result = inode
@@ -2121,7 +2122,7 @@ impl FileSystem {
             );
         });
 
-        let o_flags = util::parse_oflag(flags);
+        let o_flags = fs_util::parse_oflag(flags);
         let dup_res = inode.dup_fd(o_flags).await;
         match dup_res {
             Ok(new_fd) => {

@@ -19,8 +19,8 @@ use std::time::SystemTime;
 use std::time::{Duration, UNIX_EPOCH};
 use utilities::Cast;
 
+use crate::memfs::{FileLockParam, FileSystem, RenameParam, SetAttrParam};
 //use super::channel::Channel;
-use super::fs::{self, FileLockParam, FileSystem, RenameParam, SetAttrParam};
 #[cfg(target_os = "macos")]
 use super::fuse_reply::ReplyXTimes;
 use super::fuse_reply::{
@@ -176,7 +176,7 @@ impl Session {
                     .detach(); // Run in parallel
                 }
                 Err(err) => {
-                    let err_msg = fs::util::format_nix_error(err); // TODO: refactor format_nix_error()
+                    let err_msg = crate::util::format_nix_error(err); // TODO: refactor format_nix_error()
                     error!(
                         "failed to receive from FUSE kernel, the error is: {}",
                         err_msg
@@ -247,7 +247,7 @@ impl Session {
             panic!(
                 "failed to process req={:?}, the error is: {}",
                 fuse_req,
-                fs::util::format_nix_error(e), // TODO: refactor format_nix_error()
+                crate::util::format_nix_error(e), // TODO: refactor format_nix_error()
             );
         }
         let res = sender.send((buffer_idx, byte_buffer));
@@ -287,7 +287,7 @@ impl Session {
         if let Ok(read_size) = read_result.0 {
             debug!("read successfully {} byte data from FUSE device", read_size);
             if let Ok(req) = Request::new(&byte_vec) {
-                if let Operation::Init { arg } = req.operation() {
+                if let Operation::Init { arg } = *req.operation() {
                     let filesystem = Arc::clone(&self.filesystem);
                     self.init(arg, &req, filesystem, fuse_fd).await?;
                 }
@@ -407,11 +407,52 @@ async fn dispatch<'a>(
     // TODO: consider remove this global lock to filesystem
     let mut filesystem = fs.lock().await;
 
-    match req.operation() {
+    match *req.operation() {
         // Filesystem initialization
         Operation::Init { .. } => panic!("FUSE should have already initialized"),
         // Any operation is invalid before initialization
-        _ if !FUSE_INITIALIZED.load(Ordering::Acquire) => {
+        Operation::Lookup { .. }
+        | Operation::Forget { .. }
+        | Operation::SetAttr { .. }
+        | Operation::SymLink { .. }
+        | Operation::MkNod { .. }
+        | Operation::MkDir { .. }
+        | Operation::Unlink { .. }
+        | Operation::RmDir { .. }
+        | Operation::Rename { .. }
+        | Operation::Link { .. }
+        | Operation::Open { .. }
+        | Operation::Read { .. }
+        | Operation::Write { .. }
+        | Operation::Release { .. }
+        | Operation::FSync { .. }
+        | Operation::SetXAttr { .. }
+        | Operation::GetXAttr { .. }
+        | Operation::ListXAttr { .. }
+        | Operation::RemoveXAttr { .. }
+        | Operation::Flush { .. }
+        | Operation::OpenDir { .. }
+        | Operation::ReadDir { .. }
+        | Operation::ReleaseDir { .. }
+        | Operation::FSyncDir { .. }
+        | Operation::GetLk { .. }
+        | Operation::SetLk { .. }
+        | Operation::SetLkW { .. }
+        | Operation::Access { .. }
+        | Operation::Create { .. }
+        | Operation::Interrupt { .. }
+        | Operation::BMap { .. }
+        | Operation::IoCtl { .. }
+        | Operation::Poll { .. }
+        | Operation::NotifyReply { .. }
+        | Operation::BatchForget { .. }
+        | Operation::FAllocate { .. }
+        | Operation::ReadDirPlus { .. }
+        | Operation::Rename2 { .. }
+        | Operation::LSeek { .. }
+        | Operation::CopyFileRange { .. }
+            if !FUSE_INITIALIZED.load(Ordering::Acquire) =>
+        {
             warn!("ignoring FUSE operation before init, the request={}", req);
             let reply = ReplyEmpty::new(req.unique(), fd);
             reply.error_code(Errno::EIO).await
@@ -424,7 +465,48 @@ async fn dispatch<'a>(
             reply.ok().await
         }
         // Any operation is invalid after destroy
-        _ if FUSE_DESTROYED.load(Ordering::Acquire) => {
+        Operation::Lookup { .. }
+        | Operation::Forget { .. }
+        | Operation::SetAttr { .. }
+        | Operation::SymLink { .. }
+        | Operation::MkNod { .. }
+        | Operation::MkDir { .. }
+        | Operation::Unlink { .. }
+        | Operation::RmDir { .. }
+        | Operation::Rename { .. }
+        | Operation::Link { .. }
+        | Operation::Open { .. }
+        | Operation::Read { .. }
+        | Operation::Write { .. }
+        | Operation::Release { .. }
+        | Operation::FSync { .. }
+        | Operation::SetXAttr { .. }
+        | Operation::GetXAttr { .. }
+        | Operation::ListXAttr { .. }
+        | Operation::RemoveXAttr { .. }
+        | Operation::Flush { .. }
+        | Operation::OpenDir { .. }
+        | Operation::ReadDir { .. }
+        | Operation::ReleaseDir { .. }
+        | Operation::FSyncDir { .. }
+        | Operation::GetLk { .. }
+        | Operation::SetLk { .. }
+        | Operation::SetLkW { .. }
+        | Operation::Access { .. }
+        | Operation::Create { .. }
+        | Operation::Interrupt { .. }
+        | Operation::BMap { .. }
+        | Operation::IoCtl { .. }
+        | Operation::Poll { .. }
+        | Operation::NotifyReply { .. }
+        | Operation::BatchForget { .. }
+        | Operation::FAllocate { .. }
+        | Operation::ReadDirPlus { .. }
+        | Operation::Rename2 { .. }
+        | Operation::LSeek { .. }
+        | Operation::CopyFileRange { .. }
+            if FUSE_DESTROYED.load(Ordering::Acquire) =>
+        {
             warn!("ignoring FUSE operation after destroy, the request={}", req);
             let reply = ReplyEmpty::new(req.unique(), fd);
             reply.error_code(Errno::EIO).await
