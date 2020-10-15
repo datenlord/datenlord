@@ -16,7 +16,6 @@ use std::time::Duration;
 use std::{mem, ptr, slice};
 use utilities::{Cast, OverflowArithmetic};
 
-use super::fs;
 #[cfg(target_os = "macos")]
 use super::protocol::FuseGetXTimesOut;
 use super::protocol::{
@@ -131,7 +130,7 @@ impl<T: Send + Sync + 'static> ReplyRaw<T> {
     async fn send_error_code(self, error_code: Errno) -> nix::Result<usize> {
         self.send(
             ToBytes::Error,
-            fs::util::convert_nix_errno_to_cint(error_code),
+            crate::util::convert_nix_errno_to_cint(error_code),
         )
         .await
         // .context("send_error_code() failed to send error")
@@ -145,7 +144,7 @@ impl<T: Send + Sync + 'static> ReplyRaw<T> {
                     panic!(
                         "should not send nix::errno::Errno::UnknownErrno to FUSE kernel, \
                             the error is: {}",
-                        fs::util::format_anyhow_error(&err),
+                        crate::util::format_anyhow_error(&err),
                     );
                 } else {
                     error_code
@@ -153,13 +152,13 @@ impl<T: Send + Sync + 'static> ReplyRaw<T> {
             } else {
                 panic!(
                     "should not send non-nix::Error::Sys to FUSE kernel, the error is: {}",
-                    fs::util::format_anyhow_error(&err),
+                    crate::util::format_anyhow_error(&err),
                 )
             }
         } else {
             panic!(
                 "should not send non-nix error to FUSE kernel, the error is: {}",
-                fs::util::format_anyhow_error(&err),
+                crate::util::format_anyhow_error(&err),
             );
         };
         self.send_error_code(error_code).await
@@ -591,7 +590,7 @@ impl ReplyDirectory {
             (*pdirent).ino = ino;
             (*pdirent).off = offset.cast();
             (*pdirent).namelen = name_bytes.len().cast();
-            (*pdirent).typ = fs::util::mode_from_kind_and_perm(kind, 0).overflow_shr(12);
+            (*pdirent).typ = crate::util::mode_from_kind_and_perm(kind, 0).overflow_shr(12);
             let dirent_end_ptr = data_end_ptr.add(mem::size_of_val(&*pdirent));
             ptr::copy_nonoverlapping(name_bytes.as_ptr(), dirent_end_ptr, name_bytes.len());
             let name_end_ptr = dirent_end_ptr.add(name_bytes.len());

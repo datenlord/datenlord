@@ -6,7 +6,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::io::RawFd;
 use std::ptr;
 
-use super::super::protocol::INum;
+use crate::fuse::protocol::INum;
 
 #[cfg(target_os = "linux")]
 use libc::{dirent64 as dirent, readdir64_r as readdir_r};
@@ -134,13 +134,13 @@ mod test {
     use nix::sys::stat::Mode;
     use smol::blocking;
 
-    use super::super::util;
+    use super::super::fs_util;
     use super::Dir;
 
     #[test]
     fn test_dir() -> nix::Result<()> {
         smol::run(async {
-            let oflags = util::get_dir_oflags();
+            let oflags = fs_util::get_dir_oflags();
             let fd = blocking!(fcntl::open(".", oflags, Mode::empty()))?;
             let dir = Dir::from_fd(fd)?;
             let mut dir = smol::iter(dir);

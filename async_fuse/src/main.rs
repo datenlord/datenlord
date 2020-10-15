@@ -5,7 +5,7 @@
     // https://doc.rust-lang.org/rustc/lints/listing/allowed-by-default.html
     anonymous_parameters,
     bare_trait_objects,
-    // box_pointers,
+    box_pointers,
     elided_lifetimes_in_paths, // allow anonymous lifetime
     missing_copy_implementations,
     missing_debug_implementations,
@@ -32,6 +32,7 @@
 )]
 #![allow(
     // Some explicitly allowed Clippy lints, must have clear reason to allow
+    clippy::blanket_clippy_restriction_lints, // allow clippy::restriction
     clippy::implicit_return, // actually omitting the return keyword is idiomatic Rust code
     clippy::module_name_repetitions, // repeation of module name in a struct name is not big deal
     clippy::multiple_crate_versions, // multi-version dependency crates is not able to fix
@@ -40,20 +41,10 @@
 
 use log::debug;
 
-#[allow(unsafe_code)]
-mod byte_slice;
-
-// ioctl_read!() macro involves inter arithmetic
-#[allow(clippy::integer_arithmetic)]
-mod channel;
-mod fs;
-mod fuse_reply;
-mod fuse_request;
-mod mount;
-mod protocol;
-mod session;
-
-use session::Session;
+mod fuse;
+mod memfs;
+pub mod util;
+use fuse::session::Session;
 
 /// Argument name of FUSE mount point
 const MOUNT_POINT_ARG_NAME: &str = "mountpoint";

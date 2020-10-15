@@ -438,8 +438,7 @@ fn test_bind_mount(fuse_mount_dir: &Path) -> anyhow::Result<()> {
     use nix::mount::MsFlags;
 
     pub fn cleanup_dir(directory: &Path) -> anyhow::Result<()> {
-        let umount_res =
-            smol::block_on(async move { super::super::mount::umount(directory).await });
+        let umount_res = nix::mount::umount2(directory, nix::mount::MntFlags::MNT_FORCE);
         if umount_res.is_err() {
             info!("cleanup_dir() failed to un-mount {:?}", directory);
         }

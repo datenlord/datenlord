@@ -499,7 +499,7 @@ impl fmt::Display for Operation<'_> {
     /// Format FUSE operation to display
     #[allow(clippy::too_many_lines)]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
+        match *self {
             Operation::Lookup { name } => write!(f, "LOOKUP name={:?}", name),
             Operation::Forget { arg } => write!(f, "FORGET nlookup={}", arg.nlookup),
             Operation::GetAttr => write!(f, "GETATTR"),
@@ -832,12 +832,13 @@ mod test {
         }))
         .expect_err("Unexpected request parsing result");
         let mut chain = err.chain();
-        assert_eq!(
+        assert!(
             chain
                 .next()
                 .unwrap_or_else(|| panic!("failed to get next error"))
-                .to_string(),
-            "failed to build FUSE request payload type async_fuse::protocol::FuseInHeader"
+                .to_string()
+                .starts_with("failed to build FUSE request payload type"),
+            "error message not match",
         );
         assert_eq!(
             chain
@@ -872,13 +873,56 @@ mod test {
         assert_eq!(req.uid(), 0xc001_d00d);
         assert_eq!(req.gid(), 0xc001_cafe);
         assert_eq!(req.pid(), 0xc0de_ba5e);
-        match req.operation() {
+        match *req.operation() {
             Operation::Init { arg } => {
                 assert_eq!(arg.major, 7);
                 assert_eq!(arg.minor, 8);
                 assert_eq!(arg.max_readahead, 4096);
             }
-            _ => panic!("unexpected request operation"),
+            Operation::Lookup { .. }
+            | Operation::Forget { .. }
+            | Operation::GetAttr
+            | Operation::SetAttr { .. }
+            | Operation::ReadLink
+            | Operation::SymLink { .. }
+            | Operation::MkNod { .. }
+            | Operation::MkDir { .. }
+            | Operation::Unlink { .. }
+            | Operation::RmDir { .. }
+            | Operation::Rename { .. }
+            | Operation::Link { .. }
+            | Operation::Open { .. }
+            | Operation::Read { .. }
+            | Operation::Write { .. }
+            | Operation::StatFs
+            | Operation::Release { .. }
+            | Operation::FSync { .. }
+            | Operation::SetXAttr { .. }
+            | Operation::GetXAttr { .. }
+            | Operation::ListXAttr { .. }
+            | Operation::RemoveXAttr { .. }
+            | Operation::Flush { .. }
+            | Operation::OpenDir { .. }
+            | Operation::ReadDir { .. }
+            | Operation::ReleaseDir { .. }
+            | Operation::FSyncDir { .. }
+            | Operation::GetLk { .. }
+            | Operation::SetLk { .. }
+            | Operation::SetLkW { .. }
+            | Operation::Access { .. }
+            | Operation::Create { .. }
+            | Operation::Interrupt { .. }
+            | Operation::BMap { .. }
+            | Operation::Destroy
+            | Operation::IoCtl { .. }
+            | Operation::Poll { .. }
+            | Operation::NotifyReply { .. }
+            | Operation::BatchForget { .. }
+            | Operation::FAllocate { .. }
+            | Operation::ReadDirPlus { .. }
+            | Operation::Rename2 { .. }
+            | Operation::LSeek { .. }
+            | Operation::CopyFileRange { .. } => panic!("unexpected request operation"),
         }
     }
 
@@ -893,12 +937,55 @@ mod test {
         assert_eq!(req.uid(), 0xc001_d00d);
         assert_eq!(req.gid(), 0xc001_cafe);
         assert_eq!(req.pid(), 0xc0de_ba5e);
-        match req.operation() {
+        match *req.operation() {
             Operation::MkNod { arg, name } => {
                 assert_eq!(arg.mode, 0o644);
-                assert_eq!(*name, "foo.txt");
+                assert_eq!(name, "foo.txt");
             }
-            _ => panic!("unexpected request operation"),
+            Operation::Lookup { .. }
+            | Operation::Forget { .. }
+            | Operation::GetAttr
+            | Operation::SetAttr { .. }
+            | Operation::ReadLink
+            | Operation::SymLink { .. }
+            | Operation::MkDir { .. }
+            | Operation::Unlink { .. }
+            | Operation::RmDir { .. }
+            | Operation::Rename { .. }
+            | Operation::Link { .. }
+            | Operation::Open { .. }
+            | Operation::Read { .. }
+            | Operation::Write { .. }
+            | Operation::StatFs
+            | Operation::Release { .. }
+            | Operation::FSync { .. }
+            | Operation::SetXAttr { .. }
+            | Operation::GetXAttr { .. }
+            | Operation::ListXAttr { .. }
+            | Operation::RemoveXAttr { .. }
+            | Operation::Flush { .. }
+            | Operation::Init { .. }
+            | Operation::OpenDir { .. }
+            | Operation::ReadDir { .. }
+            | Operation::ReleaseDir { .. }
+            | Operation::FSyncDir { .. }
+            | Operation::GetLk { .. }
+            | Operation::SetLk { .. }
+            | Operation::SetLkW { .. }
+            | Operation::Access { .. }
+            | Operation::Create { .. }
+            | Operation::Interrupt { .. }
+            | Operation::BMap { .. }
+            | Operation::Destroy
+            | Operation::IoCtl { .. }
+            | Operation::Poll { .. }
+            | Operation::NotifyReply { .. }
+            | Operation::BatchForget { .. }
+            | Operation::FAllocate { .. }
+            | Operation::ReadDirPlus { .. }
+            | Operation::Rename2 { .. }
+            | Operation::LSeek { .. }
+            | Operation::CopyFileRange { .. } => panic!("unexpected request operation"),
         }
     }
 }
