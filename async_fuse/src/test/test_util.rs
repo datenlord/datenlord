@@ -5,7 +5,7 @@ use std::path::Path;
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use super::super::{mount, session::Session};
+use crate::fuse::{mount, session::Session};
 
 pub const DEFAULT_MOUNT_DIR: &str = "../fuse_test";
 pub const FILE_CONTENT: &str = "0123456789ABCDEF";
