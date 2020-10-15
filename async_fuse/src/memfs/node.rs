@@ -527,7 +527,7 @@ impl Node {
                 );
                 Ok(fd_res)
             } else {
-                util::build_error_result_from_errno(
+                crate::util::build_error_result_from_errno(
                     nix::errno::Errno::last(),
                     format!(
                         "failed to open symlink={:?} itself",
