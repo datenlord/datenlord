@@ -2,21 +2,37 @@ branches:
   only: 
     - master
 
-arch:
-  - amd64
-  - arm64
-
 os: 
   - linux
 
 language: rust
 
-rust:
-  - stable
-  - nightly
-  - 1.46.0 # MSRV
-
 jobs:
+  include:
+    - name: amd64-linux-msrv
+      arch: amd64
+      rust: 1.46.0 # MSRV
+
+    - name: amd64-linux-stable
+      arch: amd64
+      rust: stable
+
+    - name: amd64-linux-nightly
+      arch: amd64
+      rust: nightly
+
+    - name: arm64-linux-msrv
+      arch: arm64
+      rust: 1.46.0 # MSRV
+
+    - name: arm64-linux-stable
+      arch: arm64
+      rust: stable
+
+    - name: arm64-linux-nightly
+      arch: arm64
+      rust: nightly
+
   allow_failures:
     - rust: nightly
     - arch: arm64 # FIXME: test failed on ARM64
