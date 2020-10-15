@@ -373,7 +373,7 @@ pub async fn mount(mount_path: &Path) -> anyhow::Result<RawFd> {
             //     "failed to mount to fuse device, the error is: {}",
             //     nix::Error::last(),
             // ));
-            super::fs::util::build_error_result_from_errno(
+            crate::util::build_error_result_from_errno(
                 nix::errno::Errno::last(),
                 "failed to mount to fuse device".to_owned(),
             )
