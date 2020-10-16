@@ -1,0 +1,116 @@
+name: CRON-CI
+on:
+  schedule: [cron: "0 */4 * * *"]
+
+jobs:
+  e2e:
+    name: K8S-E2E
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set SSH config
+        run: |
+          sudo rm -rf ~/.ssh/
+          ssh-keygen -N '' -f ~/.ssh/id_rsa
+          cp ~/.ssh/id_rsa.pub ~/.ssh/authorized_keys
+          cat ~/.ssh/authorized_keys
+          export HOSTNAME=`hostname`
+          export WHO=`whoami`
+          export HOSTIP=`ifconfig eth0 | grep 'inet ' | awk '{print $2}'`
+          cat >>~/.ssh/config <<END
+          Host thisrunner
+            HostName $HOSTNAME
+            User $WHO
+            IdentityFile $HOME/.ssh/id_rsa
+            StrictHostKeyChecking no
+            UserKnownHostsFile /dev/null
+          END
+          chmod 755 $HOME
+          sudo service ssh restart
+          sudo service ssh status
+          ssh -vvv thisrunner
+          exit
+      - name: Setup Minikube
+        uses: manusa/actions-setup-minikube@v2.0.0
+        with:
+          minikube version: 'v1.13.0'
+          kubernetes version: 'v1.19.0'
+          github token: ${{ secrets.GITHUB_TOKEN }}
+      #- name: Deploy minikube
+      #  uses: opsgang/ga-setup-minikube@v0.1.1
+      #  with:
+      #    minikube-version: 1.12.3
+      #    k8s-version: 1.18.8
+      #- name: Test deploy DatenLord CSI plugin to K8s
+      #  run: |
+      #    kubectl cluster-info
+      #    kubectl get pods -A
+      #    docker pull quay.io/k8scsi/csi-node-driver-registrar:v1.3.0
+      #    docker pull quay.io/k8scsi/livenessprobe:v2.0.0
+      #    docker pull quay.io/k8scsi/csi-attacher:v2.2.0
+      #    docker pull quay.io/k8scsi/csi-provisioner:v1.6.0
+      #    docker pull quay.io/k8scsi/csi-snapshotter:v2.1.1
+      #    docker pull quay.io/k8scsi/csi-resizer:v0.5.0
+      #    docker pull gcr.io/etcd-development/etcd:latest
+      #    docker pull datenlord/csiplugin:latest
+      #    kubectl apply -f csiplugin_k8s.yaml
+      #    kubectl get csidriver
+      #    while [[ $(kubectl get pods -l app=csi-controller-datenlord -A -o 'jsonpath={..status.conditions[?(@.type=="Ready")].status}') != "True" ]]; do kubectl get pods -A -o wide ; kubectl get nodes -o wide ; kubectl describe pod csi-controller-datenlord-0 -n csi-datenlord ; sleep 6 ; done
+      #    while [[ $(kubectl get pods -l app=csi-nodeplugin-datenlord -A -o 'jsonpath={..status.conditions[?(@.type=="Ready")].status}') != "True" ]]; do kubectl get pods -A -o wide ; kubectl get nodes -o wide ; sleep 6 ; done
+      #    kubectl get pods -A -o wide
+      #    sudo netstat -lntp && ls -lsh
+      - name: Check out code
+        uses: actions/checkout@v2
+      - name: Docker build fuse
+        run: |
+          docker build --file ./Dockerfile --tag datenlord/datenlord:e2e_test
+      - name: Check out csi-sanity code
+        uses: actions/checkout@v2
+        with:
+          repository: datenlord/csi
+          path: ./csi
+      - name: Docker build csi
+        run: |
+          cd csi
+          docker build --file ../Dockerfile.csi --tag datenlord/csiplugin:e2e_test
+          cd ..
+      - name: Deploy DatenLord to K8s
+        run: |
+          kubectl cluster-info
+          kubectl get pods -A
+          #docker pull quay.io/k8scsi/csi-node-driver-registrar:v1.3.0
+          #docker pull quay.io/k8scsi/livenessprobe:v2.0.0
+          #docker pull quay.io/k8scsi/csi-attacher:v2.2.0
+          #docker pull quay.io/k8scsi/csi-provisioner:v1.6.0
+          #docker pull quay.io/k8scsi/csi-snapshotter:v2.1.1
+          #docker pull quay.io/k8scsi/csi-resizer:v0.5.0
+          #docker pull gcr.io/etcd-development/etcd:latest
+          kubectl apply -f https://raw.githubusercontent.com/kubernetes-csi/external-snapshotter/master/client/config/crd/snapshot.storage.k8s.io_volumesnapshots.yaml
+          kubectl apply -f https://raw.githubusercontent.com/kubernetes-csi/external-snapshotter/master/client/config/crd/snapshot.storage.k8s.io_volumesnapshotcontents.yaml
+          kubectl apply -f https://raw.githubusercontent.com/kubernetes-csi/external-snapshotter/master/client/config/crd/snapshot.storage.k8s.io_volumesnapshotclasses.yaml
+          kubectl apply -f datenlord.yaml
+          kubectl get csidriver
+          kubectl get csinode
+          kubectl get storageclass
+          kubectl get volumesnapshotclass
+          kubectl wait --for=condition=Ready pod -l app=csi-controller-datenlord -n csi-datenlord --timeout=60s
+          kubectl wait --for=condition=Ready pod -l app=csi-nodeplugin-datenlord -n csi-datenlord --timeout=60s
+          wget https://raw.githubusercontent.com/kubernetes-csi/external-snapshotter/master/deploy/kubernetes/snapshot-controller/rbac-snapshot-controller.yaml
+          wget https://raw.githubusercontent.com/kubernetes-csi/external-snapshotter/master/deploy/kubernetes/snapshot-controller/setup-snapshot-controller.yaml
+          sed -e 's/namespace\:\ default/namespace\:\ kube\-system/g' rbac-snapshot-controller.yaml > datenlord-rbac-snapshot-controller.yaml
+          sed -e 's/namespace\:\ default/namespace\:\ kube\-system/g' setup-snapshot-controller.yaml > datenlord-setup-snapshot-controller.yaml
+          kubectl apply -f datenlord-rbac-snapshot-controller.yaml
+          kubectl apply -f datenlord-setup-snapshot-controller.yaml
+          kubectl wait --for=condition=Ready pod -l app=snapshot-controller -n kube-system --timeout=60s
+          kubectl get pods -A -o wide
+          sudo netstat -lntp && ls -lsh
+      - name: E2E Test
+        run: |
+          wget --quiet https://dl.k8s.io/v1.19.0/kubernetes-test-linux-amd64.tar.gz
+          tar zxvf kubernetes-test-linux-amd64.tar.gz
+          export K8S_CONFIG=k8s.e2e.config
+          kubectl config view --raw > $K8S_CONFIG
+          kubernetes/test/bin/e2e.test -v=6 -ginkgo.v -ginkgo.focus='External.Storage' -kubectl-path=`which kubectl` -kubeconfig=$K8S_CONFIG -storage.testdriver=datenlord-e2e-test.yaml
+      #- name: Setup tmate session
+      #  if: ${{ always() }}
+      #  uses: mxschmitt/action-tmate@v3
+
