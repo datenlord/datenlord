@@ -1,15 +1,16 @@
 FROM rust:1.47 as builder
 WORKDIR /tmp/build
 COPY . .
+RUN rustup component add rustfmt
 RUN apt-get update
 RUN apt-get install -y cmake g++ libprotobuf-dev protobuf-compiler
-RUN cargo build --release
+RUN cargo build
 
 FROM ubuntu
 LABEL maintainers="DatenLord Authors"
 LABEL description="DatenLord CSI Driver"
 
-COPY --from=builder /tmp/build/target/release/csi /usr/local/bin/csiplugin
+COPY --from=builder /tmp/build/target/debug/csi /usr/local/bin/csiplugin
 ENTRYPOINT ["/usr/local/bin/csiplugin"]
 CMD []
 
