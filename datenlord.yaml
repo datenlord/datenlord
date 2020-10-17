@@ -204,15 +204,15 @@ spec:
             allowPrivilegeEscalation: true
           image: datenlord/datenlord:e2e_test
           imagePullPolicy: "IfNotPresent"
-          args:
-            - "--mountpoint=$(FUSE_MOUNT_DIR)"
-          lifecycle:
-            #postStart:
-            #  exec:
-            #    command: ["/bin/sh", "-c", "\"umount -f /var/opt/datenlord-data && echo un-mounted || echo not-mounted\""]
-            preStop:
-              exec:
-                command: ["/bin/sh", "/usr/local/bin/umount-in-container.sh", "/var/opt/datenlord-data"]
+          #args:
+          #  - "--mountpoint=$(FUSE_MOUNT_DIR)"
+          #lifecycle:
+          #  #postStart:
+          #  #  exec:
+          #  #    command: ["/bin/sh", "-c", "\"umount -f /var/opt/datenlord-data && echo un-mounted || echo not-mounted\""]
+          #  preStop:
+          #    exec:
+          #      command: ["/bin/sh", "/usr/local/bin/umount-in-container.sh", "/var/opt/datenlord-data"]
           env:
             - name: FUSE_MOUNT_DIR
               value: /var/opt/datenlord-data
