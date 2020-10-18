@@ -13,18 +13,19 @@ fi
 FUSECTL_DIR=/sys/fs/fuse/connections
 
 FUSE_DIR=$1
+FUSE_MINOR=$(cat /proc/self/mountinfo | grep fuse | grep $FUSE_DIR | awk '{print $3}' | cut -d ':' -f 2)
 MOUNTED=$(cat /proc/self/mountinfo | grep fuse | grep $FUSE_DIR | awk '{print $5}')
 if [ -z $MOUNTED ]
 then
     echo "$FUSE_DIR UN-MOUNTED"
 else
-    umount -f $FUSE_DIR || echo "UMOUNT FAILED"
+    umount $FUSE_DIR || echo "UMOUNT FAILED"
 fi
 
-FUSE_MINOR=$(cat /proc/self/mountinfo | grep fuse | grep $FUSE_DIR | awk '{print $3}' | cut -d ':' -f 2)
-if [ -z $FUSE_MINOR ]
+STILL_MOUNTED=$(ls /sys/fs/fuse/connections | grep $FUSE_MINOR | awk '{print $1}')
+if [ -z $STILL_MOUNTED ]
 then
-    echo "$FUSE_DIR IS NOT MOUNTED"
+    echo "$FUSE_DIR GOT UN-MOUNTED"
 else
     FUSE_CTL_MOUNTED=$(cat /proc/self/mountinfo | grep $FUSECTL_DIR | awk '{print $5}')
     if [ $FUSE_CTL_MOUNTED ]
@@ -34,5 +35,5 @@ else
         echo "MOUNT FUSECTL"
         mount -t fusectl fusectl $FUSECTL_DIR
     fi
-    echo "UMOUNT FUSE DIR=$FUSE_DIR MINOR=$FUSE_MINOR" | tee /sys/fs/fuse/connections/$FUSE_MINOR/abort
+    echo "UMOUNT FUSE DIR=$FUSE_DIR MINOR=$FUSE_MINOR" | tee /sys/fs/fuse/connections/$FUSE_MINOR/abort || echo "FUSECTL UMOUNT FAILED"
 fi

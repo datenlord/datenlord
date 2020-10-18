@@ -79,16 +79,18 @@ jobs:
         run: |
           kubectl cluster-info
           kubectl get pods -A
-          #docker pull quay.io/k8scsi/csi-node-driver-registrar:v1.3.0
-          #docker pull quay.io/k8scsi/livenessprobe:v2.0.0
-          #docker pull quay.io/k8scsi/csi-attacher:v2.2.0
-          #docker pull quay.io/k8scsi/csi-provisioner:v1.6.0
-          #docker pull quay.io/k8scsi/csi-snapshotter:v2.1.1
-          #docker pull quay.io/k8scsi/csi-resizer:v0.5.0
-          #docker pull gcr.io/etcd-development/etcd:latest
           kubectl apply -f https://raw.githubusercontent.com/kubernetes-csi/external-snapshotter/master/client/config/crd/snapshot.storage.k8s.io_volumesnapshots.yaml
           kubectl apply -f https://raw.githubusercontent.com/kubernetes-csi/external-snapshotter/master/client/config/crd/snapshot.storage.k8s.io_volumesnapshotcontents.yaml
           kubectl apply -f https://raw.githubusercontent.com/kubernetes-csi/external-snapshotter/master/client/config/crd/snapshot.storage.k8s.io_volumesnapshotclasses.yaml
+          kubectl apply -f datenlord.yaml
+          kubectl wait --for=condition=Ready pod -l app=csi-controller-datenlord -n csi-datenlord --timeout=60s
+          kubectl wait --for=condition=Ready pod -l app=csi-nodeplugin-datenlord -n csi-datenlord --timeout=60s
+          FUSE_MOUNT_PATH=/var/opt/datenlord-data
+          FOUND_PATH=`cat /proc/self/mountinfo | grep fuse | grep $FUSE_MOUNT_PATH | awk '{print $5}'`
+          test -n $FOUND_PATH || (echo "FAILED TO FIND MOUNT PATH $FUSE_MOUNT_PATH" && /bin/false)
+          kubectl delete -f datenlord.yaml
+          NO_PATH=`cat /proc/self/mountinfo | grep fuse | grep /var/opt/datenlord-data | awk '{print $5}'`
+          test -z $NO_PATH || (echo "FAILED TO UN-MOUNT PATH $FUSE_MOUNT_PATH" && /bin/false)
           kubectl apply -f datenlord.yaml
           kubectl get csidriver
           kubectl get csinode
@@ -105,13 +107,13 @@ jobs:
           kubectl wait --for=condition=Ready pod -l app=snapshot-controller -n kube-system --timeout=60s
           kubectl get pods -A -o wide
           sudo netstat -lntp && ls -lsh
-      - name: E2E Test
+      - name: CSI E2E Test
         run: |
           wget --quiet https://dl.k8s.io/v1.19.0/kubernetes-test-linux-amd64.tar.gz
           tar zxvf kubernetes-test-linux-amd64.tar.gz
           export K8S_CONFIG=k8s.e2e.config
           kubectl config view --raw > $K8S_CONFIG
-          kubernetes/test/bin/e2e.test -v=6 -ginkgo.failFast -ginkgo.failOnPending -ginkgo.debug -ginkgo.v -ginkgo.focus='External.Storage' -kubectl-path=`which kubectl` -kubeconfig=$K8S_CONFIG -storage.testdriver=$PWD/csi/datenlord-e2e-test.yaml
+          kubernetes/test/bin/e2e.test -v=5 -ginkgo.failFast -ginkgo.failOnPending -ginkgo.debug -ginkgo.v -ginkgo.focus='External.Storage' -kubectl-path=`which kubectl` -kubeconfig=$K8S_CONFIG -storage.testdriver=$PWD/csi/datenlord-e2e-test.yaml
           #kubernetes/test/bin/ginkgo -p -v -focus='External.Storage' kubernetes/test/bin/e2e.test -- -kubectl-path=`which kubectl` -kubeconfig=$K8S_CONFIG -storage.testdriver=$PWD/csi/datenlord-e2e-test.yaml
       - name: Setup tmate session
         if: ${{ failure() }}
