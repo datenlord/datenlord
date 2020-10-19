@@ -1,4 +1,5 @@
-FROM rust:1.47 as builder
+ARG RUST_IMAGE_VERSION=latest
+FROM rust:${RUST_IMAGE_VERSION} as builder
 WORKDIR /tmp/build
 COPY . .
 RUN cargo build --release
