@@ -4,6 +4,19 @@ on:
     branches: [master]
   schedule: [cron: "0 */4 * * *"]
 
+env:
+  RUST_VERSION: 1.47.0
+  CONTROLLER_APP_LABEL: csi-controller-datenlord
+  CONTROLLER_CONTAINER_NAME: datenlord-controller-plugin
+  DATENLORD_NAMESPACE: csi-datenlord
+  FUSE_CONTAINER_NAME: datenlord-fuse
+  FUSE_MOUNT_PATH: /var/opt/datenlord-data
+  K8S_CONFIG: k8s.e2e.config
+  NODE_APP_LABEL: csi-nodeplugin-datenlord
+  NODE_CONTAINER_NAME: datenlord-node-plugin
+  MINIKUBE_VERSION: v1.13.0
+  K8S_VERSION: v1.19.0
+
 jobs:
   e2e:
     name: K8S-CSI-E2E
@@ -36,8 +49,10 @@ jobs:
       - name: Setup Minikube
         uses: manusa/actions-setup-minikube@v2.0.0
         with:
-          minikube version: 'v1.13.0'
-          kubernetes version: 'v1.19.0'
+          #minikube version: 'v1.13.0'
+          #kubernetes version: 'v1.19.0'
+          minikube version: ${{ env.MINIKUBE_VERSION }}
+          kubernetes version: ${{ env.K8S_VERSION }}
           github token: ${{ secrets.GITHUB_TOKEN }}
       #- name: Deploy minikube
       #  uses: opsgang/ga-setup-minikube@v0.1.1
@@ -66,15 +81,15 @@ jobs:
         uses: actions/checkout@v2
       - name: Docker build fuse
         run: |
-          docker build . --file ./Dockerfile --tag datenlord/datenlord:e2e_test
-      - name: Check out csi-sanity code
+          docker build . --build-arg RUST_IMAGE_VERSION=$RUST_VERSION --file ./Dockerfile --tag datenlord/datenlord:e2e_test
+      - name: Check out csi code
         uses: actions/checkout@v2
         with:
           repository: datenlord/csi
           path: ./csi
       - name: Docker build csi
         run: |
-          docker build ./csi --file ./Dockerfile.csi --tag datenlord/csiplugin:e2e_test
+          docker build ./csi --build-arg RUST_IMAGE_VERSION=$RUST_VERSION --file ./Dockerfile.csi --tag datenlord/csiplugin:e2e_test
       - name: Deploy DatenLord to K8S
         run: |
           kubectl cluster-info
@@ -83,21 +98,20 @@ jobs:
           kubectl apply -f https://raw.githubusercontent.com/kubernetes-csi/external-snapshotter/master/client/config/crd/snapshot.storage.k8s.io_volumesnapshotcontents.yaml
           kubectl apply -f https://raw.githubusercontent.com/kubernetes-csi/external-snapshotter/master/client/config/crd/snapshot.storage.k8s.io_volumesnapshotclasses.yaml
           kubectl apply -f datenlord.yaml
-          kubectl wait --for=condition=Ready pod -l app=csi-controller-datenlord -n csi-datenlord --timeout=60s
-          kubectl wait --for=condition=Ready pod -l app=csi-nodeplugin-datenlord -n csi-datenlord --timeout=60s
-          FUSE_MOUNT_PATH=/var/opt/datenlord-data
+          kubectl wait --for=condition=Ready pod -l app=$CONTROLLER_APP_LABEL -n $DATENLORD_NAMESPACE --timeout=60s
+          kubectl wait --for=condition=Ready pod -l app=$NODE_APP_LABEL -n $DATENLORD_NAMESPACE --timeout=60s
           FOUND_PATH=`cat /proc/self/mountinfo | grep fuse | grep $FUSE_MOUNT_PATH | awk '{print $5}'`
           test -n $FOUND_PATH || (echo "FAILED TO FIND MOUNT PATH $FUSE_MOUNT_PATH" && /bin/false)
           kubectl delete -f datenlord.yaml
-          NO_PATH=`cat /proc/self/mountinfo | grep fuse | grep /var/opt/datenlord-data | awk '{print $5}'`
+          NO_PATH=`cat /proc/self/mountinfo | grep fuse | grep $FUSE_MOUNT_PATH | awk '{print $5}'`
           test -z $NO_PATH || (echo "FAILED TO UN-MOUNT PATH $FUSE_MOUNT_PATH" && /bin/false)
           kubectl apply -f datenlord.yaml
           kubectl get csidriver
           kubectl get csinode
           kubectl get storageclass
           kubectl get volumesnapshotclass
-          kubectl wait --for=condition=Ready pod -l app=csi-controller-datenlord -n csi-datenlord --timeout=60s
-          kubectl wait --for=condition=Ready pod -l app=csi-nodeplugin-datenlord -n csi-datenlord --timeout=60s
+          kubectl wait --for=condition=Ready pod -l app=$CONTROLLER_APP_LABEL -n $DATENLORD_NAMESPACE --timeout=60s
+          kubectl wait --for=condition=Ready pod -l app=$NODE_APP_LABEL -n $DATENLORD_NAMESPACE --timeout=60s
           wget https://raw.githubusercontent.com/kubernetes-csi/external-snapshotter/master/deploy/kubernetes/snapshot-controller/rbac-snapshot-controller.yaml
           wget https://raw.githubusercontent.com/kubernetes-csi/external-snapshotter/master/deploy/kubernetes/snapshot-controller/setup-snapshot-controller.yaml
           sed -e 's/namespace\:\ default/namespace\:\ kube\-system/g' rbac-snapshot-controller.yaml > datenlord-rbac-snapshot-controller.yaml
@@ -109,12 +123,22 @@ jobs:
           sudo netstat -lntp && ls -lsh
       - name: CSI E2E Test
         run: |
-          wget --quiet https://dl.k8s.io/v1.19.0/kubernetes-test-linux-amd64.tar.gz
+          wget --quiet https://dl.k8s.io/$K8S_VERSION/kubernetes-test-linux-amd64.tar.gz
           tar zxvf kubernetes-test-linux-amd64.tar.gz
-          export K8S_CONFIG=k8s.e2e.config
           kubectl config view --raw > $K8S_CONFIG
           kubernetes/test/bin/e2e.test -v=5 -ginkgo.failFast -ginkgo.failOnPending -ginkgo.debug -ginkgo.v -ginkgo.focus='External.Storage' -kubectl-path=`which kubectl` -kubeconfig=$K8S_CONFIG -storage.testdriver=$PWD/csi/datenlord-e2e-test.yaml
-          #kubernetes/test/bin/ginkgo -p -v -focus='External.Storage' kubernetes/test/bin/e2e.test -- -kubectl-path=`which kubectl` -kubeconfig=$K8S_CONFIG -storage.testdriver=$PWD/csi/datenlord-e2e-test.yaml
+          #kubernetes/test/bin/ginkgo -p -v -failFast -failOnPending -debug -focus='External.Storage' kubernetes/test/bin/e2e.test -- -v=5 -kubectl-path=`which kubectl` -kubeconfig=$K8S_CONFIG -storage.testdriver=$PWD/csi/datenlord-e2e-test.yaml
+      - name: Print DatenLord logs
+        if: ${{ failure() }}
+        run: |
+          CONTROLLER_POD_NAME=`kubectl get pod -l app=$CONTROLLER_APP_LABEL -n $DATENLORD_NAMESPACE -o jsonpath="{.items[0].metadata.name}"`
+          echo "SHOW LOGS OF $CONTROLLER_CONTAINER_NAME IN $CONTROLLER_POD_NAME"
+          kubectl logs $CONTROLLER_POD_NAME -n $DATENLORD_NAMESPACE -c $CONTROLLER_CONTAINER_NAME
+          NODE_POD_NAME=`kubectl get pod -l app=$NODE_APP_LABEL -n $DATENLORD_NAMESPACE -o jsonpath="{.items[0].metadata.name}"`
+          echo "SHOW LOGS OF $NODE_CONTAINER_NAME IN $NODE_POD_NAME"
+          kubectl logs $NODE_POD_NAME -n $DATENLORD_NAMESPACE -c $NODE_CONTAINER_NAME
+          echo "SHOW LOGS OF $FUSE_CONTAINER_NAME IN $NODE_POD_NAME"
+          kubectl logs $NODE_POD_NAME -n $DATENLORD_NAMESPACE -c $FUSE_CONTAINER_NAME
       - name: Setup tmate session
         if: ${{ failure() }}
         uses: mxschmitt/action-tmate@v3
