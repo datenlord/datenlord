@@ -82,11 +82,6 @@ jobs:
       - name: Docker build fuse
         run: |
           docker build . --build-arg RUST_IMAGE_VERSION=$RUST_VERSION --file ./Dockerfile --tag datenlord/datenlord:e2e_test
-      - name: Check out csi code
-        uses: actions/checkout@v2
-        with:
-          repository: datenlord/csi
-          path: ./csi
       - name: Docker build csi
         run: |
           docker build ./csi --build-arg RUST_IMAGE_VERSION=$RUST_VERSION --file ./Dockerfile.csi --tag datenlord/csiplugin:e2e_test

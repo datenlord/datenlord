@@ -1,0 +1,18 @@
+syntax = "proto3";
+package datenlord.v1;
+
+import "csi.proto";
+
+service Worker {
+  rpc WorkerCreateVolume (csi.v1.CreateVolumeRequest)
+    returns (csi.v1.CreateVolumeResponse) {}
+
+  rpc WorkerDeleteVolume (csi.v1.DeleteVolumeRequest)
+    returns (csi.v1.DeleteVolumeResponse) {}
+
+  rpc WorkerCreateSnapshot (csi.v1.CreateSnapshotRequest)
+    returns (csi.v1.CreateSnapshotResponse) {}
+
+  rpc WorkerDeleteSnapshot (csi.v1.DeleteSnapshotRequest)
+    returns (csi.v1.DeleteSnapshotResponse) {}
+}

@@ -1,0 +1,16 @@
+StorageClass:
+  FromName: true
+SnapshotClass:
+  FromName: true
+DriverInfo:
+  Name: csi.datenlord.io
+  Capabilities:
+    block: false
+    controllerExpansion: true
+    exec: true
+    multipods: true
+    persistence: true
+    pvcDataSource: true
+    snapshotDataSource: true
+InlineVolumes:
+- Attributes: {}
