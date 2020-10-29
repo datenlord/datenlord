@@ -121,8 +121,8 @@ jobs:
           wget --quiet https://dl.k8s.io/$K8S_VERSION/kubernetes-test-linux-amd64.tar.gz
           tar zxvf kubernetes-test-linux-amd64.tar.gz
           kubectl config view --raw > $K8S_CONFIG
-          kubernetes/test/bin/e2e.test -v=5 -ginkgo.failFast -ginkgo.failOnPending -ginkgo.debug -ginkgo.v -ginkgo.focus='External.Storage' -kubectl-path=`which kubectl` -kubeconfig=$K8S_CONFIG -storage.testdriver=$PWD/csi/datenlord-e2e-test.yaml
-          #kubernetes/test/bin/ginkgo -p -v -failFast -failOnPending -debug -focus='External.Storage' kubernetes/test/bin/e2e.test -- -v=5 -kubectl-path=`which kubectl` -kubeconfig=$K8S_CONFIG -storage.testdriver=$PWD/csi/datenlord-e2e-test.yaml
+          #kubernetes/test/bin/e2e.test -v=5 -ginkgo.failFast -ginkgo.failOnPending -ginkgo.debug -ginkgo.v -ginkgo.focus='External.Storage' -kubectl-path=`which kubectl` -kubeconfig=$K8S_CONFIG -storage.testdriver=$PWD/csi/datenlord-e2e-test.yaml
+          kubernetes/test/bin/ginkgo -p -v -failFast -failOnPending -debug -focus='External.Storage' kubernetes/test/bin/e2e.test -- -v=5 -kubectl-path=`which kubectl` -kubeconfig=$PWD/$K8S_CONFIG -storage.testdriver=$PWD/csi/datenlord-e2e-test.yaml -test.parallel=3
       - name: Print DatenLord logs
         if: ${{ failure() }}
         run: |

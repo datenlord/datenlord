@@ -385,7 +385,7 @@ spec:
     matchLabels:
       app: csi-etcd
   serviceName: "csi-etcd-svc"
-  replicas: 3
+  replicas: 1
   template:
     metadata:
       labels:
