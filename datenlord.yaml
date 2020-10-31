@@ -375,6 +375,22 @@ spec:
       targetPort: 2379
 
 ---
+apiVersion: v1
+kind: Service
+metadata:
+  name: csi-etcd
+  namespace: csi-datenlord
+spec:
+  clusterIP: None
+  ports:
+    - port: 2379
+      name: client
+    - port: 2380
+      name: peer
+  selector:
+    app: csi-etcd
+
+---
 kind: StatefulSet
 apiVersion: apps/v1
 metadata:
@@ -384,8 +400,8 @@ spec:
   selector:
     matchLabels:
       app: csi-etcd
-  serviceName: "csi-etcd-svc"
-  replicas: 1
+  serviceName: "csi-etcd"
+  replicas: 3
   template:
     metadata:
       labels:
@@ -395,26 +411,29 @@ spec:
         - name: etcd
           image: gcr.io/etcd-development/etcd:v3.4.13
           imagePullPolicy: "IfNotPresent"
+          ports:
+          - containerPort: 2379
+            name: client
+          - containerPort: 2380
+            name: peer
           command:
             - "/usr/local/bin/etcd"
           args:
             - "--name=$(NODE_ID)"
-            - "--initial-advertise-peer-urls=http://$(NODE_IP):2380"
+            - "--initial-advertise-peer-urls=http://$(NODE_ID):2380"
             - "--listen-peer-urls=http://0.0.0.0:2380"
-            - "--advertise-client-urls=http://$(NODE_IP):2379"
+            - "--advertise-client-urls=http://$(NODE_ID).csi-etcd:2379"
             - "--listen-client-urls=http://0.0.0.0:2379"
-            - "--initial-cluster=$(NODE_ID)=http://$(NODE_IP):2380"
+            - "--initial-cluster=$(PEER)"
             - "--listen-metrics-urls=http://0.0.0.0:2381"
-            - "--data-dir=/var/run/etcd/default.etcd"
+            - "--data-dir=/var/lib/etcd/default.etcd"
           env:
             - name: NODE_ID
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.name
-            - name: NODE_IP
-              valueFrom:
-                fieldRef:
-                  fieldPath: status.podIP
+            - name: PEER
+              value: "csi-etcd-0=http://csi-etcd-0.csi-etcd:2380,csi-etcd-1=http://csi-etcd-1.csi-etcd:2380,csi-etcd-2=http://csi-etcd-2.csi-etcd:2380"
           livenessProbe:
             httpGet:
               path: /health
