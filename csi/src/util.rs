@@ -47,8 +47,10 @@ pub const EPHEMERAL_KEY_CONTEXT: &str = "csi.storage.k8s.io/ephemeral";
 pub const MAX_VOLUMES_PER_NODE: i32 = 256;
 /// The socket file to be binded by worker service
 pub const LOCAL_WORKER_SOCKET: &str = "unix:///tmp/worker.sock";
-/// The path to bind mount helper command
-pub const BIND_MOUNTER: &str = "target/debug/bind_mounter";
+/// The default path to bind mount helper command
+pub const DEFAULT_BIND_MOUNT_HELPER_CMD_PATH: &str = "../target/debug/bind_mounter";
+/// The key of the bind mount helper command path environment variable
+pub const BIND_MOUNT_HELPER_CMD_ENV_KEY: &str = "BIND_MOUNTER";
 
 /// The runtime role of CSI plugin
 #[derive(Clone, Copy, Debug)]
@@ -219,6 +221,21 @@ pub fn decode_from_bytes<T: DeserializeOwned>(bytes: &[u8]) -> anyhow::Result<T>
     Ok(decoded_value)
 }
 
+/// Get the bind mount helper command path
+fn get_bind_mount_helper_cmd() -> String {
+    match std::env::var(BIND_MOUNT_HELPER_CMD_ENV_KEY) {
+        Ok(val) => val,
+        Err(e) => {
+            debug!(
+                "failed to get the bind mount helper command path, \
+                    use default path={}, the error is: {}",
+                DEFAULT_BIND_MOUNT_HELPER_CMD_PATH, e,
+            );
+            DEFAULT_BIND_MOUNT_HELPER_CMD_PATH.to_owned()
+        }
+    }
+}
+
 /// Mount target path, if fail try force un-mount again
 pub fn mount_volume_bind_path(
     from: impl AsRef<Path>,
@@ -258,7 +275,7 @@ pub fn mount_volume_bind_path(
             from_path, target_path
         ))
     } else {
-        let mut mount_cmd = Command::new(BIND_MOUNTER);
+        let mut mount_cmd = Command::new(get_bind_mount_helper_cmd());
         mount_cmd
             .arg("-f")
             .arg(from_path)
@@ -280,8 +297,8 @@ pub fn mount_volume_bind_path(
             Ok(h) => h,
             Err(e) => {
                 return Err(anyhow!(format!(
-                    "bind_mounter command failed to start, the error is: {}",
-                    e
+                    "bind mount helper command failed to start, the error is: {}",
+                    e,
                 ),))
             }
         };
@@ -289,9 +306,12 @@ pub fn mount_volume_bind_path(
             Ok(())
         } else {
             let stderr = String::from_utf8_lossy(&mount_handle.stderr);
-            debug!("bind_mounter failed to mount, the error is: {}", &stderr);
+            debug!(
+                "bind mount helper command failed to mount, the error is: {}",
+                &stderr
+            );
             Err(anyhow!(
-                "bind_mounter failed to mount {:?} to {:?}, the error is: {}",
+                "bind mount helper command failed to mount {:?} to {:?}, the error is: {}",
                 from_path,
                 target_path,
                 stderr,
@@ -317,16 +337,19 @@ pub fn umount_volume_bind_path(target_dir: &str) -> anyhow::Result<()> {
             }
         }
     } else {
-        let umount_handle = Command::new(BIND_MOUNTER)
+        let umount_handle = Command::new(get_bind_mount_helper_cmd())
             .arg("-u")
             .arg(&target_dir)
             .output()
-            .context("bind_mounter command failed to start")?;
+            .context("bind mount helper command failed to start")?;
         if !umount_handle.status.success() {
             let stderr = String::from_utf8_lossy(&umount_handle.stderr);
-            debug!("bind_mounter failed to umount, the error is: {}", &stderr);
+            debug!(
+                "bind mount helper command failed to umount, the error is: {}",
+                &stderr
+            );
             return Err(anyhow!(
-                "bind_mounter failed to umount {:?}, the error is: {}",
+                "bind mount helper command failed to umount {:?}, the error is: {}",
                 Path::new(target_dir),
                 stderr,
             ));

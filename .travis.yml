@@ -2,8 +2,8 @@ branches:
   only: 
     - master
 
-os: 
-  - linux
+os: linux
+dist: focal
 
 language: rust
 
@@ -41,5 +41,7 @@ jobs:
 cache: cargo
 
 script:
+  - rustup component add rustfmt # ectd-rs depends on rustfmt
+  - sudo apt update && sudo apt install cmake g++ libprotobuf-dev protobuf-compiler
   - cargo build --verbose
-  - ./scripts/test.sh
+  - ./scripts/travis-ci.sh

@@ -1400,9 +1400,9 @@ impl FileSystem {
         let a_time = param.a_time;
         let m_time = param.m_time;
         #[cfg(feature = "abi-7-9")]
-        let lock_owner = param.lock_owner;
+        let _lock_owner = param.lock_owner;
         #[cfg(feature = "abi-7-23")]
-        let c_time = param.c_time;
+        let _c_time = param.c_time;
         #[cfg(target_os = "macos")]
         let crtime = param.crtime;
         #[cfg(target_os = "macos")]
