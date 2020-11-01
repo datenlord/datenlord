@@ -2,4 +2,5 @@
 
 members = [ 
     "async_fuse",
+    "csi",
 ]

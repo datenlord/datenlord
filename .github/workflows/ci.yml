@@ -5,6 +5,12 @@ on:
 
 env:
   CI_RUST_TOOLCHAIN: 1.47.0
+  CONTROLLER_SOCKET_FILE: /tmp/controller.sock
+  BIND_MOUNTER: target/debug/bind_mounter
+  ETCD_CONTAINER_NAME: etcd
+  NODE_SOCKET_FILE: /tmp/node.sock
+  RUST_BACKTRACE: full
+  RUST_LOG: debug
 
 jobs:
   outdated:
@@ -31,34 +37,138 @@ jobs:
     name: Check
     runs-on: ubuntu-latest
     steps:
+      - name: Install CSI dependencies
+        run: sudo apt install -y cmake g++ libprotobuf-dev protobuf-compiler
       - uses: actions/checkout@v2
       - uses: actions-rs/toolchain@v1
         with:
-          profile: minimal
+          profile: default
           toolchain: ${{ env.CI_RUST_TOOLCHAIN }}
           override: true
       - uses: actions-rs/cargo@v1
         with:
           command: check
 
-  test:
-    name: Test
+  fuse-cargo-test:
+    name: FUSE-Cargo-Test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v2
       - uses: actions-rs/toolchain@v1
         with:
-          profile: minimal
+          profile: default
           toolchain: ${{ env.CI_RUST_TOOLCHAIN }}
           override: true
       #- uses: actions-rs/cargo@v1
       #  with:
       #    command: test
-      - name: Run cargo test with non-root and root
+      - name: Run FUSE cargo test with non-root and root
         run: |
+          cd async_fuse
           cargo test |& tee cargo_test.log
-          TEST_CMD=`grep Running cargo_test.log | awk '{print $2}'`
+          export TEST_CMD=`grep Running cargo_test.log | awk '{print $2}'`
           sudo $TEST_CMD
+
+  csi-sanity-test:
+    name: CSI-Sanity-Test
+    runs-on: ubuntu-latest
+    #services:
+    #  etcd:
+    #    image: gcr.io/etcd-development/etcd:latest
+    #    # Set health checks to wait until etcd has started
+    #    options: >-
+    #      --health-cmd "/usr/local/bin/etcdctl cluster-health"
+    #      --health-interval 10s
+    #      --health-timeout 5s
+    #      --health-retries 5
+    #      --entrypoint /usr/local/bin/etcd
+    #    ports:
+    #      - 2379:2379
+    #      - 2380:2380
+    steps:
+      - name: Install CSI dependencies
+        run: sudo apt install -y cmake g++ libprotobuf-dev protobuf-compiler
+      - name: Set up Docker
+        id: buildx
+        uses: docker/setup-buildx-action@v1
+        with:
+          version: latest
+      - name: Check out code
+        uses: actions/checkout@v2
+      - name: Prepare Rust environment
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: default
+          toolchain: ${{ env.CI_RUST_TOOLCHAIN }}
+          override: true
+      - name: Cargo build
+        uses: actions-rs/cargo@v1
+        with:
+          command: build
+      - name: Run etcd service
+        run: |
+          docker run -d --rm --net host --name $ETCD_CONTAINER_NAME gcr.io/etcd-development/etcd:latest
+          docker ps
+          docker logs $ETCD_CONTAINER_NAME
+          sudo netstat -lntp
+      - name: Enable bind_mounter permission and run cargo test
+        run: |
+          sudo chown root:root $BIND_MOUNTER
+          sudo chmod u+s $BIND_MOUNTER
+          ls -lsh $BIND_MOUNTER
+          export ETCD_END_POINT=http://127.0.0.1:2379
+          export BIND_MOUNTER=`realpath $BIND_MOUNTER`
+          cargo test -p csi
+      #- name: Cargo test
+      #  uses: actions-rs/cargo@v1
+      #  with:
+      #    command: test
+      #- name: Cargo build
+      #  uses: actions-rs/cargo@v1
+      #  with:
+      #    command: build
+      #- name: Enable bind_mounter permission again
+      #  run: |
+      #    sudo chown root:root $BIND_MOUNTER
+      #    sudo chmod u+s $BIND_MOUNTER
+      #    ls -lsh $BIND_MOUNTER
+      - name: Restart etcd service to clean up its data
+        run: |
+          docker kill $ETCD_CONTAINER_NAME
+          docker run -d --rm --net host --name $ETCD_CONTAINER_NAME gcr.io/etcd-development/etcd:latest
+          docker ps
+          docker logs $ETCD_CONTAINER_NAME
+          sudo netstat -lntp
+      #- name: Docker build csi plugin
+      #  run: export BUILD_DIR=/tmp/datenlord_container_build ; mkdir -p $BUILD_DIR && cp target/debug/csi $BUILD_DIR && docker build $BUILD_DIR --file ./Dockerfile --tag datenlord/csiplugin:latest
+      #- name: Docker run csi controller and node seperately
+      #  run: |
+      #    docker run -d --rm -v /tmp:/tmp --net host --env RUST_LOG=csi=debug --name datenlord_csi_controller datenlord/csiplugin -n localhost -s unix:///tmp/controller.sock -p 50051 -r controller -e http://127.0.0.1:2379 --datadir /tmp/datenlord-data-dir
+      #    docker run -d --rm -v /tmp:/tmp --net host --env RUST_LOG=csi=debug --name datenlord_csi_node datenlord/csiplugin -n localhost -s unix:///tmp/node.sock -p 50051 -r node -e http://127.0.0.1:2379 --datadir /tmp/datenlord-data-dir
+      #- name: Docker run csi plugin
+      #  run: docker run -d --rm -v /tmp:/tmp --net host --env RUST_LOG=debug --name datenlord_csi datenlord/csiplugin -n localhost -s unix:///tmp/csi.sock -p 50051 -r both -e http://127.0.0.1:2379 --datadir /tmp/datenlord-data-dir
+      #- name: Debug Info
+      #  run: sudo netstat -lntp ; docker ps ; docker logs etcd ; docker logs datenlord_csi_controller ; docker logs datenlord_csi_node ;
+      #- name: Run csi-sanity test
+      #  run: docker run --rm -v /tmp:/tmp --name sanity golang:latest sh -c "go get github.com/kubernetes-csi/csi-test/cmd/csi-sanity && \$GOPATH/bin/csi-sanity -csi.endpoint=/tmp/node.sock -csi.controllerendpoint=/tmp/controller.sock"
+      - name: Check out csi-sanity code
+        uses: actions/checkout@v2
+        with:
+          repository: kubernetes-csi/csi-test
+          path: ./csi-test
+      - name: Build csi-sanity code
+        uses: cedrickring/golang-action@1.5.2
+        env:
+          PROJECT_PATH: "./csi-test/cmd/csi-sanity"
+      - name: Run csi plugin and csi-sanity test
+        run: |
+          export ETCD_END_POINT=http://127.0.0.1:2379
+          target/debug/csi --endpoint=unix://$NODE_SOCKET_FILE --workerport=0 --nodeid=localhost --drivername=io.datenlord.csi.plugin --datadir=/tmp/datenlord_data_dir --runas=node --etcd=$ETCD_END_POINT &
+          target/debug/csi --endpoint=unix://$CONTROLLER_SOCKET_FILE --workerport=0 --nodeid=localhost --drivername=io.datenlord.csi.plugin --datadir=/tmp/datenlord_data_dir --runas=controller --etcd=$ETCD_END_POINT &
+          ./csi-test/cmd/csi-sanity/csi-sanity -csi.endpoint=$NODE_SOCKET_FILE -csi.controllerendpoint=$CONTROLLER_SOCKET_FILE
+      - name: Setup tmate session
+        if: ${{ failure() }}
+        uses: mxschmitt/action-tmate@v3
 
   fmt:
     name: Fmt
@@ -67,10 +177,9 @@ jobs:
       - uses: actions/checkout@v2
       - uses: actions-rs/toolchain@v1
         with:
-          profile: minimal
+          profile: default
           toolchain: ${{ env.CI_RUST_TOOLCHAIN }}
           override: true
-      - run: rustup component add rustfmt 
       - uses: actions-rs/cargo@v1
         with:
           command: fmt
@@ -78,33 +187,34 @@ jobs:
 
   clippy:
     name: Clippy
-    strategy:
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
     steps:
+      - name: Install CSI dependencies
+        run: sudo apt install -y cmake g++ libprotobuf-dev protobuf-compiler
       - uses: actions/checkout@v2
       - uses: actions-rs/toolchain@v1
         with:
-          profile: minimal
+          profile: default
           toolchain: ${{ env.CI_RUST_TOOLCHAIN }}
           override: true
-      - run: rustup component add clippy
       - uses: actions-rs/cargo@v1
         with:
           command: clippy
+          # Enable --all-features --all-targets
           args: --all -- -D warnings
 
-  e2e:
-    name: E2E
+  fs-e2e:
+    name: FS-E2E
     runs-on: ubuntu-latest
     steps:
+      - name: Install CSI dependencies
+        run: sudo apt install -y cmake g++ libprotobuf-dev protobuf-compiler
       - name: Checkout repository
         uses: actions/checkout@v2
       - name: Install toolchain
         uses: actions-rs/toolchain@v1
         with:
-          profile: minimal
+          profile: default
           toolchain: ${{ env.CI_RUST_TOOLCHAIN }}
           override: true
       - name: Build DatenLord
@@ -166,9 +276,9 @@ jobs:
           cd fuse_mount_dir
           sudo prove -rv ../ntfs-3g-pjd-fstest/tests/chflags
           sudo prove -rv ../ntfs-3g-pjd-fstest/tests/xacl
-      #- name: Setup tmate session
-      #  if: ${{ always() }}
-      #  uses: mxschmitt/action-tmate@v3
+      - name: Setup tmate session
+        if: ${{ failure() }}
+        uses: mxschmitt/action-tmate@v3
 
 #  coverage:
 #    name: Coverage
@@ -180,7 +290,7 @@ jobs:
 #      - name: Install toolchain
 #        uses: actions-rs/toolchain@v1
 #        with:
-#          profile: minimal
+#          profile: default
 #          toolchain: ${{ env.CI_RUST_TOOLCHAIN }}
 #          override: true
 #

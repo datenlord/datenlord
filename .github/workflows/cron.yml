@@ -6,13 +6,14 @@ on:
 
 env:
   RUST_VERSION: 1.47.0
-  CONFIG_MINIKUBE: datenlord_minikube.yaml
-  CONFIG_KIND: datenlord.yaml
+  CONFIG_MINIKUBE: scripts/datenlord_minikube.yaml
+  CONFIG_KIND: scripts/datenlord.yaml
   CONTROLLER_APP_LABEL: csi-controller-datenlord
   CONTROLLER_CONTAINER_NAME: datenlord-controller-plugin
   DATENLORD_CSI_IMAGE: datenlord/csiplugin:e2e_test
   DATENLORD_IMAGE: datenlord/datenlord:e2e_test
   DATENLORD_NAMESPACE: csi-datenlord
+  E2E_TEST_CONFIG: scripts/datenlord-e2e-test.yaml
   FUSE_CONTAINER_NAME: datenlord-fuse
   FUSE_MOUNT_PATH: /var/opt/datenlord-data
   K8S_CONFIG: k8s.e2e.config
@@ -24,7 +25,7 @@ env:
   MINIKUBE_VERSION: v1.13.0
 
 jobs:
-  e2e:
+  minikube-csi-e2e:
     name: K8S-CSI-E2E
     # How to run K8S CSI e2e test
     # https://www.stackovercloud.com/2020/01/08/blog-testing-of-csi-drivers/
@@ -85,12 +86,10 @@ jobs:
       #    sudo netstat -lntp && ls -lsh
       - name: Check out code
         uses: actions/checkout@v2
-      - name: Docker build fuse
+      - name: Docker build fuse and csi
         run: |
-          docker build . --build-arg RUST_IMAGE_VERSION=$RUST_VERSION --file ./Dockerfile --tag $DATENLORD_IMAGE
-      - name: Docker build csi
-        run: |
-          docker build ./csi --build-arg RUST_IMAGE_VERSION=$RUST_VERSION --file ./Dockerfile.csi --tag $DATENLORD_CSI_IMAGE
+          docker build . --build-arg RUST_IMAGE_VERSION=$RUST_VERSION --file ./Dockerfile --target fuse --tag $DATENLORD_IMAGE
+          docker build . --build-arg RUST_IMAGE_VERSION=$RUST_VERSION --file ./Dockerfile --target csi --tag $DATENLORD_CSI_IMAGE
       - name: Deploy DatenLord to K8S
         run: |
           kubectl cluster-info
@@ -127,8 +126,8 @@ jobs:
           wget --quiet https://dl.k8s.io/$K8S_VERSION/kubernetes-test-linux-amd64.tar.gz
           tar zxvf kubernetes-test-linux-amd64.tar.gz
           kubectl config view --raw > $K8S_CONFIG
-          #kubernetes/test/bin/e2e.test -v=5 -ginkgo.failFast -ginkgo.failOnPending -ginkgo.debug -ginkgo.v -ginkgo.focus='External.Storage' -kubectl-path=`which kubectl` -kubeconfig=$K8S_CONFIG -storage.testdriver=$PWD/csi/datenlord-e2e-test.yaml
-          kubernetes/test/bin/ginkgo -p -v -failFast -failOnPending -debug -focus='External.Storage' kubernetes/test/bin/e2e.test -- -v=5 -kubectl-path=`which kubectl` -kubeconfig=$PWD/$K8S_CONFIG -storage.testdriver=$PWD/datenlord-e2e-test.yaml -test.parallel=3
+          #kubernetes/test/bin/e2e.test -v=5 -ginkgo.failFast -ginkgo.failOnPending -ginkgo.debug -ginkgo.v -ginkgo.focus='External.Storage' -kubectl-path=`which kubectl` -kubeconfig=$K8S_CONFIG -storage.testdriver=`realpath $E2E_TEST_CONFIG`
+          kubernetes/test/bin/ginkgo -p -v -failFast -failOnPending -debug -focus='External.Storage' kubernetes/test/bin/e2e.test -- -v=5 -kubectl-path=`which kubectl` -kubeconfig=`realpath $K8S_CONFIG` -storage.testdriver=`realpath $E2E_TEST_CONFIG` -test.parallel=3
       - name: Print DatenLord logs
         if: ${{ failure() }}
         run: |
@@ -144,7 +143,7 @@ jobs:
         if: ${{ failure() }}
         uses: mxschmitt/action-tmate@v3
 
-  kind-e2e:
+  kind-csi-e2e:
     name: KIND-K8S-CSI-E2E
     # How to run K8S CSI e2e test
     # https://www.stackovercloud.com/2020/01/08/blog-testing-of-csi-drivers/
@@ -204,14 +203,11 @@ jobs:
           rm -rf $HOME/.ssh/
           ssh-keygen -N '' -f ~/.ssh/id_rsa
           /bin/bash /tmp/setup.sh
-
-      - name: Docker build fuse
+      - name: Docker build fuse and csi
         run: |
-          docker build . --build-arg RUST_IMAGE_VERSION=$RUST_VERSION --file ./Dockerfile --tag $DATENLORD_IMAGE
+          docker build . --build-arg RUST_IMAGE_VERSION=$RUST_VERSION --file ./Dockerfile --target fuse --tag $DATENLORD_IMAGE
+          docker build . --build-arg RUST_IMAGE_VERSION=$RUST_VERSION --file ./Dockerfile --target csi --tag $DATENLORD_CSI_IMAGE
           kind load docker-image $DATENLORD_IMAGE
-      - name: Docker build csi
-        run: |
-          docker build ./csi --build-arg RUST_IMAGE_VERSION=$RUST_VERSION --file ./Dockerfile.csi --tag $DATENLORD_CSI_IMAGE
           kind load docker-image $DATENLORD_CSI_IMAGE
       - name: Deploy DatenLord to K8S
         run: |
@@ -249,8 +245,8 @@ jobs:
           wget --quiet https://dl.k8s.io/$K8S_VERSION/kubernetes-test-linux-amd64.tar.gz
           tar zxvf kubernetes-test-linux-amd64.tar.gz
           kubectl config view --raw > $K8S_CONFIG
-          #kubernetes/test/bin/e2e.test -v=5 -ginkgo.failFast -ginkgo.failOnPending -ginkgo.debug -ginkgo.v -ginkgo.focus='External.Storage' -kubectl-path=`which kubectl` -kubeconfig=$K8S_CONFIG -storage.testdriver=$PWD/csi/datenlord-e2e-test.yaml
-          kubernetes/test/bin/ginkgo -p -v -failFast -failOnPending -debug -focus='External.Storage' -skip='.*Dynamic PV.*filesystem.*should access to two volumes with the same volume mode and retain data across pod recreation on .* node|.*Dynamic PV.*default fs.*should allow exec of files on the volume' kubernetes/test/bin/e2e.test -- -v=5 -kubectl-path=`which kubectl` -kubeconfig=$PWD/$K8S_CONFIG -storage.testdriver=$PWD/datenlord-e2e-test.yaml -test.parallel=3
+          #kubernetes/test/bin/e2e.test -v=5 -ginkgo.failFast -ginkgo.failOnPending -ginkgo.debug -ginkgo.v -ginkgo.focus='External.Storage' -kubectl-path=`which kubectl` -kubeconfig=$K8S_CONFIG -storage.testdriver=`realpath $E2E_TEST_CONFIG`
+          kubernetes/test/bin/ginkgo -p -v -failFast -failOnPending -debug -focus='External.Storage' -skip='.*Dynamic PV.*filesystem.*should access to two volumes with the same volume mode and retain data across pod recreation on .* node' kubernetes/test/bin/e2e.test -- -v=5 -kubectl-path=`which kubectl` -kubeconfig=`realpath $K8S_CONFIG` -storage.testdriver=`realpath $E2E_TEST_CONFIG` -test.parallel=3
       - name: Print DatenLord logs
         if: ${{ failure() }}
         run: |

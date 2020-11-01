@@ -85,8 +85,8 @@ pub const FUSE_ROOT_ID: u64 = 1;
 pub type INum = u64;
 
 /// FUSE attribute `fuse_attr`
-#[repr(C)]
 #[derive(Debug)]
+#[repr(C)]
 pub struct FuseAttr {
     /// Node i-number
     pub ino: INum,
@@ -134,8 +134,8 @@ pub struct FuseAttr {
 }
 
 /// FUSE kstatfs `fuse_kstatfs`
-#[repr(C)]
 #[derive(Debug)]
+#[repr(C)]
 pub struct FuseKStatFs {
     /// Total blocks (in units of frsize)
     pub blocks: u64,
@@ -160,8 +160,8 @@ pub struct FuseKStatFs {
 }
 
 /// FUSE file lock `fuse_file_lock`
-#[repr(C)]
 #[derive(Debug)]
+#[repr(C)]
 pub struct FuseFileLock {
     /// The starting offset of the lock
     pub start: u64,
@@ -174,6 +174,7 @@ pub struct FuseFileLock {
 }
 
 /// Bitmasks for `fuse_setattr_in.valid`
+#[allow(dead_code)]
 pub mod setattr_flags {
     /// To set file mode
     pub const FATTR_MODE: u32 = 1 << 0;
@@ -362,81 +363,96 @@ pub use init_flags::*;
 
 /// CUSE INIT request/reply flags
 ///
-/// CUSE_UNRESTRICTED_IOCTL:  use unrestricted ioctl
+/// `CUSE_UNRESTRICTED_IOCTL`:  use unrestricted ioctl
+#[allow(dead_code)]
 #[cfg(feature = "abi-7-11")]
 pub const CUSE_UNRESTRICTED_IOCTL: u32 = 1 << 0; // use unrestricted ioctl
 
 /// Release flags
 pub const FUSE_RELEASE_FLUSH: u32 = 1 << 0;
+#[allow(dead_code)]
 #[cfg(feature = "abi-7-17")]
 pub const FUSE_RELEASE_FLOCK_UNLOCK: u32 = 1 << 1;
 
 /// Getattr flags
+#[allow(dead_code)]
 #[cfg(feature = "abi-7-9")]
 pub const FUSE_GETATTR_FH: u32 = 1 << 0;
 
 /// Lock flags
+#[allow(dead_code)]
 #[cfg(feature = "abi-7-9")]
 pub const FUSE_LK_FLOCK: u32 = 1 << 0;
 
 /// WRITE flags
-///
-/// FUSE_WRITE_CACHE: delayed write from page cache, file handle is guessed
-#[cfg(feature = "abi-7-9")]
-pub const FUSE_WRITE_CACHE: u32 = 1 << 0;
-/// FUSE_WRITE_LOCKOWNER: lock_owner field is valid
-#[cfg(feature = "abi-7-9")]
-pub const FUSE_WRITE_LOCKOWNER: u32 = 1 << 1;
-/// FUSE_WRITE_KILL_PRIV: kill suid and sgid bits
-#[cfg(feature = "abi-7-31")]
-pub const FUSE_WRITE_KILL_PRIV: u32 = 1 << 2;
+#[allow(dead_code)]
+pub mod write_flags {
+    /// `FUSE_WRITE_CACHE`: delayed write from page cache, file handle is guessed
+    #[cfg(feature = "abi-7-9")]
+    pub const FUSE_WRITE_CACHE: u32 = 1 << 0;
+    /// `FUSE_WRITE_LOCKOWNER`: `lock_owner` field is valid
+    #[cfg(feature = "abi-7-9")]
+    pub const FUSE_WRITE_LOCKOWNER: u32 = 1 << 1;
+    /// `FUSE_WRITE_KILL_PRIV`: kill suid and sgid bits
+    #[cfg(feature = "abi-7-31")]
+    pub const FUSE_WRITE_KILL_PRIV: u32 = 1 << 2;
+}
+
+pub use write_flags::*;
 
 /// Read flags
+#[allow(dead_code)]
 #[cfg(feature = "abi-7-9")]
 pub const FUSE_READ_LOCKOWNER: u32 = 1 << 1;
 
 /// Ioctl flags
-///
-/// FUSE_IOCTL_COMPAT: 32bit compat ioctl on 64bit machine
-#[cfg(feature = "abi-7-11")]
-pub const FUSE_IOCTL_COMPAT: u32 = 1 << 0;
-/// FUSE_IOCTL_UNRESTRICTED: not restricted to well-formed ioctls, retry allowed
-#[cfg(feature = "abi-7-11")]
-pub const FUSE_IOCTL_UNRESTRICTED: u32 = 1 << 1;
-/// FUSE_IOCTL_RETRY: retry with new iovecs
-#[cfg(feature = "abi-7-11")]
-pub const FUSE_IOCTL_RETRY: u32 = 1 << 2;
-/// FUSE_IOCTL_32BIT: 32bit ioctl
-#[cfg(feature = "abi-7-16")]
-pub const FUSE_IOCTL_32BIT: u32 = 1 << 3;
-/// FUSE_IOCTL_DIR: is a directory
-#[cfg(feature = "abi-7-18")]
-pub const FUSE_IOCTL_DIR: u32 = 1 << 4;
-/// FUSE_IOCTL_COMPAT_X32: x32 compat ioctl on 64bit machine (64bit time_t)
-#[cfg(feature = "abi-7-30")]
-pub const FUSE_IOCTL_COMPAT_X32: u32 = 1 << 5;
+#[allow(dead_code)]
+pub mod ioctl_flags {
+    /// `FUSE_IOCTL_COMPAT`: 32bit compat ioctl on 64bit machine
+    #[cfg(feature = "abi-7-11")]
+    pub const FUSE_IOCTL_COMPAT: u32 = 1 << 0;
+    /// `FUSE_IOCTL_UNRESTRICTED`: not restricted to well-formed ioctls, retry allowed
+    #[cfg(feature = "abi-7-11")]
+    pub const FUSE_IOCTL_UNRESTRICTED: u32 = 1 << 1;
+    /// `FUSE_IOCTL_RETRY`: retry with new iovecs
+    #[cfg(feature = "abi-7-11")]
+    pub const FUSE_IOCTL_RETRY: u32 = 1 << 2;
+    /// `FUSE_IOCTL_32BIT`: 32bit ioctl
+    #[cfg(feature = "abi-7-16")]
+    pub const FUSE_IOCTL_32BIT: u32 = 1 << 3;
+    /// `FUSE_IOCTL_DIR`: is a directory
+    #[cfg(feature = "abi-7-18")]
+    pub const FUSE_IOCTL_DIR: u32 = 1 << 4;
+    /// `FUSE_IOCTL_COMPAT_X32`: x32 compat ioctl on 64bit machine (64bit `time_t`)
+    #[cfg(feature = "abi-7-30")]
+    pub const FUSE_IOCTL_COMPAT_X32: u32 = 1 << 5;
 
-/// FUSE_IOCTL_MAX_IOV: maximum of in_iovecs + out_iovecs
-#[cfg(feature = "abi-7-11")]
-pub const FUSE_IOCTL_MAX_IOV: u32 = 256;
+    /// `FUSE_IOCTL_MAX_IOV`: maximum of `in_iovecs + out_iovecs`
+    #[cfg(feature = "abi-7-11")]
+    pub const FUSE_IOCTL_MAX_IOV: u32 = 256;
+}
+
+pub use ioctl_flags::*;
 
 /// Poll flags
 ///
-/// FUSE_POLL_SCHEDULE_NOTIFY: request poll notify
+/// `FUSE_POLL_SCHEDULE_NOTIFY`: request poll notify
+#[allow(dead_code)]
 #[cfg(feature = "abi-7-11")]
 pub const FUSE_POLL_SCHEDULE_NOTIFY: u32 = 1 << 0;
 
 /// Fsync flags
 ///
-/// FUSE_FSYNC_FDATASYNC: Sync data only, not metadata
+/// `FUSE_FSYNC_FDATASYNC`: sync data only, not metadata
+#[allow(dead_code)]
 #[cfg(feature = "abi-7-31")]
 pub const FUSE_FSYNC_FDATASYNC: u32 = 1 << 0;
 
 /// FUSE operation code `fuse_opcode`
-#[repr(C)]
-#[derive(Debug)]
 #[allow(non_camel_case_types)]
+#[derive(Debug)]
 #[non_exhaustive]
+#[repr(C)]
 pub enum FuseOpCode {
     /// Look up a directory entry by name and get its attributes
     FUSE_LOOKUP = 1,
@@ -554,10 +570,11 @@ pub enum FuseOpCode {
 }
 
 /// FUSE nofity code `fuse_notify_code`
+#[allow(dead_code)]
 #[allow(non_camel_case_types)]
 #[cfg(feature = "abi-7-11")]
-#[repr(C)]
 #[derive(Debug)]
+#[repr(C)]
 pub enum FuseNotifyCode {
     FUSE_POLL = 1,
     #[cfg(feature = "abi-7-12")]
@@ -611,8 +628,8 @@ pub mod fuse_compat_configs {
 pub use fuse_compat_configs::*;
 
 /// FUSE entry response `fuse_entry_out`
-#[repr(C)]
 #[derive(Debug)]
+#[repr(C)]
 pub struct FuseEntryOut {
     /// Inode ID
     pub nodeid: u64,
@@ -631,8 +648,8 @@ pub struct FuseEntryOut {
 }
 
 /// FUSE forget request input `fuse_forget_in`
-#[repr(C)]
 #[derive(Debug)]
+#[repr(C)]
 pub struct FuseForgetIn {
     /// The number of lookup to forget
     pub nlookup: u64,
@@ -640,8 +657,8 @@ pub struct FuseForgetIn {
 
 /// FUSE forget request input `fuse_forget_one`
 // #[cfg(feature = "abi-7-16")]
-#[repr(C)]
 #[derive(Debug)]
+#[repr(C)]
 pub struct FuseForgetOne {
     /// The node i-number
     pub nodeid: u64,
@@ -651,8 +668,8 @@ pub struct FuseForgetOne {
 
 /// FUSE batch forget request input `fuse_batch_forget_in`
 // #[cfg(feature = "abi-7-16")]
-#[repr(C)]
 #[derive(Debug)]
+#[repr(C)]
 pub struct FuseBatchForgetIn {
     /// Batch count
     pub count: u32,
@@ -664,8 +681,8 @@ pub struct FuseBatchForgetIn {
 
 /// FUSE get attribute request input `fuse_getattr_in`
 #[cfg(feature = "abi-7-9")]
-#[repr(C)]
 #[derive(Debug)]
+#[repr(C)]
 pub struct FuseGetAttrIn {
     /// Get attribute flags
     pub getattr_flags: u32,
@@ -676,8 +693,8 @@ pub struct FuseGetAttrIn {
 }
 
 /// FUSE get attribute response `fuse_attr_out`
-#[repr(C)]
 #[derive(Debug)]
+#[repr(C)]
 pub struct FuseAttrOut {
     /// Cache timeout seconds for the attributes
     pub attr_valid: u64,
@@ -691,8 +708,8 @@ pub struct FuseAttrOut {
 
 /// FUSE get extended timestamp response `fuse_getxtimes_out`
 #[cfg(target_os = "macos")]
-#[repr(C)]
 #[derive(Debug)]
+#[repr(C)]
 pub struct FuseGetXTimesOut {
     /// Backup time seconds
     pub bkuptime: u64,
@@ -705,8 +722,8 @@ pub struct FuseGetXTimesOut {
 }
 
 /// FUSE make node request input `fuse_mknod_in`
-#[repr(C)]
 #[derive(Debug)]
+#[repr(C)]
 pub struct FuseMkNodIn {
     /// File mode
     pub mode: u32,
@@ -721,8 +738,8 @@ pub struct FuseMkNodIn {
 }
 
 /// FUSE make directory request input `fuse_mkdir_in`
-#[repr(C)]
 #[derive(Debug)]
+#[repr(C)]
 pub struct FuseMkDirIn {
     /// Directory mode
     pub mode: u32,
@@ -735,8 +752,8 @@ pub struct FuseMkDirIn {
 }
 
 /// FUSE rename request input `fuse_rename_in`
-#[repr(C)]
 #[derive(Debug)]
+#[repr(C)]
 pub struct FuseRenameIn {
     /// The new directory i-number
     pub newdir: u64,
@@ -744,8 +761,8 @@ pub struct FuseRenameIn {
 
 /// FUSE rename2 request input `fuse_rename2_in`
 // #[cfg(feature = "abi-7-23")]
-#[repr(C)]
 #[derive(Debug)]
+#[repr(C)]
 pub struct FuseRename2In {
     /// The new directory i-number
     pub newdir: u64,
@@ -757,8 +774,8 @@ pub struct FuseRename2In {
 
 /// FUSE exchange request input `fuse_exchange_in`
 #[cfg(target_os = "macos")]
-#[repr(C)]
 #[derive(Debug)]
+#[repr(C)]
 pub struct FuseExchangeIn {
     /// Old directory i-number
     pub olddir: u64,
@@ -769,16 +786,16 @@ pub struct FuseExchangeIn {
 }
 
 /// FUSE link request input `fuse_link_in`
-#[repr(C)]
 #[derive(Debug)]
+#[repr(C)]
 pub struct FuseLinkIn {
     /// The old node i-number
     pub oldnodeid: u64,
 }
 
 /// FUSE set attribute request input `fuse_setattr_in`
-#[repr(C)]
 #[derive(Debug)]
+#[repr(C)]
 pub struct FuseSetAttrIn {
     /// FUSE set attribute bit mask
     pub valid: u32,
@@ -848,8 +865,8 @@ pub struct FuseSetAttrIn {
 }
 
 /// FUSE open request input `fuse_open_in`
-#[repr(C)]
 #[derive(Debug)]
+#[repr(C)]
 pub struct FuseOpenIn {
     /// Open flags
     pub flags: u32,
@@ -858,8 +875,8 @@ pub struct FuseOpenIn {
 }
 
 /// FUSE create request input `fuse_create_in`
-#[repr(C)]
 #[derive(Debug)]
+#[repr(C)]
 pub struct FuseCreateIn {
     /// Creation flags
     pub flags: u32,
@@ -874,8 +891,8 @@ pub struct FuseCreateIn {
 }
 
 /// FUSE open resoponse `fuse_open_out`
-#[repr(C)]
 #[derive(Debug)]
+#[repr(C)]
 pub struct FuseOpenOut {
     /// File handler
     pub fh: u64,
@@ -886,8 +903,8 @@ pub struct FuseOpenOut {
 }
 
 /// FUSE release request input `fuse_release_in`
-#[repr(C)]
 #[derive(Debug)]
+#[repr(C)]
 pub struct FuseReleaseIn {
     /// File handler
     pub fh: u64,
@@ -900,8 +917,8 @@ pub struct FuseReleaseIn {
 }
 
 /// FUSE flush request input `fuse_flush_in`
-#[repr(C)]
 #[derive(Debug)]
+#[repr(C)]
 pub struct FuseFlushIn {
     /// File handler
     pub fh: u64,
@@ -914,8 +931,8 @@ pub struct FuseFlushIn {
 }
 
 /// FUSE read request input `fuse_read_in`
-#[repr(C)]
 #[derive(Debug)]
+#[repr(C)]
 pub struct FuseReadIn {
     /// File handler
     pub fh: u64,
@@ -937,8 +954,8 @@ pub struct FuseReadIn {
 }
 
 /// FUSE write request input `fuse_write_in`
-#[repr(C)]
 #[derive(Debug)]
+#[repr(C)]
 pub struct FuseWriteIn {
     /// File handler
     pub fh: u64,
@@ -960,8 +977,8 @@ pub struct FuseWriteIn {
 }
 
 /// FUSE write response `fuse_write_out`
-#[repr(C)]
 #[derive(Debug)]
+#[repr(C)]
 pub struct FuseWriteOut {
     /// Write size
     pub size: u32,
@@ -970,16 +987,16 @@ pub struct FuseWriteOut {
 }
 
 /// FUSE statfs response `fuse_statfs_out`
-#[repr(C)]
 #[derive(Debug)]
+#[repr(C)]
 pub struct FuseStatFsOut {
     /// FUSE kstatfs
     pub st: FuseKStatFs,
 }
 
 /// FUSE fsync request input `fuse_fsync_in`
-#[repr(C)]
 #[derive(Debug)]
+#[repr(C)]
 pub struct FuseFSyncIn {
     /// File handler
     pub fh: u64,
@@ -990,8 +1007,8 @@ pub struct FuseFSyncIn {
 }
 
 /// FUSE set extended attribute request input `fuse_setxattr_in`
-#[repr(C)]
 #[derive(Debug)]
+#[repr(C)]
 pub struct FuseSetXAttrIn {
     /// The size of extended attribute value to set
     pub size: u32,
@@ -1006,8 +1023,8 @@ pub struct FuseSetXAttrIn {
 }
 
 /// FUSE get extended attribute request input `fuse_getxattr_in`
-#[repr(C)]
 #[derive(Debug)]
+#[repr(C)]
 pub struct FuseGetXAttrIn {
     /// The maximum length of the attribute value to be replied
     pub size: u32,
@@ -1022,8 +1039,8 @@ pub struct FuseGetXAttrIn {
 }
 
 /// FUSE get extended attribute response `fuse_getxattr_out`
-#[repr(C)]
 #[derive(Debug)]
+#[repr(C)]
 pub struct FuseGetXAttrOut {
     /// The size of the extended attribute value
     pub size: u32,
@@ -1032,8 +1049,8 @@ pub struct FuseGetXAttrOut {
 }
 
 /// FUSE lock request input `fuse_lk_in`
-#[repr(C)]
 #[derive(Debug)]
+#[repr(C)]
 pub struct FuseLockIn {
     /// File handler
     pub fh: u64,
@@ -1049,16 +1066,16 @@ pub struct FuseLockIn {
 }
 
 /// FUSE lock response `fuse_lk_out`
-#[repr(C)]
 #[derive(Debug)]
+#[repr(C)]
 pub struct FuseLockOut {
     /// FUSE file lock
     pub lk: FuseFileLock,
 }
 
 /// FUSE access request input `fuse_access_in`
-#[repr(C)]
 #[derive(Debug)]
+#[repr(C)]
 pub struct FuseAccessIn {
     /// The requested access mode
     pub mask: u32,
@@ -1067,8 +1084,8 @@ pub struct FuseAccessIn {
 }
 
 /// FUSE init request input `fuse_init_in`
-#[repr(C)]
 #[derive(Debug)]
+#[repr(C)]
 pub struct FuseInitIn {
     /// FUSE protocol major version
     pub major: u32,
@@ -1081,8 +1098,8 @@ pub struct FuseInitIn {
 }
 
 /// FUSE init response `fuse_init_out`
-#[repr(C)]
 #[derive(Debug)]
+#[repr(C)]
 pub struct FuseInitOut {
     /// FUSE protocol major version
     pub major: u32,
@@ -1125,13 +1142,14 @@ pub struct FuseInitOut {
 }
 
 /// CUSE device info max size
+#[allow(dead_code)]
 #[cfg(feature = "abi-7-11")]
 pub const CUSE_INIT_INFO_MAX: u32 = 4096;
 
 /// CUSE init request input `cuse_init_in`
 #[cfg(feature = "abi-7-11")]
-#[repr(C)]
 #[derive(Debug)]
+#[repr(C)]
 pub struct CuseInitIn {
     /// Protocol major version
     pub major: u32,
@@ -1145,8 +1163,8 @@ pub struct CuseInitIn {
 
 /// CUSE init response `cuse_init_out`
 #[cfg(feature = "abi-7-11")]
-#[repr(C)]
 #[derive(Debug)]
+#[repr(C)]
 pub struct CuseInitOut {
     /// Protocol major version
     pub major: u32,
@@ -1169,16 +1187,16 @@ pub struct CuseInitOut {
 }
 
 /// FUSE interrupt request input `fuse_interrupt_in`
-#[repr(C)]
 #[derive(Debug)]
+#[repr(C)]
 pub struct FuseInterruptIn {
     /// Interrupted FUSE request unique ID
     pub unique: u64,
 }
 
 /// FUSE bmap request input `fuse_bmap_in`
-#[repr(C)]
 #[derive(Debug)]
+#[repr(C)]
 pub struct FuseBMapIn {
     /// The block index within file to be mapped
     pub block: u64,
@@ -1189,8 +1207,8 @@ pub struct FuseBMapIn {
 }
 
 /// FUSE bmap response `fuse_bmap_out`
-#[repr(C)]
 #[derive(Debug)]
+#[repr(C)]
 pub struct FuseBMapOut {
     /// The block index to be mapped
     pub block: u64,
@@ -1198,8 +1216,8 @@ pub struct FuseBMapOut {
 
 /// FUSE ioctl request input `fuse_ioctl_in`
 // #[cfg(feature = "abi-7-11")]
-#[repr(C)]
 #[derive(Debug)]
+#[repr(C)]
 pub struct FuseIoCtlIn {
     /// File handler
     pub fh: u64,
@@ -1216,8 +1234,8 @@ pub struct FuseIoCtlIn {
 }
 
 #[cfg(feature = "abi-7-16")]
-#[repr(C)]
 #[derive(Debug)]
+#[repr(C)]
 pub struct FuseIoCtlIoVec {
     // fuse_ioctl_iovec
     pub base: u64,
@@ -1225,8 +1243,8 @@ pub struct FuseIoCtlIoVec {
 }
 
 #[cfg(feature = "abi-7-11")]
-#[repr(C)]
 #[derive(Debug)]
+#[repr(C)]
 pub struct FuseIoCtlOut {
     // fuse_ioctl_out
     pub result: i32,
@@ -1237,8 +1255,8 @@ pub struct FuseIoCtlOut {
 
 /// FUSE poll request input `fuse_poll_in`
 // #[cfg(feature = "abi-7-11")]
-#[repr(C)]
 #[derive(Debug)]
+#[repr(C)]
 pub struct FusePollIn {
     /// File handler
     pub fh: u64,
@@ -1255,8 +1273,8 @@ pub struct FusePollIn {
 }
 
 #[cfg(feature = "abi-7-11")]
-#[repr(C)]
 #[derive(Debug)]
+#[repr(C)]
 pub struct FusePollOut {
     // fuse_poll_out
     pub revents: u32,
@@ -1264,8 +1282,8 @@ pub struct FusePollOut {
 }
 
 #[cfg(feature = "abi-7-11")]
-#[repr(C)]
 #[derive(Debug)]
+#[repr(C)]
 pub struct FuseNotifyPollWakeUpOut {
     // fuse_notify_poll_wakeup_out
     pub kh: u64,
@@ -1273,8 +1291,8 @@ pub struct FuseNotifyPollWakeUpOut {
 
 /// FUSE file allocate request input `fuse_fallocate_in`
 // #[cfg(feature = "abi-7-19")]
-#[repr(C)]
 #[derive(Debug)]
+#[repr(C)]
 pub struct FuseFAllocateIn {
     /// File handler
     pub fh: u64,
@@ -1289,8 +1307,8 @@ pub struct FuseFAllocateIn {
 }
 
 /// FUSE request header `fuse_in_header`
-#[repr(C)]
 #[derive(Debug)]
+#[repr(C)]
 pub struct FuseInHeader {
     /// Request size
     pub len: u32,
@@ -1311,8 +1329,8 @@ pub struct FuseInHeader {
 }
 
 /// FUSE response header `fuse_out_header`
-#[repr(C)]
 #[derive(Debug)]
+#[repr(C)]
 pub struct FuseOutHeader {
     /// Response size
     pub len: u32,
@@ -1323,8 +1341,8 @@ pub struct FuseOutHeader {
 }
 
 /// FUSE directory entry `fuse_dirent`
-#[repr(C)]
 #[derive(Debug)]
+#[repr(C)]
 pub struct FuseDirEnt {
     /// The i-number of the entry
     pub ino: INum,
@@ -1348,8 +1366,8 @@ pub struct FuseDirEnt {
 /// FUSE directory entry plus `fuse_direntplus`
 /// used in `readdirplus()`
 #[cfg(feature = "abi-7-21")]
-#[repr(C)]
 #[derive(Debug)]
+#[repr(C)]
 pub struct FuseDirEntPlus {
     /// FUSE directory entry extra info
     pub entry_out: FuseEntryOut,
@@ -1366,8 +1384,8 @@ pub struct FuseDirEntPlus {
 //     FUSE_DIRENT_ALIGN(FUSE_NAME_OFFSET_DIRENTPLUS + (d)->dirent.namelen)
 
 #[cfg(feature = "abi-7-12")]
-#[repr(C)]
 #[derive(Debug)]
+#[repr(C)]
 pub struct FuseNotifyInvalINodeOut {
     // fuse_notify_inval_inode_out
     pub ino: INum,
@@ -1376,8 +1394,8 @@ pub struct FuseNotifyInvalINodeOut {
 }
 
 #[cfg(feature = "abi-7-12")]
-#[repr(C)]
 #[derive(Debug)]
+#[repr(C)]
 pub struct FuseNotifyInvalEntryOut {
     // fuse_notify_inval_entry_out
     pub parent: u64,
@@ -1386,8 +1404,8 @@ pub struct FuseNotifyInvalEntryOut {
 }
 
 #[cfg(feature = "abi-7-18")]
-#[repr(C)]
 #[derive(Debug)]
+#[repr(C)]
 pub struct FuseNotifyDeleteOut {
     // fuse_notify_delete_out
     pub parent: u64,
@@ -1397,8 +1415,8 @@ pub struct FuseNotifyDeleteOut {
 }
 
 #[cfg(feature = "abi-7-15")]
-#[repr(C)]
 #[derive(Debug)]
+#[repr(C)]
 pub struct FuseNotifyStoreOut {
     // fuse_notify_store_out
     pub nodeid: u64,
@@ -1408,8 +1426,8 @@ pub struct FuseNotifyStoreOut {
 }
 
 #[cfg(feature = "abi-7-15")]
-#[repr(C)]
 #[derive(Debug)]
+#[repr(C)]
 pub struct FuseNotifyRetrieveOut {
     // fuse_notify_retrieve_out
     pub notify_unique: u64,
@@ -1420,8 +1438,8 @@ pub struct FuseNotifyRetrieveOut {
 }
 
 #[cfg(feature = "abi-7-15")]
-#[repr(C)]
 #[derive(Debug)]
+#[repr(C)]
 pub struct FuseNotifyRetrieveIn {
     // fuse_notify_retrieve_in
     // matches the size of fuse_write_in
@@ -1439,8 +1457,8 @@ pub struct FuseNotifyRetrieveIn {
 
 /// FUSE lseek request input `fuse_lseek_in`
 // #[cfg(feature = "abi-7-24")]
-#[repr(C)]
 #[derive(Debug)]
+#[repr(C)]
 pub struct FuseLSeekIn {
     /// File handler
     pub fh: u64,
@@ -1454,8 +1472,8 @@ pub struct FuseLSeekIn {
 
 /// FUSE lseek response `fuse_lseek_out`
 // #[cfg(feature = "abi-7-24")]
-#[repr(C)]
 #[derive(Debug)]
+#[repr(C)]
 pub struct FuseLSeekOut {
     /// Seek offset
     pub offset: u64,
@@ -1463,8 +1481,8 @@ pub struct FuseLSeekOut {
 
 /// FUSE copy file range request input `fuse_copy_file_range_in`
 // #[cfg(feature = "abi-7-28")]
-#[repr(C)]
 #[derive(Debug)]
+#[repr(C)]
 pub struct FuseCopyFileRangeIn {
     /// The file handler of the source file
     pub fh_in: u64,

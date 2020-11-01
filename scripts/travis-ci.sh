@@ -16,9 +16,9 @@ function show_result()
 
 function run_tests()
 {
-    # NOTE: run non-root test
+    # NOTE: run non-root test of async_fuse
     set -o pipefail
-    cargo test 2>&1 | tee cargo_test.log
+    cargo test -p async_fuse 2>&1 | tee cargo_test.log
     rv=$?
     set +o pipefail
 
@@ -27,7 +27,7 @@ function run_tests()
         return $rv
     fi
 
-    # NOTE: run root test
+    # NOTE: run root test of async_fuse
     test_bin_path=`grep Running cargo_test.log | awk '{print $2}'`
     echo $test_bin_path
     sudo $test_bin_path
@@ -38,6 +38,7 @@ function run_tests()
         return $rv
     fi
 
+    # TODO: run test of csi
     return 0
 }
 
