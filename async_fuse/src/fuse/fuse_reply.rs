@@ -242,47 +242,8 @@ pub struct ReplyInit {
 
 impl ReplyInit {
     /// Reply init response
-    pub async fn init(
-        self,
-        major: u32,
-        minor: u32,
-        max_readahead: u32,
-        flags: u32,
-        #[cfg(not(feature = "abi-7-13"))] unused: u32,
-        #[cfg(feature = "abi-7-13")] max_background: u16,
-        #[cfg(feature = "abi-7-13")] congestion_threshold: u16,
-        max_write: u32,
-        #[cfg(feature = "abi-7-23")] time_gran: u32,
-        #[cfg(all(feature = "abi-7-23", not(feature = "abi-7-28")))] unused: [u32; 9],
-        #[cfg(feature = "abi-7-28")] max_pages: u16,
-        #[cfg(feature = "abi-7-28")] padding: u16,
-        #[cfg(feature = "abi-7-28")] unused: [u32; 8],
-    ) -> nix::Result<usize> {
-        self.reply
-            .send_data(FuseInitOut {
-                major,
-                minor,
-                max_readahead,
-                flags,
-                #[cfg(not(feature = "abi-7-13"))]
-                unused,
-                #[cfg(feature = "abi-7-13")]
-                max_background,
-                #[cfg(feature = "abi-7-13")]
-                congestion_threshold,
-                max_write,
-                #[cfg(feature = "abi-7-23")]
-                time_gran,
-                #[cfg(all(feature = "abi-7-23", not(feature = "abi-7-28")))]
-                unused,
-                #[cfg(feature = "abi-7-28")]
-                max_pages,
-                #[cfg(feature = "abi-7-28")]
-                padding,
-                #[cfg(feature = "abi-7-28")]
-                unused,
-            })
-            .await
+    pub async fn init(self, resp: FuseInitOut) -> nix::Result<usize> {
+        self.reply.send_data(resp).await
     }
 }
 

@@ -368,8 +368,9 @@ pub use init_flags::*;
 #[cfg(feature = "abi-7-11")]
 pub const CUSE_UNRESTRICTED_IOCTL: u32 = 1 << 0; // use unrestricted ioctl
 
-/// Release flags
+/// Release with flush
 pub const FUSE_RELEASE_FLUSH: u32 = 1 << 0;
+/// Release with `flock` unlock
 #[allow(dead_code)]
 #[cfg(feature = "abi-7-17")]
 pub const FUSE_RELEASE_FLOCK_UNLOCK: u32 = 1 << 1;
@@ -535,7 +536,7 @@ pub enum FuseOpCode {
     /// A reply to a NOTIFY_RETRIEVE notification
     // #[cfg(feature = "abi-7-15")]
     FUSE_NOTIFY_REPLY = 41,
-    /// Batch forget i-nodes
+    /// Batch forget inodes
     // #[cfg(feature = "abi-7-16")]
     FUSE_BATCH_FORGET = 42,
     /// Allocate requested space
@@ -576,17 +577,24 @@ pub enum FuseOpCode {
 #[derive(Debug)]
 #[repr(C)]
 pub enum FuseNotifyCode {
+    /// Poll
     FUSE_POLL = 1,
+    /// Notify invalid inode
     #[cfg(feature = "abi-7-12")]
     FUSE_NOTIFY_INVAL_INODE = 2,
+    /// Notify invalid entry
     #[cfg(feature = "abi-7-12")]
     FUSE_NOTIFY_INVAL_ENTRY = 3,
+    /// Notify store
     #[cfg(feature = "abi-7-15")]
     FUSE_NOTIFY_STORE = 4,
+    /// Notify retrieve
     #[cfg(feature = "abi-7-15")]
     FUSE_NOTIFY_RETRIEVE = 5,
+    /// Notify delete
     #[cfg(feature = "abi-7-18")]
     FUSE_NOTIFY_DELETE = 6,
+    /// Max notify code
     FUSE_NOTIFY_CODE_MAX,
 }
 
@@ -599,28 +607,28 @@ pub const FUSE_MIN_READ_BUFFER: usize = 8192;
 pub mod fuse_compat_configs {
     /// FUSE compatible statfs size when minior version lower than 4
     pub const FUSE_COMPAT_STATFS_SIZE: usize = 48;
-
+    /// FUSE compatible directory entry related response size for macOS and version < 7.9
     #[cfg(all(target_os = "macos", feature = "abi-7-9"))]
     pub const FUSE_COMPAT_ENTRY_OUT_SIZE: usize = 136;
-
+    /// FUSE compatible directory entry related response size for version < 7.9
     #[cfg(feature = "abi-7-9")]
     pub const FUSE_COMPAT_ENTRY_OUT_SIZE: usize = 120;
-
+    /// FUSE compatible attribute related response size for macOS and version < 7.9
     #[cfg(all(target_os = "macos", feature = "abi-7-9"))]
     pub const FUSE_COMPAT_ATTR_OUT_SIZE: usize = 112;
-
+    /// FUSE compatible attribute related response size for version < 7.9
     #[cfg(feature = "abi-7-9")]
     pub const FUSE_COMPAT_ATTR_OUT_SIZE: usize = 96;
-
+    /// FUSE compatible `mknod` request size for version < 7.12
     #[cfg(feature = "abi-7-12")]
     pub const FUSE_COMPAT_MKNOD_IN_SIZE: usize = 8;
-
+    /// FUSE compatible `write` request size for version < 7.9
     #[cfg(feature = "abi-7-9")]
     pub const FUSE_COMPAT_WRITE_IN_SIZE: usize = 24;
-
+    /// FUSE compatible `init` response size for version < 7.5
     #[cfg(feature = "abi-7-23")]
     pub const FUSE_COMPAT_INIT_OUT_SIZE: usize = 8;
-
+    /// FUSE compatible `init` response size for version < 7.23
     #[cfg(feature = "abi-7-23")]
     pub const FUSE_COMPAT_22_INIT_OUT_SIZE: usize = 24;
 }
@@ -1058,6 +1066,7 @@ pub struct FuseLockIn {
     pub owner: u64,
     /// FUSE file lock
     pub lk: FuseFileLock,
+    /// Lock flags
     #[cfg(feature = "abi-7-9")]
     pub lk_flags: u32,
     /// Alignment padding
@@ -1233,23 +1242,29 @@ pub struct FuseIoCtlIn {
     pub out_size: u32,
 }
 
+/// FUSE ioctl iovec `fuse_ioctl_iovec`
 #[cfg(feature = "abi-7-16")]
 #[derive(Debug)]
 #[repr(C)]
 pub struct FuseIoCtlIoVec {
-    // fuse_ioctl_iovec
+    /// iovec starting address
     pub base: u64,
+    /// Number of bytes to transfer
     pub len: u64,
 }
 
+/// FUSE ioctl response `fuse_ioctl_out`
 #[cfg(feature = "abi-7-11")]
 #[derive(Debug)]
 #[repr(C)]
 pub struct FuseIoCtlOut {
-    // fuse_ioctl_out
+    /// Result to be passed to the caller
     pub result: i32,
+    /// `FUSE_IOCTL_*` flags
     pub flags: u32,
+    /// iovec specifying data to fetch from the caller
     pub in_iovs: u32,
+    /// iovec specifying addresses to write output to
     pub out_iovs: u32,
 }
 
@@ -1272,20 +1287,23 @@ pub struct FusePollIn {
     pub events: u32,
 }
 
+/// FUSE poll response `fuse_poll_out`
 #[cfg(feature = "abi-7-11")]
 #[derive(Debug)]
 #[repr(C)]
 pub struct FusePollOut {
-    // fuse_poll_out
+    /// Poll result event mask
     pub revents: u32,
+    /// Padding
     pub padding: u32,
 }
 
+/// FUSE notify poll wakeup response `fuse_notify_poll_wakeup_out`
 #[cfg(feature = "abi-7-11")]
 #[derive(Debug)]
 #[repr(C)]
 pub struct FuseNotifyPollWakeUpOut {
-    // fuse_notify_poll_wakeup_out
+    /// Wakeup handler
     pub kh: u64,
 }
 
@@ -1383,71 +1401,96 @@ pub struct FuseDirEntPlus {
 // #define FUSE_DIRENTPLUS_SIZE(d) \
 //     FUSE_DIRENT_ALIGN(FUSE_NAME_OFFSET_DIRENTPLUS + (d)->dirent.namelen)
 
+/// FUSE nofity invalid inode response `fuse_notify_inval_inode_out`
 #[cfg(feature = "abi-7-12")]
 #[derive(Debug)]
 #[repr(C)]
 pub struct FuseNotifyInvalINodeOut {
-    // fuse_notify_inval_inode_out
+    /// Node ID
     pub ino: INum,
+    /// Offset
     pub off: i64,
+    /// Length
     pub len: i64,
 }
 
+/// FUSE notify invalid entry response `fuse_notify_inval_entry_out`
 #[cfg(feature = "abi-7-12")]
 #[derive(Debug)]
 #[repr(C)]
 pub struct FuseNotifyInvalEntryOut {
-    // fuse_notify_inval_entry_out
-    pub parent: u64,
+    /// Parent inode
+    pub parent: INum,
+    /// Name length
     pub namelen: u32,
+    /// Padding
     pub padding: u32,
 }
 
+/// Fuse notify delete response `fuse_notify_delete_out`
 #[cfg(feature = "abi-7-18")]
 #[derive(Debug)]
 #[repr(C)]
 pub struct FuseNotifyDeleteOut {
-    // fuse_notify_delete_out
-    pub parent: u64,
-    pub child: u64,
+    /// Parent inode
+    pub parent: INum,
+    /// Child inode
+    pub child: INum,
+    /// Name length
     pub namelen: u32,
+    /// Padding
     pub padding: u32,
 }
 
+/// FUSE notify store response `fuse_notify_store_out`
 #[cfg(feature = "abi-7-15")]
 #[derive(Debug)]
 #[repr(C)]
 pub struct FuseNotifyStoreOut {
-    // fuse_notify_store_out
-    pub nodeid: u64,
+    /// Node ID
+    pub nodeid: INum,
+    /// Offset
     pub offset: u64,
+    /// Size
     pub size: u32,
+    /// Padding
     pub padding: u32,
 }
 
+/// FUSE notify retrieve response `fuse_notify_retrieve_out`
 #[cfg(feature = "abi-7-15")]
 #[derive(Debug)]
 #[repr(C)]
 pub struct FuseNotifyRetrieveOut {
-    // fuse_notify_retrieve_out
+    /// Unique ID
     pub notify_unique: u64,
+    /// Node ID
     pub nodeid: u64,
+    /// Offset
     pub offset: u64,
+    /// Size
     pub size: u32,
+    /// Padding
     pub padding: u32,
 }
 
+/// FUSE notify retrieve request input `fuse_notify_retrieve_in`
+/// matches the size of `fuse_write_in`
 #[cfg(feature = "abi-7-15")]
 #[derive(Debug)]
 #[repr(C)]
 pub struct FuseNotifyRetrieveIn {
-    // fuse_notify_retrieve_in
-    // matches the size of fuse_write_in
+    /// Padding
     pub dummy1: u64,
+    /// Offset
     pub offset: u64,
+    /// Size
     pub size: u32,
+    /// Padding
     pub dummy2: u32,
+    /// Padding
     pub dummy3: u64,
+    /// Padding
     pub dummy4: u64,
 }
 

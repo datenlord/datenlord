@@ -34,9 +34,9 @@ use super::protocol::FATTR_CTIME;
 #[cfg(feature = "abi-7-9")]
 use super::protocol::FATTR_LOCKOWNER; // {FATTR_ATIME_NOW, FATTR_MTIME_NOW};
 use super::protocol::{
-    FuseInitIn, FuseSetXAttrIn, FATTR_ATIME, FATTR_FH, FATTR_GID, FATTR_MODE, FATTR_MTIME,
-    FATTR_SIZE, FATTR_UID, FUSE_ASYNC_READ, FUSE_KERNEL_MINOR_VERSION, FUSE_KERNEL_VERSION,
-    FUSE_RELEASE_FLUSH,
+    FuseInitIn, FuseInitOut, FuseSetXAttrIn, FATTR_ATIME, FATTR_FH, FATTR_GID, FATTR_MODE,
+    FATTR_MTIME, FATTR_SIZE, FATTR_UID, FUSE_ASYNC_READ, FUSE_KERNEL_MINOR_VERSION,
+    FUSE_KERNEL_VERSION, FUSE_RELEASE_FLUSH,
 };
 #[cfg(target_os = "macos")]
 use super::protocol::{
@@ -352,18 +352,18 @@ impl Session {
         // larger major version, it'll re-send a matching init message. If it
         // supports only lower major versions, we replied with an error above.
         reply
-            .init(
-                FUSE_KERNEL_VERSION,
-                FUSE_KERNEL_MINOR_VERSION, // Do not change minor version, otherwise unknown panic
-                arg.max_readahead,         // accept FUSE kernel module max_readahead
+            .init(FuseInitOut {
+                major: FUSE_KERNEL_VERSION,
+                minor: FUSE_KERNEL_MINOR_VERSION, // Do not change minor version, otherwise unknown panic
+                max_readahead: arg.max_readahead, // accept FUSE kernel module max_readahead
                 flags, // TODO: use features given in INIT_FLAGS and reported as capable
                 #[cfg(not(feature = "abi-7-13"))]
                 unused,
                 #[cfg(feature = "abi-7-13")]
-                MAX_BACKGROUND,
+                max_background: MAX_BACKGROUND,
                 #[cfg(feature = "abi-7-13")]
                 congestion_threshold,
-                MAX_WRITE_SIZE,
+                max_write: MAX_WRITE_SIZE,
                 #[cfg(feature = "abi-7-23")]
                 time_gran,
                 #[cfg(all(feature = "abi-7-23", not(feature = "abi-7-28")))]
@@ -374,7 +374,7 @@ impl Session {
                 padding,
                 #[cfg(feature = "abi-7-28")]
                 unused,
-            )
+            })
             .await?;
         debug!(
             "INIT response: ABI version={}.{}, flags={:#x}, max readahead={}, max write={}",
@@ -934,7 +934,7 @@ async fn dispatch<'a>(
 
         #[cfg(feature = "abi-7-11")]
         Operation::CuseInit { arg } => {
-            todo!("CuseInit arg={:?}", arg);
+            panic!("unsupported CuseInit arg={:?}", arg);
         }
     }
 }
