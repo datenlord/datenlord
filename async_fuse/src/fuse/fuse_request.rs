@@ -873,56 +873,14 @@ mod test {
         assert_eq!(req.uid(), 0xc001_d00d);
         assert_eq!(req.gid(), 0xc001_cafe);
         assert_eq!(req.pid(), 0xc0de_ba5e);
+        #[allow(clippy::wildcard_enum_match_arm)]
         match *req.operation() {
             Operation::Init { arg } => {
                 assert_eq!(arg.major, 7);
                 assert_eq!(arg.minor, 8);
                 assert_eq!(arg.max_readahead, 4096);
             }
-            Operation::Lookup { .. }
-            | Operation::Forget { .. }
-            | Operation::GetAttr
-            | Operation::SetAttr { .. }
-            | Operation::ReadLink
-            | Operation::SymLink { .. }
-            | Operation::MkNod { .. }
-            | Operation::MkDir { .. }
-            | Operation::Unlink { .. }
-            | Operation::RmDir { .. }
-            | Operation::Rename { .. }
-            | Operation::Link { .. }
-            | Operation::Open { .. }
-            | Operation::Read { .. }
-            | Operation::Write { .. }
-            | Operation::StatFs
-            | Operation::Release { .. }
-            | Operation::FSync { .. }
-            | Operation::SetXAttr { .. }
-            | Operation::GetXAttr { .. }
-            | Operation::ListXAttr { .. }
-            | Operation::RemoveXAttr { .. }
-            | Operation::Flush { .. }
-            | Operation::OpenDir { .. }
-            | Operation::ReadDir { .. }
-            | Operation::ReleaseDir { .. }
-            | Operation::FSyncDir { .. }
-            | Operation::GetLk { .. }
-            | Operation::SetLk { .. }
-            | Operation::SetLkW { .. }
-            | Operation::Access { .. }
-            | Operation::Create { .. }
-            | Operation::Interrupt { .. }
-            | Operation::BMap { .. }
-            | Operation::Destroy
-            | Operation::IoCtl { .. }
-            | Operation::Poll { .. }
-            | Operation::NotifyReply { .. }
-            | Operation::BatchForget { .. }
-            | Operation::FAllocate { .. }
-            | Operation::ReadDirPlus { .. }
-            | Operation::Rename2 { .. }
-            | Operation::LSeek { .. }
-            | Operation::CopyFileRange { .. } => panic!("unexpected request operation"),
+            _ => panic!("unexpected request operation"),
         }
     }
 
@@ -937,55 +895,13 @@ mod test {
         assert_eq!(req.uid(), 0xc001_d00d);
         assert_eq!(req.gid(), 0xc001_cafe);
         assert_eq!(req.pid(), 0xc0de_ba5e);
+        #[allow(clippy::wildcard_enum_match_arm)]
         match *req.operation() {
             Operation::MkNod { arg, name } => {
                 assert_eq!(arg.mode, 0o644);
                 assert_eq!(name, "foo.txt");
             }
-            Operation::Lookup { .. }
-            | Operation::Forget { .. }
-            | Operation::GetAttr
-            | Operation::SetAttr { .. }
-            | Operation::ReadLink
-            | Operation::SymLink { .. }
-            | Operation::MkDir { .. }
-            | Operation::Unlink { .. }
-            | Operation::RmDir { .. }
-            | Operation::Rename { .. }
-            | Operation::Link { .. }
-            | Operation::Open { .. }
-            | Operation::Read { .. }
-            | Operation::Write { .. }
-            | Operation::StatFs
-            | Operation::Release { .. }
-            | Operation::FSync { .. }
-            | Operation::SetXAttr { .. }
-            | Operation::GetXAttr { .. }
-            | Operation::ListXAttr { .. }
-            | Operation::RemoveXAttr { .. }
-            | Operation::Flush { .. }
-            | Operation::Init { .. }
-            | Operation::OpenDir { .. }
-            | Operation::ReadDir { .. }
-            | Operation::ReleaseDir { .. }
-            | Operation::FSyncDir { .. }
-            | Operation::GetLk { .. }
-            | Operation::SetLk { .. }
-            | Operation::SetLkW { .. }
-            | Operation::Access { .. }
-            | Operation::Create { .. }
-            | Operation::Interrupt { .. }
-            | Operation::BMap { .. }
-            | Operation::Destroy
-            | Operation::IoCtl { .. }
-            | Operation::Poll { .. }
-            | Operation::NotifyReply { .. }
-            | Operation::BatchForget { .. }
-            | Operation::FAllocate { .. }
-            | Operation::ReadDirPlus { .. }
-            | Operation::Rename2 { .. }
-            | Operation::LSeek { .. }
-            | Operation::CopyFileRange { .. } => panic!("unexpected request operation"),
+            _ => panic!("unexpected request operation"),
         }
     }
 }

@@ -200,8 +200,7 @@ jobs:
       - uses: actions-rs/cargo@v1
         with:
           command: clippy
-          # Enable --all-features --all-targets
-          args: --all -- -D warnings
+          args: --all-features --all-targets -- -D warnings
 
   fs-e2e:
     name: FS-E2E
