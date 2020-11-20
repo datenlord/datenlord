@@ -28,7 +28,7 @@ log = "0.4.6"
 memchr = "2.3.3"
 nix = "0.19.0"
 pin-project-lite ="0.2.0"
-smol = "0.1.11"
+smol = "1.2.4"
 utilities = { git = "https://github.com/datenlord/utilities", rev = "4ef408d" }
 
 [features]
