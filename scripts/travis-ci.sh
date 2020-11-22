@@ -16,6 +16,11 @@ function show_result()
 
 function run_tests()
 {
+    sudo apt-get update && sudo apt-get install --yes fio
+
+    # NOTE: run root test of async_fuse must be in this directory
+    cd async_fuse
+
     # NOTE: run non-root test of async_fuse
     set -o pipefail
     cargo test -p async_fuse 2>&1 | tee cargo_test.log

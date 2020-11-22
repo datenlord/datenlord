@@ -101,10 +101,11 @@ pub async fn umount(short_path: &Path) -> anyhow::Result<()> {
 
         if unistd::geteuid().is_root() {
             // Direct un-mount
-            nix::mount::umount2(
-                &mount_path,
-                nix::mount::MntFlags::MNT_FORCE,
-            ).context(format!(
+            nix::mount::umount(&mount_path).context(format!(
+            // nix::mount::umount2(
+            //     &mount_path,
+            //     nix::mount::MntFlags::MNT_FORCE,
+            // ).context(format!(
                 "failed to un-mount FUSE, path={:?}",
                 mount_path,
             ))
