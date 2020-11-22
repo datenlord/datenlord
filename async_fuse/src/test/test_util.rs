@@ -6,12 +6,11 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use crate::fuse::{mount, session::Session};
-
-pub const DEFAULT_MOUNT_DIR: &str = "../fuse_test";
-pub const FILE_CONTENT: &str = "0123456789ABCDEF";
+use crate::util;
 
 pub fn setup(mount_dir: &Path) -> anyhow::Result<JoinHandle<()>> {
-    env_logger::init();
+    let _log_init_res = env_logger::try_init();
+
     if mount_dir.exists() {
         smol::block_on(async move {
             let result = mount::umount(mount_dir).await;
@@ -32,7 +31,10 @@ pub fn setup(mount_dir: &Path) -> anyhow::Result<JoinHandle<()>> {
             Ok(())
         };
         if let Err(e) = run_fs(&abs_root_path).await {
-            panic!("failed to run filesystem, the error is: {}", e);
+            panic!(
+                "failed to run filesystem, the error is: {}",
+                util::format_anyhow_error(&e),
+            );
         }
     });
     // do not block main thread
@@ -57,7 +59,11 @@ pub fn teardown(mount_dir: &Path, th: JoinHandle<()>) -> anyhow::Result<()> {
 
     smol::block_on(async {
         mount::umount(mount_dir).await.unwrap_or_else(|err| {
-            panic!("failed to un-mount {:?}, the error is: {}", mount_dir, err,)
+            panic!(
+                "failed to un-mount {:?}, the error is: {}",
+                mount_dir,
+                util::format_anyhow_error(&err),
+            )
         });
     });
     let abs_mount_path = fs::canonicalize(mount_dir)?;

@@ -53,6 +53,8 @@ jobs:
     name: FUSE-Cargo-Test
     runs-on: ubuntu-latest
     steps:
+      - name: Install benchmark tool fio
+        run: sudo apt install -y fio
       - uses: actions/checkout@v2
       - uses: actions-rs/toolchain@v1
         with:
@@ -65,8 +67,9 @@ jobs:
       - name: Run FUSE cargo test with non-root and root
         run: |
           cd async_fuse
-          cargo test |& tee cargo_test.log
-          export TEST_CMD=`grep Running cargo_test.log | awk '{print $2}'`
+          cargo test -p async_fuse |& tee fuse_cargo_test.log
+          cat bench.log
+          export TEST_CMD=`grep Running fuse_cargo_test.log | awk '{print $2}'`
           sudo $TEST_CMD
 
   csi-sanity-test:

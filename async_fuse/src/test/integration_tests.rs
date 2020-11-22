@@ -10,7 +10,11 @@ use std::iter;
 use std::path::Path;
 use utilities::OverflowArithmetic;
 
-use super::test_util::{self, DEFAULT_MOUNT_DIR, FILE_CONTENT};
+use super::test_util;
+
+pub const BENCH_MOUNT_DIR: &str = "../fuse_bench";
+pub const DEFAULT_MOUNT_DIR: &str = "../fuse_test";
+pub const FILE_CONTENT: &str = "0123456789ABCDEF";
 
 fn test_file_manipulation_rust_way(mount_dir: &Path) -> anyhow::Result<()> {
     info!("file manipulation Rust style");
@@ -513,4 +517,30 @@ fn run_test() -> anyhow::Result<()> {
 
     test_util::teardown(mount_dir, th)?;
     Ok(())
+}
+
+#[test]
+fn run_bench() -> anyhow::Result<()> {
+    let mount_dir = Path::new(BENCH_MOUNT_DIR);
+    let th = test_util::setup(mount_dir)?;
+
+    let fio_handle = std::process::Command::new("fio")
+        .arg("../scripts/fio_jobs.ini")
+        .env("BENCH_DIR", BENCH_MOUNT_DIR)
+        .output()
+        .context("fio command failed to start, maybe install fio first")?;
+    let fio_res = if fio_handle.status.success() {
+        std::fs::write("bench.log", &fio_handle.stdout).context("failed to write bench log")?;
+        Ok(())
+    } else {
+        let stderr = String::from_utf8_lossy(&fio_handle.stderr);
+        info!("fio failed to run, the error is: {}", &stderr);
+        Err(anyhow::anyhow!(
+            "fio failed to run, the error is: {}",
+            &stderr,
+        ))
+    };
+
+    test_util::teardown(mount_dir, th)?;
+    fio_res
 }
