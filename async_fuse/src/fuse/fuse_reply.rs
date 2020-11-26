@@ -536,29 +536,48 @@ impl ReplyDirectory {
     /// A transparent offset value can be provided for each entry. The kernel uses these
     /// value to request the next entries in further readdir calls
     pub fn add<T: AsRef<OsStr>>(&mut self, ino: u64, offset: i64, kind: SFlag, name: T) -> bool {
+        /// <https://doc.rust-lang.org/std/alloc/struct.Layout.html#method.padding_needed_for>
+        ///
+        /// <https://doc.rust-lang.org/src/core/alloc/layout.rs.html#226-250>
+        const fn round_up(len: usize, align: usize) -> usize {
+            len.wrapping_add(align).wrapping_sub(1) & !align.wrapping_sub(1)
+        }
+
         let name_bytes = name.as_ref().as_bytes();
         let entlen = mem::size_of::<FuseDirEnt>().overflow_add(name_bytes.len());
-        let entsize = entlen.overflow_add(mem::size_of::<u64>().overflow_sub(1))
-            & !(mem::size_of::<u64>().overflow_sub(1)); // 64bit align
+        let entsize = round_up(entlen, mem::size_of::<u64>()); // 64bit align
+
         let padlen = entsize.overflow_sub(entlen);
         if self.data.len().overflow_add(entsize) > self.data.capacity() {
             return true;
         }
+
+        let mut dirent = FuseDirEnt {
+            ino,
+            off: offset.cast(),
+            namelen: name_bytes.len().cast(),
+            typ: crate::util::mode_from_kind_and_perm(kind, 0).overflow_shr(12),
+        };
+
         // TODO: refactory this, do not use unsafe code
         unsafe {
-            let data_end_ptr = self.data.as_mut_ptr().add(self.data.len());
-            let pdirent: *mut FuseDirEnt = utilities::cast_to_mut_ptr(&mut *data_end_ptr);
-            (*pdirent).ino = ino;
-            (*pdirent).off = offset.cast();
-            (*pdirent).namelen = name_bytes.len().cast();
-            (*pdirent).typ = crate::util::mode_from_kind_and_perm(kind, 0).overflow_shr(12);
-            let dirent_end_ptr = data_end_ptr.add(mem::size_of_val(&*pdirent));
-            ptr::copy_nonoverlapping(name_bytes.as_ptr(), dirent_end_ptr, name_bytes.len());
-            let name_end_ptr = dirent_end_ptr.add(name_bytes.len());
-            ptr::write_bytes(name_end_ptr, 0_u8, padlen);
-            let newlen = self.data.len().overflow_add(entsize);
-            self.data.set_len(newlen);
+            // write dirent
+            let base: *mut u8 = <*mut FuseDirEnt>::cast(&mut dirent);
+            let bytes = slice::from_raw_parts(base, mem::size_of::<FuseDirEnt>());
+            self.data.extend_from_slice(bytes);
+
+            // write name
+            self.data.extend_from_slice(name_bytes);
+
+            // write zero padding
+            let end_ptr = self.data.as_mut_ptr().add(self.data.len());
+            ptr::write_bytes(end_ptr, 0, padlen);
+
+            // set len
+            let new_len = self.data.len().wrapping_add(padlen);
+            self.data.set_len(new_len);
         }
+
         false
     }
 
