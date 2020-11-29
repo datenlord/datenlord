@@ -8,5 +8,5 @@ fn main() {
         "src",                                    // output
         None,                                     // customizations
     )
-    .expect("Failed to compile gRPC definitions!");
+    .unwrap_or_else(|e| panic!("Failed to compile gRPC definitions, the error is: {}", e));
 }
