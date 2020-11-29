@@ -71,6 +71,35 @@ jobs:
           cat bench.log
           export TEST_CMD=`grep Running fuse_cargo_test.log | awk '{print $2}'`
           sudo $TEST_CMD
+  csi-cargo-test:
+    name: CSI-Cargo-Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install CSI dependencies
+        run: sudo apt install -y cmake g++ libprotobuf-dev protobuf-compiler
+      - name: Check out code
+        uses: actions/checkout@v2
+      - name: Prepare Rust environment
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: default
+          toolchain: ${{ env.CI_RUST_TOOLCHAIN }}
+          override: true
+      - name: Build bind_mounter
+        uses: actions-rs/cargo@v1
+        with:
+          command: build
+          args: --bin bind_mounter
+      - name: Enable bind_mounter permission and run cargo test with not-root and root
+        run: |
+          sudo chown root:root $BIND_MOUNTER
+          sudo chmod u+s $BIND_MOUNTER
+          ls -lsh $BIND_MOUNTER
+          export ETCD_END_POINT=http://127.0.0.1:2379
+          export BIND_MOUNTER=`realpath $BIND_MOUNTER`
+          cargo test -p csi |& tee csi_cargo_test.log
+          export TEST_CMD=`grep Running csi_cargo_test.log | grep csi | awk '{print $2}'`
+          sudo $TEST_CMD
 
   csi-sanity-test:
     name: CSI-Sanity-Test
@@ -108,20 +137,6 @@ jobs:
         uses: actions-rs/cargo@v1
         with:
           command: build
-      - name: Run etcd service
-        run: |
-          docker run -d --rm --net host --name $ETCD_CONTAINER_NAME gcr.io/etcd-development/etcd:latest
-          docker ps
-          docker logs $ETCD_CONTAINER_NAME
-          # sudo netstat -lntp
-      - name: Enable bind_mounter permission and run cargo test
-        run: |
-          sudo chown root:root $BIND_MOUNTER
-          sudo chmod u+s $BIND_MOUNTER
-          ls -lsh $BIND_MOUNTER
-          export ETCD_END_POINT=http://127.0.0.1:2379
-          export BIND_MOUNTER=`realpath $BIND_MOUNTER`
-          cargo test -p csi
       #- name: Cargo test
       #  uses: actions-rs/cargo@v1
       #  with:
@@ -135,9 +150,15 @@ jobs:
       #    sudo chown root:root $BIND_MOUNTER
       #    sudo chmod u+s $BIND_MOUNTER
       #    ls -lsh $BIND_MOUNTER
-      - name: Restart etcd service to clean up its data
+      - name: Enable bind_mounter permission
         run: |
-          docker kill $ETCD_CONTAINER_NAME
+          sudo chown root:root $BIND_MOUNTER
+          sudo chmod u+s $BIND_MOUNTER
+          ls -lsh $BIND_MOUNTER
+          export ETCD_END_POINT=http://127.0.0.1:2379
+          export BIND_MOUNTER=`realpath $BIND_MOUNTER`
+      - name: Run etcd service
+        run: |
           docker run -d --rm --net host --name $ETCD_CONTAINER_NAME gcr.io/etcd-development/etcd:latest
           docker ps
           docker logs $ETCD_CONTAINER_NAME

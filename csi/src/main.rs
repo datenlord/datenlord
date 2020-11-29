@@ -555,6 +555,7 @@ mod test {
 
     use anyhow::anyhow;
     use grpcio::{ChannelBuilder, EnvBuilder};
+    use mock_etcd::MockEtcdServer;
     use protobuf::RepeatedField;
     use std::fs::{self, File};
     use std::io::prelude::*;
@@ -583,6 +584,8 @@ mod test {
     fn test_all() -> anyhow::Result<()> {
         // TODO: run test case in parallel
         // Because they all depend on etcd, so cannot run in parallel now
+        let mut etcd_server = MockEtcdServer::new();
+        etcd_server.start();
         test_meta_data().context("test meta data failed")?;
         test_identity_server().context("test identity server failed")?;
         test_controller_server().context("test controller server failed")?;
