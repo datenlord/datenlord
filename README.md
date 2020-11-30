@@ -41,4 +41,8 @@ DatenLord has several target scenarios, which fall into two main categories:
     * Multi-cloud storage unified management, to facilitate application migration across clouds.
 
 ## Road Map
-
+- [ ] 0.1 Refactor async fuse lib to provide clear async APIs, which is used by the datenlord filesystem.
+- [ ] 0.2 Support all Fuse APIs in the datenlord fs.
+- [ ] 0.3 Make fuse lib fully asynchronous. Switch async fuse lib's device communication channel from blocking I/O to io_uring.
+- [ ] 0.4 Complete K8s integration test.
+- [ ] 1.0 Complete Tensorflow k8s integration and finish performance comparison with raw fs.

@@ -25,123 +25,123 @@ env:
   MINIKUBE_VERSION: v1.13.0
 
 jobs:
-  minikube-csi-e2e:
-    name: K8S-CSI-E2E
-    # How to run K8S CSI e2e test
-    # https://www.stackovercloud.com/2020/01/08/blog-testing-of-csi-drivers/
-    runs-on: ubuntu-latest
-    steps:
-      - name: Set SSH config
-        run: |
-          sudo rm -rf ~/.ssh/
-          ssh-keygen -N '' -f ~/.ssh/id_rsa
-          cp ~/.ssh/id_rsa.pub ~/.ssh/authorized_keys
-          cat ~/.ssh/authorized_keys
-          export HOSTNAME=`hostname`
-          export WHO=`whoami`
-          export HOSTIP=`ifconfig eth0 | grep 'inet ' | awk '{print $2}'`
-          cat >>~/.ssh/config <<END
-          Host thisrunner
-            HostName $HOSTNAME
-            User $WHO
-            IdentityFile $HOME/.ssh/id_rsa
-            StrictHostKeyChecking no
-            UserKnownHostsFile /dev/null
-          END
-          chmod 755 $HOME
-          sudo service ssh restart
-          sudo service ssh status
-          ssh -vvv thisrunner
-          exit
-      - name: Setup Minikube
-        uses: manusa/actions-setup-minikube@v2.0.0
-        with:
-          #minikube version: 'v1.13.0'
-          #kubernetes version: 'v1.19.0'
-          minikube version: ${{ env.MINIKUBE_VERSION }}
-          kubernetes version: ${{ env.K8S_VERSION }}
-          github token: ${{ secrets.GITHUB_TOKEN }}
-      #- name: Deploy minikube
-      #  uses: opsgang/ga-setup-minikube@v0.1.1
-      #  with:
-      #    minikube-version: 1.12.3
-      #    k8s-version: 1.18.8
-      #- name: Test deploy DatenLord CSI plugin to K8S
-      #  run: |
-      #    kubectl cluster-info
-      #    kubectl get pods -A
-      #    docker pull quay.io/k8scsi/csi-node-driver-registrar:v1.3.0
-      #    docker pull quay.io/k8scsi/livenessprobe:v2.0.0
-      #    docker pull quay.io/k8scsi/csi-attacher:v2.2.0
-      #    docker pull quay.io/k8scsi/csi-provisioner:v1.6.0
-      #    docker pull quay.io/k8scsi/csi-snapshotter:v2.1.1
-      #    docker pull quay.io/k8scsi/csi-resizer:v0.5.0
-      #    docker pull gcr.io/etcd-development/etcd:latest
-      #    docker pull datenlord/csiplugin:latest
-      #    kubectl apply -f csiplugin_k8s.yaml
-      #    kubectl get csidriver
-      #    while [[ $(kubectl get pods -l app=csi-controller-datenlord -A -o 'jsonpath={..status.conditions[?(@.type=="Ready")].status}') != "True" ]]; do kubectl get pods -A -o wide ; kubectl get nodes -o wide ; kubectl describe pod csi-controller-datenlord-0 -n csi-datenlord ; sleep 6 ; done
-      #    while [[ $(kubectl get pods -l app=csi-nodeplugin-datenlord -A -o 'jsonpath={..status.conditions[?(@.type=="Ready")].status}') != "True" ]]; do kubectl get pods -A -o wide ; kubectl get nodes -o wide ; sleep 6 ; done
-      #    kubectl get pods -A -o wide
-      #    sudo netstat -lntp && ls -lsh
-      - name: Check out code
-        uses: actions/checkout@v2
-      - name: Docker build fuse and csi
-        run: |
-          docker build . --build-arg RUST_IMAGE_VERSION=$RUST_VERSION --file ./Dockerfile --target fuse --tag $DATENLORD_IMAGE
-          docker build . --build-arg RUST_IMAGE_VERSION=$RUST_VERSION --file ./Dockerfile --target csi --tag $DATENLORD_CSI_IMAGE
-      - name: Deploy DatenLord to K8S
-        run: |
-          kubectl cluster-info
-          kubectl get pods -A
-          kubectl apply -f https://raw.githubusercontent.com/kubernetes-csi/external-snapshotter/master/client/config/crd/snapshot.storage.k8s.io_volumesnapshots.yaml
-          kubectl apply -f https://raw.githubusercontent.com/kubernetes-csi/external-snapshotter/master/client/config/crd/snapshot.storage.k8s.io_volumesnapshotcontents.yaml
-          kubectl apply -f https://raw.githubusercontent.com/kubernetes-csi/external-snapshotter/master/client/config/crd/snapshot.storage.k8s.io_volumesnapshotclasses.yaml
-          kubectl apply -f $CONFIG_MINIKUBE
-          kubectl wait --for=condition=Ready pod -l app=$CONTROLLER_APP_LABEL -n $DATENLORD_NAMESPACE --timeout=60s
-          kubectl wait --for=condition=Ready pod -l app=$NODE_APP_LABEL -n $DATENLORD_NAMESPACE --timeout=60s
-          FOUND_PATH=`cat /proc/self/mountinfo | grep fuse | grep $FUSE_MOUNT_PATH | awk '{print $5}'`
-          test -n $FOUND_PATH || (echo "FAILED TO FIND MOUNT PATH $FUSE_MOUNT_PATH" && /bin/false)
-          kubectl delete -f $CONFIG_MINIKUBE
-          NO_PATH=`cat /proc/self/mountinfo | grep fuse | grep $FUSE_MOUNT_PATH | awk '{print $5}'`
-          test -z $NO_PATH || (echo "FAILED TO UN-MOUNT PATH $FUSE_MOUNT_PATH" && /bin/false)
-          kubectl apply -f $CONFIG_MINIKUBE
-          kubectl get csidriver
-          kubectl get csinode
-          kubectl get storageclass
-          kubectl get volumesnapshotclass
-          kubectl wait --for=condition=Ready pod -l app=$CONTROLLER_APP_LABEL -n $DATENLORD_NAMESPACE --timeout=60s
-          kubectl wait --for=condition=Ready pod -l app=$NODE_APP_LABEL -n $DATENLORD_NAMESPACE --timeout=60s
-          wget https://raw.githubusercontent.com/kubernetes-csi/external-snapshotter/master/deploy/kubernetes/snapshot-controller/rbac-snapshot-controller.yaml
-          wget https://raw.githubusercontent.com/kubernetes-csi/external-snapshotter/master/deploy/kubernetes/snapshot-controller/setup-snapshot-controller.yaml
-          sed -e 's/namespace\:\ default/namespace\:\ kube\-system/g' rbac-snapshot-controller.yaml > datenlord-rbac-snapshot-controller.yaml
-          sed -e 's/namespace\:\ default/namespace\:\ kube\-system/g' setup-snapshot-controller.yaml > datenlord-setup-snapshot-controller.yaml
-          kubectl apply -f datenlord-rbac-snapshot-controller.yaml
-          kubectl apply -f datenlord-setup-snapshot-controller.yaml
-          kubectl wait --for=condition=Ready pod -l app=snapshot-controller -n kube-system --timeout=60s
-          kubectl get pods -A -o wide
-          sudo netstat -lntp && ls -lsh
-      - name: CSI E2E Test
-        run: |
-          wget --quiet https://dl.k8s.io/$K8S_VERSION/kubernetes-test-linux-amd64.tar.gz
-          tar zxvf kubernetes-test-linux-amd64.tar.gz
-          kubectl config view --raw > $K8S_CONFIG
-          #kubernetes/test/bin/e2e.test -v=5 -ginkgo.failFast -ginkgo.failOnPending -ginkgo.debug -ginkgo.v -ginkgo.focus='External.Storage' -kubectl-path=`which kubectl` -kubeconfig=$K8S_CONFIG -storage.testdriver=`realpath $E2E_TEST_CONFIG`
-          kubernetes/test/bin/ginkgo -p -v -failFast -failOnPending -debug -focus='External.Storage' kubernetes/test/bin/e2e.test -- -v=5 -kubectl-path=`which kubectl` -kubeconfig=`realpath $K8S_CONFIG` -storage.testdriver=`realpath $E2E_TEST_CONFIG` -test.parallel=3
-      - name: Print DatenLord logs
-        if: ${{ failure() }}
-        run: |
-          CONTROLLER_POD_NAME=`kubectl get pod -l app=$CONTROLLER_APP_LABEL -n $DATENLORD_NAMESPACE -o jsonpath="{.items[0].metadata.name}"`
-          echo "SHOW LOGS OF $CONTROLLER_CONTAINER_NAME IN $CONTROLLER_POD_NAME"
-          kubectl logs $CONTROLLER_POD_NAME -n $DATENLORD_NAMESPACE -c $CONTROLLER_CONTAINER_NAME
-          NODE_POD_NAME=`kubectl get pod -l app=$NODE_APP_LABEL -n $DATENLORD_NAMESPACE -o jsonpath="{.items[0].metadata.name}"`
-          echo "SHOW LOGS OF $NODE_CONTAINER_NAME IN $NODE_POD_NAME"
-          kubectl logs $NODE_POD_NAME -n $DATENLORD_NAMESPACE -c $NODE_CONTAINER_NAME
-          echo "SHOW LOGS OF $FUSE_CONTAINER_NAME IN $NODE_POD_NAME"
-          kubectl logs $NODE_POD_NAME -n $DATENLORD_NAMESPACE -c $FUSE_CONTAINER_NAME
-      - name: Setup tmate session
-        if: ${{ failure() }}
-        uses: mxschmitt/action-tmate@v3
+  #minikube-csi-e2e:
+  #  name: K8S-CSI-E2E
+  #  # How to run K8S CSI e2e test
+  #  # https://www.stackovercloud.com/2020/01/08/blog-testing-of-csi-drivers/
+  #  runs-on: ubuntu-latest
+  #  steps:
+  #    - name: Set SSH config
+  #      run: |
+  #        sudo rm -rf ~/.ssh/
+  #        ssh-keygen -N '' -f ~/.ssh/id_rsa
+  #        cp ~/.ssh/id_rsa.pub ~/.ssh/authorized_keys
+  #        cat ~/.ssh/authorized_keys
+  #        export HOSTNAME=`hostname`
+  #        export WHO=`whoami`
+  #        export HOSTIP=`ifconfig eth0 | grep 'inet ' | awk '{print $2}'`
+  #        cat >>~/.ssh/config <<END
+  #        Host thisrunner
+  #          HostName $HOSTNAME
+  #          User $WHO
+  #          IdentityFile $HOME/.ssh/id_rsa
+  #          StrictHostKeyChecking no
+  #          UserKnownHostsFile /dev/null
+  #        END
+  #        chmod 755 $HOME
+  #        sudo service ssh restart
+  #        sudo service ssh status
+  #        ssh -vvv thisrunner
+  #        exit
+  #    - name: Setup Minikube
+  #      uses: manusa/actions-setup-minikube@v2.0.0
+  #      with:
+  #        #minikube version: 'v1.13.0'
+  #        #kubernetes version: 'v1.19.0'
+  #        minikube version: ${{ env.MINIKUBE_VERSION }}
+  #        kubernetes version: ${{ env.K8S_VERSION }}
+  #        github token: ${{ secrets.GITHUB_TOKEN }}
+  #    #- name: Deploy minikube
+  #    #  uses: opsgang/ga-setup-minikube@v0.1.1
+  #    #  with:
+  #    #    minikube-version: 1.12.3
+  #    #    k8s-version: 1.18.8
+  #    #- name: Test deploy DatenLord CSI plugin to K8S
+  #    #  run: |
+  #    #    kubectl cluster-info
+  #    #    kubectl get pods -A
+  #    #    docker pull quay.io/k8scsi/csi-node-driver-registrar:v1.3.0
+  #    #    docker pull quay.io/k8scsi/livenessprobe:v2.0.0
+  #    #    docker pull quay.io/k8scsi/csi-attacher:v2.2.0
+  #    #    docker pull quay.io/k8scsi/csi-provisioner:v1.6.0
+  #    #    docker pull quay.io/k8scsi/csi-snapshotter:v2.1.1
+  #    #    docker pull quay.io/k8scsi/csi-resizer:v0.5.0
+  #    #    docker pull gcr.io/etcd-development/etcd:latest
+  #    #    docker pull datenlord/csiplugin:latest
+  #    #    kubectl apply -f csiplugin_k8s.yaml
+  #    #    kubectl get csidriver
+  #    #    while [[ $(kubectl get pods -l app=csi-controller-datenlord -A -o 'jsonpath={..status.conditions[?(@.type=="Ready")].status}') != "True" ]]; do kubectl get pods -A -o wide ; kubectl get nodes -o wide ; kubectl describe pod csi-controller-datenlord-0 -n csi-datenlord ; sleep 6 ; done
+  #    #    while [[ $(kubectl get pods -l app=csi-nodeplugin-datenlord -A -o 'jsonpath={..status.conditions[?(@.type=="Ready")].status}') != "True" ]]; do kubectl get pods -A -o wide ; kubectl get nodes -o wide ; sleep 6 ; done
+  #    #    kubectl get pods -A -o wide
+  #    #    sudo netstat -lntp && ls -lsh
+  #    - name: Check out code
+  #      uses: actions/checkout@v2
+  #    - name: Docker build fuse and csi
+  #      run: |
+  #        docker build . --build-arg RUST_IMAGE_VERSION=$RUST_VERSION --file ./Dockerfile --target fuse --tag $DATENLORD_IMAGE
+  #        docker build . --build-arg RUST_IMAGE_VERSION=$RUST_VERSION --file ./Dockerfile --target csi --tag $DATENLORD_CSI_IMAGE
+  #    - name: Deploy DatenLord to K8S
+  #      run: |
+  #        kubectl cluster-info
+  #        kubectl get pods -A
+  #        kubectl apply -f https://raw.githubusercontent.com/kubernetes-csi/external-snapshotter/master/client/config/crd/snapshot.storage.k8s.io_volumesnapshots.yaml
+  #        kubectl apply -f https://raw.githubusercontent.com/kubernetes-csi/external-snapshotter/master/client/config/crd/snapshot.storage.k8s.io_volumesnapshotcontents.yaml
+  #        kubectl apply -f https://raw.githubusercontent.com/kubernetes-csi/external-snapshotter/master/client/config/crd/snapshot.storage.k8s.io_volumesnapshotclasses.yaml
+  #        kubectl apply -f $CONFIG_MINIKUBE
+  #        kubectl wait --for=condition=Ready pod -l app=$CONTROLLER_APP_LABEL -n $DATENLORD_NAMESPACE --timeout=60s
+  #        kubectl wait --for=condition=Ready pod -l app=$NODE_APP_LABEL -n $DATENLORD_NAMESPACE --timeout=60s
+  #        FOUND_PATH=`cat /proc/self/mountinfo | grep fuse | grep $FUSE_MOUNT_PATH | awk '{print $5}'`
+  #        test -n $FOUND_PATH || (echo "FAILED TO FIND MOUNT PATH $FUSE_MOUNT_PATH" && /bin/false)
+  #        kubectl delete -f $CONFIG_MINIKUBE
+  #        NO_PATH=`cat /proc/self/mountinfo | grep fuse | grep $FUSE_MOUNT_PATH | awk '{print $5}'`
+  #        test -z $NO_PATH || (echo "FAILED TO UN-MOUNT PATH $FUSE_MOUNT_PATH" && /bin/false)
+  #        kubectl apply -f $CONFIG_MINIKUBE
+  #        kubectl get csidriver
+  #        kubectl get csinode
+  #        kubectl get storageclass
+  #        kubectl get volumesnapshotclass
+  #        kubectl wait --for=condition=Ready pod -l app=$CONTROLLER_APP_LABEL -n $DATENLORD_NAMESPACE --timeout=60s
+  #        kubectl wait --for=condition=Ready pod -l app=$NODE_APP_LABEL -n $DATENLORD_NAMESPACE --timeout=60s
+  #        wget https://raw.githubusercontent.com/kubernetes-csi/external-snapshotter/master/deploy/kubernetes/snapshot-controller/rbac-snapshot-controller.yaml
+  #        wget https://raw.githubusercontent.com/kubernetes-csi/external-snapshotter/master/deploy/kubernetes/snapshot-controller/setup-snapshot-controller.yaml
+  #        sed -e 's/namespace\:\ default/namespace\:\ kube\-system/g' rbac-snapshot-controller.yaml > datenlord-rbac-snapshot-controller.yaml
+  #        sed -e 's/namespace\:\ default/namespace\:\ kube\-system/g' setup-snapshot-controller.yaml > datenlord-setup-snapshot-controller.yaml
+  #        kubectl apply -f datenlord-rbac-snapshot-controller.yaml
+  #        kubectl apply -f datenlord-setup-snapshot-controller.yaml
+  #        kubectl wait --for=condition=Ready pod -l app=snapshot-controller -n kube-system --timeout=60s
+  #        kubectl get pods -A -o wide
+  #        sudo netstat -lntp && ls -lsh
+  #    - name: CSI E2E Test
+  #      run: |
+  #        wget --quiet https://dl.k8s.io/$K8S_VERSION/kubernetes-test-linux-amd64.tar.gz
+  #        tar zxvf kubernetes-test-linux-amd64.tar.gz
+  #        kubectl config view --raw > $K8S_CONFIG
+  #        #kubernetes/test/bin/e2e.test -v=5 -ginkgo.failFast -ginkgo.failOnPending -ginkgo.debug -ginkgo.v -ginkgo.focus='External.Storage' -kubectl-path=`which kubectl` -kubeconfig=$K8S_CONFIG -storage.testdriver=`realpath $E2E_TEST_CONFIG`
+  #        kubernetes/test/bin/ginkgo -p -v -failFast -failOnPending -debug -focus='External.Storage' kubernetes/test/bin/e2e.test -- -v=5 -kubectl-path=`which kubectl` -kubeconfig=`realpath $K8S_CONFIG` -storage.testdriver=`realpath $E2E_TEST_CONFIG` -test.parallel=3
+  #    - name: Print DatenLord logs
+  #      if: ${{ failure() }}
+  #      run: |
+  #        CONTROLLER_POD_NAME=`kubectl get pod -l app=$CONTROLLER_APP_LABEL -n $DATENLORD_NAMESPACE -o jsonpath="{.items[0].metadata.name}"`
+  #        echo "SHOW LOGS OF $CONTROLLER_CONTAINER_NAME IN $CONTROLLER_POD_NAME"
+  #        kubectl logs $CONTROLLER_POD_NAME -n $DATENLORD_NAMESPACE -c $CONTROLLER_CONTAINER_NAME
+  #        NODE_POD_NAME=`kubectl get pod -l app=$NODE_APP_LABEL -n $DATENLORD_NAMESPACE -o jsonpath="{.items[0].metadata.name}"`
+  #        echo "SHOW LOGS OF $NODE_CONTAINER_NAME IN $NODE_POD_NAME"
+  #        kubectl logs $NODE_POD_NAME -n $DATENLORD_NAMESPACE -c $NODE_CONTAINER_NAME
+  #        echo "SHOW LOGS OF $FUSE_CONTAINER_NAME IN $NODE_POD_NAME"
+  #        kubectl logs $NODE_POD_NAME -n $DATENLORD_NAMESPACE -c $FUSE_CONTAINER_NAME
+  #    - name: Setup tmate session
+  #      if: ${{ failure() }}
+  #      uses: mxschmitt/action-tmate@v3
 
   kind-csi-e2e:
     name: KIND-K8S-CSI-E2E
