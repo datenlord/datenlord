@@ -336,7 +336,7 @@ fn parse_args() -> CliArgs {
                 .required(true)
                 .help(
                     "Set the port of worker service port, \
-                        default value 50051",
+                        no default value",
                 ),
         )
         .arg(
