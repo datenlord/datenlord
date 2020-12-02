@@ -40,9 +40,64 @@ DatenLord has several target scenarios, which fall into two main categories:
     * AI and big-data jobs, especially training tasks;
     * Multi-cloud storage unified management, to facilitate application migration across clouds.
 
+## Quick Start
+Currently DatenLord has been built as Docker images and can be deployed via K8S.
+
+To deploy DatenLord via K8S, just simply run:
+* `sed -e 's/e2e_test/latest/g' scripts/datenlord.yaml > datenlord-deploy.yaml`
+* `kubectl apply -f datenlord-deploy.yaml`
+
+To use DatenLord, just define PVC using DatenLord Storage Class, and then deploy a Pod using this PVC:
+```
+cat <<EOF >datenlord-demo.yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: pvc-datenlord-test
+spec:
+  accessModes:
+    - ReadWriteOnce
+  volumeMode: Filesystem
+  resources:
+    requests:
+      storage: 100Mi
+  storageClassName: csi-datenlord-sc
+
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: mysql-datenlord-test
+spec:
+    containers:
+    - name: mysql
+      image: mysql
+      env:
+      - name: MYSQL_ROOT_PASSWORD
+        value: "rootpasswd"
+      volumeMounts:
+      - mountPath: /var/lib/mysql
+        name: data
+        subPath: mysql
+    volumes:
+    - name: data
+      persistentVolumeClaim:
+        claimName: pvc-datenlord-test
+EOF
+
+kubectl apply -f datenlord-demo.yaml
+```
+
+It may need to install snapshot CRD and controller on K8S, if used K8S CSI snapshot feature:
+* `kubectl apply -f https://raw.githubusercontent.com/kubernetes-csi/external-snapshotter/master/client/config/crd/snapshot.storage.k8s.io_volumesnapshots.yaml`
+* `kubectl apply -f https://raw.githubusercontent.com/kubernetes-csi/external-snapshotter/master/client/config/crd/snapshot.storage.k8s.io_volumesnapshotcontents.yaml`
+* `kubectl apply -f https://raw.githubusercontent.com/kubernetes-csi/external-snapshotter/master/client/config/crd/snapshot.storage.k8s.io_volumesnapshotclasses.yaml`
+* `kubectl apply -f https://raw.githubusercontent.com/kubernetes-csi/external-snapshotter/master/deploy/kubernetes/snapshot-controller/rbac-snapshot-controller.yaml`
+* `kubectl apply -f https://raw.githubusercontent.com/kubernetes-csi/external-snapshotter/master/deploy/kubernetes/snapshot-controller/setup-snapshot-controller.yaml`
+
 ## Road Map
 - [ ] 0.1 Refactor async fuse lib to provide clear async APIs, which is used by the datenlord filesystem.
 - [ ] 0.2 Support all Fuse APIs in the datenlord fs.
-- [ ] 0.3 Make fuse lib fully asynchronous. Switch async fuse lib's device communication channel from blocking I/O to io_uring.
+- [ ] 0.3 Make fuse lib fully asynchronous. Switch async fuse lib's device communication channel from blocking I/O to `io_uring`.
 - [ ] 0.4 Complete K8s integration test.
 - [ ] 1.0 Complete Tensorflow k8s integration and finish performance comparison with raw fs.
