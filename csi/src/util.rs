@@ -101,6 +101,7 @@ pub fn generate_proto_timestamp(
 }
 
 /// Copy a directory recursively
+#[allow(clippy::create_dir)]
 pub fn copy_directory_recursively(
     from: impl AsRef<Path>,
     to: impl AsRef<Path>,

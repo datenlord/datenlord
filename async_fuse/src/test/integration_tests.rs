@@ -178,6 +178,7 @@ fn test_deferred_deletion(mount_dir: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+#[allow(clippy::create_dir)]
 fn test_rename_file(mount_dir: &Path) -> anyhow::Result<()> {
     info!("rename file");
     let from_dir = Path::new(mount_dir).join("from_dir");
@@ -304,6 +305,7 @@ fn test_rename_file_replace(mount_dir: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+#[allow(clippy::create_dir)]
 fn test_rename_dir(mount_dir: &Path) -> anyhow::Result<()> {
     info!("rename directory");
     let from_dir = Path::new(mount_dir).join("from_dir");
@@ -340,6 +342,7 @@ fn test_rename_dir(mount_dir: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+#[allow(clippy::create_dir)]
 fn test_symlink_dir(mount_dir: &Path) -> anyhow::Result<()> {
     info!("create and read symlink to directory");
     let src_dir = Path::new(mount_dir).join("src_dir");
@@ -438,6 +441,7 @@ fn test_symlink_file(mount_dir: &Path) -> anyhow::Result<()> {
 /// Test bind mount a FUSE directory to a tmpfs directory
 /// this test case need root privilege
 #[cfg(target_os = "linux")]
+#[allow(clippy::create_dir)]
 fn test_bind_mount(fuse_mount_dir: &Path) -> anyhow::Result<()> {
     use nix::mount::MsFlags;
 
