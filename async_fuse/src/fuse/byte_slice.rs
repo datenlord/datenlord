@@ -6,7 +6,7 @@ use std::mem;
 use std::slice;
 use utilities::OverflowArithmetic;
 
-use super::protocol::FuseAbiData;
+use super::abi_marker::FuseAbiData;
 
 /// # Safety
 /// + ensure that `bytes.as_ptr()` is well-aligned for T.
