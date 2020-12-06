@@ -44,7 +44,7 @@ jobs:
       - uses: actions/checkout@v2
       - uses: actions-rs/toolchain@v1
         with:
-          profile: default
+          profile: minimal
           toolchain: ${{ env.CI_RUST_TOOLCHAIN }}
           override: true
       - uses: actions-rs/cargo@v1
@@ -138,7 +138,7 @@ jobs:
       - name: Prepare Rust environment
         uses: actions-rs/toolchain@v1
         with:
-          profile: default
+          profile: minimal
           toolchain: ${{ env.CI_RUST_TOOLCHAIN }}
           override: true
       - name: Cargo build
@@ -197,9 +197,10 @@ jobs:
       - uses: actions/checkout@v2
       - uses: actions-rs/toolchain@v1
         with:
-          profile: default
+          profile: minimal
           toolchain: ${{ env.CI_RUST_TOOLCHAIN }}
           override: true
+      - run: rustup component add rustfmt
       - uses: actions-rs/cargo@v1
         with:
           command: fmt
@@ -216,9 +217,10 @@ jobs:
       - uses: actions/checkout@v2
       - uses: actions-rs/toolchain@v1
         with:
-          profile: default
+          profile: minimal
           toolchain: ${{ env.CI_RUST_TOOLCHAIN }}
           override: true
+      - run: rustup component add clippy
       - uses: actions-rs/cargo@v1
         with:
           command: clippy
@@ -237,7 +239,7 @@ jobs:
       - name: Install toolchain
         uses: actions-rs/toolchain@v1
         with:
-          profile: default
+          profile: minimal
           toolchain: ${{ env.CI_RUST_TOOLCHAIN }}
           override: true
       - name: Build DatenLord
