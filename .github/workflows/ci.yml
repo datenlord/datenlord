@@ -113,7 +113,7 @@ jobs:
           docker run -d --rm --net host --name $ETCD_CONTAINER_NAME gcr.io/etcd-development/etcd:latest
           docker ps
           docker logs $ETCD_CONTAINER_NAME
-          sudo netstat -lntp
+          # sudo netstat -lntp
       - name: Enable bind_mounter permission and run cargo test
         run: |
           sudo chown root:root $BIND_MOUNTER
@@ -141,19 +141,7 @@ jobs:
           docker run -d --rm --net host --name $ETCD_CONTAINER_NAME gcr.io/etcd-development/etcd:latest
           docker ps
           docker logs $ETCD_CONTAINER_NAME
-          sudo netstat -lntp
-      #- name: Docker build csi plugin
-      #  run: export BUILD_DIR=/tmp/datenlord_container_build ; mkdir -p $BUILD_DIR && cp target/debug/csi $BUILD_DIR && docker build $BUILD_DIR --file ./Dockerfile --tag datenlord/csiplugin:latest
-      #- name: Docker run csi controller and node seperately
-      #  run: |
-      #    docker run -d --rm -v /tmp:/tmp --net host --env RUST_LOG=csi=debug --name datenlord_csi_controller datenlord/csiplugin -n localhost -s unix:///tmp/controller.sock -p 50051 -r controller -e http://127.0.0.1:2379 --datadir /tmp/datenlord-data-dir
-      #    docker run -d --rm -v /tmp:/tmp --net host --env RUST_LOG=csi=debug --name datenlord_csi_node datenlord/csiplugin -n localhost -s unix:///tmp/node.sock -p 50051 -r node -e http://127.0.0.1:2379 --datadir /tmp/datenlord-data-dir
-      #- name: Docker run csi plugin
-      #  run: docker run -d --rm -v /tmp:/tmp --net host --env RUST_LOG=debug --name datenlord_csi datenlord/csiplugin -n localhost -s unix:///tmp/csi.sock -p 50051 -r both -e http://127.0.0.1:2379 --datadir /tmp/datenlord-data-dir
-      #- name: Debug Info
-      #  run: sudo netstat -lntp ; docker ps ; docker logs etcd ; docker logs datenlord_csi_controller ; docker logs datenlord_csi_node ;
-      #- name: Run csi-sanity test
-      #  run: docker run --rm -v /tmp:/tmp --name sanity golang:latest sh -c "go get github.com/kubernetes-csi/csi-test/cmd/csi-sanity && \$GOPATH/bin/csi-sanity -csi.endpoint=/tmp/node.sock -csi.controllerendpoint=/tmp/controller.sock"
+          # sudo netstat -lntp
       - name: Check out csi-sanity code
         uses: actions/checkout@v2
         with:
@@ -238,26 +226,21 @@ jobs:
         with:
           repository: pwang7/fuse-xfstests
           path: ./fuse-xfstests
-      - name: Run fuse-xfstests
-        run: |
-          sudo apt update
-          sudo apt install xfslibs-dev uuid-dev libtool-bin \
-              e2fsprogs automake gcc libuuid1 quota attr libattr1-dev make \
-              libacl1-dev libaio-dev xfsprogs libgdbm-dev gawk fio dbench \
-              uuid-runtime python sqlite3 # liburing-dev
-          sudo useradd -m fsgqa
-          sudo groupadd fsgqa || true
-          sudo useradd 123456-fsgqa
-          sudo useradd fsgqa2
-          cd fuse-xfstests
-          make
-          #sudo ./check-datenlord
-          cd -
-      #- name: Check out pjdfstest code
-      #  uses: actions/checkout@v2
-      #  with:
-      #    repository: pjd/pjdfstest
-      #    path: ./pjdfstest
+      #- name: Run fuse-xfstests
+      #  run: |
+      #    sudo apt update
+      #    sudo apt install xfslibs-dev uuid-dev libtool-bin \
+      #        e2fsprogs automake gcc libuuid1 quota attr libattr1-dev make \
+      #        libacl1-dev libaio-dev xfsprogs libgdbm-dev gawk fio dbench \
+      #        uuid-runtime python sqlite3 # liburing-dev
+      #    sudo useradd -m fsgqa
+      #    sudo groupadd fsgqa || true
+      #    sudo useradd 123456-fsgqa
+      #    sudo useradd fsgqa2
+      #    cd fuse-xfstests
+      #    make
+      #    #sudo ./check-datenlord
+      #    cd -
       - name: Run ntfs-3g-pjd-fstest
         run: |
           git clone https://git.code.sf.net/p/ntfs-3g/pjd-fstest ntfs-3g-pjd-fstest
