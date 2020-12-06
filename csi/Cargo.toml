@@ -18,7 +18,7 @@ async-compat = "0.1.4"
 bincode = "1.3.1"
 clap = "2.33.3"
 env_logger = "0.8.1"
-etcd-rs = { git = "https://github.com/datenlord/etcd-client", rev="3f2feab" }
+etcd-client = { git = "https://github.com/datenlord/etcd-client", rev="226b78b" }
 flate2 = "1.0.16"
 futures = "0.3.5"
 grpcio = { version = "0.7.0", default-features = false, features = ["protobuf-codec"] }
