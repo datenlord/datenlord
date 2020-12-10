@@ -35,7 +35,7 @@ uuid = { version = "0.8.1", features = ["v4"] }
 walkdir = "2.3.1"
 
 [build-dependencies]
-protoc-grpcio = "2.0.0"
+protoc-grpcio = "3.0.0"
 
 [dev-dependencies]
 mock-etcd = { git = "https://github.com/datenlord/mock-etcd", rev = "37a65eb" }
