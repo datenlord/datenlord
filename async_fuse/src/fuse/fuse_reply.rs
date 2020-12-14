@@ -612,7 +612,7 @@ impl ReplyXAttr {
 
 #[cfg(test)]
 mod test {
-    use super::super::byte_slice::ByteSlice;
+    use super::super::de::Deserializer;
     use super::super::protocol::{FuseAttr, FuseAttrOut, FuseOutHeader};
     use super::ReplyAttr;
 
@@ -722,9 +722,9 @@ mod test {
             let mut aligned_bytes = AlignedBytes::new_zeroed(bytes.len(), 4096);
             aligned_bytes.copy_from_slice(&bytes);
 
-            let mut bs = ByteSlice::new(&aligned_bytes);
-            let foh: &FuseOutHeader = bs.fetch().context("failed to fetch FuseOutHeader")?;
-            let fao: &FuseAttrOut = bs.fetch().context("failed to fetch FuseAttrOut")?;
+            let mut de = Deserializer::new(&aligned_bytes);
+            let foh: &FuseOutHeader = de.fetch_ref().context("failed to fetch FuseOutHeader")?;
+            let fao: &FuseAttrOut = de.fetch_ref().context("failed to fetch FuseAttrOut")?;
 
             dbg!(foh, fao);
             debug_assert_eq!(fao.attr.ino, ino);

@@ -1,11 +1,12 @@
 //! The implementation fo FUSE request
 
+use log::warn;
 use std::ffi::OsStr;
 use std::fmt;
 use utilities::Cast;
 
-use super::byte_slice::ByteSlice;
 use super::context::ProtoVersion;
+use super::de::Deserializer;
 #[cfg(target_os = "macos")]
 use super::protocol::FuseExchangeIn;
 use super::protocol::{
@@ -304,7 +305,7 @@ impl<'a> Operation<'a> {
     #[allow(clippy::too_many_lines)]
     fn parse(
         n: u32,
-        data: &mut ByteSlice<'a>,
+        data: &mut Deserializer<'a>,
         #[allow(unused_variables)] proto_version: ProtoVersion,
     ) -> anyhow::Result<Self> {
         let opcode = match n {
@@ -380,20 +381,24 @@ impl<'a> Operation<'a> {
             FuseOpCode::FUSE_LOOKUP => Operation::Lookup {
                 name: data.fetch_os_str()?,
             },
-            FuseOpCode::FUSE_FORGET => Operation::Forget { arg: data.fetch()? },
+            FuseOpCode::FUSE_FORGET => Operation::Forget {
+                arg: data.fetch_ref()?,
+            },
             FuseOpCode::FUSE_GETATTR => Operation::GetAttr,
-            FuseOpCode::FUSE_SETATTR => Operation::SetAttr { arg: data.fetch()? },
+            FuseOpCode::FUSE_SETATTR => Operation::SetAttr {
+                arg: data.fetch_ref()?,
+            },
             FuseOpCode::FUSE_READLINK => Operation::ReadLink,
             FuseOpCode::FUSE_SYMLINK => Operation::SymLink {
                 name: data.fetch_os_str()?,
                 link: data.fetch_os_str()?,
             },
             FuseOpCode::FUSE_MKNOD => Operation::MkNod {
-                arg: data.fetch()?,
+                arg: data.fetch_ref()?,
                 name: data.fetch_os_str()?,
             },
             FuseOpCode::FUSE_MKDIR => Operation::MkDir {
-                arg: data.fetch()?,
+                arg: data.fetch_ref()?,
                 name: data.fetch_os_str()?,
             },
             FuseOpCode::FUSE_UNLINK => Operation::Unlink {
@@ -403,83 +408,127 @@ impl<'a> Operation<'a> {
                 name: data.fetch_os_str()?,
             },
             FuseOpCode::FUSE_RENAME => Operation::Rename {
-                arg: data.fetch()?,
+                arg: data.fetch_ref()?,
                 oldname: data.fetch_os_str()?,
                 newname: data.fetch_os_str()?,
             },
             FuseOpCode::FUSE_LINK => Operation::Link {
-                arg: data.fetch()?,
+                arg: data.fetch_ref()?,
                 name: data.fetch_os_str()?,
             },
-            FuseOpCode::FUSE_OPEN => Operation::Open { arg: data.fetch()? },
-            FuseOpCode::FUSE_READ => Operation::Read { arg: data.fetch()? },
+            FuseOpCode::FUSE_OPEN => Operation::Open {
+                arg: data.fetch_ref()?,
+            },
+            FuseOpCode::FUSE_READ => Operation::Read {
+                arg: data.fetch_ref()?,
+            },
             FuseOpCode::FUSE_WRITE => Operation::Write {
-                arg: data.fetch()?,
-                data: data.fetch_all(),
+                arg: data.fetch_ref()?,
+                data: data.fetch_all_bytes(),
             },
             FuseOpCode::FUSE_STATFS => Operation::StatFs,
-            FuseOpCode::FUSE_RELEASE => Operation::Release { arg: data.fetch()? },
-            FuseOpCode::FUSE_FSYNC => Operation::FSync { arg: data.fetch()? },
+            FuseOpCode::FUSE_RELEASE => Operation::Release {
+                arg: data.fetch_ref()?,
+            },
+            FuseOpCode::FUSE_FSYNC => Operation::FSync {
+                arg: data.fetch_ref()?,
+            },
             FuseOpCode::FUSE_SETXATTR => Operation::SetXAttr {
-                arg: data.fetch()?,
+                arg: data.fetch_ref()?,
                 name: data.fetch_os_str()?,
-                value: data.fetch_all(),
+                value: data.fetch_all_bytes(),
             },
             FuseOpCode::FUSE_GETXATTR => Operation::GetXAttr {
-                arg: data.fetch()?,
+                arg: data.fetch_ref()?,
                 name: data.fetch_os_str()?,
             },
-            FuseOpCode::FUSE_LISTXATTR => Operation::ListXAttr { arg: data.fetch()? },
+            FuseOpCode::FUSE_LISTXATTR => Operation::ListXAttr {
+                arg: data.fetch_ref()?,
+            },
             FuseOpCode::FUSE_REMOVEXATTR => Operation::RemoveXAttr {
                 name: data.fetch_os_str()?,
             },
-            FuseOpCode::FUSE_FLUSH => Operation::Flush { arg: data.fetch()? },
-            FuseOpCode::FUSE_INIT => Operation::Init { arg: data.fetch()? },
-            FuseOpCode::FUSE_OPENDIR => Operation::OpenDir { arg: data.fetch()? },
-            FuseOpCode::FUSE_READDIR => Operation::ReadDir { arg: data.fetch()? },
-            FuseOpCode::FUSE_RELEASEDIR => Operation::ReleaseDir { arg: data.fetch()? },
-            FuseOpCode::FUSE_FSYNCDIR => Operation::FSyncDir { arg: data.fetch()? },
-            FuseOpCode::FUSE_GETLK => Operation::GetLk { arg: data.fetch()? },
-            FuseOpCode::FUSE_SETLK => Operation::SetLk { arg: data.fetch()? },
-            FuseOpCode::FUSE_SETLKW => Operation::SetLkW { arg: data.fetch()? },
-            FuseOpCode::FUSE_ACCESS => Operation::Access { arg: data.fetch()? },
+            FuseOpCode::FUSE_FLUSH => Operation::Flush {
+                arg: data.fetch_ref()?,
+            },
+            FuseOpCode::FUSE_INIT => Operation::Init {
+                arg: data.fetch_ref()?,
+            },
+            FuseOpCode::FUSE_OPENDIR => Operation::OpenDir {
+                arg: data.fetch_ref()?,
+            },
+            FuseOpCode::FUSE_READDIR => Operation::ReadDir {
+                arg: data.fetch_ref()?,
+            },
+            FuseOpCode::FUSE_RELEASEDIR => Operation::ReleaseDir {
+                arg: data.fetch_ref()?,
+            },
+            FuseOpCode::FUSE_FSYNCDIR => Operation::FSyncDir {
+                arg: data.fetch_ref()?,
+            },
+            FuseOpCode::FUSE_GETLK => Operation::GetLk {
+                arg: data.fetch_ref()?,
+            },
+            FuseOpCode::FUSE_SETLK => Operation::SetLk {
+                arg: data.fetch_ref()?,
+            },
+            FuseOpCode::FUSE_SETLKW => Operation::SetLkW {
+                arg: data.fetch_ref()?,
+            },
+            FuseOpCode::FUSE_ACCESS => Operation::Access {
+                arg: data.fetch_ref()?,
+            },
             FuseOpCode::FUSE_CREATE => Operation::Create {
-                arg: data.fetch()?,
+                arg: data.fetch_ref()?,
                 name: data.fetch_os_str()?,
             },
-            FuseOpCode::FUSE_INTERRUPT => Operation::Interrupt { arg: data.fetch()? },
-            FuseOpCode::FUSE_BMAP => Operation::BMap { arg: data.fetch()? },
+            FuseOpCode::FUSE_INTERRUPT => Operation::Interrupt {
+                arg: data.fetch_ref()?,
+            },
+            FuseOpCode::FUSE_BMAP => Operation::BMap {
+                arg: data.fetch_ref()?,
+            },
             FuseOpCode::FUSE_DESTROY => Operation::Destroy,
             // #[cfg(feature = "abi-7-11")]
             FuseOpCode::FUSE_IOCTL => Operation::IoCtl {
-                arg: data.fetch()?,
-                data: data.fetch_all(),
+                arg: data.fetch_ref()?,
+                data: data.fetch_all_bytes(),
             },
             // #[cfg(feature = "abi-7-11")]
-            FuseOpCode::FUSE_POLL => Operation::Poll { arg: data.fetch()? },
+            FuseOpCode::FUSE_POLL => Operation::Poll {
+                arg: data.fetch_ref()?,
+            },
             // #[cfg(feature = "abi-7-15")]
             FuseOpCode::FUSE_NOTIFY_REPLY => Operation::NotifyReply {
-                data: data.fetch_all(),
+                data: data.fetch_all_bytes(),
             },
             // #[cfg(feature = "abi-7-16")]
             FuseOpCode::FUSE_BATCH_FORGET => Operation::BatchForget {
-                arg: data.fetch()?,
+                arg: data.fetch_ref()?,
                 nodes: data.fetch_all_as_slice()?,
             },
             // #[cfg(feature = "abi-7-19")]
-            FuseOpCode::FUSE_FALLOCATE => Operation::FAllocate { arg: data.fetch()? },
+            FuseOpCode::FUSE_FALLOCATE => Operation::FAllocate {
+                arg: data.fetch_ref()?,
+            },
             // #[cfg(feature = "abi-7-21")]
-            FuseOpCode::FUSE_READDIRPLUS => Operation::ReadDirPlus { arg: data.fetch()? },
+            FuseOpCode::FUSE_READDIRPLUS => Operation::ReadDirPlus {
+                arg: data.fetch_ref()?,
+            },
             // #[cfg(feature = "abi-7-23")]
             FuseOpCode::FUSE_RENAME2 => Operation::Rename2 {
-                arg: data.fetch()?,
+                arg: data.fetch_ref()?,
                 oldname: data.fetch_os_str()?,
                 newname: data.fetch_os_str()?,
             },
             // #[cfg(feature = "abi-7-24")]
-            FuseOpCode::FUSE_LSEEK => Operation::LSeek { arg: data.fetch()? },
+            FuseOpCode::FUSE_LSEEK => Operation::LSeek {
+                arg: data.fetch_ref()?,
+            },
             // #[cfg(feature = "abi-7-28")]
-            FuseOpCode::FUSE_COPY_FILE_RANGE => Operation::CopyFileRange { arg: data.fetch()? },
+            FuseOpCode::FUSE_COPY_FILE_RANGE => Operation::CopyFileRange {
+                arg: data.fetch_ref()?,
+            },
 
             #[cfg(target_os = "macos")]
             FuseOpCode::FUSE_SETVOLNAME => Operation::SetVolName {
@@ -489,13 +538,15 @@ impl<'a> Operation<'a> {
             FuseOpCode::FUSE_GETXTIMES => Operation::GetXTimes,
             #[cfg(target_os = "macos")]
             FuseOpCode::FUSE_EXCHANGE => Operation::Exchange {
-                arg: data.fetch()?,
+                arg: data.fetch_ref()?,
                 oldname: data.fetch_os_str()?,
                 newname: data.fetch_os_str()?,
             },
 
             #[cfg(feature = "abi-7-11")]
-            FuseOpCode::CUSE_INIT => Operation::CuseInit { arg: data.fetch()? },
+            FuseOpCode::CUSE_INIT => Operation::CuseInit {
+                arg: data.fetch_ref()?,
+            },
         })
     }
 }
@@ -697,9 +748,9 @@ impl<'a> Request<'a> {
     /// Build FUSE request
     pub fn new(bytes: &'a [u8], proto_version: ProtoVersion) -> anyhow::Result<Self> {
         let data_len = bytes.len();
-        let mut data = ByteSlice::new(bytes);
+        let mut de = Deserializer::new(bytes);
         // Parse header
-        let header = data.fetch::<FuseInHeader>()?;
+        let header = de.fetch_ref::<FuseInHeader>()?;
         // Check data size
         debug_assert!(
             data_len >= header.len.cast(), // TODO: why not daten_len == header.len?
@@ -708,7 +759,18 @@ impl<'a> Request<'a> {
             header.len,
         );
         // Parse/check operation arguments
-        let operation = Operation::parse(header.opcode, &mut data, proto_version)?;
+        let operation = Operation::parse(header.opcode, &mut de, proto_version)?;
+        if de.remaining_len() > 0 {
+            warn!(
+                "request bytes is not completely consumed: \
+                    bytes.len() = {}, header = {:?}, de.remaining_len() = {}, de = {:?}",
+                bytes.len(),
+                header,
+                de.remaining_len(),
+                de
+            );
+        }
+
         Ok(Self { header, operation })
     }
 
@@ -765,18 +827,11 @@ impl<'a> Request<'a> {
 
 #[cfg(test)]
 mod test {
+    use super::super::de::DeserializeError;
     use super::*;
     use log::debug;
 
-    #[repr(align(8))]
-    struct Align8<T: Sized>(T);
-
-    impl<T: Sized> std::ops::Deref for Align8<T> {
-        type Target = T;
-        fn deref(&self) -> &Self::Target {
-            &self.0
-        }
-    }
+    use aligned_bytes::stack::{align8, Align8};
 
     // `FuseInHeader` is aligned to 8 bytes.
     // `Align8` is enough for structs used here.
@@ -786,7 +841,7 @@ mod test {
     // So we have runtime checks in `ByteSlice::fetch` and `ByteSlice::fetch_all_as_slice`.
 
     #[cfg(target_endian = "big")]
-    const INIT_REQUEST: Align8<[u8; 56]> = Align8([
+    const INIT_REQUEST: Align8<[u8; 56]> = align8([
         0x00, 0x00, 0x00, 0x38, 0x00, 0x00, 0x00, 0x1a, // len, opcode
         0xde, 0xad, 0xbe, 0xef, 0xba, 0xad, 0xd0, 0x0d, // unique
         0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, // nodeid
@@ -797,7 +852,7 @@ mod test {
     ]);
 
     #[cfg(target_endian = "little")]
-    const INIT_REQUEST: Align8<[u8; 56]> = Align8([
+    const INIT_REQUEST: Align8<[u8; 56]> = align8([
         0x38, 0x00, 0x00, 0x00, 0x1a, 0x00, 0x00, 0x00, // len, opcode
         0x0d, 0xf0, 0xad, 0xba, 0xef, 0xbe, 0xad, 0xde, // unique
         0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11, // nodeid
@@ -808,7 +863,7 @@ mod test {
     ]);
 
     #[cfg(target_endian = "big")]
-    const MKNOD_REQUEST: Align8<[u8; 56]> = Align8([
+    const MKNOD_REQUEST: Align8<[u8; 56]> = align8([
         0x00, 0x00, 0x00, 0x38, 0x00, 0x00, 0x00, 0x08, // len, opcode
         0xde, 0xad, 0xbe, 0xef, 0xba, 0xad, 0xd0, 0x0d, // unique
         0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, // nodeid
@@ -819,7 +874,7 @@ mod test {
     ]);
 
     #[cfg(target_endian = "little")]
-    const MKNOD_REQUEST: Align8<[u8; 56]> = Align8([
+    const MKNOD_REQUEST: Align8<[u8; 56]> = align8([
         0x38, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, // len, opcode
         0x0d, 0xf0, 0xad, 0xba, 0xef, 0xbe, 0xad, 0xde, // unique
         0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11, // nodeid
@@ -838,28 +893,20 @@ mod test {
     #[test]
     fn short_read_header() {
         let idx = 20;
-        let err = Request::new(
-            INIT_REQUEST.get(..20).unwrap_or_else(|| {
-                panic!("faile to get the first {} elements from INIT_REQUEST", idx)
-            }),
-            PROTO_VERSION,
-        )
-        .expect_err("Unexpected request parsing result");
+        let bytes = INIT_REQUEST
+            .get(..idx)
+            .unwrap_or_else(|| panic!("faile to get the first {} elements from INIT_REQUEST", idx));
+
+        let err =
+            Request::new(bytes, PROTO_VERSION).expect_err("Unexpected request parsing result");
         let mut chain = err.chain();
-        assert!(
-            chain
-                .next()
-                .unwrap_or_else(|| panic!("failed to get next error"))
-                .to_string()
-                .starts_with("failed to build FUSE request payload type"),
-            "error message not match",
-        );
         assert_eq!(
             chain
                 .next()
                 .unwrap_or_else(|| panic!("failed to get next error"))
-                .to_string(),
-            "no enough bytes to fetch, remaining 20 bytes but to fetch 40 bytes"
+                .downcast_ref::<DeserializeError>()
+                .unwrap_or_else(|| panic!("error type not match")),
+            &DeserializeError::NotEnough
         );
         assert!(chain.next().is_none());
     }
