@@ -400,7 +400,7 @@ impl Session {
             minor: arg.minor,
         });
 
-        FUSE_INITIALIZED.store(true, Ordering::Relaxed);
+        FUSE_INITIALIZED.store(true, Ordering::Release);
 
         Ok(())
     }
