@@ -5,6 +5,7 @@ use std::fmt;
 use utilities::Cast;
 
 use super::byte_slice::ByteSlice;
+use super::context::ProtoVersion;
 #[cfg(target_os = "macos")]
 use super::protocol::FuseExchangeIn;
 use super::protocol::{
@@ -301,7 +302,11 @@ pub enum Operation<'a> {
 impl<'a> Operation<'a> {
     /// Build FUSE operation from op-code
     #[allow(clippy::too_many_lines)]
-    fn parse(n: u32, data: &mut ByteSlice<'a>) -> anyhow::Result<Self> {
+    fn parse(
+        n: u32,
+        data: &mut ByteSlice<'a>,
+        #[allow(unused_variables)] proto_version: ProtoVersion,
+    ) -> anyhow::Result<Self> {
         let opcode = match n {
             1 => FuseOpCode::FUSE_LOOKUP,
             2 => FuseOpCode::FUSE_FORGET,
@@ -690,7 +695,7 @@ impl fmt::Display for Request<'_> {
 
 impl<'a> Request<'a> {
     /// Build FUSE request
-    pub fn new(bytes: &'a [u8]) -> anyhow::Result<Self> {
+    pub fn new(bytes: &'a [u8], proto_version: ProtoVersion) -> anyhow::Result<Self> {
         let data_len = bytes.len();
         let mut data = ByteSlice::new(bytes);
         // Parse header
@@ -703,7 +708,7 @@ impl<'a> Request<'a> {
             header.len,
         );
         // Parse/check operation arguments
-        let operation = Operation::parse(header.opcode, &mut data)?;
+        let operation = Operation::parse(header.opcode, &mut data, proto_version)?;
         Ok(Self { header, operation })
     }
 
@@ -824,12 +829,21 @@ mod test {
         0x66, 0x6f, 0x6f, 0x2e, 0x74, 0x78, 0x74, 0x00, // name
     ]);
 
+    /// assume that kernel protocol version is 7.12
+    const PROTO_VERSION: ProtoVersion = ProtoVersion {
+        major: 7,
+        minor: 12,
+    };
+
     #[test]
     fn short_read_header() {
         let idx = 20;
-        let err = Request::new(INIT_REQUEST.get(..20).unwrap_or_else(|| {
-            panic!("faile to get the first {} elements from INIT_REQUEST", idx)
-        }))
+        let err = Request::new(
+            INIT_REQUEST.get(..20).unwrap_or_else(|| {
+                panic!("faile to get the first {} elements from INIT_REQUEST", idx)
+            }),
+            PROTO_VERSION,
+        )
         .expect_err("Unexpected request parsing result");
         let mut chain = err.chain();
         assert!(
@@ -854,17 +868,19 @@ mod test {
     #[should_panic(expected = "failed to assert 48 >= 56")]
     fn short_read() {
         let idx = 48;
-        let req =
-            Request::new(INIT_REQUEST.get(..idx).unwrap_or_else(|| {
+        let req = Request::new(
+            INIT_REQUEST.get(..idx).unwrap_or_else(|| {
                 panic!("failed to get first {} elements from INIT_REQUEST", idx)
-            }))
-            .unwrap_or_else(|err| panic!("failed to build FUSE request, the error is: {}", err));
+            }),
+            PROTO_VERSION,
+        )
+        .unwrap_or_else(|err| panic!("failed to build FUSE request, the error is: {}", err));
         debug!("short read request={:?}", req);
     }
 
     #[test]
     fn init() {
-        let req = Request::new(&INIT_REQUEST[..])
+        let req = Request::new(&INIT_REQUEST[..], PROTO_VERSION)
             .unwrap_or_else(|err| panic!("failed to build FUSE request, the error is: {}", err));
         assert_eq!(req.header.len, 56);
         assert_eq!(req.header.opcode, 26);
@@ -886,7 +902,7 @@ mod test {
 
     #[test]
     fn mknod() {
-        let req = Request::new(&MKNOD_REQUEST[..])
+        let req = Request::new(&MKNOD_REQUEST[..], PROTO_VERSION)
             .unwrap_or_else(|err| panic!("failed to build FUSE request, the error is: {}", err));
         assert_eq!(req.header.len, 56);
         assert_eq!(req.header.opcode, 8);

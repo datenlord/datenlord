@@ -1,6 +1,7 @@
 //! Implementation of FUSE library
 
 mod abi_marker;
+mod context;
 
 #[allow(unsafe_code)]
 mod byte_slice;
