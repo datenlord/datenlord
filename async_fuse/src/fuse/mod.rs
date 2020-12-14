@@ -2,9 +2,7 @@
 
 mod abi_marker;
 mod context;
-
-#[allow(unsafe_code)]
-mod byte_slice;
+mod de;
 
 // ioctl_read!() macro involves inter arithmetic
 #[allow(clippy::integer_arithmetic)]
