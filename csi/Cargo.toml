@@ -27,7 +27,7 @@ nix = "0.19.0"
 protobuf = "2.16.2"
 rand = "0.7.3"
 serde = { version = "1.0", features = ["derive"] }
-smol = { version = "0.1.18", features = ["tokio02"] }
+smol = { version = "1.2.5", features = ["tokio02"] }
 tar = "0.4.29"
 utilities = { git = "https://github.com/datenlord/utilities", rev = "4ef408d" }
 uuid = { version = "0.8.1", features = ["v4"] }
