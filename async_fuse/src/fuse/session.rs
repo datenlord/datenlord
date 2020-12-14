@@ -3,6 +3,7 @@
 use aligned_bytes::AlignedBytes;
 use anyhow::{anyhow, Context};
 use crossbeam_channel::{Receiver, Sender};
+use crossbeam_utils::atomic::AtomicCell;
 use futures::lock::Mutex;
 use log::{debug, error, info, warn};
 use nix::errno::Errno;
@@ -11,7 +12,7 @@ use smol::{self, blocking, Task};
 use std::os::unix::io::RawFd;
 use std::path::Path;
 use std::sync::{
-    atomic::{AtomicBool, AtomicU32, Ordering},
+    atomic::{AtomicBool, Ordering},
     Arc,
 };
 #[cfg(target_os = "macos")]
@@ -19,6 +20,7 @@ use std::time::SystemTime;
 use std::time::{Duration, UNIX_EPOCH};
 use utilities::Cast;
 
+use super::context::ProtoVersion;
 use crate::memfs::{FileLockParam, FileSystem, RenameParam, SetAttrParam};
 //use super::channel::Channel;
 #[cfg(target_os = "macos")]
@@ -82,10 +84,8 @@ static FUSE_DESTROYED: AtomicBool = AtomicBool::new(false);
 pub struct Session {
     /// FUSE device fd
     fuse_fd: RawFd,
-    /// FUSE protocol major version
-    proto_major: AtomicU32,
-    /// FUSE protocol minor version
-    proto_minor: AtomicU32,
+    /// kernel FUSE protocol version
+    proto_version: AtomicCell<ProtoVersion>,
     /// The underlying FUSE file system
     filesystem: Arc<Mutex<FileSystem>>,
 }
@@ -135,8 +135,7 @@ impl Session {
             .context("failed to mount fuse device")?;
         Ok(Self {
             fuse_fd,
-            proto_major: AtomicU32::new(7),
-            proto_minor: AtomicU32::new(8),
+            proto_version: AtomicCell::new(ProtoVersion::UNSPECIFIED),
             filesystem: Arc::new(Mutex::new(filesystem)),
         })
     }
@@ -164,6 +163,7 @@ impl Session {
                     let fuse_fd = fuse_dev_fd;
                     let fs = Arc::clone(&self.filesystem);
                     let sender = pool_sender.clone();
+                    let proto_version = self.proto_version.load();
                     Task::spawn(Self::process_fuse_request(
                         buffer_idx,
                         byte_buffer,
@@ -171,6 +171,7 @@ impl Session {
                         fuse_fd,
                         fs,
                         sender,
+                        proto_version,
                     ))
                     // .await; // Run in series
                     .detach(); // Run in parallel
@@ -225,6 +226,7 @@ impl Session {
         fuse_fd: RawFd,
         fs: Arc<Mutex<FileSystem>>,
         sender: Sender<(u16, AlignedBytes)>,
+        proto_version: ProtoVersion,
     ) {
         let bytes = byte_buffer.get(..read_size).unwrap_or_else(|| {
             panic!(
@@ -232,7 +234,7 @@ impl Session {
                 read_size, buffer_idx,
             )
         });
-        let fuse_req = match Request::new(bytes) {
+        let fuse_req = match Request::new(bytes, proto_version) {
             // Dispatch request
             Ok(r) => r,
             // Quit on illegal request
@@ -286,7 +288,7 @@ impl Session {
         byte_vec = read_result.1;
         if let Ok(read_size) = read_result.0 {
             debug!("read successfully {} byte data from FUSE device", read_size);
-            if let Ok(req) = Request::new(&byte_vec) {
+            if let Ok(req) = Request::new(&byte_vec, self.proto_version.load()) {
                 if let Operation::Init { arg } = *req.operation() {
                     let filesystem = Arc::clone(&self.filesystem);
                     self.init(arg, &req, filesystem, fuse_fd).await?;
@@ -386,8 +388,10 @@ impl Session {
         );
 
         // Store the kernel FUSE major and minor version
-        self.proto_major.store(arg.major, Ordering::Relaxed);
-        self.proto_minor.store(arg.minor, Ordering::Relaxed);
+        self.proto_version.store(ProtoVersion {
+            major: arg.major,
+            minor: arg.minor,
+        });
 
         FUSE_INITIALIZED.store(true, Ordering::Relaxed);
 
