@@ -280,22 +280,29 @@ impl Session {
         });
 
         let fuse_fd = self.dev_fd();
-        let (idx, mut byte_vec) = pool_receiver.recv()?;
+        let (idx, mut byte_buf) = pool_receiver.recv()?;
         let read_result = blocking!(
-            let res = unistd::read(fuse_fd, &mut *byte_vec);
-            (res, byte_vec)
+            let res = unistd::read(fuse_fd, &mut *byte_buf);
+            (res, byte_buf)
         );
-        byte_vec = read_result.1;
+        byte_buf = read_result.1;
         if let Ok(read_size) = read_result.0 {
             debug!("read successfully {} byte data from FUSE device", read_size);
-            if let Ok(req) = Request::new(&byte_vec, self.proto_version.load()) {
+            let bytes = byte_buf.get(..read_size).unwrap_or_else(|| {
+                panic!(
+                    "read_size is greater than buffer size: read_size = {}, buffer size = {}",
+                    read_size,
+                    byte_buf.len()
+                )
+            });
+            if let Ok(req) = Request::new(bytes, self.proto_version.load()) {
                 if let Operation::Init { arg } = *req.operation() {
                     let filesystem = Arc::clone(&self.filesystem);
                     self.init(arg, &req, filesystem, fuse_fd).await?;
                 }
             }
         }
-        pool_sender.send((idx, byte_vec)).context(format!(
+        pool_sender.send((idx, byte_buf)).context(format!(
             "failed to put buffer idx={} back to buffer pool after FUSE init",
             idx,
         ))?;
