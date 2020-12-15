@@ -32,21 +32,6 @@ impl EtcdDelegate {
         Ok(Self { etcd_rs_client })
     }
 
-    /// Get key-value list from etcd
-    async fn get_list_async<T: DeserializeOwned>(&self, prefix: &str) -> anyhow::Result<Vec<T>> {
-        let req = etcd_client::EtcdRangeRequest::new(etcd_client::KeyRange::prefix(prefix));
-        let mut resp = self.etcd_rs_client.kv().range(req).await.context(format!(
-            "failed to get RangeResponse from etcd for key={:?}",
-            prefix,
-        ))?;
-        let mut result_vec = Vec::with_capacity(resp.count());
-        for kv in resp.take_kvs() {
-            let decoded_value: T = util::decode_from_bytes(kv.value())?;
-            result_vec.push(decoded_value);
-        }
-        Ok(result_vec)
-    }
-
     /// Get one key-value pair from etcd
     async fn get_one_kv_async<T: DeserializeOwned>(&self, key: &str) -> anyhow::Result<Option<T>> {
         let req = etcd_client::EtcdRangeRequest::new(etcd_client::KeyRange::key(key));
