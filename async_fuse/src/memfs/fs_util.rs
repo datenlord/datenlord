@@ -1,19 +1,21 @@
 //! The implementation of filesystem related utilities
 
+use super::dir::{Dir, DirEntry};
+use crate::fuse::protocol::{FuseAttr, INum};
+use crate::util::unblock;
+
+use std::collections::BTreeMap;
+use std::ffi::OsString;
+use std::os::unix::io::RawFd;
+use std::path::Path;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
 use anyhow::Context;
 use log::debug;
 use nix::fcntl::{self, OFlag};
 use nix::sys::stat::{self, FileStat, Mode, SFlag};
 use smol::blocking;
-use std::collections::BTreeMap;
-use std::ffi::OsString;
-use std::os::unix::{ffi::OsStrExt, io::RawFd};
-use std::path::Path;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use utilities::Cast;
-
-use super::dir::{Dir, DirEntry};
-use crate::fuse::protocol::{FuseAttr, INum};
 
 /// File attributes
 #[derive(Clone, Copy, Debug)]
@@ -271,23 +273,21 @@ pub fn convert_to_fuse_attr(attr: FileAttr) -> FuseAttr {
 }
 
 /// Helper funtion to load directory data
-pub async fn load_dir_data(fd: RawFd) -> anyhow::Result<BTreeMap<OsString, DirEntry>> {
-    let dir = blocking!(Dir::from_fd(fd)).context(format!("failed to build Dir from fd={}", fd))?;
-    let dir_entry_map = blocking!(
-        let dir_entry_map: BTreeMap<OsString, DirEntry> = dir
-            .filter_map(std::result::Result::ok) // filter out error result
-            .filter(|e| {
-                let bytes = e.entry_name().as_bytes();
-                !bytes.starts_with(&[b'.']) // skip hidden entries, '.' and '..'
-            })
-            .filter_map(|e| match e.entry_type() {
-                SFlag::S_IFDIR | SFlag::S_IFREG | SFlag::S_IFLNK => Some((e.entry_name().into(), e)),
-                _ => None,
-            })
-            .collect();
-        dir_entry_map
-    );
-    Ok(dir_entry_map)
+pub async fn load_dir_data(dirfd: RawFd) -> anyhow::Result<BTreeMap<OsString, DirEntry>> {
+    unblock(move || {
+        let dir = Dir::opendirat(dirfd, ".", OFlag::empty())
+            .with_context(|| format!("failed to build Dir from fd={}", dirfd))?;
+        let mut dir_entry_map = BTreeMap::new();
+        for entry in dir {
+            let entry = entry?;
+            if let SFlag::S_IFDIR | SFlag::S_IFREG | SFlag::S_IFLNK = entry.entry_type() {
+                let name = entry.entry_name().to_owned();
+                let _ = dir_entry_map.insert(name, entry);
+            }
+        }
+        Ok(dir_entry_map)
+    })
+    .await
 }
 
 /// Helper function to load file data
