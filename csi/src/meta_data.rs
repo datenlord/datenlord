@@ -308,7 +308,11 @@ impl MetaData {
     /// Find snapshot by name
     pub async fn get_snapshot_by_name(&self, snap_name: &str) -> Option<DatenLordSnapshot> {
         let snap_name_key = format!("{}/{}", SNAPSHOT_NAME_PREFIX, snap_name);
-        let snap_id: String = match self.etcd_delegate.get_at_most_one_value(&snap_name_key).await {
+        let snap_id: String = match self
+            .etcd_delegate
+            .get_at_most_one_value(&snap_name_key)
+            .await
+        {
             Ok(val) => {
                 if let Some(sid) = val {
                     sid
@@ -529,7 +533,11 @@ impl MetaData {
     /// Get volume by name
     pub async fn get_volume_by_name(&self, vol_name: &str) -> Option<DatenLordVolume> {
         let vol_name_key = format!("{}/{}", VOLUME_NAME_PREFIX, vol_name);
-        let vol_id: String = match self.etcd_delegate.get_at_most_one_value(&vol_name_key).await {
+        let vol_id: String = match self
+            .etcd_delegate
+            .get_at_most_one_value(&vol_name_key)
+            .await
+        {
             Ok(val) => {
                 if let Some(v) = val {
                     v
@@ -734,8 +742,10 @@ impl MetaData {
 
         // TODO: use etcd transancation?
         let vol_id_key = format!("{}/{}", VOLUME_ID_PREFIX, vol_id);
-        let vol_id_pre_value: DatenLordVolume =
-            self.etcd_delegate.delete_exact_one_value(&vol_id_key).await?;
+        let vol_id_pre_value: DatenLordVolume = self
+            .etcd_delegate
+            .delete_exact_one_value(&vol_id_key)
+            .await?;
 
         let vol_name_key = format!("{}/{}", VOLUME_NAME_PREFIX, vol_id_pre_value.vol_name);
         let vol_name_pre_value: String = self

@@ -400,7 +400,7 @@ fn parse_args() -> CliArgs {
                 .takes_value(true)
                 .required(true)
                 .help(
-                    "Set the etcd addresses of format http://ip:port, \
+                    "Set the etcd addresses of format ip:port, \
                         if multiple etcd addresses use comma to seperate, \
                         required argument, no default value",
                 ),
@@ -464,10 +464,10 @@ fn get_args(matches: &ArgMatches) -> CliArgs {
     let etcd_address_vec = match matches.value_of(ETCD_ADDRESS_ARG_NAME) {
         Some(a) => a
             .split(',')
-            .map(|s| {
-                let etcd_ip_address = match s.strip_prefix("http://") {
-                    Some(stripped_ip_address) => stripped_ip_address,
-                    None => s,
+            .map(|address| {
+                let etcd_ip_address = match address.strip_prefix("http://") {
+                    Some(strip_address) => strip_address,
+                    None => address,
                 };
                 etcd_ip_address.to_owned()
             })
@@ -606,11 +606,7 @@ mod test {
         match std::env::var(ETCD_ENV_VAR_KEY) {
             Ok(val) => {
                 debug!("{}={}", ETCD_ENV_VAR_KEY, val);
-                let etcd_ip_address = match val.strip_prefix("http://") {
-                    Some(stripped_ip_address) => stripped_ip_address.to_string(),
-                    None => val,
-                };
-                vec![etcd_ip_address]
+                vec![val]
             }
             Err(_) => vec![DEFAULT_ETCD_ENDPOINT_FOR_TEST.to_owned()],
         }
