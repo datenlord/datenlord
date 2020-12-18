@@ -245,7 +245,7 @@ fn run_async_controller_server(controller_server: Server) {
         let f = futures::future::pending::<()>();
         f.await;
     }
-    smol::run(async move {
+    smol::block_on(async move {
         run_server(controller_server).await;
     });
 }
@@ -269,7 +269,7 @@ fn run_async_node_servers(node_server: Server, worker_server: Server) {
         let f = futures::future::pending::<()>();
         f.await;
     }
-    smol::run(async move {
+    smol::block_on(async move {
         run_server(node_server, worker_server).await;
     });
 }
