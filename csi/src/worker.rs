@@ -27,7 +27,7 @@ impl WorkerImpl {
         Self { meta_data }
     }
     /// Build volume from either snapshot or another volume
-    fn build_volume_from_source(
+    async fn build_volume_from_source(
         &self,
         vol_id: &str,
         vol_name: &str,
@@ -37,7 +37,7 @@ impl WorkerImpl {
         match *content_source {
             VolumeSource::Snapshot(ref source_snapshot_id) => {
                 self.meta_data
-                    .copy_volume_from_snapshot(vol_size, source_snapshot_id, &vol_id.to_string())
+                    .copy_volume_from_snapshot(vol_size, source_snapshot_id, &vol_id.to_string()).await
                     .map_err(|(rsc, anyhow_err)| {
                         (
                             rsc,
@@ -60,6 +60,7 @@ impl WorkerImpl {
             VolumeSource::Volume(ref source_volume_id) => {
                 self.meta_data
                     .copy_volume_from_volume(vol_size, source_volume_id, &vol_id.to_string())
+                    .await
                     .map_err(|(rsc, anyhow_err)| {
                         (
                             rsc,
@@ -121,14 +122,16 @@ impl Worker for WorkerImpl {
         };
 
         if let Some(ref content_source) = volume.content_source {
-            let build_res = self
-                .build_volume_from_source(&vol_id_str, vol_name, vol_size, content_source)
-                .map_err(|(rsc, anyhow_err)| {
-                    (
-                        rsc,
-                        anyhow_err.context("failed to create volume from source"),
-                    )
-                });
+            let build_res = smol::block_on(async {
+                self.build_volume_from_source(&vol_id_str, vol_name, vol_size, content_source)
+                    .await
+            })
+            .map_err(|(rsc, anyhow_err)| {
+                (
+                    rsc,
+                    anyhow_err.context("failed to create volume from source"),
+                )
+            });
             if let Err((rpc_status_code, e)) = build_res {
                 debug!(
                     "failed to create volume from source, the error is: {}",
@@ -169,14 +172,14 @@ impl Worker for WorkerImpl {
         debug!("worker delete_volume request: {:?}", req);
 
         let vol_id = req.get_volume_id();
-        let delete_res = self
-            .meta_data
-            .delete_volume_meta_data(vol_id)
-            .context(format!(
-                "failed to find the volume ID={} to delete on node ID={}",
-                vol_id,
-                self.meta_data.get_node_id(),
-            ));
+        let delete_res =
+            smol::block_on(async { self.meta_data.delete_volume_meta_data(vol_id).await }).context(
+                format!(
+                    "failed to find the volume ID={} to delete on node ID={}",
+                    vol_id,
+                    self.meta_data.get_node_id(),
+                ),
+            );
         match delete_res {
             Ok(volume) => {
                 let del_res = volume.delete_directory();
@@ -216,13 +219,15 @@ impl Worker for WorkerImpl {
         let src_volume_id = req.get_source_volume_id();
         let node_id = self.meta_data.get_node_id();
 
-        let build_snap_res = self
-            .meta_data
-            .build_snapshot_from_volume(src_volume_id, &snap_id_str, snap_name)
-            .context(format!(
-                "failed to create snapshot ID={} on node ID={}",
-                snap_id_str, node_id,
-            ));
+        let build_snap_res = smol::block_on(async {
+            self.meta_data
+                .build_snapshot_from_volume(src_volume_id, &snap_id_str, snap_name)
+                .await
+        })
+        .context(format!(
+            "failed to create snapshot ID={} on node ID={}",
+            snap_id_str, node_id,
+        ));
         match build_snap_res {
             Ok(snapshot) => {
                 let build_resp_res = util::build_create_snapshot_response(

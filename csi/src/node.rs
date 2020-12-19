@@ -89,8 +89,8 @@ impl NodeImpl {
 
     /// Delete ephemeral volume
     /// `tolerant_error` means whether to ignore umount error or not
-    fn delete_ephemeral_volume(&self, volume: &DatenLordVolume, tolerant_error: bool) {
-        let delete_ephemeral_res = self.meta_data.delete_volume_meta_data(&volume.vol_id);
+    async fn delete_ephemeral_volume(&self, volume: &DatenLordVolume, tolerant_error: bool) {
+        let delete_ephemeral_res = self.meta_data.delete_volume_meta_data(&volume.vol_id).await;
         if let Err(e) = delete_ephemeral_res {
             if tolerant_error {
                 error!(
@@ -307,7 +307,7 @@ impl Node for NodeImpl {
 
         let vol_id = req.get_volume_id();
         // If ephemeral is true, create volume here to avoid errors if not exists
-        if ephemeral && !self.meta_data.find_volume_by_id(vol_id) {
+        if ephemeral && !smol::block_on(async { self.meta_data.find_volume_by_id(vol_id).await }) {
             let create_res = self.create_ephemeral_volume(vol_id);
             if let Err((rpc_status_code, e)) = create_res {
                 warn!(
@@ -348,14 +348,18 @@ impl Node for NodeImpl {
                         mount_options,
                     );
                     // Bind mount from target_dir to vol_path
-                    let build_res = self.meta_data.bind_mount(
-                        target_dir,
-                        fs_type,
-                        read_only,
-                        vol_id,
-                        &mount_options,
-                        ephemeral,
-                    );
+                    let build_res = smol::block_on(async {
+                        self.meta_data
+                            .bind_mount(
+                                target_dir,
+                                fs_type,
+                                read_only,
+                                vol_id,
+                                &mount_options,
+                                ephemeral,
+                            )
+                            .await
+                    });
                     if let Err((rpc_status_code, e)) = build_res {
                         return util::fail(&ctx, sink, rpc_status_code, &e);
                     }
@@ -403,7 +407,7 @@ impl Node for NodeImpl {
             );
         }
 
-        let volume = match self.meta_data.get_volume_by_id(vol_id) {
+        let volume = match smol::block_on(async { self.meta_data.get_volume_by_id(vol_id).await }) {
             Some(v) => v,
             None => {
                 return util::fail(
@@ -418,9 +422,11 @@ impl Node for NodeImpl {
         let r = NodeUnpublishVolumeResponse::new();
         // Do not return error for non-existent path, repeated calls OK for idempotency
         // if unistd::geteuid().is_root() {
-        let delete_res = self
-            .meta_data
-            .delete_volume_one_bind_mount_path(vol_id, target_path);
+        let delete_res = smol::block_on(async {
+            self.meta_data
+                .delete_volume_one_bind_mount_path(vol_id, target_path)
+                .await
+        });
         let mut pre_mount_path_set = match delete_res {
             Ok(s) => s,
             Err(e) => {
@@ -481,7 +487,7 @@ impl Node for NodeImpl {
         // Delete ephemeral volume if no more bind mount
         // Does not return error when delete failure, repeated calls OK for idempotency
         if volume.ephemeral && pre_mount_path_set.is_empty() {
-            self.delete_ephemeral_volume(&volume, tolerant_error);
+            smol::block_on(async { self.delete_ephemeral_volume(&volume, tolerant_error).await });
         }
         util::success(&ctx, sink, r)
     }
@@ -533,7 +539,7 @@ impl Node for NodeImpl {
             );
         }
 
-        if !self.meta_data.find_volume_by_id(vol_id) {
+        if !smol::block_on(async { self.meta_data.find_volume_by_id(vol_id).await }) {
             return util::fail(
                 &ctx,
                 sink,

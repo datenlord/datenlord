@@ -119,11 +119,11 @@ impl EtcdClient {
     }
 
     /// Get zero or one key-value pair from etcd
-    pub fn get_at_most_one_value<T: DeserializeOwned>(
+    pub async fn get_at_most_one_value<T: DeserializeOwned>(
         &self,
         key: &str,
     ) -> anyhow::Result<Option<T>> {
-        let value = smol::block_on(Compat::new(async move { self.get_one_kv_async(key).await }))?;
+        let value = self.get_one_kv_async(key).await?;
         Ok(value)
     }
 

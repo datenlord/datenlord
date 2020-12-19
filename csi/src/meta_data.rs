@@ -177,12 +177,13 @@ impl MetaData {
     }
 
     /// Select a node to create volume or snapshot
-    pub fn select_node(&self, req: &CreateVolumeRequest) -> anyhow::Result<DatenLordNode> {
+    pub async fn select_node(&self, req: &CreateVolumeRequest) -> anyhow::Result<DatenLordNode> {
         let node_id = if req.has_volume_content_source() {
             let volume_src = req.get_volume_content_source();
             if volume_src.has_snapshot() {
                 let snapshot_id = &volume_src.get_snapshot().snapshot_id;
                 self.get_snapshot_by_id(snapshot_id)
+                    .await
                     .map(|snapshot| Some(snapshot.node_id))
                     .ok_or(anyhow!(format!(
                         "failed to get snapshot ID={}",
@@ -191,6 +192,7 @@ impl MetaData {
             } else if volume_src.has_volume() {
                 let volume_id = &volume_src.get_volume().volume_id;
                 self.get_volume_by_id(volume_id)
+                    .await
                     .map(|volume| Some(volume.node_id))
                     .ok_or(anyhow!(format!("failed to get volume ID={}", volume_id)))?
             } else {
@@ -199,14 +201,13 @@ impl MetaData {
         } else {
             None
         };
-        node_id.map_or_else(
-            || {
+        match node_id {
+            None => {
                 debug!("request doesn't have node id, select random node");
                 self.select_random_node()
-            },
-            |node_id| {
+            }
+            Some(node_id) => {
                 debug!("select node ID={} from request", node_id);
-
                 if req.has_accessibility_requirements() {
                     let match_requisite = req
                         .get_accessibility_requirements()
@@ -214,12 +215,14 @@ impl MetaData {
                         .iter()
                         .any(|t| t.get_segments().iter().any(|(_k, v)| v == &node_id));
                     let match_preferred = req
-                            .get_accessibility_requirements()
-                            .get_preferred()
-                            .iter()
-                            .any(|t| t.get_segments().iter().any(|(_k, v)| v == &node_id));
+                        .get_accessibility_requirements()
+                        .get_preferred()
+                        .iter()
+                        .any(|t| t.get_segments().iter().any(|(_k, v)| v == &node_id));
                     if match_requisite || match_preferred {
-                        self.get_node_by_id(&node_id).ok_or_else(|| panic!("failed to get node ID={}", node_id))
+                        self.get_node_by_id(&node_id)
+                            .await
+                            .ok_or_else(|| panic!("failed to get node ID={}", node_id))
                     } else {
                         panic!(
                             "select node ID={} is not in request required topology and preferred topology",
@@ -227,12 +230,12 @@ impl MetaData {
                         );
                     }
                 } else {
-                    self
-                        .get_node_by_id(&node_id)
+                    self.get_node_by_id(&node_id)
+                        .await
                         .ok_or_else(|| panic!("failed to get node ID={}", node_id))
                 }
-            },
-        )
+            }
+        }
     }
 
     /// Get volume absolute path by ID
@@ -268,10 +271,11 @@ impl MetaData {
     }
 
     /// Get node by ID
-    pub fn get_node_by_id(&self, node_id: &str) -> Option<DatenLordNode> {
+    pub async fn get_node_by_id(&self, node_id: &str) -> Option<DatenLordNode> {
         let get_res = self
             .etcd_client
-            .get_at_most_one_value(&format!("{}/{}", NODE_PREFIX, node_id));
+            .get_at_most_one_value(&format!("{}/{}", NODE_PREFIX, node_id))
+            .await;
         match get_res {
             Ok(val) => val,
             Err(e) => {
@@ -282,10 +286,11 @@ impl MetaData {
     }
 
     /// Get snapshot by ID
-    pub fn get_snapshot_by_id(&self, snap_id: &str) -> Option<DatenLordSnapshot> {
+    pub async fn get_snapshot_by_id(&self, snap_id: &str) -> Option<DatenLordSnapshot> {
         let get_res = self
             .etcd_client
-            .get_at_most_one_value(&format!("{}/{}", SNAPSHOT_ID_PREFIX, snap_id));
+            .get_at_most_one_value(&format!("{}/{}", SNAPSHOT_ID_PREFIX, snap_id))
+            .await;
         match get_res {
             Ok(val) => val,
             Err(e) => {
@@ -296,9 +301,9 @@ impl MetaData {
     }
 
     /// Find snapshot by name
-    pub fn get_snapshot_by_name(&self, snap_name: &str) -> Option<DatenLordSnapshot> {
+    pub async fn get_snapshot_by_name(&self, snap_name: &str) -> Option<DatenLordSnapshot> {
         let snap_name_key = format!("{}/{}", SNAPSHOT_NAME_PREFIX, snap_name);
-        let snap_id: String = match self.etcd_client.get_at_most_one_value(&snap_name_key) {
+        let snap_id: String = match self.etcd_client.get_at_most_one_value(&snap_name_key).await {
             Ok(val) => {
                 if let Some(sid) = val {
                     sid
@@ -316,13 +321,20 @@ impl MetaData {
             }
         };
         debug!("found snap ID={} and name={} from etcd", snap_id, snap_name,);
-        self.get_snapshot_by_id(&snap_id)
+        self.get_snapshot_by_id(&snap_id).await
     }
 
     /// Find snapshot by source volume ID, each source volume ID has one snapshot at most
-    pub fn get_snapshot_by_src_volume_id(&self, src_volume_id: &str) -> Option<DatenLordSnapshot> {
+    pub async fn get_snapshot_by_src_volume_id(
+        &self,
+        src_volume_id: &str,
+    ) -> Option<DatenLordSnapshot> {
         let src_vol_id_key = format!("{}/{}", SNAPSHOT_SOURCE_ID_PREFIX, src_volume_id);
-        let snap_id: String = match self.etcd_client.get_at_most_one_value(&src_vol_id_key) {
+        let snap_id: String = match self
+            .etcd_client
+            .get_at_most_one_value(&src_vol_id_key)
+            .await
+        {
             Ok(val) => {
                 if let Some(s) = val {
                     s
@@ -347,7 +359,7 @@ impl MetaData {
             "found snap ID={} by source volume ID={} from etcd",
             snap_id, src_volume_id,
         );
-        self.get_snapshot_by_id(&snap_id)
+        self.get_snapshot_by_id(&snap_id).await
     }
 
     /// The helper function to list elements
@@ -485,15 +497,16 @@ impl MetaData {
     }
 
     /// Find volume by ID
-    pub fn find_volume_by_id(&self, vol_id: &str) -> bool {
-        self.get_volume_by_id(vol_id).is_some()
+    pub async fn find_volume_by_id(&self, vol_id: &str) -> bool {
+        self.get_volume_by_id(vol_id).await.is_some()
     }
 
     /// Get volume by ID
-    pub fn get_volume_by_id(&self, vol_id: &str) -> Option<DatenLordVolume> {
+    pub async fn get_volume_by_id(&self, vol_id: &str) -> Option<DatenLordVolume> {
         match self
             .etcd_client
             .get_at_most_one_value(&format!("{}/{}", VOLUME_ID_PREFIX, vol_id))
+            .await
         {
             Ok(val) => val,
             Err(e) => {
@@ -507,9 +520,9 @@ impl MetaData {
     }
 
     /// Get volume by name
-    pub fn get_volume_by_name(&self, vol_name: &str) -> Option<DatenLordVolume> {
+    pub async fn get_volume_by_name(&self, vol_name: &str) -> Option<DatenLordVolume> {
         let vol_name_key = format!("{}/{}", VOLUME_NAME_PREFIX, vol_name);
-        let vol_id: String = match self.etcd_client.get_at_most_one_value(&vol_name_key) {
+        let vol_id: String = match self.etcd_client.get_at_most_one_value(&vol_name_key).await {
             Ok(val) => {
                 if let Some(v) = val {
                     v
@@ -528,7 +541,7 @@ impl MetaData {
             }
         };
         debug!("found volume ID={} and name={} from etcd", vol_id, vol_name);
-        self.get_volume_by_id(&vol_id)
+        self.get_volume_by_id(&vol_id).await
     }
 
     /// Add new snapshot meta data
@@ -686,7 +699,7 @@ impl MetaData {
     }
 
     /// Delete the volume meta data
-    pub fn delete_volume_meta_data(&self, vol_id: &str) -> anyhow::Result<DatenLordVolume> {
+    pub async fn delete_volume_meta_data(&self, vol_id: &str) -> anyhow::Result<DatenLordVolume> {
         info!("deleting volume ID={}", vol_id);
 
         // TODO: use etcd transancation?
@@ -703,7 +716,7 @@ impl MetaData {
         );
         let _node_vol_pre_value: bool = self.etcd_client.delete_exact_one_value(&node_vol_key)?;
 
-        let get_mount_path_res = self.get_volume_bind_mount_path(vol_id);
+        let get_mount_path_res = self.get_volume_bind_mount_path(vol_id).await;
         if let Ok(pre_mount_path_vec) = get_mount_path_res {
             pre_mount_path_vec.iter().for_each(|pre_mount_path| {
                 let umount_res = util::umount_volume_bind_path(pre_mount_path);
@@ -734,7 +747,7 @@ impl MetaData {
     }
 
     /// Populate the given destPath with data from the snapshot ID
-    pub fn copy_volume_from_snapshot(
+    pub async fn copy_volume_from_snapshot(
         &self,
         dst_volume_size: i64,
         src_snapshot_id: &str,
@@ -742,7 +755,7 @@ impl MetaData {
     ) -> Result<(), (RpcStatusCode, anyhow::Error)> {
         let dst_path = self.get_volume_path(dst_volume_id);
 
-        match self.get_snapshot_by_id(src_snapshot_id) {
+        match self.get_snapshot_by_id(src_snapshot_id).await {
             None => {
                 return Err((
                     RpcStatusCode::NOT_FOUND,
@@ -812,7 +825,7 @@ impl MetaData {
     }
 
     /// Populate the given destPath with data from the `src_volume_id`
-    pub fn copy_volume_from_volume(
+    pub async fn copy_volume_from_volume(
         &self,
         dst_volume_size: i64,
         src_volume_id: &str,
@@ -820,7 +833,7 @@ impl MetaData {
     ) -> Result<(), (RpcStatusCode, anyhow::Error)> {
         let dst_path = self.get_volume_path(dst_volume_id);
 
-        match self.get_volume_by_id(src_volume_id) {
+        match self.get_volume_by_id(src_volume_id).await {
             None => {
                 return Err((
                     RpcStatusCode::NOT_FOUND,
@@ -880,15 +893,18 @@ impl MetaData {
 
     /// Delete one bind path of a volume from etcd,
     /// return all bind paths before deletion
-    pub fn delete_volume_one_bind_mount_path(
+    pub async fn delete_volume_one_bind_mount_path(
         &self,
         vol_id: &str,
         mount_path: &str,
     ) -> anyhow::Result<HashSet<String>> {
-        let mut mount_path_set = self.get_volume_bind_mount_path(vol_id).context(format!(
-            "failed to get the bind mount paths of volume ID={}",
-            vol_id,
-        ))?;
+        let mut mount_path_set = self
+            .get_volume_bind_mount_path(vol_id)
+            .await
+            .context(format!(
+                "failed to get the bind mount paths of volume ID={}",
+                vol_id,
+            ))?;
         if mount_path_set.contains(mount_path) {
             let volume_mount_path_key = format!(
                 "{}/{}/{}",
@@ -944,7 +960,10 @@ impl MetaData {
     }
 
     /// Get volume bind mount path from etcd
-    pub fn get_volume_bind_mount_path(&self, vol_id: &str) -> anyhow::Result<HashSet<String>> {
+    pub async fn get_volume_bind_mount_path(
+        &self,
+        vol_id: &str,
+    ) -> anyhow::Result<HashSet<String>> {
         let volume_mount_path_key = format!(
             "{}/{}/{}",
             VOLUME_BIND_MOUNT_PATH_PREFIX,
@@ -953,7 +972,8 @@ impl MetaData {
         );
         let get_opt: Option<String> = self
             .etcd_client
-            .get_at_most_one_value(&volume_mount_path_key)?;
+            .get_at_most_one_value(&volume_mount_path_key)
+            .await?;
         match get_opt {
             Some(pre_mount_paths) => Ok((&pre_mount_paths)
                 .split(VOLUME_BIND_MOUNT_PATH_SEPARATOR)
@@ -966,13 +986,13 @@ impl MetaData {
     /// Write volume bind mount path to etcd,
     /// if volume has multiple bind mount path, then append to the value in etcd
     // TODO: make it fault tolerant when etcd is down
-    fn save_volume_bind_mount_path(
+    async fn save_volume_bind_mount_path(
         &self,
         vol_id: &str,
         target_path: &str,
         bind_mount_mode: BindMountMode,
     ) {
-        let get_mount_path_res = self.get_volume_bind_mount_path(vol_id);
+        let get_mount_path_res = self.get_volume_bind_mount_path(vol_id).await;
         let mut mount_path_set = match get_mount_path_res {
             Ok(v) => v,
             Err(_) => HashSet::new(),
@@ -1035,7 +1055,7 @@ impl MetaData {
     }
 
     /// Bind mount volume directory to target path if root
-    pub fn bind_mount(
+    pub async fn bind_mount(
         &self,
         target_dir: &str,
         fs_type: &str,
@@ -1059,7 +1079,7 @@ impl MetaData {
             }
         };
 
-        let get_mount_path_res = self.get_volume_bind_mount_path(vol_id);
+        let get_mount_path_res = self.get_volume_bind_mount_path(vol_id).await;
         let bind_mount_mode = match get_mount_path_res {
             Ok(pre_mount_path_set) => {
                 if pre_mount_path_set.is_empty() {
@@ -1092,7 +1112,7 @@ impl MetaData {
         ));
         if let Err(bind_err) = mount_res {
             if ephemeral {
-                match self.delete_volume_meta_data(vol_id) {
+                match self.delete_volume_meta_data(vol_id).await {
                     Ok(_) => debug!(
                         "successfully deleted ephemeral volume ID={}, when bind mount failed",
                         vol_id,
@@ -1111,14 +1131,15 @@ impl MetaData {
                 "successfully bind mounted volume path={:?} to target path={:?}",
                 vol_path, target_dir,
             );
-            self.save_volume_bind_mount_path(vol_id, target_dir, bind_mount_mode);
+            self.save_volume_bind_mount_path(vol_id, target_dir, bind_mount_mode)
+                .await;
         }
 
         Ok(())
     }
 
     /// Build snapshot from source volume
-    pub fn build_snapshot_from_volume(
+    pub async fn build_snapshot_from_volume(
         &self,
         src_vol_id: &str,
         snap_id: &str,
@@ -1139,7 +1160,7 @@ impl MetaData {
             }
         }
 
-        match self.get_volume_by_id(src_vol_id) {
+        match self.get_volume_by_id(src_vol_id).await {
             Some(src_vol) => {
                 assert_eq!(
                     src_vol.node_id,
