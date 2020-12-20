@@ -644,99 +644,105 @@ mod test {
     }
 
     fn test_meta_data() -> anyhow::Result<()> {
-        let meta_data = build_test_meta_data()?;
-        let vol_id = "the-fake-ephemeral-volume-id-for-meta-data-test";
-        let mut volume = meta_data::DatenLordVolume::build_ephemeral_volume(
-            vol_id,
-            "ephemeral-volume", // vol_name
-            DEFAULT_NODE_NAME,
-            meta_data.get_volume_path(NODE_PUBLISH_VOLUME_ID).as_path(), // vol_path
-        )?;
-        let add_vol_res = meta_data.add_volume_meta_data(vol_id, &volume);
-        assert!(
-            add_vol_res.is_ok(),
-            "failed to add new volume meta data to etcd"
-        );
-        let get_vol_res = meta_data
-            .get_volume_by_name(&volume.vol_name)
-            .ok_or(anyhow!(format!(
-                "failed to find volume by name={}",
-                volume.vol_name,
-            )))?;
-        assert_eq!(
-            get_vol_res.vol_name, volume.vol_name,
-            "volume name not match"
-        );
+        smol::block_on(async {
+            let meta_data = build_test_meta_data()?;
+            let vol_id = "the-fake-ephemeral-volume-id-for-meta-data-test";
+            let mut volume = meta_data::DatenLordVolume::build_ephemeral_volume(
+                vol_id,
+                "ephemeral-volume", // vol_name
+                DEFAULT_NODE_NAME,
+                meta_data.get_volume_path(NODE_PUBLISH_VOLUME_ID).as_path(), // vol_path
+            )?;
+            let add_vol_res = meta_data.add_volume_meta_data(vol_id, &volume);
+            assert!(
+                add_vol_res.is_ok(),
+                "failed to add new volume meta data to etcd"
+            );
+            let get_vol_res =
+                meta_data
+                    .get_volume_by_name(&volume.vol_name)
+                    .await
+                    .ok_or(anyhow!(format!(
+                        "failed to find volume by name={}",
+                        volume.vol_name,
+                    )))?;
+            assert_eq!(
+                get_vol_res.vol_name, volume.vol_name,
+                "volume name not match"
+            );
 
-        let new_size_bytes = 2.overflow_mul(util::EPHEMERAL_VOLUME_STORAGE_CAPACITY);
-        let exp_vol_res = meta_data.expand(&mut volume, new_size_bytes)?;
-        assert_eq!(
-            exp_vol_res,
-            util::EPHEMERAL_VOLUME_STORAGE_CAPACITY,
-            "the old size before expand not match"
-        );
+            let new_size_bytes = 2.overflow_mul(util::EPHEMERAL_VOLUME_STORAGE_CAPACITY);
+            let exp_vol_res = meta_data.expand(&mut volume, new_size_bytes)?;
+            assert_eq!(
+                exp_vol_res,
+                util::EPHEMERAL_VOLUME_STORAGE_CAPACITY,
+                "the old size before expand not match"
+            );
 
-        let expanded_vol = meta_data
-            .get_volume_by_id(vol_id)
-            .ok_or(anyhow!(format!("failed to find volume ID={}", vol_id)))?;
-        assert_eq!(
-            expanded_vol.size_bytes, new_size_bytes,
-            "the expanded volume size not match"
-        );
+            let expanded_vol = meta_data
+                .get_volume_by_id(vol_id)
+                .await
+                .ok_or(anyhow!(format!("failed to find volume ID={}", vol_id)))?;
+            assert_eq!(
+                expanded_vol.size_bytes, new_size_bytes,
+                "the expanded volume size not match"
+            );
 
-        let request = CreateVolumeRequest::new();
-        let selected_node = meta_data.select_node(&request)?;
-        assert_eq!(
-            selected_node.node_id, DEFAULT_NODE_NAME,
-            "selected node ID not match"
-        );
+            let request = CreateVolumeRequest::new();
+            let selected_node = meta_data.select_node(&request).await?;
+            assert_eq!(
+                selected_node.node_id, DEFAULT_NODE_NAME,
+                "selected node ID not match"
+            );
 
-        let snap_id = "the-fake-snapshot-id-for-meta-data-test";
-        let snapshot = meta_data::DatenLordSnapshot::new(
-            "test-snapshot-name".to_owned(), //snap_name,
-            snap_id.to_owned(),              //snap_id,
-            vol_id.to_owned(),
-            meta_data.get_node_id().to_owned(),
-            meta_data.get_snapshot_path(snap_id),
-            std::time::SystemTime::now(),
-            0, // size_bytes,
-        );
-        let add_snap_res = meta_data.add_snapshot_meta_data(snap_id, &snapshot);
-        assert!(
-            add_snap_res.is_ok(),
-            "failed to add new snapshot meta data to etcd"
-        );
-        let get_snap_by_name_res =
-            meta_data
+            let snap_id = "the-fake-snapshot-id-for-meta-data-test";
+            let snapshot = meta_data::DatenLordSnapshot::new(
+                "test-snapshot-name".to_owned(), //snap_name,
+                snap_id.to_owned(),              //snap_id,
+                vol_id.to_owned(),
+                meta_data.get_node_id().to_owned(),
+                meta_data.get_snapshot_path(snap_id),
+                std::time::SystemTime::now(),
+                0, // size_bytes,
+            );
+            let add_snap_res = meta_data.add_snapshot_meta_data(snap_id, &snapshot);
+            assert!(
+                add_snap_res.is_ok(),
+                "failed to add new snapshot meta data to etcd"
+            );
+            let get_snap_by_name_res = meta_data
                 .get_snapshot_by_name(&snapshot.snap_name)
+                .await
                 .ok_or(anyhow!(format!(
                     "failed to find snapshot by name={}",
                     snapshot.snap_name,
                 )))?;
-        assert_eq!(
-            get_snap_by_name_res.snap_name, snapshot.snap_name,
-            "snapshot name not match"
-        );
+            assert_eq!(
+                get_snap_by_name_res.snap_name, snapshot.snap_name,
+                "snapshot name not match"
+            );
 
-        let get_snap_by_src_vol_id_res = meta_data
-            .get_snapshot_by_src_volume_id(&snapshot.vol_id)
-            .ok_or(anyhow!(format!(
-                "failed to find snapshot by source volume ID={}",
-                snapshot.vol_id,
-            )))?;
-        assert_eq!(
-            get_snap_by_src_vol_id_res.vol_id, snapshot.vol_id,
-            "snapshot source volume ID not match"
-        );
+            let get_snap_by_src_vol_id_res = meta_data
+                .get_snapshot_by_src_volume_id(&snapshot.vol_id)
+                .await
+                .ok_or(anyhow!(format!(
+                    "failed to find snapshot by source volume ID={}",
+                    snapshot.vol_id,
+                )))?;
+            assert_eq!(
+                get_snap_by_src_vol_id_res.vol_id, snapshot.vol_id,
+                "snapshot source volume ID not match"
+            );
 
-        let del_snap_res = meta_data.delete_snapshot_meta_data(snap_id)?;
-        assert_eq!(
-            del_snap_res.snap_id, snap_id,
-            "deleted snapshot ID not match"
-        );
-        let del_vol_res = meta_data.delete_volume_meta_data(vol_id)?;
-        assert_eq!(del_vol_res.vol_id, vol_id, "deleted volume ID not match");
-        Ok(())
+            let del_snap_res = meta_data.delete_snapshot_meta_data(snap_id)?;
+            assert_eq!(
+                del_snap_res.snap_id, snap_id,
+                "deleted snapshot ID not match"
+            );
+            let del_vol_res = meta_data.delete_volume_meta_data(vol_id).await?;
+            assert_eq!(del_vol_res.vol_id, vol_id, "deleted volume ID not match");
+            Ok(())
+        })
     }
 
     fn get_volume_path(vol_id: &str) -> PathBuf {

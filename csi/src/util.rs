@@ -184,6 +184,14 @@ pub fn success<R>(ctx: &RpcContext, sink: UnarySink<R>, r: R) {
     ctx.spawn(f)
 }
 
+/// Send async success `gRPC` response
+pub async fn async_success<R: Send>(sink: UnarySink<R>, r: R) {
+    sink.success(r)
+        .map_err(move |e| error!("failed to send response, the error is: {:?}", e))
+        .map(|_| ())
+        .await
+}
+
 /// Send failure `gRPC` response
 pub fn fail<R>(
     ctx: &RpcContext,
@@ -203,6 +211,21 @@ pub fn fail<R>(
         .map_err(move |e| error!("failed to send response, the error is: {:?}", e))
         .map(|_| ());
     ctx.spawn(f)
+}
+
+/// Send async failure `gRPC` response
+pub async fn async_fail<R>(sink: UnarySink<R>, rsc: RpcStatusCode, anyhow_err: &anyhow::Error) {
+    debug_assert_ne!(
+        rsc,
+        RpcStatusCode::OK,
+        "the input RpcStatusCode should not be OK"
+    );
+    let details = format_anyhow_error(anyhow_err);
+    let rs = RpcStatus::new(rsc, Some(details));
+    sink.fail(rs)
+        .map_err(move |e| error!("failed to send response, the error is: {:?}", e))
+        .map(|_| ())
+        .await
 }
 
 /// Decode from bytes

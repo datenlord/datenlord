@@ -307,7 +307,8 @@ impl Node for NodeImpl {
 
         let vol_id = req.get_volume_id();
         // If ephemeral is true, create volume here to avoid errors if not exists
-        if ephemeral && !smol::block_on(async { self.meta_data.find_volume_by_id(vol_id).await }) {
+        let volume_exist = smol::block_on(async { self.meta_data.find_volume_by_id(vol_id).await });
+        if ephemeral && !volume_exist {
             let create_res = self.create_ephemeral_volume(vol_id);
             if let Err((rpc_status_code, e)) = create_res {
                 warn!(
@@ -539,7 +540,8 @@ impl Node for NodeImpl {
             );
         }
 
-        if !smol::block_on(async { self.meta_data.find_volume_by_id(vol_id).await }) {
+        let volume_exist = smol::block_on(async { self.meta_data.find_volume_by_id(vol_id).await });
+        if !volume_exist {
             return util::fail(
                 &ctx,
                 sink,

@@ -24,9 +24,15 @@ use super::csi_grpc::Controller;
 use super::meta_data::{DatenLordSnapshot, MetaData, VolumeSource};
 use super::util;
 
-/// for `ControllerService` implmentation
+/// for `ControllerService` implementation
 #[derive(Clone)]
 pub struct ControllerImpl {
+    /// Inner data
+    inner: Arc<ControllerImplInner>,
+}
+
+/// Holding `ControllerImpl` inner data
+pub struct ControllerImplInner {
     /// Controller capabilities
     caps: Vec<ControllerServiceCapability>,
     /// Volume meta data for controller
@@ -35,6 +41,15 @@ pub struct ControllerImpl {
 
 impl ControllerImpl {
     /// Create `ControllerImpl`
+    pub fn new(meta_data: Arc<MetaData>) -> Self {
+        Self {
+            inner: Arc::new(ControllerImplInner::new(meta_data)),
+        }
+    }
+}
+
+impl ControllerImplInner {
+    /// Create `ControllerImplInner`
     pub fn new(meta_data: Arc<MetaData>) -> Self {
         let cap_vec = if meta_data.is_ephemeral() {
             Vec::new()
@@ -362,128 +377,133 @@ impl ControllerImpl {
 impl Controller for ControllerImpl {
     fn create_volume(
         &mut self,
-        ctx: RpcContext,
+        _ctx: RpcContext,
         req: CreateVolumeRequest,
         sink: UnarySink<CreateVolumeResponse>,
     ) {
         debug!("create_volume request: {:?}", req);
+        let self_inner = Arc::<ControllerImplInner>::clone(&self.inner);
 
-        let task = smol::spawn(async {
-            self.create_volume_pre_check(&req)?;
-            // let rpc_type = ControllerServiceCapability_RPC_Type::CREATE_DELETE_VOLUME;
-            // if !self.validate_request_capability(rpc_type) {
-            //     return util::fail(
-            //         &ctx,
-            //         sink,
-            //         RpcStatusCode::INVALID_ARGUMENT,
-            //         anyhow!(format!("unsupported capability {:?}", rpc_type)),
-            //     );
-            // }
+        let task =
+            async move {
+                self_inner.create_volume_pre_check(&req)?;
+                // let rpc_type = ControllerServiceCapability_RPC_Type::CREATE_DELETE_VOLUME;
+                // if !self.validate_request_capability(rpc_type) {
+                //     return util::fail(
+                //         &ctx,
+                //         sink,
+                //         RpcStatusCode::INVALID_ARGUMENT,
+                //         anyhow!(format!("unsupported capability {:?}", rpc_type)),
+                //     );
+                // }
 
-            // let vol_name = req.get_name();
-            // if vol_name.is_empty() {
-            //     return util::fail(
-            //         &ctx,
-            //         sink,
-            //         RpcStatusCode::INVALID_ARGUMENT,
-            //         anyhow!("name missing in request"),
-            //     );
-            // }
+                // let vol_name = req.get_name();
+                // if vol_name.is_empty() {
+                //     return util::fail(
+                //         &ctx,
+                //         sink,
+                //         RpcStatusCode::INVALID_ARGUMENT,
+                //         anyhow!("name missing in request"),
+                //     );
+                // }
 
-            // let req_caps = req.get_volume_capabilities();
-            // if req_caps.is_empty() {
-            //     return util::fail(
-            //         &ctx,
-            //         sink,
-            //         RpcStatusCode::INVALID_ARGUMENT,
-            //         anyhow!("volume capabilities missing in request"),
-            //     );
-            // }
+                // let req_caps = req.get_volume_capabilities();
+                // if req_caps.is_empty() {
+                //     return util::fail(
+                //         &ctx,
+                //         sink,
+                //         RpcStatusCode::INVALID_ARGUMENT,
+                //         anyhow!("volume capabilities missing in request"),
+                //     );
+                // }
 
-            // let access_type_block = req_caps.iter().any(VolumeCapability::has_block);
-            // let access_mode_multi_writer = req_caps.iter().any(|vc| {
-            //     vc.get_access_mode().get_mode()
-            //         == VolumeCapability_AccessMode_Mode::MULTI_NODE_MULTI_WRITER
-            //         || vc.get_access_mode().get_mode()
-            //             == VolumeCapability_AccessMode_Mode::MULTI_NODE_SINGLE_WRITER
-            // });
-            // if access_type_block {
-            //     return util::fail(
-            //         &ctx,
-            //         sink,
-            //         RpcStatusCode::INVALID_ARGUMENT,
-            //         anyhow!("access type block not supported"),
-            //     );
-            // }
-            // if access_mode_multi_writer {
-            //     return util::fail(
-            //         &ctx,
-            //         sink,
-            //         RpcStatusCode::INVALID_ARGUMENT,
-            //         anyhow!(
-            //             "access mode MULTI_NODE_SINGLE_WRITER and \
-            //                 MULTI_NODE_MULTI_WRITER not supported"
-            //         ),
-            //     );
-            // }
+                // let access_type_block = req_caps.iter().any(VolumeCapability::has_block);
+                // let access_mode_multi_writer = req_caps.iter().any(|vc| {
+                //     vc.get_access_mode().get_mode()
+                //         == VolumeCapability_AccessMode_Mode::MULTI_NODE_MULTI_WRITER
+                //         || vc.get_access_mode().get_mode()
+                //             == VolumeCapability_AccessMode_Mode::MULTI_NODE_SINGLE_WRITER
+                // });
+                // if access_type_block {
+                //     return util::fail(
+                //         &ctx,
+                //         sink,
+                //         RpcStatusCode::INVALID_ARGUMENT,
+                //         anyhow!("access type block not supported"),
+                //     );
+                // }
+                // if access_mode_multi_writer {
+                //     return util::fail(
+                //         &ctx,
+                //         sink,
+                //         RpcStatusCode::INVALID_ARGUMENT,
+                //         anyhow!(
+                //             "access mode MULTI_NODE_SINGLE_WRITER and \
+                //                 MULTI_NODE_MULTI_WRITER not supported"
+                //         ),
+                //     );
+                // }
 
-            // let volume_size = req.get_capacity_range().get_required_bytes();
-            // if volume_size > util::MAX_VOLUME_STORAGE_CAPACITY {
-            //     return util::fail(
-            //         &ctx,
-            //         sink,
-            //         RpcStatusCode::OUT_OF_RANGE,
-            //         anyhow!(format!(
-            //             "requested size {} exceeds maximum allowed {}",
-            //             volume_size,
-            //             util::MAX_VOLUME_STORAGE_CAPACITY,
-            //         )),
-            //     );
-            // }
-            let vol_name = req.get_name();
-            let resp_opt =
-                self.find_existing_volume(&req)
-                    .await
-                    .or_else(|(rpc_status_code, e)| {
+                // let volume_size = req.get_capacity_range().get_required_bytes();
+                // if volume_size > util::MAX_VOLUME_STORAGE_CAPACITY {
+                //     return util::fail(
+                //         &ctx,
+                //         sink,
+                //         RpcStatusCode::OUT_OF_RANGE,
+                //         anyhow!(format!(
+                //             "requested size {} exceeds maximum allowed {}",
+                //             volume_size,
+                //             util::MAX_VOLUME_STORAGE_CAPACITY,
+                //         )),
+                //     );
+                // }
+                let vol_name = req.get_name();
+                let resp_opt = self_inner.find_existing_volume(&req).await.map_err(
+                    |(rpc_status_code, e)| {
                         debug!(
                             "failed to find existing volume name={}, the error is: {}",
                             vol_name,
                             util::format_anyhow_error(&e),
                         );
-                        Err((rpc_status_code, e))
-                    })?;
+                        (rpc_status_code, e)
+                    },
+                )?;
 
-            if let Some(resp) = resp_opt {
-                debug!(
-                    "found existing volume ID={} and name={}",
-                    resp.get_volume().get_volume_id(),
-                    vol_name,
-                );
-                return Ok(resp);
-            } else {
-                debug!("no volume name={} found", vol_name);
-            }
-
-            self.worker_create_volume(&req)
-                .await
-                .or_else(|(rpc_status_code, e)| {
-                    debug_assert_ne!(
-                        rpc_status_code,
-                        RpcStatusCode::OK,
-                        "the RpcStatusCode should not be OK when error",
-                    );
+                if let Some(resp) = resp_opt {
                     debug!(
-                        "failed to create volume, the error is: {}",
-                        util::format_anyhow_error(&e)
+                        "found existing volume ID={} and name={}",
+                        resp.get_volume().get_volume_id(),
+                        vol_name,
                     );
-                    Err((rpc_status_code, e))
-                })
-        });
-        let result = smol::block_on(async { task.await });
-        match result {
-            Err((rpc_status_code, e)) => util::fail(&ctx, sink, rpc_status_code, &e),
-            Ok(resp) => util::success(&ctx, sink, resp),
-        }
+                    return Ok(resp);
+                } else {
+                    debug!("no volume name={} found", vol_name);
+                }
+
+                self_inner
+                    .worker_create_volume(&req)
+                    .await
+                    .map_err(|(rpc_status_code, e)| {
+                        debug_assert_ne!(
+                            rpc_status_code,
+                            RpcStatusCode::OK,
+                            "the RpcStatusCode should not be OK when error",
+                        );
+                        debug!(
+                            "failed to create volume, the error is: {}",
+                            util::format_anyhow_error(&e)
+                        );
+                        (rpc_status_code, e)
+                    })
+            };
+        smol::spawn(async move {
+            let result = task.await;
+            match result {
+                Err((rpc_status_code, e)) => util::async_fail(sink, rpc_status_code, &e).await,
+                Ok(resp) => util::async_success(sink, resp).await,
+            }
+        })
+        .detach();
     }
 
     fn delete_volume(
@@ -506,7 +526,7 @@ impl Controller for ControllerImpl {
         }
 
         let rpc_type = ControllerServiceCapability_RPC_Type::CREATE_DELETE_VOLUME;
-        if !self.validate_request_capability(rpc_type) {
+        if !self.inner.validate_request_capability(rpc_type) {
             return util::fail(
                 &ctx,
                 sink,
@@ -516,10 +536,10 @@ impl Controller for ControllerImpl {
         }
 
         // Do not return gRPC error when delete failed for idempotency
-        let vol_res = smol::block_on(async { self.meta_data.get_volume_by_id(vol_id).await });
+        let vol_res = smol::block_on(async { self.inner.meta_data.get_volume_by_id(vol_id).await });
         if let Some(vol) = vol_res {
             let node_res =
-                smol::block_on(async { self.meta_data.get_node_by_id(&vol.node_id).await });
+                smol::block_on(async { self.inner.meta_data.get_node_by_id(&vol.node_id).await });
             if let Some(node) = node_res {
                 let client = MetaData::build_worker_client(&node);
                 let worker_delete_res = client.worker_delete_volume(&req).context(format!(
@@ -544,7 +564,7 @@ impl Controller for ControllerImpl {
             warn!(
                 "failed to find volume ID={} to delete on controller ID={}",
                 vol_id,
-                self.meta_data.get_node_id(),
+                self.inner.meta_data.get_node_id(),
             );
         }
         let r = DeleteVolumeResponse::new();
@@ -614,7 +634,7 @@ impl Controller for ControllerImpl {
             );
         }
 
-        let vol_res = smol::block_on(async { self.meta_data.get_volume_by_id(vol_id).await });
+        let vol_res = smol::block_on(async { self.inner.meta_data.get_volume_by_id(vol_id).await });
         if vol_res.is_none() {
             return util::fail(
                 &ctx,
@@ -664,7 +684,7 @@ impl Controller for ControllerImpl {
         debug!("list_volumes request: {:?}", req);
 
         let rpc_type = ControllerServiceCapability_RPC_Type::LIST_VOLUMES;
-        if !self.validate_request_capability(rpc_type) {
+        if !self.inner.validate_request_capability(rpc_type) {
             return util::fail(
                 &ctx,
                 sink,
@@ -675,7 +695,10 @@ impl Controller for ControllerImpl {
 
         let max_entries = req.get_max_entries();
         let starting_token = req.get_starting_token();
-        let list_res = self.meta_data.list_volumes(starting_token, max_entries);
+        let list_res = self
+            .inner
+            .meta_data
+            .list_volumes(starting_token, max_entries);
         let (vol_vec, next_pos) = match list_res {
             Ok((vol_vec, next_pos)) => (vol_vec, next_pos),
             Err((rpc_status_code, e)) => {
@@ -727,7 +750,7 @@ impl Controller for ControllerImpl {
         debug!("controller_get_capabilities request: {:?}", req);
 
         let mut r = ControllerGetCapabilitiesResponse::new();
-        r.set_capabilities(RepeatedField::from_vec(self.caps.clone()));
+        r.set_capabilities(RepeatedField::from_vec(self.inner.caps.clone()));
         util::success(&ctx, sink, r)
     }
 
@@ -740,7 +763,7 @@ impl Controller for ControllerImpl {
         debug!("create_snapshot request: {:?}", req);
 
         let rpc_type = ControllerServiceCapability_RPC_Type::CREATE_DELETE_SNAPSHOT;
-        if !self.validate_request_capability(rpc_type) {
+        if !self.inner.validate_request_capability(rpc_type) {
             return util::fail(
                 &ctx,
                 sink,
@@ -769,7 +792,7 @@ impl Controller for ControllerImpl {
             );
         }
 
-        let find_res = smol::block_on(async { self.find_existing_snapshot(&req).await });
+        let find_res = smol::block_on(async { self.inner.find_existing_snapshot(&req).await });
         match find_res {
             Ok(resp_opt) => {
                 if let Some(resp) = resp_opt {
@@ -793,10 +816,11 @@ impl Controller for ControllerImpl {
             }
         }
 
-        match smol::block_on(async { self.meta_data.get_volume_by_id(src_vol_id).await }) {
+        match smol::block_on(async { self.inner.meta_data.get_volume_by_id(src_vol_id).await }) {
             Some(src_vol) => {
-                let node_res =
-                    smol::block_on(async { self.meta_data.get_node_by_id(&src_vol.node_id).await });
+                let node_res = smol::block_on(async {
+                    self.inner.meta_data.get_node_by_id(&src_vol.node_id).await
+                });
                 if let Some(node) = node_res {
                     let client = MetaData::build_worker_client(&node);
                     let create_res = client.worker_create_snapshot(&req).context(format!(
@@ -840,7 +864,7 @@ impl Controller for ControllerImpl {
         }
 
         let rpc_type = ControllerServiceCapability_RPC_Type::CREATE_DELETE_SNAPSHOT;
-        if !self.validate_request_capability(rpc_type) {
+        if !self.inner.validate_request_capability(rpc_type) {
             return util::fail(
                 &ctx,
                 sink,
@@ -850,10 +874,11 @@ impl Controller for ControllerImpl {
         }
 
         // Do not return gRPC error when delete failed for idempotency
-        let snap_res = smol::block_on(async { self.meta_data.get_snapshot_by_id(snap_id).await });
+        let snap_res =
+            smol::block_on(async { self.inner.meta_data.get_snapshot_by_id(snap_id).await });
         if let Some(snap) = snap_res {
             let node_res =
-                smol::block_on(async { self.meta_data.get_node_by_id(&snap.node_id).await });
+                smol::block_on(async { self.inner.meta_data.get_node_by_id(&snap.node_id).await });
             if let Some(node) = node_res {
                 let client = MetaData::build_worker_client(&node);
                 let worker_delete_res = client.worker_delete_snapshot(&req).context(format!(
@@ -891,7 +916,7 @@ impl Controller for ControllerImpl {
         debug!("list_snapshots request: {:?}", req);
 
         let rpc_type = ControllerServiceCapability_RPC_Type::LIST_SNAPSHOTS;
-        if !self.validate_request_capability(rpc_type) {
+        if !self.inner.validate_request_capability(rpc_type) {
             return util::fail(
                 &ctx,
                 sink,
@@ -904,9 +929,9 @@ impl Controller for ControllerImpl {
         let snap_id = req.get_snapshot_id();
         if !snap_id.is_empty() {
             let snap_res =
-                smol::block_on(async { self.meta_data.get_snapshot_by_id(snap_id).await });
+                smol::block_on(async { self.inner.meta_data.get_snapshot_by_id(snap_id).await });
             if let Some(snap) = snap_res {
-                let add_res = Self::add_snapshot_to_list_response(&snap)
+                let add_res = ControllerImplInner::add_snapshot_to_list_response(&snap)
                     .context("failed to generate ListSnapshotsResponse");
                 let r = match add_res {
                     Ok(resp) => resp,
@@ -927,12 +952,13 @@ impl Controller for ControllerImpl {
         let src_volume_id = req.get_source_volume_id();
         if !src_volume_id.is_empty() {
             let snap_res = smol::block_on(async {
-                self.meta_data
+                self.inner
+                    .meta_data
                     .get_snapshot_by_src_volume_id(src_volume_id)
                     .await
             });
             if let Some(snap) = snap_res {
-                let add_res = Self::add_snapshot_to_list_response(&snap)
+                let add_res = ControllerImplInner::add_snapshot_to_list_response(&snap)
                     .context("failed to generate ListSnapshotsResponse");
                 let r = match add_res {
                     Ok(resp) => resp,
@@ -955,7 +981,10 @@ impl Controller for ControllerImpl {
         // case 3: no parameter is set, so return all the snapshots
         let max_entries = req.get_max_entries();
         let starting_token = req.get_starting_token();
-        let list_res = self.meta_data.list_snapshots(starting_token, max_entries);
+        let list_res = self
+            .inner
+            .meta_data
+            .list_snapshots(starting_token, max_entries);
         let (snap_vec, next_pos) = match list_res {
             Ok((snap_vec, next_pos)) => (snap_vec, next_pos),
             Err((rpc_status_code, e)) => {
@@ -1022,7 +1051,7 @@ impl Controller for ControllerImpl {
             );
         }
 
-        let vol_res = smol::block_on(async { self.meta_data.get_volume_by_id(vol_id).await });
+        let vol_res = smol::block_on(async { self.inner.meta_data.get_volume_by_id(vol_id).await });
         let mut ex_vol = if let Some(v) = vol_res {
             v
         } else {
@@ -1037,7 +1066,7 @@ impl Controller for ControllerImpl {
 
         match ex_vol.get_size().cmp(&capacity) {
             Ordering::Less => {
-                let expand_res = self.meta_data.expand(&mut ex_vol, capacity);
+                let expand_res = self.inner.meta_data.expand(&mut ex_vol, capacity);
                 if let Err(e) = expand_res {
                     panic!(
                         "failed to expand volume ID={}, the error is: {}",
