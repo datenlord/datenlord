@@ -618,7 +618,7 @@ mod test {
             fs::remove_dir_all(NODE_PUBLISH_VOLUME_TARGET_PATH)?;
         }
 
-        etcd_client.delete_all()?;
+        smol::block_on(async { etcd_client.delete_all().await })?;
         Ok(())
     }
 
@@ -653,7 +653,7 @@ mod test {
                 DEFAULT_NODE_NAME,
                 meta_data.get_volume_path(NODE_PUBLISH_VOLUME_ID).as_path(), // vol_path
             )?;
-            let add_vol_res = meta_data.add_volume_meta_data(vol_id, &volume);
+            let add_vol_res = meta_data.add_volume_meta_data(vol_id, &volume).await;
             assert!(
                 add_vol_res.is_ok(),
                 "failed to add new volume meta data to etcd"
@@ -672,7 +672,7 @@ mod test {
             );
 
             let new_size_bytes = 2.overflow_mul(util::EPHEMERAL_VOLUME_STORAGE_CAPACITY);
-            let exp_vol_res = meta_data.expand(&mut volume, new_size_bytes)?;
+            let exp_vol_res = meta_data.expand(&mut volume, new_size_bytes).await?;
             assert_eq!(
                 exp_vol_res,
                 util::EPHEMERAL_VOLUME_STORAGE_CAPACITY,
@@ -705,7 +705,7 @@ mod test {
                 std::time::SystemTime::now(),
                 0, // size_bytes,
             );
-            let add_snap_res = meta_data.add_snapshot_meta_data(snap_id, &snapshot);
+            let add_snap_res = meta_data.add_snapshot_meta_data(snap_id, &snapshot).await;
             assert!(
                 add_snap_res.is_ok(),
                 "failed to add new snapshot meta data to etcd"
@@ -734,7 +734,7 @@ mod test {
                 "snapshot source volume ID not match"
             );
 
-            let del_snap_res = meta_data.delete_snapshot_meta_data(snap_id)?;
+            let del_snap_res = meta_data.delete_snapshot_meta_data(snap_id).await?;
             assert_eq!(
                 del_snap_res.snap_id, snap_id,
                 "deleted snapshot ID not match"
@@ -761,7 +761,7 @@ mod test {
         let etcd_address_vec = get_etcd_address_vec();
         let etcd_client = EtcdClient::new(etcd_address_vec)?;
 
-        let async_server = false;
+        let async_server = true;
         GRPC_SERVER.call_once(move || {
             let clear_res = clear_test_data(&etcd_client);
             assert!(
@@ -1116,7 +1116,7 @@ mod test {
         creat_vol_req.set_name(dup_vol_name.to_owned());
 
         let creat_resp2 = create_volume(client, &creat_vol_req)
-            .context("failed to get CreateVolumeResponse when create from first volume")?;
+            .context("failed to get CreateVolumeResponse when create second volume")?;
         let volume2 = creat_resp2.get_volume();
 
         assert!(

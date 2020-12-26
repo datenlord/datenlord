@@ -228,6 +228,21 @@ pub async fn async_fail<R>(sink: UnarySink<R>, rsc: RpcStatusCode, anyhow_err: &
         .await
 }
 
+/// Spawn a task to execute async task and send `gRPC` response
+pub fn spawn_grpc_task<R: Send + 'static>(
+    sink: UnarySink<R>,
+    task: impl Future<Output = Result<R, (RpcStatusCode, anyhow::Error)>> + Send + 'static,
+) {
+    smol::spawn(async move {
+        let result = task.await;
+        match result {
+            Err((rpc_status_code, e)) => async_fail(sink, rpc_status_code, &e).await,
+            Ok(resp) => async_success(sink, resp).await,
+        }
+    })
+    .detach();
+}
+
 /// Decode from bytes
 pub fn decode_from_bytes<T: DeserializeOwned>(bytes: &[u8]) -> anyhow::Result<T> {
     // let decoded_value = bincode::deserialize(bytes).map_err(|e| {

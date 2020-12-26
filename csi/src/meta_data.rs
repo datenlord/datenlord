@@ -107,31 +107,34 @@ impl MetaData {
         etcd_client: EtcdClient,
         node: DatenLordNode,
     ) -> anyhow::Result<Self> {
-        let md = Self {
-            data_dir,
-            ephemeral,
-            run_as,
-            etcd_client,
-            node,
-        };
-        match md.run_as {
-            RunAsRole::Both => {
-                md.register_to_etcd(CONTROLLER_PREFIX)?;
-                md.register_to_etcd(NODE_PREFIX)?;
+        smol::block_on(async move {
+            let md = Self {
+                data_dir,
+                ephemeral,
+                run_as,
+                etcd_client,
+                node,
+            };
+            match md.run_as {
+                RunAsRole::Both => {
+                    md.register_to_etcd(CONTROLLER_PREFIX).await?;
+                    md.register_to_etcd(NODE_PREFIX).await?;
+                }
+                RunAsRole::Controller => md.register_to_etcd(CONTROLLER_PREFIX).await?,
+                RunAsRole::Node => md.register_to_etcd(NODE_PREFIX).await?,
             }
-            RunAsRole::Controller => md.register_to_etcd(CONTROLLER_PREFIX)?,
-            RunAsRole::Node => md.register_to_etcd(NODE_PREFIX)?,
-        }
 
-        Ok(md)
+            Ok(md)
+        })
     }
 
     /// Register this worker to etcd
-    fn register_to_etcd(&self, prefix: &str) -> anyhow::Result<()> {
+    async fn register_to_etcd(&self, prefix: &str) -> anyhow::Result<()> {
         let key = format!("{}/{}", prefix, self.get_node_id());
         debug!("register node ID={} to etcd", key);
         self.etcd_client
             .write_or_update_kv(&key, &self.node)
+            .await
             .context(format!(
                 "failed to registration in etcd, the node ID={}",
                 self.get_node_id(),
@@ -154,10 +157,12 @@ impl MetaData {
     }
 
     /// Select a random node
-    fn select_random_node(&self) -> anyhow::Result<DatenLordNode> {
+    async fn select_random_node(&self) -> anyhow::Result<DatenLordNode> {
         // List key-value pairs with prefix
-        let node_list: Vec<DatenLordNode> =
-            self.etcd_client.get_list(&format!("{}/", NODE_PREFIX))?;
+        let node_list: Vec<DatenLordNode> = self
+            .etcd_client
+            .get_list(&format!("{}/", NODE_PREFIX))
+            .await?;
         debug_assert!(
             !node_list.is_empty(),
             "failed to retrieve node list from etcd"
@@ -204,7 +209,7 @@ impl MetaData {
         match node_id {
             None => {
                 debug!("request doesn't have node id, select random node");
-                self.select_random_node()
+                self.select_random_node().await
             }
             Some(node_id) => {
                 debug!("select node ID={} from request", node_id);
@@ -440,7 +445,7 @@ impl MetaData {
     }
 
     /// List volumes
-    pub fn list_volumes(
+    pub async fn list_volumes(
         &self,
         starting_token: &str,
         max_entries: i32,
@@ -448,6 +453,7 @@ impl MetaData {
         let vol_list: Vec<DatenLordVolume> = self
             .etcd_client
             .get_list(&format!("{}/", VOLUME_ID_PREFIX))
+            .await
             .map_err(|e| (RpcStatusCode::INTERNAL, e))?;
 
         Self::list_helper(vol_list, starting_token, max_entries, |vol| {
@@ -464,7 +470,7 @@ impl MetaData {
     }
 
     /// List snapshots except those creation time failed to convert to proto timestamp
-    pub fn list_snapshots(
+    pub async fn list_snapshots(
         &self,
         starting_token: &str,
         max_entries: i32,
@@ -472,6 +478,7 @@ impl MetaData {
         let snap_list: Vec<DatenLordSnapshot> = self
             .etcd_client
             .get_list(&format!("{}/", SNAPSHOT_ID_PREFIX))
+            .await
             .map_err(|e| (RpcStatusCode::INTERNAL, e))?;
 
         Self::list_helper(snap_list, starting_token, max_entries, |snap| {
@@ -545,7 +552,7 @@ impl MetaData {
     }
 
     /// Add new snapshot meta data
-    pub fn add_snapshot_meta_data(
+    pub async fn add_snapshot_meta_data(
         &self,
         snap_id: &str,
         snapshot: &DatenLordSnapshot,
@@ -557,6 +564,7 @@ impl MetaData {
         let snap_id_key = format!("{}/{}", SNAPSHOT_ID_PREFIX, snap_id);
         self.etcd_client
             .write_new_kv(&snap_id_key, snapshot)
+            .await
             .context(format!(
                 "failed to add new snapshot key={} to etcd",
                 snap_id_key
@@ -565,6 +573,7 @@ impl MetaData {
         let snap_name_key = format!("{}/{}", SNAPSHOT_NAME_PREFIX, snapshot.snap_name);
         self.etcd_client
             .write_new_kv(&snap_name_key, &snap_id_str)
+            .await
             .context(format!(
                 "failed to add new snapshot key={} to etcd",
                 snap_name_key
@@ -573,6 +582,7 @@ impl MetaData {
         let snap_source_id_key = format!("{}/{}", SNAPSHOT_SOURCE_ID_PREFIX, snapshot.vol_id);
         self.etcd_client
             .write_new_kv(&snap_source_id_key, &snap_id_str)
+            .await
             .context(format!(
                 "failed to add new snapshot key={} to etcd",
                 snap_source_id_key,
@@ -581,6 +591,7 @@ impl MetaData {
         let node_snap_key = format!("{}/{}/{}", NODE_SNAPSHOT_PREFIX, snapshot.node_id, snap_id);
         self.etcd_client
             .write_new_kv(&node_snap_key, &snapshot.ready_to_use)
+            .await
             .context(format!(
                 "failed to add new snapshot key={} to etcd",
                 node_snap_key
@@ -590,29 +601,40 @@ impl MetaData {
     }
 
     /// Delete the snapshot meta data
-    pub fn delete_snapshot_meta_data(&self, snap_id: &str) -> anyhow::Result<DatenLordSnapshot> {
+    pub async fn delete_snapshot_meta_data(
+        &self,
+        snap_id: &str,
+    ) -> anyhow::Result<DatenLordSnapshot> {
         info!("deleting the meta data of snapshot ID={}", snap_id);
 
         // TODO: use etcd transancation?
         let snap_id_key = format!("{}/{}", SNAPSHOT_ID_PREFIX, snap_id);
-        let snap_id_pre_value: DatenLordSnapshot =
-            self.etcd_client.delete_exact_one_value(&snap_id_key)?;
+        let snap_id_pre_value: DatenLordSnapshot = self
+            .etcd_client
+            .delete_exact_one_value(&snap_id_key)
+            .await?;
 
         let snap_name_key = format!("{}/{}", SNAPSHOT_NAME_PREFIX, snap_id_pre_value.snap_name);
-        let snap_name_pre_value: String =
-            self.etcd_client.delete_exact_one_value(&snap_name_key)?;
+        let snap_name_pre_value: String = self
+            .etcd_client
+            .delete_exact_one_value(&snap_name_key)
+            .await?;
 
         let snap_source_id_key =
             format!("{}/{}", SNAPSHOT_SOURCE_ID_PREFIX, snap_id_pre_value.vol_id);
         let snap_source_pre_value: String = self
             .etcd_client
-            .delete_exact_one_value(&snap_source_id_key)?;
+            .delete_exact_one_value(&snap_source_id_key)
+            .await?;
 
         let node_snap_key = format!(
             "{}/{}/{}",
             NODE_SNAPSHOT_PREFIX, snap_id_pre_value.node_id, snap_id
         );
-        let _node_snap_pre_value: bool = self.etcd_client.delete_exact_one_value(&node_snap_key)?;
+        let _node_snap_pre_value: bool = self
+            .etcd_client
+            .delete_exact_one_value(&node_snap_key)
+            .await?;
 
         debug!(
             "deleted snapshot ID={} name={} source volume ID={} at node ID={}",
@@ -622,7 +644,7 @@ impl MetaData {
     }
 
     /// Update the existing volume meta data
-    pub fn update_volume_meta_data(
+    pub async fn update_volume_meta_data(
         &self,
         vol_id: &str,
         volume: &DatenLordVolume,
@@ -631,7 +653,10 @@ impl MetaData {
         let vol_id_str = vol_id.to_owned();
 
         let vol_id_key = format!("{}/{}", VOLUME_ID_PREFIX, vol_id);
-        let vol_id_pre_value = self.etcd_client.update_existing_kv(&vol_id_key, volume)?;
+        let vol_id_pre_value = self
+            .etcd_client
+            .update_existing_kv(&vol_id_key, volume)
+            .await?;
         debug_assert_eq!(
             vol_id_pre_value.vol_id, vol_id,
             "replaced volume key={} value not match",
@@ -641,7 +666,8 @@ impl MetaData {
         let vol_name_key = format!("{}/{}", VOLUME_NAME_PREFIX, volume.vol_name);
         let vol_name_pre_value = self
             .etcd_client
-            .update_existing_kv(&vol_name_key, &vol_id_str)?;
+            .update_existing_kv(&vol_name_key, &vol_id_str)
+            .await?;
         debug_assert_eq!(
             vol_name_pre_value, vol_id,
             "replaced volume key={} value not match",
@@ -652,7 +678,8 @@ impl MetaData {
         let node_vol_key = format!("{}/{}/{}", NODE_VOLUME_PREFIX, volume.node_id, vol_id);
         let node_vol_pre_value = self
             .etcd_client
-            .update_existing_kv(&node_vol_key, &volume.ephemeral)?;
+            .update_existing_kv(&node_vol_key, &volume.ephemeral)
+            .await?;
         debug_assert_eq!(
             node_vol_pre_value, vol_id_pre_value.ephemeral,
             "replaced volume key={} value not match",
@@ -663,7 +690,7 @@ impl MetaData {
     }
 
     /// Add new volume meta data
-    pub fn add_volume_meta_data(
+    pub async fn add_volume_meta_data(
         &self,
         vol_id: &str,
         volume: &DatenLordVolume,
@@ -674,6 +701,7 @@ impl MetaData {
         let vol_id_key = format!("{}/{}", VOLUME_ID_PREFIX, vol_id);
         self.etcd_client
             .write_new_kv(&vol_id_key, volume)
+            .await
             .context(format!(
                 "failed to add new volume key={} to etcd",
                 vol_id_key,
@@ -682,6 +710,7 @@ impl MetaData {
         let vol_name_key = format!("{}/{}", VOLUME_NAME_PREFIX, volume.vol_name);
         self.etcd_client
             .write_new_kv(&vol_name_key, &vol_id_str)
+            .await
             .context(format!(
                 "failed to add new volume key={} to etcd",
                 vol_name_key,
@@ -690,6 +719,7 @@ impl MetaData {
         let node_vol_key = format!("{}/{}/{}", NODE_VOLUME_PREFIX, volume.node_id, vol_id);
         self.etcd_client
             .write_new_kv(&node_vol_key, &volume.ephemeral)
+            .await
             .context(format!(
                 "failed to add new volume key={} to etcd",
                 node_vol_key,
@@ -705,16 +735,22 @@ impl MetaData {
         // TODO: use etcd transancation?
         let vol_id_key = format!("{}/{}", VOLUME_ID_PREFIX, vol_id);
         let vol_id_pre_value: DatenLordVolume =
-            self.etcd_client.delete_exact_one_value(&vol_id_key)?;
+            self.etcd_client.delete_exact_one_value(&vol_id_key).await?;
 
         let vol_name_key = format!("{}/{}", VOLUME_NAME_PREFIX, vol_id_pre_value.vol_name);
-        let vol_name_pre_value: String = self.etcd_client.delete_exact_one_value(&vol_name_key)?;
+        let vol_name_pre_value: String = self
+            .etcd_client
+            .delete_exact_one_value(&vol_name_key)
+            .await?;
 
         let node_vol_key = format!(
             "{}/{}/{}",
             NODE_VOLUME_PREFIX, vol_id_pre_value.node_id, vol_id
         );
-        let _node_vol_pre_value: bool = self.etcd_client.delete_exact_one_value(&node_vol_key)?;
+        let _node_vol_pre_value: bool = self
+            .etcd_client
+            .delete_exact_one_value(&node_vol_key)
+            .await?;
 
         let get_mount_path_res = self.get_volume_bind_mount_path(vol_id).await;
         if let Ok(pre_mount_path_vec) = get_mount_path_res {
@@ -731,7 +767,7 @@ impl MetaData {
                 }
             });
             if !pre_mount_path_vec.is_empty() {
-                let deleted_path_vec = self.delete_volume_all_bind_mount_path(vol_id)?;
+                let deleted_path_vec = self.delete_volume_all_bind_mount_path(vol_id).await?;
                 debug_assert_eq!(
                     pre_mount_path_vec, deleted_path_vec,
                     "the volume bind mount paths and \
@@ -915,7 +951,7 @@ impl MetaData {
             mount_path_set.remove(mount_path);
             if mount_path_set.is_empty() {
                 // Delete the last mount path
-                self.delete_volume_all_bind_mount_path(vol_id)
+                self.delete_volume_all_bind_mount_path(vol_id).await
             } else {
                 let mount_path_value_in_etcd = mount_path_set
                     .into_iter()
@@ -924,6 +960,7 @@ impl MetaData {
                 let volume_mount_paths: String = self
                     .etcd_client
                     .update_existing_kv(&volume_mount_path_key, &mount_path_value_in_etcd)
+                    .await
                     .context(format!(
                         "failed to delete one mount path={} of volume ID={}",
                         mount_path, vol_id
@@ -939,7 +976,7 @@ impl MetaData {
     }
 
     /// Delete all bind path of a volume from etcd
-    pub fn delete_volume_all_bind_mount_path(
+    pub async fn delete_volume_all_bind_mount_path(
         &self,
         vol_id: &str,
     ) -> anyhow::Result<HashSet<String>> {
@@ -951,7 +988,8 @@ impl MetaData {
         );
         let mount_paths: String = self
             .etcd_client
-            .delete_exact_one_value(&volume_mount_path_key)?;
+            .delete_exact_one_value(&volume_mount_path_key)
+            .await?;
 
         Ok((&mount_paths)
             .split(VOLUME_BIND_MOUNT_PATH_SEPARATOR)
@@ -1013,7 +1051,8 @@ impl MetaData {
             BindMountMode::Single => {
                 let write_res = self
                     .etcd_client
-                    .write_new_kv(&volume_mount_path_key, &mount_path_value_in_etcd);
+                    .write_new_kv(&volume_mount_path_key, &mount_path_value_in_etcd)
+                    .await;
                 if let Err(e) = write_res {
                     panic!(
                         "failed to write the mount path={} of volume ID={} to etcd, \
@@ -1027,7 +1066,8 @@ impl MetaData {
             BindMountMode::Multiple => {
                 let update_res = self
                     .etcd_client
-                    .update_existing_kv(&volume_mount_path_key, &mount_path_value_in_etcd);
+                    .update_existing_kv(&volume_mount_path_key, &mount_path_value_in_etcd)
+                    .await;
                 match update_res {
                     Ok(pre_mount_paths) => {
                         debug_assert!(
@@ -1228,10 +1268,14 @@ impl MetaData {
     }
 
     /// Expand volume size, return previous size
-    pub fn expand(&self, volume: &mut DatenLordVolume, new_size_bytes: i64) -> anyhow::Result<i64> {
+    pub async fn expand(
+        &self,
+        volume: &mut DatenLordVolume,
+        new_size_bytes: i64,
+    ) -> anyhow::Result<i64> {
         let old_size_bytes = volume.get_size();
         if volume.expand_size(new_size_bytes) {
-            let prv_vol = self.update_volume_meta_data(&volume.vol_id, volume)?;
+            let prv_vol = self.update_volume_meta_data(&volume.vol_id, volume).await?;
             assert_eq!(
                 prv_vol.get_size(),
                 old_size_bytes,

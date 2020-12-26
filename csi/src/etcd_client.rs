@@ -33,21 +33,6 @@ impl EtcdClient {
         Ok(Self { etcd_rs_client })
     }
 
-    /// Get key-value list from etcd
-    async fn get_list_async<T: DeserializeOwned>(&self, prefix: &str) -> anyhow::Result<Vec<T>> {
-        let req = etcd_rs::RangeRequest::new(etcd_rs::KeyRange::prefix(prefix));
-        let mut resp = self.etcd_rs_client.kv().range(req).await.context(format!(
-            "failed to get RangeResponse from etcd for key={:?}",
-            prefix,
-        ))?;
-        let mut result_vec = Vec::with_capacity(resp.count());
-        for kv in resp.take_kvs() {
-            let decoded_value: T = util::decode_from_bytes(kv.value())?;
-            result_vec.push(decoded_value);
-        }
-        Ok(result_vec)
-    }
-
     /// Get one key-value pair from etcd
     async fn get_one_kv_async<T: DeserializeOwned>(&self, key: &str) -> anyhow::Result<Option<T>> {
         let req = etcd_rs::RangeRequest::new(etcd_rs::KeyRange::key(key));
@@ -112,10 +97,18 @@ impl EtcdClient {
     }
 
     /// Get key-value list from etcd
-    pub fn get_list<T: DeserializeOwned>(&self, prefix: &str) -> anyhow::Result<Vec<T>> {
-        smol::block_on(Compat::new(
-            async move { self.get_list_async(prefix).await },
-        ))
+    pub async fn get_list<T: DeserializeOwned>(&self, prefix: &str) -> anyhow::Result<Vec<T>> {
+        let req = etcd_rs::RangeRequest::new(etcd_rs::KeyRange::prefix(prefix));
+        let mut resp = self.etcd_rs_client.kv().range(req).await.context(format!(
+            "failed to get RangeResponse from etcd for key={:?}",
+            prefix,
+        ))?;
+        let mut result_vec = Vec::with_capacity(resp.count());
+        for kv in resp.take_kvs() {
+            let decoded_value: T = util::decode_from_bytes(kv.value())?;
+            result_vec.push(decoded_value);
+        }
+        Ok(result_vec)
     }
 
     /// Get zero or one key-value pair from etcd
@@ -128,15 +121,14 @@ impl EtcdClient {
     }
 
     /// Update a existing key value pair to etcd
-    pub fn update_existing_kv<T: DeserializeOwned + Serialize + Clone + Debug + Send + Sync>(
+    pub async fn update_existing_kv<
+        T: DeserializeOwned + Serialize + Clone + Debug + Send + Sync,
+    >(
         &self,
         key: &str,
         value: &T,
     ) -> anyhow::Result<T> {
-        let write_res =
-            smol::block_on(Compat::new(
-                async move { self.write_to_etcd(key, value).await },
-            ))?;
+        let write_res = self.write_to_etcd(key, value).await?;
         if let Some(pre_value) = write_res {
             Ok(pre_value)
         } else {
@@ -145,15 +137,12 @@ impl EtcdClient {
     }
 
     /// Write a new key value pair to etcd
-    pub fn write_new_kv<T: DeserializeOwned + Serialize + Clone + Debug + Send + Sync>(
+    pub async fn write_new_kv<T: DeserializeOwned + Serialize + Clone + Debug + Send + Sync>(
         &self,
         key: &str,
         value: &T,
     ) -> anyhow::Result<()> {
-        let write_res =
-            smol::block_on(Compat::new(
-                async move { self.write_to_etcd(key, value).await },
-            ))?;
+        let write_res = self.write_to_etcd(key, value).await?;
         if let Some(pre_value) = write_res {
             panic!(
                 "failed to write new key vaule pair, the key={} exists in etcd, \
@@ -166,15 +155,14 @@ impl EtcdClient {
     }
 
     /// Write key value pair to etcd, if key exists, update it
-    pub fn write_or_update_kv<T: DeserializeOwned + Serialize + Clone + Debug + Send + Sync>(
+    pub async fn write_or_update_kv<
+        T: DeserializeOwned + Serialize + Clone + Debug + Send + Sync,
+    >(
         &self,
         key: &str,
         value: &T,
     ) -> anyhow::Result<()> {
-        let write_res =
-            smol::block_on(Compat::new(
-                async move { self.write_to_etcd(key, value).await },
-            ))?;
+        let write_res = self.write_to_etcd(key, value).await?;
         if let Some(pre_value) = write_res {
             debug!(
                 "key={} exists in etcd, the previous value={:?}, update it",
@@ -185,12 +173,11 @@ impl EtcdClient {
     }
 
     /// Delete an existing key value pair from etcd
-    pub fn delete_exact_one_value<T: DeserializeOwned + Clone + Debug + Send + Sync>(
+    pub async fn delete_exact_one_value<T: DeserializeOwned + Clone + Debug + Send + Sync>(
         &self,
         key: &str,
     ) -> anyhow::Result<T> {
-        let mut deleted_value_vec =
-            smol::block_on(Compat::new(async move { self.delete_from_etcd(key).await }))?;
+        let mut deleted_value_vec = self.delete_from_etcd(key).await?;
         debug_assert_eq!(
             deleted_value_vec.len(),
             1,
@@ -208,13 +195,14 @@ impl EtcdClient {
 
     /// Delete all key value pairs from etcd
     #[allow(dead_code)]
-    pub fn delete_all(&self) -> anyhow::Result<()> {
+    pub async fn delete_all(&self) -> anyhow::Result<()> {
         let mut req = etcd_rs::DeleteRequest::new(etcd_rs::KeyRange::all());
         req.set_prev_kv(false);
-        smol::block_on(Compat::new(async move {
-            self.etcd_rs_client.kv().delete(req).await
-        }))
-        .context("failed to delete all data from etcd")?;
+        self.etcd_rs_client
+            .kv()
+            .delete(req)
+            .await
+            .context("failed to delete all data from etcd")?;
         Ok(())
     }
 }
