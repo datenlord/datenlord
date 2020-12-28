@@ -271,7 +271,8 @@ impl ControllerImplInner {
             }
         };
         let client = MetaData::build_worker_client(&worker_node);
-        let create_res = client.worker_create_volume(req);
+        let req_clone = req.clone();
+        let create_res = smol::unblock(move || client.worker_create_volume(&req_clone)).await;
         match create_res {
             Ok(resp) => Ok(resp),
             Err(e) => {
@@ -496,6 +497,7 @@ impl Controller for ControllerImpl {
                         (rpc_status_code, e)
                     })
             };
+
         util::spawn_grpc_task(sink, task);
     }
 
@@ -532,10 +534,14 @@ impl Controller for ControllerImpl {
                 let node_res = self_inner.meta_data.get_node_by_id(&vol.node_id).await;
                 if let Some(node) = node_res {
                     let client = MetaData::build_worker_client(&node);
-                    let worker_delete_res = client.worker_delete_volume(&req).context(format!(
-                        "failed to delete volume ID={} on node ID={}",
-                        vol_id, vol.node_id,
-                    ));
+                    let req_clone = req.clone();
+                    let worker_delete_res =
+                        smol::unblock(move || client.worker_delete_volume(&req_clone))
+                            .await
+                            .context(format!(
+                                "failed to delete volume ID={} on node ID={}",
+                                vol_id, vol.node_id,
+                            ));
                     match worker_delete_res {
                         Ok(_) => info!("successfully deleted volume ID={}", vol_id),
                         Err(e) => {
@@ -802,10 +808,14 @@ impl Controller for ControllerImpl {
                     let node_res = self_inner.meta_data.get_node_by_id(&src_vol.node_id).await;
                     if let Some(node) = node_res {
                         let client = MetaData::build_worker_client(&node);
-                        let create_res = client.worker_create_snapshot(&req).context(format!(
-                            "failed to create snapshot name={} on node ID={}",
-                            snap_name, src_vol.node_id,
-                        ));
+                        let req_clone = req.clone();
+                        let create_res =
+                            smol::unblock(move || client.worker_create_snapshot(&req_clone))
+                                .await
+                                .context(format!(
+                                    "failed to create snapshot name={} on node ID={}",
+                                    snap_name, src_vol.node_id,
+                                ));
                         match create_res {
                             Ok(r) => return Ok(r),
                             Err(e) => return Err((RpcStatusCode::INTERNAL, e)),
@@ -866,10 +876,14 @@ impl Controller for ControllerImpl {
                 let node_res = self_inner.meta_data.get_node_by_id(&snap.node_id).await;
                 if let Some(node) = node_res {
                     let client = MetaData::build_worker_client(&node);
-                    let worker_delete_res = client.worker_delete_snapshot(&req).context(format!(
-                        "failed to delete snapshot ID={} on node ID={}",
-                        snap_id, snap.node_id,
-                    ));
+                    let req_clone = req.clone();
+                    let worker_delete_res =
+                        smol::unblock(move || client.worker_delete_snapshot(&req_clone))
+                            .await
+                            .context(format!(
+                                "failed to delete snapshot ID={} on node ID={}",
+                                snap_id, snap.node_id,
+                            ));
                     match worker_delete_res {
                         Ok(_r) => info!("successfully deleted sanpshot ID={}", snap_id),
                         Err(e) => {
