@@ -276,32 +276,6 @@ impl Node for NodeImpl {
 
         let task = async move {
             NodeImplInner::node_publish_volume_pre_check(&req)?;
-            // if !req.has_volume_capability() {
-            //     return util::fail(
-            //         &ctx,
-            //         sink,
-            //         RpcStatusCode::INVALID_ARGUMENT,
-            //         &anyhow!("volume capability missing in request"),
-            //     );
-            // }
-            // let vol_id = req.get_volume_id();
-            // if vol_id.is_empty() {
-            //     return util::fail(
-            //         &ctx,
-            //         sink,
-            //         RpcStatusCode::INVALID_ARGUMENT,
-            //         &anyhow!("volume ID missing in request"),
-            //     );
-            // }
-            // let target_dir = req.get_target_path();
-            // if target_dir.is_empty() {
-            //     return util::fail(
-            //         &ctx,
-            //         sink,
-            //         RpcStatusCode::INVALID_ARGUMENT,
-            //         &anyhow!("target path missing in request"),
-            //     );
-            // }
 
             let read_only = req.get_readonly();
             let volume_context = req.get_volume_context();

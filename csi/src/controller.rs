@@ -271,9 +271,10 @@ impl ControllerImplInner {
             }
         };
         let client = MetaData::build_worker_client(&worker_node);
-        let req_clone = req.clone();
-        let create_res = smol::unblock(move || client.worker_create_volume(&req_clone)).await;
-        match create_res {
+        let create_res = client
+            .worker_create_volume_async(req)
+            .map_err(|e| (RpcStatusCode::INTERNAL, anyhow::Error::new(e)))?;
+        match create_res.await {
             Ok(resp) => Ok(resp),
             Err(e) => {
                 match e {
@@ -388,76 +389,7 @@ impl Controller for ControllerImpl {
         let task =
             async move {
                 self_inner.create_volume_pre_check(&req)?;
-                // let rpc_type = ControllerServiceCapability_RPC_Type::CREATE_DELETE_VOLUME;
-                // if !self.validate_request_capability(rpc_type) {
-                //     return util::fail(
-                //         &ctx,
-                //         sink,
-                //         RpcStatusCode::INVALID_ARGUMENT,
-                //         anyhow!(format!("unsupported capability {:?}", rpc_type)),
-                //     );
-                // }
 
-                // let vol_name = req.get_name();
-                // if vol_name.is_empty() {
-                //     return util::fail(
-                //         &ctx,
-                //         sink,
-                //         RpcStatusCode::INVALID_ARGUMENT,
-                //         anyhow!("name missing in request"),
-                //     );
-                // }
-
-                // let req_caps = req.get_volume_capabilities();
-                // if req_caps.is_empty() {
-                //     return util::fail(
-                //         &ctx,
-                //         sink,
-                //         RpcStatusCode::INVALID_ARGUMENT,
-                //         anyhow!("volume capabilities missing in request"),
-                //     );
-                // }
-
-                // let access_type_block = req_caps.iter().any(VolumeCapability::has_block);
-                // let access_mode_multi_writer = req_caps.iter().any(|vc| {
-                //     vc.get_access_mode().get_mode()
-                //         == VolumeCapability_AccessMode_Mode::MULTI_NODE_MULTI_WRITER
-                //         || vc.get_access_mode().get_mode()
-                //             == VolumeCapability_AccessMode_Mode::MULTI_NODE_SINGLE_WRITER
-                // });
-                // if access_type_block {
-                //     return util::fail(
-                //         &ctx,
-                //         sink,
-                //         RpcStatusCode::INVALID_ARGUMENT,
-                //         anyhow!("access type block not supported"),
-                //     );
-                // }
-                // if access_mode_multi_writer {
-                //     return util::fail(
-                //         &ctx,
-                //         sink,
-                //         RpcStatusCode::INVALID_ARGUMENT,
-                //         anyhow!(
-                //             "access mode MULTI_NODE_SINGLE_WRITER and \
-                //                 MULTI_NODE_MULTI_WRITER not supported"
-                //         ),
-                //     );
-                // }
-
-                // let volume_size = req.get_capacity_range().get_required_bytes();
-                // if volume_size > util::MAX_VOLUME_STORAGE_CAPACITY {
-                //     return util::fail(
-                //         &ctx,
-                //         sink,
-                //         RpcStatusCode::OUT_OF_RANGE,
-                //         anyhow!(format!(
-                //             "requested size {} exceeds maximum allowed {}",
-                //             volume_size,
-                //             util::MAX_VOLUME_STORAGE_CAPACITY,
-                //         )),
-                //     );
-                // }
                 let vol_name = req.get_name();
                 let resp_opt = self_inner.find_existing_volume(&req).await.map_err(
                     |(rpc_status_code, e)| {
@@ -534,17 +466,18 @@ impl Controller for ControllerImpl {
                 let node_res = self_inner.meta_data.get_node_by_id(&vol.node_id).await;
                 if let Some(node) = node_res {
                     let client = MetaData::build_worker_client(&node);
-                    let req_clone = req.clone();
-                    let worker_delete_res =
-                        smol::unblock(move || client.worker_delete_volume(&req_clone))
-                            .await
-                            .context(format!(
-                                "failed to delete volume ID={} on node ID={}",
-                                vol_id, vol.node_id,
-                            ));
+                    let worker_delete_res = client
+                        .worker_delete_volume_async(&req)
+                        .map_err(|e| (RpcStatusCode::INTERNAL, anyhow::Error::new(e)))?
+                        .await
+                        .context(format!(
+                            "failed to delete volume ID={} on node ID={}",
+                            vol_id, vol.node_id,
+                        ));
                     match worker_delete_res {
                         Ok(_) => info!("successfully deleted volume ID={}", vol_id),
                         Err(e) => {
+                            // Return error here?
                             warn!(
                                 "failed to delete volume ID={} on node ID={}, the error is: {}",
                                 vol_id,
@@ -808,14 +741,14 @@ impl Controller for ControllerImpl {
                     let node_res = self_inner.meta_data.get_node_by_id(&src_vol.node_id).await;
                     if let Some(node) = node_res {
                         let client = MetaData::build_worker_client(&node);
-                        let req_clone = req.clone();
-                        let create_res =
-                            smol::unblock(move || client.worker_create_snapshot(&req_clone))
-                                .await
-                                .context(format!(
-                                    "failed to create snapshot name={} on node ID={}",
-                                    snap_name, src_vol.node_id,
-                                ));
+                        let create_res = client
+                            .worker_create_snapshot_async(&req)
+                            .map_err(|e| (RpcStatusCode::INTERNAL, anyhow::Error::new(e)))?
+                            .await
+                            .context(format!(
+                                "failed to create snapshot name={} on node ID={}",
+                                snap_name, src_vol.node_id,
+                            ));
                         match create_res {
                             Ok(r) => return Ok(r),
                             Err(e) => return Err((RpcStatusCode::INTERNAL, e)),
@@ -876,14 +809,14 @@ impl Controller for ControllerImpl {
                 let node_res = self_inner.meta_data.get_node_by_id(&snap.node_id).await;
                 if let Some(node) = node_res {
                     let client = MetaData::build_worker_client(&node);
-                    let req_clone = req.clone();
-                    let worker_delete_res =
-                        smol::unblock(move || client.worker_delete_snapshot(&req_clone))
-                            .await
-                            .context(format!(
-                                "failed to delete snapshot ID={} on node ID={}",
-                                snap_id, snap.node_id,
-                            ));
+                    let worker_delete_res = client
+                        .worker_delete_snapshot_async(&req)
+                        .map_err(|e| (RpcStatusCode::INTERNAL, anyhow::Error::new(e)))?
+                        .await
+                        .context(format!(
+                            "failed to delete snapshot ID={} on node ID={}",
+                            snap_id, snap.node_id,
+                        ));
                     match worker_delete_res {
                         Ok(_r) => info!("successfully deleted sanpshot ID={}", snap_id),
                         Err(e) => {
