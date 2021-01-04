@@ -766,7 +766,7 @@ impl MetaData {
                         if let Err(e) = umount_res {
                             panic!(
                                 "failed to un-mount volume ID={} bind path={}, \
-                            the error is: {}",
+                                    the error is: {}",
                                 vol_id_owned,
                                 pre_mount_path,
                                 util::format_anyhow_error(&e),
@@ -789,6 +789,19 @@ impl MetaData {
             vol_id, vol_name_pre_value, vol_id_pre_value.node_id,
         );
         Ok(vol_id_pre_value)
+    }
+
+    /// Decompress snapshot of volume to destination
+    fn decompress_snapshot(snap_path: &Path, dst_path: &Path) -> anyhow::Result<()> {
+        let tar_gz =
+            File::open(snap_path).context(format!("failed to open path={:?}", snap_path))?;
+
+        let tar_file = flate2::read::GzDecoder::new(tar_gz);
+        let mut archive = tar::Archive::new(tar_file);
+        archive
+            .unpack(dst_path)
+            .context(format!("failed to decompress snapshot to {:?}", dst_path))?;
+        Ok(())
     }
 
     /// Populate the given destPath with data from the snapshot ID
@@ -844,25 +857,14 @@ impl MetaData {
 
                 debug_assert!(
                     dst_path.is_dir(),
-                    "the volume of monnt access type should have a directory path: {:?}",
+                    "the volume of mount access type should have a directory path: {:?}",
                     dst_path,
                 );
-                let open_res = File::open(&src_snapshot.snap_path)
-                    .context(format!("failed to open path={:?}", src_snapshot.snap_path));
-                let tar_gz = match open_res {
-                    Ok(tg) => tg,
-                    Err(e) => {
-                        return Err((RpcStatusCode::INTERNAL, e));
-                    }
-                };
-                let tar_file = flate2::read::GzDecoder::new(tar_gz);
-                let mut archive = tar::Archive::new(tar_file);
-                let unpack_res = archive
-                    .unpack(&dst_path)
-                    .context(format!("failed to decompress snapshot to {:?}", dst_path));
-                if let Err(e) = unpack_res {
-                    return Err((RpcStatusCode::INTERNAL, e));
-                }
+                let snap_path_owned = src_snapshot.snap_path.to_owned();
+                let dst_path_owned = dst_path.to_owned();
+                smol::unblock(move || Self::decompress_snapshot(&snap_path_owned, &dst_path_owned))
+                    .await
+                    .map_err(|e| (RpcStatusCode::INTERNAL, e))?
             }
         }
 
@@ -912,11 +914,16 @@ impl MetaData {
                     ));
                 }
 
-                let copy_res = util::copy_directory_recursively(
-                    &src_volume.vol_path,
-                    &dst_path,
-                    false, // follow symlink or not
-                )
+                let vol_path_owned = src_volume.vol_path.to_owned();
+                let dst_path_owned = dst_path.to_owned();
+                let copy_res = smol::unblock(move || {
+                    util::copy_directory_recursively(
+                        &vol_path_owned,
+                        &dst_path_owned,
+                        false, // follow symlink or not
+                    )
+                })
+                .await
                 .context(format!(
                     "failed to pre-populate data from source mount volume {} and name={}",
                     src_volume.vol_id, src_volume.vol_name,
@@ -1271,7 +1278,7 @@ impl MetaData {
                 smol::unblock(move || Self::compress_volume(&src_vol_owned, &snap_path_owned))
                     .await?;
 
-                let now = std::time::SystemTime::now();
+                let now = smol::unblock(std::time::SystemTime::now).await;
                 let snapshot = DatenLordSnapshot::new(
                     snap_name.to_owned(),
                     snap_id.to_string(),

@@ -35,7 +35,7 @@ impl IdentityImpl {
 impl Identity for IdentityImpl {
     fn get_plugin_info(
         &mut self,
-        ctx: RpcContext,
+        _ctx: RpcContext,
         req: GetPluginInfoRequest,
         sink: UnarySink<GetPluginInfoResponse>,
     ) {
@@ -44,12 +44,12 @@ impl Identity for IdentityImpl {
         let mut r = GetPluginInfoResponse::new();
         r.set_name(self.plugin_name.clone());
         r.set_vendor_version(self.version.clone());
-        util::success(&ctx, sink, r)
+        util::spawn_grpc_task(sink, async { Ok(r) });
     }
 
     fn get_plugin_capabilities(
         &mut self,
-        ctx: RpcContext,
+        _ctx: RpcContext,
         req: GetPluginCapabilitiesRequest,
         sink: UnarySink<GetPluginCapabilitiesResponse>,
     ) {
@@ -63,14 +63,15 @@ impl Identity for IdentityImpl {
             .set_field_type(PluginCapability_Service_Type::VOLUME_ACCESSIBILITY_CONSTRAINTS);
         let mut r = GetPluginCapabilitiesResponse::new();
         r.set_capabilities(::protobuf::RepeatedField::from_vec(vec![p1, p2]));
-        util::success(&ctx, sink, r)
+
+        util::spawn_grpc_task(sink, async { Ok(r) });
     }
 
-    fn probe(&mut self, ctx: RpcContext, req: ProbeRequest, sink: UnarySink<ProbeResponse>) {
+    fn probe(&mut self, _ctx: RpcContext, req: ProbeRequest, sink: UnarySink<ProbeResponse>) {
         debug!("probe request: {:?}", req);
 
         let mut r = ProbeResponse::new();
         r.mut_ready().set_value(true);
-        util::success(&ctx, sink, r)
+        util::spawn_grpc_task(sink, async { Ok(r) });
     }
 }

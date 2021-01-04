@@ -131,8 +131,8 @@ impl ControllerImplInner {
                                         RpcStatusCode::ALREADY_EXISTS,
                                         anyhow!(format!(
                                             "existing volume ID={} has parent snapshot ID={}, \
-                                            but VolumeContentSource_SnapshotSource has \
-                                            parent snapshot ID={}",
+                                                but VolumeContentSource_SnapshotSource has \
+                                                parent snapshot ID={}",
                                             ex_vol.vol_id, psid, parent_snap_id,
                                         )),
                                     ));
@@ -155,8 +155,8 @@ impl ControllerImplInner {
                                         RpcStatusCode::ALREADY_EXISTS,
                                         anyhow!(format!(
                                             "existing volume ID={} has parent volume ID={}, \
-                                            but VolumeContentSource_VolumeSource has \
-                                            parent volume ID={}",
+                                                but VolumeContentSource_VolumeSource has \
+                                                parent volume ID={}",
                                             ex_vol.vol_id, pvid, parent_vol_id,
                                         )),
                                     ));
@@ -504,34 +504,28 @@ impl Controller for ControllerImpl {
 
     fn controller_publish_volume(
         &mut self,
-        ctx: RpcContext,
+        _ctx: RpcContext,
         req: ControllerPublishVolumeRequest,
         sink: UnarySink<ControllerPublishVolumeResponse>,
     ) {
         debug!("controller_publish_volume request: {:?}", req);
 
-        util::fail(
-            &ctx,
-            sink,
-            RpcStatusCode::UNIMPLEMENTED,
-            &anyhow!("unimplemented"),
-        )
+        util::spawn_grpc_task(sink, async {
+            Err((RpcStatusCode::UNIMPLEMENTED, anyhow!("unimplemented")))
+        });
     }
 
     fn controller_unpublish_volume(
         &mut self,
-        ctx: RpcContext,
+        _ctx: RpcContext,
         req: ControllerUnpublishVolumeRequest,
         sink: UnarySink<ControllerUnpublishVolumeResponse>,
     ) {
         debug!("controller_unpublish_volume request: {:?}", req);
 
-        util::fail(
-            &ctx,
-            sink,
-            RpcStatusCode::UNIMPLEMENTED,
-            &anyhow!("unimplemented"),
-        )
+        util::spawn_grpc_task(sink, async {
+            Err((RpcStatusCode::UNIMPLEMENTED, anyhow!("unimplemented")))
+        });
     }
 
     fn validate_volume_capabilities(
@@ -631,7 +625,7 @@ impl Controller for ControllerImpl {
                     );
                     warn!(
                         "failed to list volumes from starting position={} and \
-                        max entries={}, the error is: {}",
+                            max entries={}, the error is: {}",
                         starting_token,
                         max_entries,
                         util::format_anyhow_error(&e),
@@ -651,23 +645,20 @@ impl Controller for ControllerImpl {
 
     fn get_capacity(
         &mut self,
-        ctx: RpcContext,
+        _ctx: RpcContext,
         req: GetCapacityRequest,
         sink: UnarySink<GetCapacityResponse>,
     ) {
         debug!("get_capacity request: {:?}", req);
 
-        util::fail(
-            &ctx,
-            sink,
-            RpcStatusCode::UNIMPLEMENTED,
-            &anyhow!("unimplemented"),
-        )
+        util::spawn_grpc_task(sink, async {
+            Err((RpcStatusCode::UNIMPLEMENTED, anyhow!("unimplemented")))
+        });
     }
 
     fn controller_get_capabilities(
         &mut self,
-        ctx: RpcContext,
+        _ctx: RpcContext,
         req: ControllerGetCapabilitiesRequest,
         sink: UnarySink<ControllerGetCapabilitiesResponse>,
     ) {
@@ -675,7 +666,7 @@ impl Controller for ControllerImpl {
 
         let mut r = ControllerGetCapabilitiesResponse::new();
         r.set_capabilities(RepeatedField::from_vec(self.inner.caps.clone()));
-        util::success(&ctx, sink, r)
+        util::spawn_grpc_task(sink, async { Ok(r) });
     }
 
     fn create_snapshot(
@@ -915,7 +906,7 @@ impl Controller for ControllerImpl {
                     );
                     warn!(
                         "failed to list snapshots from starting position={}, \
-                        max entries={}, the error is: {}",
+                            max entries={}, the error is: {}",
                         starting_token,
                         max_entries,
                         util::format_anyhow_error(&e),
@@ -1007,17 +998,14 @@ impl Controller for ControllerImpl {
 
     fn controller_get_volume(
         &mut self,
-        ctx: RpcContext,
+        _ctx: RpcContext,
         req: ControllerGetVolumeRequest,
         sink: UnarySink<ControllerGetVolumeResponse>,
     ) {
         debug!("controller_get_volume request: {:?}", req);
 
-        util::fail(
-            &ctx,
-            sink,
-            RpcStatusCode::UNIMPLEMENTED,
-            &anyhow!("unimplemented"),
-        )
+        util::spawn_grpc_task(sink, async {
+            Err((RpcStatusCode::UNIMPLEMENTED, anyhow!("unimplemented")))
+        });
     }
 }

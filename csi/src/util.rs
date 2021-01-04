@@ -2,8 +2,8 @@
 
 use anyhow::{anyhow, Context};
 use futures::prelude::*;
-use grpcio::{RpcContext, RpcStatus, RpcStatusCode, UnarySink};
-use log::{debug, error, info};
+use grpcio::{RpcStatus, RpcStatusCode, UnarySink};
+use log::{debug, info};
 use nix::mount::{self, MntFlags, MsFlags};
 use nix::unistd;
 use protobuf::RepeatedField;
@@ -175,42 +175,13 @@ pub fn build_create_snapshot_response(
     Ok(r)
 }
 
-/// Send success `gRPC` response
-pub fn success<R>(ctx: &RpcContext, sink: UnarySink<R>, r: R) {
-    let f = sink
-        .success(r)
-        .map_err(move |e| error!("failed to send response, the error is: {:?}", e))
-        .map(|_| ());
-    ctx.spawn(f)
-}
-
 /// Send async success `gRPC` response
 pub async fn async_success<R: Send>(sink: UnarySink<R>, r: R) {
-    sink.success(r)
-        .map_err(move |e| error!("failed to send response, the error is: {:?}", e))
-        .map(|_| ())
-        .await
-}
+    let res = sink.success(r).await;
 
-/// Send failure `gRPC` response
-pub fn fail<R>(
-    ctx: &RpcContext,
-    sink: UnarySink<R>,
-    rsc: RpcStatusCode,
-    anyhow_err: &anyhow::Error,
-) {
-    debug_assert_ne!(
-        rsc,
-        RpcStatusCode::OK,
-        "the input RpcStatusCode should not be OK"
-    );
-    let details = format_anyhow_error(anyhow_err);
-    let rs = RpcStatus::new(rsc, Some(details));
-    let f = sink
-        .fail(rs)
-        .map_err(move |e| error!("failed to send response, the error is: {:?}", e))
-        .map(|_| ());
-    ctx.spawn(f)
+    if let Err(e) = res {
+        panic!("failed to send response, the error is: {:?}", e)
+    }
 }
 
 /// Send async failure `gRPC` response
@@ -222,10 +193,11 @@ pub async fn async_fail<R>(sink: UnarySink<R>, rsc: RpcStatusCode, anyhow_err: &
     );
     let details = format_anyhow_error(anyhow_err);
     let rs = RpcStatus::new(rsc, Some(details));
-    sink.fail(rs)
-        .map_err(move |e| error!("failed to send response, the error is: {:?}", e))
-        .map(|_| ())
-        .await
+    let res = sink.fail(rs).await;
+
+    if let Err(e) = res {
+        panic!("failed to send response, the error is: {:?}", e)
+    }
 }
 
 /// Spawn a task to execute async task and send `gRPC` response
@@ -236,8 +208,8 @@ pub fn spawn_grpc_task<R: Send + 'static>(
     smol::spawn(async move {
         let result = task.await;
         match result {
-            Err((rpc_status_code, e)) => async_fail(sink, rpc_status_code, &e).await,
             Ok(resp) => async_success(sink, resp).await,
+            Err((rpc_status_code, e)) => async_fail(sink, rpc_status_code, &e).await,
         }
     })
     .detach();
@@ -367,7 +339,7 @@ pub fn umount_volume_bind_path(target_dir: &str) -> anyhow::Result<()> {
             if let Err(umount_force_e) = umount_force_res {
                 return Err(anyhow!(
                     "failed to un-mount the target path={:?}, \
-                            the un-mount error is: {:?} and the force un-mount error is: {}",
+                        the un-mount error is: {:?} and the force un-mount error is: {}",
                     Path::new(target_dir),
                     umount_e,
                     umount_force_e,

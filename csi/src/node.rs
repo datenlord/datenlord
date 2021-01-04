@@ -179,90 +179,84 @@ impl NodeImplInner {
 impl Node for NodeImpl {
     fn node_stage_volume(
         &mut self,
-        ctx: RpcContext,
+        _ctx: RpcContext,
         req: NodeStageVolumeRequest,
         sink: UnarySink<NodeStageVolumeResponse>,
     ) {
         debug!("node_stage_volume request: {:?}", req);
+        let self_inner = Arc::<NodeImplInner>::clone(&self.inner);
 
-        let rpc_type = NodeServiceCapability_RPC_Type::STAGE_UNSTAGE_VOLUME;
-        if !self.inner.validate_request_capability(rpc_type) {
-            return util::fail(
-                &ctx,
-                sink,
-                RpcStatusCode::INVALID_ARGUMENT,
-                &anyhow!(format!("unsupported capability {:?}", rpc_type)),
-            );
-        }
+        let task = async move {
+            let rpc_type = NodeServiceCapability_RPC_Type::STAGE_UNSTAGE_VOLUME;
+            if !self_inner.validate_request_capability(rpc_type) {
+                return Err((
+                    RpcStatusCode::INVALID_ARGUMENT,
+                    anyhow!(format!("unsupported capability {:?}", rpc_type)),
+                ));
+            }
 
-        // Check arguments
-        let vol_id = req.get_volume_id();
-        if vol_id.is_empty() {
-            return util::fail(
-                &ctx,
-                sink,
-                RpcStatusCode::INVALID_ARGUMENT,
-                &anyhow!("volume ID missing in request"),
-            );
-        }
-        if req.get_staging_target_path().is_empty() {
-            return util::fail(
-                &ctx,
-                sink,
-                RpcStatusCode::INVALID_ARGUMENT,
-                &anyhow!("target path missing in request"),
-            );
-        }
-        if !req.has_volume_capability() {
-            return util::fail(
-                &ctx,
-                sink,
-                RpcStatusCode::INVALID_ARGUMENT,
-                &anyhow!("volume Capability missing in request"),
-            );
-        }
+            // Check arguments
+            let vol_id = req.get_volume_id();
+            if vol_id.is_empty() {
+                return Err((
+                    RpcStatusCode::INVALID_ARGUMENT,
+                    anyhow!("volume ID missing in request"),
+                ));
+            }
+            if req.get_staging_target_path().is_empty() {
+                return Err((
+                    RpcStatusCode::INVALID_ARGUMENT,
+                    anyhow!("target path missing in request"),
+                ));
+            }
+            if !req.has_volume_capability() {
+                return Err((
+                    RpcStatusCode::INVALID_ARGUMENT,
+                    anyhow!("volume Capability missing in request"),
+                ));
+            }
 
-        let r = NodeStageVolumeResponse::new();
-        util::success(&ctx, sink, r)
+            let r = NodeStageVolumeResponse::new();
+            Ok(r)
+        };
+        util::spawn_grpc_task(sink, task);
     }
 
     fn node_unstage_volume(
         &mut self,
-        ctx: RpcContext,
+        _ctx: RpcContext,
         req: NodeUnstageVolumeRequest,
         sink: UnarySink<NodeUnstageVolumeResponse>,
     ) {
         debug!("node_unstage_volume request: {:?}", req);
+        let self_inner = Arc::<NodeImplInner>::clone(&self.inner);
 
-        let rpc_type = NodeServiceCapability_RPC_Type::STAGE_UNSTAGE_VOLUME;
-        if !self.inner.validate_request_capability(rpc_type) {
-            return util::fail(
-                &ctx,
-                sink,
-                RpcStatusCode::INVALID_ARGUMENT,
-                &anyhow!(format!("unsupported capability {:?}", rpc_type)),
-            );
-        }
+        let task = async move {
+            let rpc_type = NodeServiceCapability_RPC_Type::STAGE_UNSTAGE_VOLUME;
+            if !self_inner.validate_request_capability(rpc_type) {
+                return Err((
+                    RpcStatusCode::INVALID_ARGUMENT,
+                    anyhow!(format!("unsupported capability {:?}", rpc_type)),
+                ));
+            }
 
-        // Check arguments
-        if req.get_volume_id().is_empty() {
-            return util::fail(
-                &ctx,
-                sink,
-                RpcStatusCode::INVALID_ARGUMENT,
-                &anyhow!("volume ID missing in request"),
-            );
-        }
-        if req.get_staging_target_path().is_empty() {
-            return util::fail(
-                &ctx,
-                sink,
-                RpcStatusCode::INVALID_ARGUMENT,
-                &anyhow!("target path missing in request"),
-            );
-        }
-        let r = NodeUnstageVolumeResponse::new();
-        util::success(&ctx, sink, r)
+            // Check arguments
+            if req.get_volume_id().is_empty() {
+                return Err((
+                    RpcStatusCode::INVALID_ARGUMENT,
+                    anyhow!("volume ID missing in request"),
+                ));
+            }
+            if req.get_staging_target_path().is_empty() {
+                return Err((
+                    RpcStatusCode::INVALID_ARGUMENT,
+                    anyhow!("target path missing in request"),
+                ));
+            }
+            let r = NodeUnstageVolumeResponse::new();
+            Ok(r)
+        };
+        util::spawn_grpc_task(sink, task);
     }
 
     fn node_publish_volume(
@@ -332,7 +326,7 @@ impl Node for NodeImpl {
                         let mount_options = mount_flags.join(",");
                         info!(
                             "target={}\nfstype={}\ndevice={}\nreadonly={}\n\
-                            volume ID={}\nattributes={:?}\nmountflags={}\n",
+                                volume ID={}\nattributes={:?}\nmountflags={}\n",
                             target_dir,
                             fs_type,
                             device_id,
@@ -412,7 +406,7 @@ impl Node for NodeImpl {
                 Err(e) => {
                     warn!(
                         "failed to delete mount path={} of volume ID={} from etcd, \
-                        the error is: {}",
+                            the error is: {}",
                         target_path,
                         vol_id,
                         util::format_anyhow_error(&e),
@@ -435,7 +429,10 @@ impl Node for NodeImpl {
                 // since the target path is not one of the mount paths of this volume
                 true
             };
-            if let Err(e) = util::umount_volume_bind_path(target_path) {
+            let target_path_owned = target_path.to_owned();
+            if let Err(e) =
+                smol::unblock(move || util::umount_volume_bind_path(&target_path_owned)).await
+            {
                 if tolerant_error {
                     // Try to un-mount the path not stored in etcd, if error just log it
                     warn!(
@@ -478,18 +475,15 @@ impl Node for NodeImpl {
 
     fn node_get_volume_stats(
         &mut self,
-        ctx: RpcContext,
+        _ctx: RpcContext,
         req: NodeGetVolumeStatsRequest,
         sink: UnarySink<NodeGetVolumeStatsResponse>,
     ) {
         debug!("node_get_volume_stats request: {:?}", req);
 
-        util::fail(
-            &ctx,
-            sink,
-            RpcStatusCode::UNIMPLEMENTED,
-            &anyhow!("unimplemented"),
-        )
+        util::spawn_grpc_task(sink, async {
+            Err((RpcStatusCode::UNIMPLEMENTED, anyhow!("unimplemented")))
+        });
     }
 
     // node_expand_volume is only implemented so the driver can be used for e2e testing
@@ -570,7 +564,7 @@ impl Node for NodeImpl {
 
     fn node_get_capabilities(
         &mut self,
-        ctx: RpcContext,
+        _ctx: RpcContext,
         req: NodeGetCapabilitiesRequest,
         sink: UnarySink<NodeGetCapabilitiesResponse>,
     ) {
@@ -578,12 +572,12 @@ impl Node for NodeImpl {
 
         let mut r = NodeGetCapabilitiesResponse::new();
         r.set_capabilities(RepeatedField::from_vec(self.inner.caps.clone()));
-        util::success(&ctx, sink, r)
+        util::spawn_grpc_task(sink, async move { Ok(r) });
     }
 
     fn node_get_info(
         &mut self,
-        ctx: RpcContext,
+        _ctx: RpcContext,
         req: NodeGetInfoRequest,
         sink: UnarySink<NodeGetInfoResponse>,
     ) {
@@ -600,6 +594,6 @@ impl Node for NodeImpl {
         r.set_max_volumes_per_node(self.inner.meta_data.get_max_volumes_per_node().into());
         r.set_accessible_topology(topology);
 
-        util::success(&ctx, sink, r)
+        util::spawn_grpc_task(sink, async move { Ok(r) });
     }
 }

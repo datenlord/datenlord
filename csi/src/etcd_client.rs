@@ -132,7 +132,7 @@ impl EtcdClient {
         if let Some(pre_value) = write_res {
             Ok(pre_value)
         } else {
-            panic!("failed to replace previous value, return nothing",);
+            panic!("failed to replace previous value, return nothing");
         }
     }
 
