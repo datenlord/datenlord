@@ -306,13 +306,13 @@ impl Node for NodeImpl {
                 self_inner.create_ephemeral_volume(vol_id).await.map_err(
                     |(rpc_status_code, e)| {
                         warn!(
-                    "failed to create ephemeral volume ID={}, RpcStatusCode={}, the error is:{}",
-                    vol_id,
-                    rpc_status_code,
-                    util::format_anyhow_error(&e),
-                );
+                            "failed to create ephemeral volume ID={}, RpcStatusCode={}, the error is:{}",
+                            vol_id,
+                            rpc_status_code,
+                            util::format_anyhow_error(&e),
+                        );
                         (RpcStatusCode::INTERNAL, e)
-                    },
+                    }
                 )?;
             }
             let target_dir = req.get_target_path();

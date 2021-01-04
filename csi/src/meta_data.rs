@@ -754,22 +754,31 @@ impl MetaData {
 
         let get_mount_path_res = self.get_volume_bind_mount_path(vol_id).await;
         if let Ok(pre_mount_path_vec) = get_mount_path_res {
-            pre_mount_path_vec.iter().for_each(|pre_mount_path| {
-                let umount_res = util::umount_volume_bind_path(pre_mount_path);
-                if let Err(e) = umount_res {
-                    panic!(
-                        "failed to un-mount volume ID={} bind path={}, \
+            let vol_id_owned = vol_id.to_owned();
+            let pre_mount_path_vec_ref = Arc::new(pre_mount_path_vec);
+            let pre_mount_path_vec_ref_clone =
+                Arc::<HashSet<String>>::clone(&pre_mount_path_vec_ref);
+            smol::unblock(move || {
+                pre_mount_path_vec_ref_clone
+                    .iter()
+                    .for_each(|pre_mount_path| {
+                        let umount_res = util::umount_volume_bind_path(pre_mount_path);
+                        if let Err(e) = umount_res {
+                            panic!(
+                                "failed to un-mount volume ID={} bind path={}, \
                             the error is: {}",
-                        vol_id,
-                        pre_mount_path,
-                        util::format_anyhow_error(&e),
-                    );
-                }
-            });
-            if !pre_mount_path_vec.is_empty() {
+                                vol_id_owned,
+                                pre_mount_path,
+                                util::format_anyhow_error(&e),
+                            );
+                        }
+                    });
+            })
+            .await;
+            if !pre_mount_path_vec_ref.is_empty() {
                 let deleted_path_vec = self.delete_volume_all_bind_mount_path(vol_id).await?;
                 debug_assert_eq!(
-                    pre_mount_path_vec, deleted_path_vec,
+                    *pre_mount_path_vec_ref, deleted_path_vec,
                     "the volume bind mount paths and \
                         the deleted paths not match when delete volume meta data",
                 );
@@ -1138,14 +1147,21 @@ impl MetaData {
                 util::format_anyhow_error(&e),
             ),
         };
-        let mount_res = util::mount_volume_bind_path(
-            &vol_path,
-            &target_path,
-            bind_mount_mode,
-            mount_options,
-            fs_type,
-            read_only,
-        )
+        let vol_path_owned = vol_path.to_owned();
+        let target_path_owned = target_path.to_owned();
+        let fs_type_owned = fs_type.to_owned();
+        let mount_options_owned = mount_options.to_owned();
+        let mount_res = smol::unblock(move || {
+            util::mount_volume_bind_path(
+                &vol_path_owned,
+                &target_path_owned,
+                bind_mount_mode,
+                &mount_options_owned,
+                &fs_type_owned,
+                read_only,
+            )
+        })
+        .await
         .context(format!(
             "failed to bind mount from {:?} to {:?}",
             vol_path, target_path,
@@ -1178,13 +1194,8 @@ impl MetaData {
         Ok(())
     }
 
-    /// Build snapshot from source volume
-    pub async fn build_snapshot_from_volume(
-        &self,
-        src_vol_id: &str,
-        snap_id: &str,
-        snap_name: &str,
-    ) -> anyhow::Result<DatenLordSnapshot> {
+    /// Compress a volume and save as a tar file
+    fn compress_volume(src_vol: &DatenLordVolume, snap_path: &Path) -> anyhow::Result<()> {
         /// Remove bad snapshot when compress error
         fn remove_bad_snapshot(snap_path: &Path) {
             let remove_res = fs::remove_file(snap_path).context(format!(
@@ -1200,6 +1211,48 @@ impl MetaData {
             }
         }
 
+        let vol_path = &src_vol.vol_path;
+        let tar_gz = File::create(&snap_path)
+            .context(format!("failed to create snapshot file {:?}", snap_path))?;
+        let gz_file = flate2::write::GzEncoder::new(tar_gz, flate2::Compression::default());
+        let mut tar_file = tar::Builder::new(gz_file);
+        let tar_res = tar_file.append_dir_all("./", vol_path).context(format!(
+            "failed to generate snapshot for volume ID={} and name={}",
+            src_vol.vol_id, src_vol.vol_name,
+        ));
+        if let Err(append_err) = tar_res {
+            remove_bad_snapshot(snap_path);
+            return Err(append_err);
+        }
+        let into_res = tar_file.into_inner().context(format!(
+            "failed to generate snapshot for volume ID={} and name={}",
+            src_vol.vol_id, src_vol.vol_name,
+        ));
+        match into_res {
+            Ok(gz_file) => {
+                let gz_finish_res = gz_file.finish().context(format!(
+                    "failed to generate snapshot for volume ID={} and name={}",
+                    src_vol.vol_id, src_vol.vol_name,
+                ));
+                if let Err(finish_err) = gz_finish_res {
+                    remove_bad_snapshot(snap_path);
+                    return Err(finish_err);
+                }
+            }
+            Err(into_err) => {
+                remove_bad_snapshot(snap_path);
+                return Err(into_err);
+            }
+        }
+        Ok(())
+    }
+    /// Build snapshot from source volume
+    pub async fn build_snapshot_from_volume(
+        &self,
+        src_vol_id: &str,
+        snap_id: &str,
+        snap_name: &str,
+    ) -> anyhow::Result<DatenLordSnapshot> {
         match self.get_volume_by_id(src_vol_id).await {
             Some(src_vol) => {
                 assert_eq!(
@@ -1211,41 +1264,12 @@ impl MetaData {
                     self.get_node_id(),
                 );
 
-                let vol_path = &src_vol.vol_path;
                 let snap_path = self.get_snapshot_path(snap_id);
+                let snap_path_owned = snap_path.to_owned();
+                let src_vol_owned = src_vol.to_owned();
 
-                let tar_gz = File::create(&snap_path)
-                    .context(format!("failed to create snapshot file {:?}", snap_path))?;
-                let gz_file = flate2::write::GzEncoder::new(tar_gz, flate2::Compression::default());
-                let mut tar_file = tar::Builder::new(gz_file);
-                let tar_res = tar_file.append_dir_all("./", &vol_path).context(format!(
-                    "failed to generate snapshot for volume ID={} and name={}",
-                    src_vol.vol_id, src_vol.vol_name,
-                ));
-                if let Err(append_err) = tar_res {
-                    remove_bad_snapshot(&snap_path);
-                    return Err(append_err);
-                }
-                let into_res = tar_file.into_inner().context(format!(
-                    "failed to generate snapshot for volume ID={} and name={}",
-                    src_vol.vol_id, src_vol.vol_name,
-                ));
-                match into_res {
-                    Ok(gz_file) => {
-                        let gz_finish_res = gz_file.finish().context(format!(
-                            "failed to generate snapshot for volume ID={} and name={}",
-                            src_vol.vol_id, src_vol.vol_name,
-                        ));
-                        if let Err(finish_err) = gz_finish_res {
-                            remove_bad_snapshot(&snap_path);
-                            return Err(finish_err);
-                        }
-                    }
-                    Err(into_err) => {
-                        remove_bad_snapshot(&snap_path);
-                        return Err(into_err);
-                    }
-                }
+                smol::unblock(move || Self::compress_volume(&src_vol_owned, &snap_path_owned))
+                    .await?;
 
                 let now = std::time::SystemTime::now();
                 let snapshot = DatenLordSnapshot::new(
