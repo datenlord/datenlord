@@ -1,10 +1,15 @@
 //! Utility functions
 
+use std::error::Error;
+use std::ffi::{CStr, CString};
+use std::mem::MaybeUninit;
+use std::os::raw::{c_char, c_int};
+use std::{io, ptr, slice};
+
 use anyhow::Context;
+use memchr::memchr;
 use nix::errno::Errno;
 use nix::sys::stat::SFlag;
-use std::error::Error;
-use std::os::raw::c_int;
 
 /// Format `anyhow::Error`
 // TODO: refactor this
@@ -70,5 +75,90 @@ pub fn mode_from_kind_and_perm(kind: SFlag, perm: u16) -> u32 {
     {
         let ftype: u32 = file_type.into();
         file_perm | ftype
+    }
+}
+
+/// polyfill from smol 0.1.18 to 1.2.5
+#[allow(dead_code)]
+pub async fn unblock<T, F>(f: F) -> T
+where
+    F: FnOnce() -> T + Send + 'static,
+    T: Send + 'static,
+{
+    smol::Task::blocking(async move { f() }).await
+}
+
+/// Stores short bytes on stack, stores long bytes on heap and provides [`CStr`].
+///
+/// The threshold of allocation is [`libc::PATH_MAX`] (4096 on linux).
+///
+/// # Errors
+/// Returns [`io::Error`]
+///
+/// Generates `InvalidInput` if the input bytes contain an interior nul byte
+#[cfg(target_os = "linux")]
+#[inline]
+pub fn with_c_str<T>(bytes: &[u8], f: impl FnOnce(&CStr) -> io::Result<T>) -> io::Result<T> {
+    /// The threshold of allocation
+    #[allow(clippy::as_conversions)]
+    const STACK_BUF_SIZE: usize = libc::PATH_MAX as usize; // 4096
+
+    if memchr(0, bytes).is_some() {
+        let err = io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "input bytes contain an interior nul byte",
+        );
+        return Err(err);
+    }
+
+    if bytes.len() >= STACK_BUF_SIZE {
+        let c_string = unsafe { CString::from_vec_unchecked(Vec::from(bytes)) };
+        return f(&c_string);
+    }
+
+    let mut buf: MaybeUninit<[u8; STACK_BUF_SIZE]> = MaybeUninit::uninit();
+
+    unsafe {
+        let buf: *mut u8 = buf.as_mut_ptr().cast();
+        ptr::copy_nonoverlapping(bytes.as_ptr(), buf, bytes.len());
+        buf.add(bytes.len()).write(0);
+
+        let bytes_with_nul = slice::from_raw_parts(buf, bytes.len().wrapping_add(1));
+        let c_str = CStr::from_bytes_with_nul_unchecked(bytes_with_nul);
+
+        f(c_str)
+    }
+}
+
+/// cast `&[c_char]` to `&[u8]`
+#[must_use]
+#[inline]
+pub fn cstr_to_bytes(s: &[c_char]) -> &[u8] {
+    unsafe { slice::from_raw_parts(s.as_ptr().cast(), s.len()) }
+}
+
+/// Returns the platform-specific value of errno
+#[cfg(target_os = "linux")]
+#[must_use]
+#[inline]
+pub fn errno() -> i32 {
+    unsafe { *libc::__errno_location() }
+}
+
+/// Sets the platform-specific errno to no-error
+#[cfg(target_os = "linux")]
+#[inline]
+pub fn clear_errno() {
+    unsafe { *libc::__errno_location() = 0 }
+}
+
+/// Converts [`nix::Error`] to [`io::Error`]
+#[must_use]
+pub fn nix_to_io_error(err: nix::Error) -> io::Error {
+    match err {
+        nix::Error::Sys(errno) => errno.into(),
+        nix::Error::InvalidPath | nix::Error::InvalidUtf8 | nix::Error::UnsupportedOperation => {
+            io::Error::new(io::ErrorKind::Other, err)
+        }
     }
 }
