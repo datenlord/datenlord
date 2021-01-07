@@ -204,8 +204,8 @@ spec:
             allowPrivilegeEscalation: true
           image: datenlord/datenlord:e2e_test
           imagePullPolicy: "IfNotPresent"
-          #args:
-          #  - "--mountpoint=$(FUSE_MOUNT_DIR)"
+          args:
+            - "--mountpoint=$(FUSE_MOUNT_DIR)"
           lifecycle:
             #postStart:
             #  exec:
