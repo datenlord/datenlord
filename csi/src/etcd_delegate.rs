@@ -10,19 +10,18 @@ use std::fmt::Debug;
 use super::util;
 
 /// The client to communicate with etcd
-pub struct EtcdClient {
+pub struct EtcdDelegate {
     /// The inner etcd client
-    etcd_rs_client: etcd_rs::Client,
+    etcd_rs_client: etcd_client::Client,
 }
 
-impl EtcdClient {
+impl EtcdDelegate {
     /// Build etcd client
     pub fn new(etcd_address_vec: Vec<String>) -> anyhow::Result<Self> {
         let etcd_rs_client = smol::block_on(Compat::new(async move {
-            etcd_rs::Client::connect(etcd_rs::ClientConfig {
+            etcd_client::Client::connect(etcd_client::ClientConfig {
                 endpoints: etcd_address_vec.clone(),
                 auth: None,
-                tls: None,
             })
             .await
             .context(format!(
@@ -35,7 +34,7 @@ impl EtcdClient {
 
     /// Get one key-value pair from etcd
     async fn get_one_kv_async<T: DeserializeOwned>(&self, key: &str) -> anyhow::Result<Option<T>> {
-        let req = etcd_rs::RangeRequest::new(etcd_rs::KeyRange::key(key));
+        let req = etcd_client::EtcdRangeRequest::new(etcd_client::KeyRange::key(key));
         let mut resp = self.etcd_rs_client.kv().range(req).await.context(format!(
             "failed to get RangeResponse of one key-value pair from etcd, the key={:?}",
             key
@@ -56,7 +55,7 @@ impl EtcdClient {
     ) -> anyhow::Result<Option<T>> {
         let bin_value =
             bincode::serialize(value).context(format!("failed to encode {:?} to binary", value))?;
-        let mut req = etcd_rs::PutRequest::new(key, bin_value);
+        let mut req = etcd_client::EtcdPutRequest::new(key, bin_value);
         req.set_prev_kv(true); // Return previous value
         let mut resp = self.etcd_rs_client.kv().put(req).await.context(format!(
             "failed to get PutResponse from etcd for key={:?}, value={:?}",
@@ -75,7 +74,7 @@ impl EtcdClient {
         &self,
         key: &str,
     ) -> anyhow::Result<Vec<T>> {
-        let mut req = etcd_rs::DeleteRequest::new(etcd_rs::KeyRange::key(key));
+        let mut req = etcd_client::EtcdDeleteRequest::new(etcd_client::KeyRange::key(key));
         req.set_prev_kv(true);
         let mut resp = self.etcd_rs_client.kv().delete(req).await.context(format!(
             "failed to get DeleteResponse from etcd for key={:?}",
@@ -98,7 +97,7 @@ impl EtcdClient {
 
     /// Get key-value list from etcd
     pub async fn get_list<T: DeserializeOwned>(&self, prefix: &str) -> anyhow::Result<Vec<T>> {
-        let req = etcd_rs::RangeRequest::new(etcd_rs::KeyRange::prefix(prefix));
+        let req = etcd_client::EtcdRangeRequest::new(etcd_client::KeyRange::prefix(prefix));
         let mut resp = self.etcd_rs_client.kv().range(req).await.context(format!(
             "failed to get RangeResponse from etcd for key={:?}",
             prefix,
@@ -196,7 +195,7 @@ impl EtcdClient {
     /// Delete all key value pairs from etcd
     #[allow(dead_code)]
     pub async fn delete_all(&self) -> anyhow::Result<()> {
-        let mut req = etcd_rs::DeleteRequest::new(etcd_rs::KeyRange::all());
+        let mut req = etcd_client::EtcdDeleteRequest::new(etcd_client::KeyRange::all());
         req.set_prev_kv(false);
         self.etcd_rs_client
             .kv()
