@@ -245,7 +245,7 @@ spec:
             - "--workerport=50051"
             - "--runas=node"
             - "--datadir=$(DATA_DIR)"
-            - "--etcd=http://csi-etcd-svc:2379"
+            - "--etcd=csi-etcd-svc:2379"
           env:
             - name: NODE_ID
               valueFrom:
@@ -485,7 +485,7 @@ spec:
             - "--workerport=50051"
             - "--runas=controller"
             - "--datadir=$(DATA_DIR)"
-            - "--etcd=http://csi-etcd-svc:2379"
+            - "--etcd=csi-etcd-svc:2379"
           env:
             - name: NODE_ID
               valueFrom:

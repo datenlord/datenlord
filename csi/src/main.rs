@@ -84,7 +84,7 @@ mod datenlord_worker;
 mod datenlord_worker_grpc;
 
 mod controller;
-mod etcd_client;
+mod etcd_delegate;
 mod identity;
 mod meta_data;
 mod node;
@@ -92,7 +92,7 @@ mod util;
 mod worker;
 
 use controller::ControllerImpl;
-use etcd_client::EtcdClient;
+use etcd_delegate::EtcdDelegate;
 use identity::IdentityImpl;
 use meta_data::{DatenLordNode, MetaData};
 use node::NodeImpl;
@@ -113,7 +113,7 @@ fn build_meta_data(
     ip_address: IpAddr,
     data_dir: String,
     run_as: RunAsRole,
-    etcd_client: EtcdClient,
+    etcd_delegate: EtcdDelegate,
 ) -> anyhow::Result<MetaData> {
     let ephemeral = false; // TODO: read from command line argument
     let node = DatenLordNode::new(
@@ -123,7 +123,7 @@ fn build_meta_data(
         util::MAX_VOLUME_STORAGE_CAPACITY,
         util::MAX_VOLUMES_PER_NODE,
     );
-    MetaData::new(data_dir, ephemeral, run_as, etcd_client, node)
+    MetaData::new(data_dir, ephemeral, run_as, etcd_delegate, node)
 }
 
 /// Build worker service
@@ -400,7 +400,7 @@ fn parse_args() -> CliArgs {
                 .takes_value(true)
                 .required(true)
                 .help(
-                    "Set the etcd addresses of format http://ip:port, \
+                    "Set the etcd addresses of format ip:port, \
                         if multiple etcd addresses use comma to seperate, \
                         required argument, no default value",
                 ),
@@ -462,7 +462,16 @@ fn get_args(matches: &ArgMatches) -> CliArgs {
         None => RunAsRole::Node,
     };
     let etcd_address_vec = match matches.value_of(ETCD_ADDRESS_ARG_NAME) {
-        Some(a) => a.split(',').map(std::borrow::ToOwned::to_owned).collect(),
+        Some(a) => a
+            .split(',')
+            .map(|address| {
+                let etcd_ip_address = match address.strip_prefix("http://") {
+                    Some(strip_address) => strip_address,
+                    None => address,
+                };
+                etcd_ip_address.to_owned()
+            })
+            .collect(),
         None => Vec::new(),
     };
     CliArgs {
@@ -501,14 +510,14 @@ fn main() -> anyhow::Result<()> {
         args.etcd_address_vec,
     );
 
-    let etcd_client = EtcdClient::new(args.etcd_address_vec)?;
+    let etcd_delegate = EtcdDelegate::new(args.etcd_address_vec)?;
     let meta_data = build_meta_data(
         args.worker_port,
         args.node_id,
         args.ip_address,
         args.data_dir,
         args.run_as,
-        etcd_client,
+        etcd_delegate,
     )?;
     let md = Arc::new(meta_data);
     let async_server = false;
@@ -571,7 +580,7 @@ mod test {
     const NODE_PUBLISH_VOLUME_ID: &str = "46ebd0ee-0e6d-43c9-b90d-ccc35a913f3e";
     const DEFAULT_NODE_NAME: &str = "localhost";
     const DEFAULT_NODE_IP: IpAddr = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
-    const DEFAULT_ETCD_ENDPOINT_FOR_TEST: &str = "http://127.0.0.1:2379";
+    const DEFAULT_ETCD_ENDPOINT_FOR_TEST: &str = "127.0.0.1:2379";
     const ETCD_ENV_VAR_KEY: &str = "ETCD_END_POINT";
     /// The csi server socket file to communicate with K8S CSI sidecars
     const CONTROLLER_END_POINT: &str = "unix:///tmp/csi.sock";
@@ -603,7 +612,7 @@ mod test {
         }
     }
 
-    fn clear_test_data(etcd_client: &EtcdClient) -> anyhow::Result<()> {
+    fn clear_test_data(etcd_delegate: &EtcdDelegate) -> anyhow::Result<()> {
         let dir_path = Path::new(util::DATA_DIR);
         if dir_path.exists() {
             fs::remove_dir_all(dir_path)?;
@@ -618,14 +627,14 @@ mod test {
             fs::remove_dir_all(NODE_PUBLISH_VOLUME_TARGET_PATH)?;
         }
 
-        smol::block_on(async { etcd_client.delete_all().await })?;
+        smol::block_on(async { etcd_delegate.delete_all().await })?;
         Ok(())
     }
 
     fn build_test_meta_data() -> anyhow::Result<MetaData> {
         let etcd_address_vec = get_etcd_address_vec();
-        let etcd_client = EtcdClient::new(etcd_address_vec)?;
-        clear_test_data(&etcd_client)?;
+        let etcd_delegate = EtcdDelegate::new(etcd_address_vec)?;
+        clear_test_data(&etcd_delegate)?;
 
         let worker_port = 50051;
         let node_id = DEFAULT_NODE_NAME;
@@ -640,7 +649,7 @@ mod test {
             util::MAX_VOLUME_STORAGE_CAPACITY,
             util::MAX_VOLUMES_PER_NODE,
         );
-        MetaData::new(data_dir.to_owned(), ephemeral, run_as, etcd_client, node)
+        MetaData::new(data_dir.to_owned(), ephemeral, run_as, etcd_delegate, node)
     }
 
     fn test_meta_data() -> anyhow::Result<()> {
@@ -759,11 +768,11 @@ mod test {
         let data_dir = util::DATA_DIR.to_owned();
         let run_as = RunAsRole::Both;
         let etcd_address_vec = get_etcd_address_vec();
-        let etcd_client = EtcdClient::new(etcd_address_vec)?;
+        let etcd_delegate = EtcdDelegate::new(etcd_address_vec)?;
 
         let async_server = true;
         GRPC_SERVER.call_once(move || {
-            let clear_res = clear_test_data(&etcd_client);
+            let clear_res = clear_test_data(&etcd_delegate);
             assert!(
                 clear_res.is_ok(),
                 "failed to clear test data, the error is: {}",
@@ -775,7 +784,7 @@ mod test {
                 ip_address,
                 data_dir,
                 run_as,
-                etcd_client,
+                etcd_delegate,
             ) {
                 Ok(md) => md,
                 Err(e) => panic!(
