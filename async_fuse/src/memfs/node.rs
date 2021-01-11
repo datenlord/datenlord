@@ -6,7 +6,6 @@ use nix::fcntl::{self, FcntlArg, OFlag};
 use nix::sys::stat::SFlag;
 use nix::sys::stat::{self, Mode};
 use nix::unistd;
-use smol::blocking;
 use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
 use std::os::unix::io::RawFd;
@@ -357,15 +356,18 @@ impl Node {
     pub async fn dup_fd(&self, oflags: OFlag) -> anyhow::Result<RawFd> {
         let raw_fd = self.fd;
         let ino = self.get_ino();
-        let new_fd = blocking!(unistd::dup(raw_fd)).context(format!(
-            "dup_fd() failed to duplicate the handler ino={} raw fd={:?}",
-            ino, raw_fd,
-        ))?;
+        let new_fd = smol::unblock(move || unistd::dup(raw_fd))
+            .await
+            .context(format!(
+                "dup_fd() failed to duplicate the handler ino={} raw fd={:?}",
+                ino, raw_fd,
+            ))?;
         // increase open count once dup() success
         self.inc_open_count();
 
         let fcntl_oflags = FcntlArg::F_SETFL(oflags);
-        blocking!(fcntl::fcntl(new_fd, fcntl_oflags))
+        smol::unblock(move || fcntl::fcntl(new_fd, fcntl_oflags))
+            .await
             .context(format!(
                 "dup_fd() failed to set the flags={:?} of duplicated handler of ino={}",
                 oflags, ino,
@@ -478,6 +480,49 @@ impl Node {
         self.get_dir_data().get(name)
     }
 
+    /// Get child symlink fd of dir
+    async fn get_child_symlink_fd(
+        dir_fd: i32,
+        child_symlink_name: OsString,
+    ) -> Result<i32, nix::Error> {
+        #[cfg(target_os = "macos")]
+        let open_res = {
+            use std::os::unix::ffi::OsStrExt;
+            let symlink_name_cstr =
+                std::ffi::CString::new(child_symlink_name.as_os_str().as_bytes())?;
+            let fd_res = smol::unblock(|| unsafe {
+                libc::openat(
+                    dir_fd,
+                    symlink_name_cstr.as_ptr(),
+                    libc::O_SYMLINK | libc::O_NOFOLLOW,
+                )
+            })
+            .await;
+            if 0 == fd_res {
+                debug!(
+                    "create_or_load_child_symlink_helper() successfully opened symlink={:?} itselt",
+                    child_symlink_name
+                );
+                Ok(fd_res)
+            } else {
+                crate::util::build_error_result_from_errno(
+                    nix::errno::Errno::last(),
+                    format!("failed to open symlink={:?} itself", child_symlink_name,),
+                )
+            }
+        };
+        #[cfg(target_os = "linux")]
+        let open_res = smol::unblock(move || {
+            fcntl::openat(
+                dir_fd,
+                child_symlink_name.as_os_str(),
+                OFlag::O_PATH | OFlag::O_NOFOLLOW,
+                Mode::all(),
+            )
+        })
+        .await;
+        open_res
+    }
     /// Helper function to create or read symlink itself in a directory
     pub async fn create_or_load_child_symlink_helper(
         &mut self,
@@ -495,11 +540,14 @@ impl Node {
             );
             let child_symlink_name_clone = child_symlink_name.clone();
             let target_path_clone = target_path.clone();
-            blocking!(unistd::symlinkat(
-                &target_path_clone,
-                Some(fd),
-                child_symlink_name_clone.as_os_str()
-            ))
+            smol::unblock(move || {
+                unistd::symlinkat(
+                    &target_path_clone,
+                    Some(fd),
+                    child_symlink_name_clone.as_os_str(),
+                )
+            })
+            .await
             .context(format!(
                 "create_or_load_child_symlink_helper() failed to create symlink \
                     name={:?} to target path={:?} under parent ino={}",
@@ -508,42 +556,9 @@ impl Node {
         };
 
         let child_symlink_name_clone = child_symlink_name.clone();
-        #[cfg(target_os = "macos")]
-        let open_res = {
-            use std::os::unix::ffi::OsStrExt;
-            let symlink_name_cstr =
-                std::ffi::CString::new(child_symlink_name_clone.as_os_str().as_bytes())?;
-            let fd_res = blocking!(unsafe {
-                libc::openat(
-                    fd,
-                    symlink_name_cstr.as_ptr(),
-                    libc::O_SYMLINK | libc::O_NOFOLLOW,
-                )
-            });
-            if 0 == fd_res {
-                debug!(
-                    "create_or_load_child_symlink_helper() successfully opened symlink={:?} itselt",
-                    child_symlink_name_clone
-                );
-                Ok(fd_res)
-            } else {
-                crate::util::build_error_result_from_errno(
-                    nix::errno::Errno::last(),
-                    format!(
-                        "failed to open symlink={:?} itself",
-                        child_symlink_name_clone,
-                    ),
-                )
-            }
-        };
-        #[cfg(target_os = "linux")]
-        let open_res = blocking!(fcntl::openat(
-            fd,
-            child_symlink_name_clone.as_os_str(),
-            OFlag::O_PATH | OFlag::O_NOFOLLOW,
-            Mode::all(),
-        ));
-        let child_fd = open_res.context(format!(
+        let child_fd = Self::get_child_symlink_fd(fd, child_symlink_name_clone)
+            .await
+            .context(format!(
             "create_or_load_child_symlink_helper() failed to open symlink itself with name={:?} \
                 under parent ino={}",
             child_symlink_name, ino,
@@ -569,13 +584,13 @@ impl Node {
         } else {
             let child_symlink_name_clone = child_symlink_name.clone();
             let target_path_osstr =
-                blocking!(fcntl::readlinkat(fd, child_symlink_name_clone.as_os_str())).context(
-                    format!(
+                smol::unblock(move || fcntl::readlinkat(fd, child_symlink_name_clone.as_os_str()))
+                    .await
+                    .context(format!(
                         "create_or_load_child_symlink_helper() failed to open \
                             the new directory name={:?} under parent ino={}",
                         child_symlink_name, ino,
-                    ),
-                )?;
+                    ))?;
             Path::new(&target_path_osstr).to_owned()
         };
 
@@ -630,13 +645,13 @@ impl Node {
                 child_dir_name
             );
             let child_dir_name_clone = child_dir_name.clone();
-            blocking!(stat::mkdirat(fd, child_dir_name_clone.as_os_str(), mode)).context(
-                format!(
+            smol::unblock(move || stat::mkdirat(fd, child_dir_name_clone.as_os_str(), mode))
+                .await
+                .context(format!(
                     "open_child_dir_helper() failed to create directory \
                         name={:?} under parent ino={}",
                     child_dir_name, ino,
-                ),
-            )?;
+                ))?;
         }
 
         let child_dir_name_clone = child_dir_name.clone();
@@ -733,12 +748,10 @@ impl Node {
             debug_assert!(oflags.contains(OFlag::O_CREAT));
         }
         let child_file_name_clone = child_file_name.clone();
-        let child_fd = blocking!(fcntl::openat(
-            fd,
-            child_file_name_clone.as_os_str(),
-            oflags,
-            mode
-        ))
+        let child_fd = smol::unblock(move || {
+            fcntl::openat(fd, child_file_name_clone.as_os_str(), oflags, mode)
+        })
+        .await
         .context(format!(
             "open_child_file_helper() failed to open a file name={:?} \
                 under parent ino={} with oflags={:?} and mode={:?}",
@@ -895,22 +908,28 @@ impl Node {
         // delete from disk and close the handler
         match removed_entry.entry_type() {
             SFlag::S_IFDIR => {
-                blocking!(unistd::unlinkat(
-                    Some(fd),
-                    child_name.as_os_str(),
-                    unistd::UnlinkatFlags::RemoveDir,
-                ))
+                smol::unblock(move || {
+                    unistd::unlinkat(
+                        Some(fd),
+                        child_name.as_os_str(),
+                        unistd::UnlinkatFlags::RemoveDir,
+                    )
+                })
+                .await
                 .context(format!(
                     "unlink_entry() failed to delete the file name={:?} from disk",
                     child_name_clone,
                 ))?;
             }
             SFlag::S_IFREG | SFlag::S_IFLNK => {
-                blocking!(unistd::unlinkat(
-                    Some(fd),
-                    child_name.as_os_str(),
-                    unistd::UnlinkatFlags::NoRemoveDir,
-                ))
+                smol::unblock(move || {
+                    unistd::unlinkat(
+                        Some(fd),
+                        child_name.as_os_str(),
+                        unistd::UnlinkatFlags::NoRemoveDir,
+                    )
+                })
+                .await
                 .context(format!(
                     "unlink_entry() failed to delete the file name={:?} from disk",
                     child_name_clone,
@@ -1105,7 +1124,8 @@ impl Node {
         let mut written_size = data.len();
         if write_to_disk {
             let data_len = data.len();
-            written_size = blocking!(nix::sys::uio::pwrite(fd, &data, offset))
+            written_size = smol::unblock(move || nix::sys::uio::pwrite(fd, &data, offset))
+                .await
                 .context("write_file() failed to write to disk")?;
             debug_assert_eq!(data_len, written_size);
         }
