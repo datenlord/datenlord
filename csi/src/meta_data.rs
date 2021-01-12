@@ -1,7 +1,6 @@
 //! The utilities of meta data management
 
-use anyhow::{anyhow, Context};
-use grpcio::{ChannelBuilder, Environment, RpcStatusCode};
+use grpcio::{ChannelBuilder, Environment};
 use log::{debug, error, info, warn};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
@@ -20,6 +19,14 @@ use super::csi::{
     VolumeContentSource_VolumeSource, VolumeContentSource_oneof_type,
 };
 use super::datenlord_worker_grpc::WorkerClient;
+use super::error::{
+    Context,
+    DatenLordError::{
+        ArgumentInvalid, NodeNotFound, SnapshotNotFound, SnapshotNotReady, StartingTokenInvalid,
+        VolumeNotFound,
+    },
+    DatenLordResult,
+};
 use super::etcd_delegate::EtcdDelegate;
 use super::util::{self, BindMountMode, RunAsRole};
 
@@ -106,7 +113,7 @@ impl MetaData {
         run_as: RunAsRole,
         etcd_delegate: EtcdDelegate,
         node: DatenLordNode,
-    ) -> anyhow::Result<Self> {
+    ) -> DatenLordResult<Self> {
         smol::block_on(async move {
             let md = Self {
                 data_dir,
@@ -129,16 +136,18 @@ impl MetaData {
     }
 
     /// Register this worker to etcd
-    async fn register_to_etcd(&self, prefix: &str) -> anyhow::Result<()> {
+    async fn register_to_etcd(&self, prefix: &str) -> DatenLordResult<()> {
         let key = format!("{}/{}", prefix, self.get_node_id());
         debug!("register node ID={} to etcd", key);
         self.etcd_delegate
             .write_or_update_kv(&key, &self.node)
             .await
-            .context(format!(
-                "failed to registration in etcd, the node ID={}",
-                self.get_node_id(),
-            ))
+            .with_context(|| {
+                format!(
+                    "failed to registration in etcd, the node ID={}",
+                    self.get_node_id(),
+                )
+            })
     }
 
     /// Build `gRPC` client to `DatenLord` worker
@@ -157,7 +166,7 @@ impl MetaData {
     }
 
     /// Select a random node
-    async fn select_random_node(&self) -> anyhow::Result<DatenLordNode> {
+    async fn select_random_node(&self) -> DatenLordResult<DatenLordNode> {
         // List key-value pairs with prefix
         let node_list: Vec<DatenLordNode> = self
             .etcd_delegate
@@ -182,24 +191,19 @@ impl MetaData {
     }
 
     /// Select a node to create volume or snapshot
-    pub async fn select_node(&self, req: &CreateVolumeRequest) -> anyhow::Result<DatenLordNode> {
+    pub async fn select_node(&self, req: &CreateVolumeRequest) -> DatenLordResult<DatenLordNode> {
         let node_id = if req.has_volume_content_source() {
             let volume_src = req.get_volume_content_source();
             if volume_src.has_snapshot() {
                 let snapshot_id = &volume_src.get_snapshot().snapshot_id;
                 self.get_snapshot_by_id(snapshot_id)
                     .await
-                    .map(|snapshot| Some(snapshot.node_id))
-                    .ok_or(anyhow!(format!(
-                        "failed to get snapshot ID={}",
-                        snapshot_id
-                    )))?
+                    .map(|snapshot| Some(snapshot.node_id))?
             } else if volume_src.has_volume() {
                 let volume_id = &volume_src.get_volume().volume_id;
                 self.get_volume_by_id(volume_id)
                     .await
-                    .map(|volume| Some(volume.node_id))
-                    .ok_or(anyhow!(format!("failed to get volume ID={}", volume_id)))?
+                    .map(|volume| Some(volume.node_id))?
             } else {
                 None
             }
@@ -227,7 +231,7 @@ impl MetaData {
                     if match_requisite || match_preferred {
                         self.get_node_by_id(&node_id)
                             .await
-                            .ok_or_else(|| panic!("failed to get node ID={}", node_id))
+                            .or_else(|_| panic!("failed to get node ID={}", node_id))
                     } else {
                         panic!(
                             "select node ID={} is not in request required topology and preferred topology",
@@ -237,7 +241,7 @@ impl MetaData {
                 } else {
                     self.get_node_by_id(&node_id)
                         .await
-                        .ok_or_else(|| panic!("failed to get node ID={}", node_id))
+                        .or_else(|_| panic!("failed to get node ID={}", node_id))
                 }
             }
         }
@@ -276,37 +280,46 @@ impl MetaData {
     }
 
     /// Get node by ID
-    pub async fn get_node_by_id(&self, node_id: &str) -> Option<DatenLordNode> {
+    pub async fn get_node_by_id(&self, node_id: &str) -> DatenLordResult<DatenLordNode> {
         let get_res = self
             .etcd_delegate
             .get_at_most_one_value(&format!("{}/{}", NODE_PREFIX, node_id))
             .await;
         match get_res {
-            Ok(val) => val,
+            Ok(val) => val.ok_or(NodeNotFound {
+                node_id: node_id.to_string(),
+                context: vec![format!("Node ID={} is not found in etcd", node_id)],
+            }),
             Err(e) => {
                 warn!("failed to get node ID={}, the error is: {}", node_id, e);
-                None
+                Err(e.with_context(|| format!("failed to get node ID={}", node_id)))
             }
         }
     }
 
     /// Get snapshot by ID
-    pub async fn get_snapshot_by_id(&self, snap_id: &str) -> Option<DatenLordSnapshot> {
+    pub async fn get_snapshot_by_id(&self, snap_id: &str) -> DatenLordResult<DatenLordSnapshot> {
         let get_res = self
             .etcd_delegate
             .get_at_most_one_value(&format!("{}/{}", SNAPSHOT_ID_PREFIX, snap_id))
             .await;
         match get_res {
-            Ok(val) => val,
+            Ok(val) => val.ok_or(SnapshotNotFound {
+                snapshot_id: snap_id.to_string(),
+                context: vec![format!("Snapshot ID={} is not found in etcd", snap_id)],
+            }),
             Err(e) => {
                 warn!("failed to get snapshot ID={}, the error is: {}", snap_id, e);
-                None
+                Err(e.with_context(|| format!("failed to get snapshot ID={} from etcd", snap_id)))
             }
         }
     }
 
     /// Find snapshot by name
-    pub async fn get_snapshot_by_name(&self, snap_name: &str) -> Option<DatenLordSnapshot> {
+    pub async fn get_snapshot_by_name(
+        &self,
+        snap_name: &str,
+    ) -> DatenLordResult<DatenLordSnapshot> {
         let snap_name_key = format!("{}/{}", SNAPSHOT_NAME_PREFIX, snap_name);
         let snap_id: String = match self
             .etcd_delegate
@@ -318,7 +331,10 @@ impl MetaData {
                     sid
                 } else {
                     debug!("failed to find snapshot name={} from etcd", snap_name);
-                    return None;
+                    return Err(SnapshotNotFound {
+                        snapshot_id: snap_name.to_string(),
+                        context: vec![format!("Snapshot name={} is not found in etcd", snap_name)],
+                    });
                 }
             }
             Err(e) => {
@@ -326,7 +342,9 @@ impl MetaData {
                     "failed to find snapshot name={} from etcd, the error is: {}",
                     snap_name, e
                 );
-                return None;
+                return Err(e.with_context(|| {
+                    format!("failed to find snapshot name={} from etcd", snap_name)
+                }));
             }
         };
         debug!("found snap ID={} and name={} from etcd", snap_id, snap_name,);
@@ -337,7 +355,7 @@ impl MetaData {
     pub async fn get_snapshot_by_src_volume_id(
         &self,
         src_volume_id: &str,
-    ) -> Option<DatenLordSnapshot> {
+    ) -> DatenLordResult<DatenLordSnapshot> {
         let src_vol_id_key = format!("{}/{}", SNAPSHOT_SOURCE_ID_PREFIX, src_volume_id);
         let snap_id: String = match self
             .etcd_delegate
@@ -352,16 +370,26 @@ impl MetaData {
                         "failed to find snapshot by source volume ID={} from etcd",
                         src_volume_id
                     );
-                    return None;
+                    return Err(SnapshotNotFound {
+                        snapshot_id: "".to_string(),
+                        context: vec![format!(
+                            "failed to find snapshot by source volume ID={} from etcd",
+                            src_volume_id
+                        )],
+                    });
                 }
             }
             Err(e) => {
                 debug!(
                     "failed to find snapshot by source volume ID={} from etcd, the error is: {}",
-                    src_volume_id,
-                    util::format_anyhow_error(&e),
+                    src_volume_id, e,
                 );
-                return None;
+                return Err(e.with_context(|| {
+                    format!(
+                        "failed to find snapshot by source volume ID={} from etcd",
+                        src_volume_id
+                    )
+                }));
             }
         };
         debug!(
@@ -377,7 +405,7 @@ impl MetaData {
         starting_token: &str,
         max_entries: i32,
         f: F,
-    ) -> Result<(Vec<T>, usize), (RpcStatusCode, anyhow::Error)>
+    ) -> DatenLordResult<(Vec<T>, usize)>
     where
         F: Fn(&E) -> Option<T>,
     {
@@ -388,20 +416,20 @@ impl MetaData {
         } else if let Ok(i) = starting_token.parse::<usize>() {
             i
         } else {
-            return Err((
-                RpcStatusCode::ABORTED,
-                anyhow!(format!("invalid starting position {}", starting_token)),
-            ));
+            return Err(StartingTokenInvalid {
+                starting_token: starting_token.to_string(),
+                context: vec![format!("invalid starting position {}", starting_token)],
+            });
         };
         if starting_pos > 0 && starting_pos >= total_num {
-            return Err((
-                RpcStatusCode::ABORTED,
-                anyhow!(format!(
+            return Err(StartingTokenInvalid {
+                starting_token: starting_token.to_string(),
+                context: vec![format!(
                     "invalid starting token={}, larger than or equal to the list size={} of volumes",
                     starting_token,
                     total_num,
-                )),
-            ));
+                )],
+            });
         }
         let (remaining, ofr) = total_num.overflowing_sub(starting_pos);
         debug_assert!(
@@ -453,12 +481,11 @@ impl MetaData {
         &self,
         starting_token: &str,
         max_entries: i32,
-    ) -> Result<(Vec<ListVolumesResponse_Entry>, usize), (RpcStatusCode, anyhow::Error)> {
+    ) -> DatenLordResult<(Vec<ListVolumesResponse_Entry>, usize)> {
         let vol_list: Vec<DatenLordVolume> = self
             .etcd_delegate
             .get_list(&format!("{}/", VOLUME_ID_PREFIX))
-            .await
-            .map_err(|e| (RpcStatusCode::INTERNAL, e))?;
+            .await?;
 
         Self::list_helper(vol_list, starting_token, max_entries, |vol| {
             let mut entry = ListVolumesResponse_Entry::new();
@@ -478,12 +505,11 @@ impl MetaData {
         &self,
         starting_token: &str,
         max_entries: i32,
-    ) -> Result<(Vec<ListSnapshotsResponse_Entry>, usize), (RpcStatusCode, anyhow::Error)> {
+    ) -> DatenLordResult<(Vec<ListSnapshotsResponse_Entry>, usize)> {
         let snap_list: Vec<DatenLordSnapshot> = self
             .etcd_delegate
             .get_list(&format!("{}/", SNAPSHOT_ID_PREFIX))
-            .await
-            .map_err(|e| (RpcStatusCode::INTERNAL, e))?;
+            .await?;
 
         Self::list_helper(snap_list, starting_token, max_entries, |snap| {
             let mut entry = ListSnapshotsResponse_Entry::new();
@@ -495,10 +521,7 @@ impl MetaData {
             entry.mut_snapshot().set_creation_time(
                 match util::generate_proto_timestamp(&snap.creation_time) {
                     Ok(ts) => ts,
-                    Err(e) => panic!(
-                        "failed to generate proto timestamp, the error is: {}",
-                        util::format_anyhow_error(&e),
-                    ),
+                    Err(e) => panic!("failed to generate proto timestamp, the error is: {}", e,),
                 },
             );
             entry.mut_snapshot().set_ready_to_use(snap.ready_to_use);
@@ -508,30 +531,42 @@ impl MetaData {
     }
 
     /// Find volume by ID
-    pub async fn find_volume_by_id(&self, vol_id: &str) -> bool {
-        self.get_volume_by_id(vol_id).await.is_some()
+    pub async fn find_volume_by_id(&self, vol_id: &str) -> DatenLordResult<bool> {
+        match self.get_volume_by_id(vol_id).await {
+            Ok(_) => Ok(true),
+            Err(e) => {
+                if let VolumeNotFound { .. } = e {
+                    Ok(false)
+                } else {
+                    Err(e)
+                }
+            }
+        }
     }
 
     /// Get volume by ID
-    pub async fn get_volume_by_id(&self, vol_id: &str) -> Option<DatenLordVolume> {
+    pub async fn get_volume_by_id(&self, vol_id: &str) -> DatenLordResult<DatenLordVolume> {
         match self
             .etcd_delegate
             .get_at_most_one_value(&format!("{}/{}", VOLUME_ID_PREFIX, vol_id))
             .await
         {
-            Ok(val) => val,
+            Ok(val) => val.ok_or(VolumeNotFound {
+                volume_id: vol_id.to_string(),
+                context: vec![format!("Volume ID={} is not found in etcd", vol_id)],
+            }),
             Err(e) => {
                 debug!(
                     "failed to find volume ID={} from etcd, the error is: {}",
                     vol_id, e
                 );
-                None
+                Err(e.with_context(|| format!("failed to find volume ID={} from etcd", vol_id)))
             }
         }
     }
 
     /// Get volume by name
-    pub async fn get_volume_by_name(&self, vol_name: &str) -> Option<DatenLordVolume> {
+    pub async fn get_volume_by_name(&self, vol_name: &str) -> DatenLordResult<DatenLordVolume> {
         let vol_name_key = format!("{}/{}", VOLUME_NAME_PREFIX, vol_name);
         let vol_id: String = match self
             .etcd_delegate
@@ -543,16 +578,20 @@ impl MetaData {
                     v
                 } else {
                     debug!("failed to find volume by name={} from etcd", vol_name,);
-                    return None;
+                    return Err(VolumeNotFound {
+                        volume_id: vol_name.to_string(),
+                        context: vec![format!("Volume name={} is not found in etcd", vol_name)],
+                    });
                 }
             }
             Err(e) => {
                 debug!(
                     "failed to find volume by name={} from etcd, the error is: {}",
-                    vol_name,
-                    util::format_anyhow_error(&e),
+                    vol_name, e,
                 );
-                return None;
+                return Err(e.with_context(|| {
+                    format!("failed to find volume by name={} from etcd", vol_name)
+                }));
             }
         };
         debug!("found volume ID={} and name={} from etcd", vol_id, vol_name);
@@ -564,7 +603,7 @@ impl MetaData {
         &self,
         snap_id: &str,
         snapshot: &DatenLordSnapshot,
-    ) -> anyhow::Result<()> {
+    ) -> DatenLordResult<()> {
         info!("adding the meta data of snapshot ID={}", snap_id);
         let snap_id_str = snap_id.to_owned();
 
@@ -573,37 +612,30 @@ impl MetaData {
         self.etcd_delegate
             .write_new_kv(&snap_id_key, snapshot)
             .await
-            .context(format!(
-                "failed to add new snapshot key={} to etcd",
-                snap_id_key
-            ))?;
+            .with_context(|| format!("failed to add new snapshot key={} to etcd", snap_id_key))?;
 
         let snap_name_key = format!("{}/{}", SNAPSHOT_NAME_PREFIX, snapshot.snap_name);
         self.etcd_delegate
             .write_new_kv(&snap_name_key, &snap_id_str)
             .await
-            .context(format!(
-                "failed to add new snapshot key={} to etcd",
-                snap_name_key
-            ))?;
+            .with_context(|| format!("failed to add new snapshot key={} to etcd", snap_name_key))?;
 
         let snap_source_id_key = format!("{}/{}", SNAPSHOT_SOURCE_ID_PREFIX, snapshot.vol_id);
         self.etcd_delegate
             .write_new_kv(&snap_source_id_key, &snap_id_str)
             .await
-            .context(format!(
-                "failed to add new snapshot key={} to etcd",
-                snap_source_id_key,
-            ))?;
+            .with_context(|| {
+                format!(
+                    "failed to add new snapshot key={} to etcd",
+                    snap_source_id_key,
+                )
+            })?;
 
         let node_snap_key = format!("{}/{}/{}", NODE_SNAPSHOT_PREFIX, snapshot.node_id, snap_id);
         self.etcd_delegate
             .write_new_kv(&node_snap_key, &snapshot.ready_to_use)
             .await
-            .context(format!(
-                "failed to add new snapshot key={} to etcd",
-                node_snap_key
-            ))?;
+            .with_context(|| format!("failed to add new snapshot key={} to etcd", node_snap_key))?;
 
         Ok(())
     }
@@ -612,7 +644,7 @@ impl MetaData {
     pub async fn delete_snapshot_meta_data(
         &self,
         snap_id: &str,
-    ) -> anyhow::Result<DatenLordSnapshot> {
+    ) -> DatenLordResult<DatenLordSnapshot> {
         info!("deleting the meta data of snapshot ID={}", snap_id);
 
         // TODO: use etcd transancation?
@@ -656,7 +688,7 @@ impl MetaData {
         &self,
         vol_id: &str,
         volume: &DatenLordVolume,
-    ) -> anyhow::Result<DatenLordVolume> {
+    ) -> DatenLordResult<DatenLordVolume> {
         info!("updating the meta data of volume ID={}", vol_id);
         let vol_id_str = vol_id.to_owned();
 
@@ -702,7 +734,7 @@ impl MetaData {
         &self,
         vol_id: &str,
         volume: &DatenLordVolume,
-    ) -> anyhow::Result<()> {
+    ) -> DatenLordResult<()> {
         info!("adding the meta data of volume ID={}", vol_id);
         let vol_id_str = vol_id.to_owned();
 
@@ -710,34 +742,25 @@ impl MetaData {
         self.etcd_delegate
             .write_new_kv(&vol_id_key, volume)
             .await
-            .context(format!(
-                "failed to add new volume key={} to etcd",
-                vol_id_key,
-            ))?;
+            .with_context(|| format!("failed to add new volume key={} to etcd", vol_id_key,))?;
 
         let vol_name_key = format!("{}/{}", VOLUME_NAME_PREFIX, volume.vol_name);
         self.etcd_delegate
             .write_new_kv(&vol_name_key, &vol_id_str)
             .await
-            .context(format!(
-                "failed to add new volume key={} to etcd",
-                vol_name_key,
-            ))?;
+            .with_context(|| format!("failed to add new volume key={} to etcd", vol_name_key,))?;
 
         let node_vol_key = format!("{}/{}/{}", NODE_VOLUME_PREFIX, volume.node_id, vol_id);
         self.etcd_delegate
             .write_new_kv(&node_vol_key, &volume.ephemeral)
             .await
-            .context(format!(
-                "failed to add new volume key={} to etcd",
-                node_vol_key,
-            ))?;
+            .with_context(|| format!("failed to add new volume key={} to etcd", node_vol_key,))?;
 
         Ok(())
     }
 
     /// Delete the volume meta data
-    pub async fn delete_volume_meta_data(&self, vol_id: &str) -> anyhow::Result<DatenLordVolume> {
+    pub async fn delete_volume_meta_data(&self, vol_id: &str) -> DatenLordResult<DatenLordVolume> {
         info!("deleting volume ID={}", vol_id);
 
         // TODO: use etcd transancation?
@@ -777,9 +800,7 @@ impl MetaData {
                             panic!(
                                 "failed to un-mount volume ID={} bind path={}, \
                                     the error is: {}",
-                                vol_id_owned,
-                                pre_mount_path,
-                                util::format_anyhow_error(&e),
+                                vol_id_owned, pre_mount_path, e,
                             );
                         }
                     });
@@ -802,15 +823,15 @@ impl MetaData {
     }
 
     /// Decompress snapshot of volume to destination
-    fn decompress_snapshot(snap_path: &Path, dst_path: &Path) -> anyhow::Result<()> {
-        let tar_gz =
-            File::open(snap_path).context(format!("failed to open path={:?}", snap_path))?;
+    fn decompress_snapshot(snap_path: &Path, dst_path: &Path) -> DatenLordResult<()> {
+        let tar_gz = File::open(snap_path)
+            .with_context(|| format!("failed to open path={:?}", snap_path))?;
 
         let tar_file = flate2::read::GzDecoder::new(tar_gz);
         let mut archive = tar::Archive::new(tar_file);
         archive
             .unpack(dst_path)
-            .context(format!("failed to decompress snapshot to {:?}", dst_path))?;
+            .with_context(|| format!("failed to decompress snapshot to {:?}", dst_path))?;
         Ok(())
     }
 
@@ -820,63 +841,52 @@ impl MetaData {
         dst_volume_size: i64,
         src_snapshot_id: &str,
         dst_volume_id: &str,
-    ) -> Result<(), (RpcStatusCode, anyhow::Error)> {
+    ) -> DatenLordResult<()> {
         let dst_path = self.get_volume_path(dst_volume_id);
 
-        match self.get_snapshot_by_id(src_snapshot_id).await {
-            None => {
-                return Err((
-                    RpcStatusCode::NOT_FOUND,
-                    anyhow!(format!(
-                        "failed to find source snapshot ID={}",
-                        src_snapshot_id,
-                    )),
-                ));
-            }
-            Some(src_snapshot) => {
-                assert_eq!(
-                    src_snapshot.node_id,
-                    self.get_node_id(),
-                    "snapshot ID={} is on node ID={} not on local node ID={}",
-                    src_snapshot_id,
-                    src_snapshot.node_id,
-                    self.get_node_id(),
-                );
-                if !src_snapshot.ready_to_use {
-                    return Err((
-                        RpcStatusCode::INTERNAL,
-                        anyhow!(format!(
-                            "source snapshot ID={} and name={} is not yet ready to use",
-                            src_snapshot.snap_id, src_snapshot.snap_name,
-                        )),
-                    ));
-                }
-                if src_snapshot.size_bytes > dst_volume_size {
-                    return Err((
-                        RpcStatusCode::INVALID_ARGUMENT,
-                        anyhow!(format!(
-                            "source snapshot ID={} and name={} has size={} \
-                                greater than requested volume size={}",
-                            src_snapshot.snap_id,
-                            src_snapshot.snap_name,
-                            src_snapshot.size_bytes,
-                            dst_volume_size,
-                        )),
-                    ));
-                }
-
-                debug_assert!(
-                    dst_path.is_dir(),
-                    "the volume of mount access type should have a directory path: {:?}",
-                    dst_path,
-                );
-                let snap_path_owned = src_snapshot.snap_path.to_owned();
-                let dst_path_owned = dst_path.to_owned();
-                smol::unblock(move || Self::decompress_snapshot(&snap_path_owned, &dst_path_owned))
-                    .await
-                    .map_err(|e| (RpcStatusCode::INTERNAL, e))?
-            }
+        let src_snapshot = self.get_snapshot_by_id(src_snapshot_id).await?;
+        assert_eq!(
+            src_snapshot.node_id,
+            self.get_node_id(),
+            "snapshot ID={} is on node ID={} not on local node ID={}",
+            src_snapshot_id,
+            src_snapshot.node_id,
+            self.get_node_id(),
+        );
+        if !src_snapshot.ready_to_use {
+            error!(
+                "source snapshot ID={} and name={} is not yet ready to use",
+                src_snapshot.snap_id, src_snapshot.snap_name
+            );
+            return Err(SnapshotNotReady {
+                snapshot_id: src_snapshot.snap_id.to_owned(),
+                context: vec![],
+            });
         }
+        if src_snapshot.size_bytes > dst_volume_size {
+            let error_msg = format!(
+                "source snapshot ID={} and name={} has size={} \
+                            greater than requested volume size={}",
+                src_snapshot.snap_id,
+                src_snapshot.snap_name,
+                src_snapshot.size_bytes,
+                dst_volume_size
+            );
+
+            error!("{}", &error_msg);
+            return Err(ArgumentInvalid {
+                context: vec![error_msg],
+            });
+        }
+
+        debug_assert!(
+            dst_path.is_dir(),
+            "the volume of mount access type should have a directory path: {:?}",
+            dst_path,
+        );
+        let snap_path_owned = src_snapshot.snap_path.to_owned();
+        let dst_path_owned = dst_path.to_owned();
+        smol::unblock(move || Self::decompress_snapshot(&snap_path_owned, &dst_path_owned)).await?;
 
         Ok(())
     }
@@ -887,66 +897,61 @@ impl MetaData {
         dst_volume_size: i64,
         src_volume_id: &str,
         dst_volume_id: &str,
-    ) -> Result<(), (RpcStatusCode, anyhow::Error)> {
+    ) -> DatenLordResult<()> {
         let dst_path = self.get_volume_path(dst_volume_id);
 
-        match self.get_volume_by_id(src_volume_id).await {
-            None => {
-                return Err((
-                    RpcStatusCode::NOT_FOUND,
-                    anyhow!(format!(
-                        "failed to find source volume ID={}, \
-                            make sure source/destination in the same storage class",
-                        src_volume_id,
-                    )),
-                ));
-            }
-            Some(src_volume) => {
-                assert_eq!(
-                    src_volume.node_id,
-                    self.get_node_id(),
-                    "volume ID={} is on node ID={} not on local node ID={}",
-                    src_volume_id,
-                    src_volume.node_id,
-                    self.get_node_id(),
-                );
-                if src_volume.get_size() > dst_volume_size {
-                    return Err((
-                        RpcStatusCode::INVALID_ARGUMENT,
-                        anyhow!(format!(
-                            "source volume ID={} and name={} has size={} \
+        let src_volume = self.get_volume_by_id(src_volume_id).await?;
+        assert_eq!(
+            src_volume.node_id,
+            self.get_node_id(),
+            "volume ID={} is on node ID={} not on local node ID={}",
+            src_volume_id,
+            src_volume.node_id,
+            self.get_node_id(),
+        );
+        if src_volume.get_size() > dst_volume_size {
+            return Err(ArgumentInvalid {
+                context: vec![format!(
+                    "source volume ID={} and name={} has size={} \
                                 greater than requested volume size={}",
-                            src_volume.vol_id,
-                            src_volume.vol_name,
-                            src_volume.get_size(),
-                            dst_volume_size,
-                        )),
-                    ));
-                }
+                    src_volume.vol_id,
+                    src_volume.vol_name,
+                    src_volume.get_size(),
+                    dst_volume_size,
+                )],
+            });
+        }
 
-                let vol_path_owned = src_volume.vol_path.to_owned();
-                let dst_path_owned = dst_path.to_owned();
-                let copy_res = smol::unblock(move || {
-                    util::copy_directory_recursively(
-                        &vol_path_owned,
-                        &dst_path_owned,
-                        false, // follow symlink or not
+        let vol_path_owned = src_volume.vol_path.to_owned();
+        let dst_path_owned = dst_path.to_owned();
+        let copy_res = smol::unblock(move || {
+            util::copy_directory_recursively(
+                &vol_path_owned,
+                &dst_path_owned,
+                false, // follow symlink or not
+            )
+        })
+        .await
+        .with_context(|| {
+            format!(
+                "failed to pre-populate data from source mount volume {} and name={}",
+                src_volume.vol_id, src_volume.vol_name,
+            )
+        });
+        match copy_res {
+            Ok(copy_size) => {
+                info!(
+                    "successfully copied {} files from {:?} to {:?}",
+                    copy_size, src_volume.vol_path, dst_path,
+                );
+            }
+            Err(e) => {
+                return Err(e.with_context(|| {
+                    format!(
+                        "failed to pre-populate data from source mount volume {} and name={}",
+                        src_volume.vol_id, src_volume.vol_name,
                     )
-                })
-                .await
-                .context(format!(
-                    "failed to pre-populate data from source mount volume {} and name={}",
-                    src_volume.vol_id, src_volume.vol_name,
-                ));
-                match copy_res {
-                    Ok(copy_size) => {
-                        info!(
-                            "successfully copied {} files from {:?} to {:?}",
-                            copy_size, src_volume.vol_path, dst_path,
-                        );
-                    }
-                    Err(e) => return Err((RpcStatusCode::INTERNAL, e)),
-                }
+                }))
             }
         }
 
@@ -959,14 +964,13 @@ impl MetaData {
         &self,
         vol_id: &str,
         mount_path: &str,
-    ) -> anyhow::Result<HashSet<String>> {
-        let mut mount_path_set = self
-            .get_volume_bind_mount_path(vol_id)
-            .await
-            .context(format!(
-                "failed to get the bind mount paths of volume ID={}",
-                vol_id,
-            ))?;
+    ) -> DatenLordResult<HashSet<String>> {
+        let mut mount_path_set =
+            self.get_volume_bind_mount_path(vol_id)
+                .await
+                .with_context(|| {
+                    format!("failed to get the bind mount paths of volume ID={}", vol_id,)
+                })?;
         if mount_path_set.contains(mount_path) {
             let volume_mount_path_key = format!(
                 "{}/{}/{}",
@@ -987,10 +991,12 @@ impl MetaData {
                     .etcd_delegate
                     .update_existing_kv(&volume_mount_path_key, &mount_path_value_in_etcd)
                     .await
-                    .context(format!(
-                        "failed to delete one mount path={} of volume ID={}",
-                        mount_path, vol_id
-                    ))?;
+                    .with_context(|| {
+                        format!(
+                            "failed to delete one mount path={} of volume ID={}",
+                            mount_path, vol_id
+                        )
+                    })?;
                 Ok((&volume_mount_paths)
                     .split(VOLUME_BIND_MOUNT_PATH_SEPARATOR)
                     .map(std::borrow::ToOwned::to_owned)
@@ -1005,7 +1011,7 @@ impl MetaData {
     pub async fn delete_volume_all_bind_mount_path(
         &self,
         vol_id: &str,
-    ) -> anyhow::Result<HashSet<String>> {
+    ) -> DatenLordResult<HashSet<String>> {
         let volume_mount_path_key = format!(
             "{}/{}/{}",
             VOLUME_BIND_MOUNT_PATH_PREFIX,
@@ -1027,7 +1033,7 @@ impl MetaData {
     pub async fn get_volume_bind_mount_path(
         &self,
         vol_id: &str,
-    ) -> anyhow::Result<HashSet<String>> {
+    ) -> DatenLordResult<HashSet<String>> {
         let volume_mount_path_key = format!(
             "{}/{}/{}",
             VOLUME_BIND_MOUNT_PATH_PREFIX,
@@ -1083,9 +1089,7 @@ impl MetaData {
                     panic!(
                         "failed to write the mount path={} of volume ID={} to etcd, \
                             the error is: {}",
-                        target_path,
-                        vol_id,
-                        util::format_anyhow_error(&e),
+                        target_path, vol_id, e,
                     );
                 }
             }
@@ -1108,9 +1112,7 @@ impl MetaData {
                     Err(e) => panic!(
                         "failed to add the mount path={} of volume ID={} to etcd, \
                             the error is: {}",
-                        target_path,
-                        vol_id,
-                        util::format_anyhow_error(&e),
+                        target_path, vol_id, e,
                     ),
                 }
             }
@@ -1129,20 +1131,19 @@ impl MetaData {
         vol_id: &str,
         mount_options: &str,
         ephemeral: bool,
-    ) -> Result<(), (RpcStatusCode, anyhow::Error)> {
+    ) -> DatenLordResult<()> {
         let vol_path = self.get_volume_path(vol_id);
         // Bind mount from target_path to vol_path if run as root
         let target_path = Path::new(target_dir);
         if target_path.exists() {
             debug!("found target bind mount directory={:?}", target_path);
         } else {
-            let create_res = fs::create_dir_all(target_path).context(format!(
-                "failed to create target bind mount directory={:?}",
-                target_dir,
-            ));
-            if let Err(e) = create_res {
-                return Err((RpcStatusCode::INTERNAL, e));
-            }
+            fs::create_dir_all(target_path).with_context(|| {
+                format!(
+                    "failed to create target bind mount directory={:?}",
+                    target_dir,
+                )
+            })?;
         };
 
         let get_mount_path_res = self.get_volume_bind_mount_path(vol_id).await;
@@ -1160,8 +1161,7 @@ impl MetaData {
             }
             Err(e) => panic!(
                 "failed to get mount path of volume ID={} from etcd, the error is: {}",
-                vol_id,
-                util::format_anyhow_error(&e),
+                vol_id, e,
             ),
         };
         let vol_path_owned = vol_path.to_owned();
@@ -1179,10 +1179,12 @@ impl MetaData {
             )
         })
         .await
-        .context(format!(
-            "failed to bind mount from {:?} to {:?}",
-            vol_path, target_path,
-        ));
+        .with_context(|| {
+            format!(
+                "failed to bind mount from {:?} to {:?}",
+                vol_path, target_path,
+            )
+        });
         if let Err(bind_err) = mount_res {
             if ephemeral {
                 match self.delete_volume_meta_data(vol_id).await {
@@ -1193,12 +1195,11 @@ impl MetaData {
                     Err(e) => error!(
                         "failed to delete ephemeral volume ID={}, \
                             when bind mount failed, the error is: {}",
-                        vol_id,
-                        util::format_anyhow_error(&e),
+                        vol_id, e,
                     ),
                 }
             }
-            return Err((RpcStatusCode::INTERNAL, bind_err));
+            return Err(bind_err);
         } else {
             info!(
                 "successfully bind mounted volume path={:?} to target path={:?}",
@@ -1212,45 +1213,48 @@ impl MetaData {
     }
 
     /// Compress a volume and save as a tar file
-    fn compress_volume(src_vol: &DatenLordVolume, snap_path: &Path) -> anyhow::Result<()> {
+    fn compress_volume(src_vol: &DatenLordVolume, snap_path: &Path) -> DatenLordResult<()> {
         /// Remove bad snapshot when compress error
         fn remove_bad_snapshot(snap_path: &Path) {
-            let remove_res = fs::remove_file(snap_path).context(format!(
-                "failed to remove bad snapshot file {:?}",
-                snap_path,
-            ));
+            let remove_res = fs::remove_file(snap_path)
+                .with_context(|| format!("failed to remove bad snapshot file {:?}", snap_path,));
             if let Err(remove_err) = remove_res {
                 error!(
                     "failed to remove bad snapshot file {:?}, the error is: {}",
-                    snap_path,
-                    util::format_anyhow_error(&remove_err),
+                    snap_path, remove_err,
                 );
             }
         }
 
         let vol_path = &src_vol.vol_path;
         let tar_gz = File::create(&snap_path)
-            .context(format!("failed to create snapshot file {:?}", snap_path))?;
+            .with_context(|| format!("failed to create snapshot file {:?}", snap_path))?;
         let gz_file = flate2::write::GzEncoder::new(tar_gz, flate2::Compression::default());
         let mut tar_file = tar::Builder::new(gz_file);
-        let tar_res = tar_file.append_dir_all("./", vol_path).context(format!(
-            "failed to generate snapshot for volume ID={} and name={}",
-            src_vol.vol_id, src_vol.vol_name,
-        ));
+        let tar_res = tar_file.append_dir_all("./", vol_path).with_context(|| {
+            format!(
+                "failed to generate snapshot for volume ID={} and name={}",
+                src_vol.vol_id, src_vol.vol_name,
+            )
+        });
         if let Err(append_err) = tar_res {
             remove_bad_snapshot(snap_path);
             return Err(append_err);
         }
-        let into_res = tar_file.into_inner().context(format!(
-            "failed to generate snapshot for volume ID={} and name={}",
-            src_vol.vol_id, src_vol.vol_name,
-        ));
+        let into_res = tar_file.into_inner().with_context(|| {
+            format!(
+                "failed to generate snapshot for volume ID={} and name={}",
+                src_vol.vol_id, src_vol.vol_name,
+            )
+        });
         match into_res {
             Ok(gz_file) => {
-                let gz_finish_res = gz_file.finish().context(format!(
-                    "failed to generate snapshot for volume ID={} and name={}",
-                    src_vol.vol_id, src_vol.vol_name,
-                ));
+                let gz_finish_res = gz_file.finish().with_context(|| {
+                    format!(
+                        "failed to generate snapshot for volume ID={} and name={}",
+                        src_vol.vol_id, src_vol.vol_name,
+                    )
+                });
                 if let Err(finish_err) = gz_finish_res {
                     remove_bad_snapshot(snap_path);
                     return Err(finish_err);
@@ -1269,43 +1273,35 @@ impl MetaData {
         src_vol_id: &str,
         snap_id: &str,
         snap_name: &str,
-    ) -> anyhow::Result<DatenLordSnapshot> {
-        match self.get_volume_by_id(src_vol_id).await {
-            Some(src_vol) => {
-                assert_eq!(
-                    src_vol.node_id,
-                    self.get_node_id(),
-                    "volume ID={} is on node ID={} not on local node ID={}",
-                    src_vol_id,
-                    src_vol.node_id,
-                    self.get_node_id(),
-                );
+    ) -> DatenLordResult<DatenLordSnapshot> {
+        let src_vol = self.get_volume_by_id(src_vol_id).await?;
+        assert_eq!(
+            src_vol.node_id,
+            self.get_node_id(),
+            "volume ID={} is on node ID={} not on local node ID={}",
+            src_vol_id,
+            src_vol.node_id,
+            self.get_node_id(),
+        );
 
-                let snap_path = self.get_snapshot_path(snap_id);
-                let snap_path_owned = snap_path.to_owned();
-                let src_vol_owned = src_vol.to_owned();
+        let snap_path = self.get_snapshot_path(snap_id);
+        let snap_path_owned = snap_path.to_owned();
+        let src_vol_owned = src_vol.to_owned();
 
-                smol::unblock(move || Self::compress_volume(&src_vol_owned, &snap_path_owned))
-                    .await?;
+        smol::unblock(move || Self::compress_volume(&src_vol_owned, &snap_path_owned)).await?;
 
-                let now = smol::unblock(std::time::SystemTime::now).await;
-                let snapshot = DatenLordSnapshot::new(
-                    snap_name.to_owned(),
-                    snap_id.to_string(),
-                    src_vol_id.to_owned(),
-                    self.get_node_id().to_owned(),
-                    snap_path,
-                    now,
-                    src_vol.get_size(),
-                );
+        let now = smol::unblock(std::time::SystemTime::now).await;
+        let snapshot = DatenLordSnapshot::new(
+            snap_name.to_owned(),
+            snap_id.to_string(),
+            src_vol_id.to_owned(),
+            self.get_node_id().to_owned(),
+            snap_path,
+            now,
+            src_vol.get_size(),
+        );
 
-                Ok(snapshot)
-            }
-            None => Err(anyhow!(format!(
-                "failed to find source volume ID={} from etcd",
-                src_vol_id,
-            ))),
-        }
+        Ok(snapshot)
     }
 
     /// Expand volume size, return previous size
@@ -1313,7 +1309,7 @@ impl MetaData {
         &self,
         volume: &mut DatenLordVolume,
         new_size_bytes: i64,
-    ) -> anyhow::Result<i64> {
+    ) -> DatenLordResult<i64> {
         let old_size_bytes = volume.get_size();
         if volume.expand_size(new_size_bytes) {
             let prv_vol = self.update_volume_meta_data(&volume.vol_id, volume).await?;
@@ -1324,11 +1320,12 @@ impl MetaData {
             );
             Ok(old_size_bytes)
         } else {
-            Err(anyhow!(
-                "the new size={} is smaller than original size={}",
-                new_size_bytes,
-                old_size_bytes,
-            ))
+            Err(ArgumentInvalid {
+                context: vec![format!(
+                    "the new size={} is smaller than original size={}",
+                    new_size_bytes, old_size_bytes,
+                )],
+            })
         }
     }
 }
@@ -1460,7 +1457,7 @@ impl DatenLordVolume {
         vol_access_mode: impl Into<Vec<VolumeCapability_AccessMode_Mode>>,
         content_source: Option<VolumeContentSource_oneof_type>,
         // ephemeral: bool,
-    ) -> anyhow::Result<Self> {
+    ) -> DatenLordResult<Self> {
         assert!(!basic_fields.vol_id.is_empty(), "volume ID cannot be empty");
         assert!(
             !basic_fields.vol_name.is_empty(),
@@ -1506,7 +1503,7 @@ impl DatenLordVolume {
         vol_name: &str,
         node_id: &str,
         vol_path: &Path,
-    ) -> anyhow::Result<Self> {
+    ) -> DatenLordResult<Self> {
         Self::new(
             DatenLordVolumeBasicFields {
                 vol_id: vol_id.to_owned(),
@@ -1527,7 +1524,7 @@ impl DatenLordVolume {
         vol_id: &str,
         node_id: &str,
         vol_path: &Path,
-    ) -> anyhow::Result<Self> {
+    ) -> DatenLordResult<Self> {
         Self::new(
             DatenLordVolumeBasicFields {
                 vol_id: vol_id.to_owned(),
@@ -1550,20 +1547,21 @@ impl DatenLordVolume {
     }
 
     /// Create volume directory
-    fn create_vol_dir(&self) -> anyhow::Result<()> {
-        fs::create_dir_all(&self.vol_path).context(format!(
-            "failed to create directory={:?} for volume ID={} and name={}",
-            self.vol_path, self.vol_id, self.vol_name,
-        ))?;
+    fn create_vol_dir(&self) -> DatenLordResult<()> {
+        fs::create_dir_all(&self.vol_path).with_context(|| {
+            format!(
+                "failed to create directory={:?} for volume ID={} and name={}",
+                self.vol_path, self.vol_id, self.vol_name,
+            )
+        })?;
         Ok(())
     }
 
     /// Delete volume directory
-    pub fn delete_directory(&self) -> anyhow::Result<()> {
-        std::fs::remove_dir_all(&self.vol_path).context(format!(
-            "failed to remove the volume directory: {:?}",
-            self.vol_path
-        ))?;
+    pub fn delete_directory(&self) -> DatenLordResult<()> {
+        std::fs::remove_dir_all(&self.vol_path).with_context(|| {
+            format!("failed to remove the volume directory: {:?}", self.vol_path)
+        })?;
         Ok(())
     }
 
@@ -1634,11 +1632,9 @@ impl DatenLordSnapshot {
     }
 
     /// Delete snapshot file
-    pub fn delete_file(&self) -> anyhow::Result<()> {
-        nix::unistd::unlink(&self.snap_path).context(format!(
-            "failed to unlink snapshot file: {:?}",
-            self.snap_path,
-        ))?;
+    pub fn delete_file(&self) -> DatenLordResult<()> {
+        nix::unistd::unlink(&self.snap_path)
+            .with_context(|| format!("failed to unlink snapshot file: {:?}", self.snap_path,))?;
         Ok(())
     }
 }
