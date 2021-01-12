@@ -84,6 +84,7 @@ mod datenlord_worker;
 mod datenlord_worker_grpc;
 
 mod controller;
+mod error;
 mod etcd_delegate;
 mod identity;
 mod meta_data;
@@ -92,6 +93,7 @@ mod util;
 mod worker;
 
 use controller::ControllerImpl;
+use error::{Context, DatenLordResult};
 use etcd_delegate::EtcdDelegate;
 use identity::IdentityImpl;
 use meta_data::{DatenLordNode, MetaData};
@@ -99,7 +101,6 @@ use node::NodeImpl;
 use util::RunAsRole;
 use worker::WorkerImpl;
 
-use anyhow::Context;
 use clap::{App, Arg, ArgMatches};
 use grpcio::{Environment, Server};
 use log::{debug, info};
@@ -114,7 +115,7 @@ fn build_meta_data(
     data_dir: String,
     run_as: RunAsRole,
     etcd_delegate: EtcdDelegate,
-) -> anyhow::Result<MetaData> {
+) -> DatenLordResult<MetaData> {
     let ephemeral = false; // TODO: read from command line argument
     let node = DatenLordNode::new(
         node_id,
@@ -127,7 +128,7 @@ fn build_meta_data(
 }
 
 /// Build worker service
-fn build_grpc_worker_server(meta_data: Arc<MetaData>) -> anyhow::Result<Server> {
+fn build_grpc_worker_server(meta_data: Arc<MetaData>) -> DatenLordResult<Server> {
     remove_socket_file(util::LOCAL_WORKER_SOCKET);
 
     let node = meta_data.get_node();
@@ -148,7 +149,7 @@ fn build_grpc_worker_server(meta_data: Arc<MetaData>) -> anyhow::Result<Server> 
         .bind(worker_bind_address, worker_bind_port)
         // .channel_args(ch_builder.build_args())
         .build()
-        .context("failed to build DatenLord worker server")?;
+        .add_context("failed to build DatenLord worker server")?;
 
     Ok(worker_server)
 }
@@ -158,7 +159,7 @@ fn build_grpc_node_server(
     end_point: &str,
     driver_name: &str,
     meta_data: Arc<MetaData>,
-) -> anyhow::Result<Server> {
+) -> DatenLordResult<Server> {
     remove_socket_file(end_point);
 
     let identity_service = csi_grpc::create_identity(IdentityImpl::new(
@@ -173,7 +174,7 @@ fn build_grpc_node_server(
         .bind(end_point, 0)
         // .channel_args(ch_builder.build_args())
         .build()
-        .context("failed to build DatenLord worker server")?;
+        .add_context("failed to build DatenLord worker server")?;
 
     Ok(node_server)
 }
@@ -183,7 +184,7 @@ fn build_grpc_controller_server(
     end_point: &str,
     driver_name: &str,
     meta_data: Arc<MetaData>,
-) -> anyhow::Result<Server> {
+) -> DatenLordResult<Server> {
     remove_socket_file(end_point);
 
     let identity_service = csi_grpc::create_identity(IdentityImpl::new(
@@ -203,7 +204,7 @@ fn build_grpc_controller_server(
         .bind(end_point, 0) // Port is not need when bind to socket file
         // .channel_args(ch_builder.build_args())
         .build()
-        .context("failed to build CSI gRPC server")?;
+        .add_context("failed to build CSI gRPC server")?;
 
     Ok(controller_server)
 }
@@ -486,7 +487,7 @@ fn get_args(matches: &ArgMatches) -> CliArgs {
     }
 }
 
-fn main() -> anyhow::Result<()> {
+fn main() -> DatenLordResult<()> {
     env_logger::init();
 
     let args = parse_args();
@@ -547,6 +548,7 @@ fn main() -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod test {
+    use super::error::Context;
     use super::util;
     use super::*;
     use csi::{
@@ -562,7 +564,6 @@ mod test {
     };
     use csi_grpc::{ControllerClient, IdentityClient, NodeClient};
 
-    use anyhow::anyhow;
     use grpcio::{ChannelBuilder, EnvBuilder};
     use mock_etcd::MockEtcdServer;
     use protobuf::RepeatedField;
@@ -590,15 +591,15 @@ mod test {
     static GRPC_SERVER: Once = Once::new();
 
     #[test]
-    fn test_all() -> anyhow::Result<()> {
+    fn test_all() -> DatenLordResult<()> {
         // TODO: run test case in parallel
         // Because they all depend on etcd, so cannot run in parallel now
         let mut etcd_server = MockEtcdServer::new();
         etcd_server.start();
-        test_meta_data().context("test meta data failed")?;
-        test_identity_server().context("test identity server failed")?;
-        test_controller_server().context("test controller server failed")?;
-        test_node_server().context("test node server failed")?;
+        test_meta_data().add_context("test meta data failed")?;
+        test_identity_server().add_context("test identity server failed")?;
+        test_controller_server().add_context("test controller server failed")?;
+        test_node_server().add_context("test node server failed")?;
         Ok(())
     }
 
@@ -612,7 +613,7 @@ mod test {
         }
     }
 
-    fn clear_test_data(etcd_delegate: &EtcdDelegate) -> anyhow::Result<()> {
+    fn clear_test_data(etcd_delegate: &EtcdDelegate) -> DatenLordResult<()> {
         let dir_path = Path::new(util::DATA_DIR);
         if dir_path.exists() {
             fs::remove_dir_all(dir_path)?;
@@ -631,7 +632,7 @@ mod test {
         Ok(())
     }
 
-    fn build_test_meta_data() -> anyhow::Result<MetaData> {
+    fn build_test_meta_data() -> DatenLordResult<MetaData> {
         let etcd_address_vec = get_etcd_address_vec();
         let etcd_delegate = EtcdDelegate::new(etcd_address_vec)?;
         clear_test_data(&etcd_delegate)?;
@@ -652,7 +653,7 @@ mod test {
         MetaData::new(data_dir.to_owned(), ephemeral, run_as, etcd_delegate, node)
     }
 
-    fn test_meta_data() -> anyhow::Result<()> {
+    fn test_meta_data() -> DatenLordResult<()> {
         smol::block_on(async {
             let meta_data = build_test_meta_data()?;
             let vol_id = "the-fake-ephemeral-volume-id-for-meta-data-test";
@@ -667,14 +668,10 @@ mod test {
                 add_vol_res.is_ok(),
                 "failed to add new volume meta data to etcd"
             );
-            let get_vol_res =
-                meta_data
-                    .get_volume_by_name(&volume.vol_name)
-                    .await
-                    .ok_or(anyhow!(format!(
-                        "failed to find volume by name={}",
-                        volume.vol_name,
-                    )))?;
+            let get_vol_res = meta_data
+                .get_volume_by_name(&volume.vol_name)
+                .await
+                .with_context(|| format!("failed to find volume by name={}", volume.vol_name,))?;
             assert_eq!(
                 get_vol_res.vol_name, volume.vol_name,
                 "volume name not match"
@@ -691,7 +688,7 @@ mod test {
             let expanded_vol = meta_data
                 .get_volume_by_id(vol_id)
                 .await
-                .ok_or(anyhow!(format!("failed to find volume ID={}", vol_id)))?;
+                .with_context(|| format!("failed to find volume ID={}", vol_id))?;
             assert_eq!(
                 expanded_vol.size_bytes, new_size_bytes,
                 "the expanded volume size not match"
@@ -722,10 +719,9 @@ mod test {
             let get_snap_by_name_res = meta_data
                 .get_snapshot_by_name(&snapshot.snap_name)
                 .await
-                .ok_or(anyhow!(format!(
-                    "failed to find snapshot by name={}",
-                    snapshot.snap_name,
-                )))?;
+                .with_context(|| {
+                    format!("failed to find snapshot by name={}", snapshot.snap_name,)
+                })?;
             assert_eq!(
                 get_snap_by_name_res.snap_name, snapshot.snap_name,
                 "snapshot name not match"
@@ -734,10 +730,12 @@ mod test {
             let get_snap_by_src_vol_id_res = meta_data
                 .get_snapshot_by_src_volume_id(&snapshot.vol_id)
                 .await
-                .ok_or(anyhow!(format!(
-                    "failed to find snapshot by source volume ID={}",
-                    snapshot.vol_id,
-                )))?;
+                .with_context(|| {
+                    format!(
+                        "failed to find snapshot by source volume ID={}",
+                        snapshot.vol_id,
+                    )
+                })?;
             assert_eq!(
                 get_snap_by_src_vol_id_res.vol_id, snapshot.vol_id,
                 "snapshot source volume ID not match"
@@ -758,7 +756,7 @@ mod test {
         Path::new(util::DATA_DIR).join(vol_id)
     }
 
-    fn run_test_server() -> anyhow::Result<()> {
+    fn run_test_server() -> DatenLordResult<()> {
         let controller_end_point = CONTROLLER_END_POINT.to_owned();
         let node_end_point = NODE_END_POINT.to_owned();
         let worker_port = 0;
@@ -787,10 +785,7 @@ mod test {
                 etcd_delegate,
             ) {
                 Ok(md) => md,
-                Err(e) => panic!(
-                    "failed to build meta data, the error is : {}",
-                    util::format_anyhow_error(&e),
-                ),
+                Err(e) => panic!("failed to build meta data, the error is : {}", e,),
             };
             let md = Arc::new(meta_data);
             let controller_server = match build_grpc_controller_server(
@@ -799,10 +794,7 @@ mod test {
                 Arc::<MetaData>::clone(&md),
             ) {
                 Ok(server) => server,
-                Err(e) => panic!(
-                    "failed to build CSI server, the error is : {}",
-                    util::format_anyhow_error(&e),
-                ),
+                Err(e) => panic!("failed to build CSI server, the error is : {}", e,),
             };
             let node_server = match build_grpc_node_server(
                 &node_end_point,
@@ -810,17 +802,11 @@ mod test {
                 Arc::<MetaData>::clone(&md),
             ) {
                 Ok(server) => server,
-                Err(e) => panic!(
-                    "failed to build Node server, the error is : {}",
-                    util::format_anyhow_error(&e),
-                ),
+                Err(e) => panic!("failed to build Node server, the error is : {}", e,),
             };
             let worker_server = match build_grpc_worker_server(md) {
                 Ok(server) => server,
-                Err(e) => panic!(
-                    "failed to build Worker server, the error is : {}",
-                    util::format_anyhow_error(&e),
-                ),
+                Err(e) => panic!("failed to build Worker server, the error is : {}", e,),
             };
 
             // Keep running the task in the background
@@ -845,7 +831,7 @@ mod test {
         Ok(())
     }
 
-    fn build_identity_client() -> anyhow::Result<IdentityClient> {
+    fn build_identity_client() -> DatenLordResult<IdentityClient> {
         run_test_server()?;
         let env = Arc::new(EnvBuilder::new().build());
         let ch = ChannelBuilder::new(env).connect(CONTROLLER_END_POINT);
@@ -853,13 +839,13 @@ mod test {
         Ok(identity_client)
     }
 
-    fn test_identity_server() -> anyhow::Result<()> {
+    fn test_identity_server() -> DatenLordResult<()> {
         let client = build_identity_client()?;
 
         // Test get info
         let info_resp = client
             .get_plugin_info(&GetPluginInfoRequest::new())
-            .context("failed to get GetPluginInfoResponse")?;
+            .add_context("failed to get GetPluginInfoResponse")?;
         assert_eq!(
             info_resp.name,
             util::CSI_PLUGIN_NAME,
@@ -874,7 +860,7 @@ mod test {
         // Test get capabilities
         let cap_resp = client
             .get_plugin_capabilities(&GetPluginCapabilitiesRequest::new())
-            .context("failed to get GetPluginCapabilitiesResponse")?;
+            .add_context("failed to get GetPluginCapabilitiesResponse")?;
         let caps = cap_resp.get_capabilities();
         let cap_vec = caps
             .iter()
@@ -892,7 +878,7 @@ mod test {
         // Test probe
         let prob_resp = client
             .probe(&ProbeRequest::new())
-            .context("failed to get ProbeResponse")?;
+            .add_context("failed to get ProbeResponse")?;
         debug_assert!(
             prob_resp.get_ready().value,
             "ProbeResponse showed server not ready",
@@ -901,7 +887,7 @@ mod test {
         Ok(())
     }
 
-    fn build_controller_client() -> anyhow::Result<ControllerClient> {
+    fn build_controller_client() -> DatenLordResult<ControllerClient> {
         run_test_server()?;
         let env = Arc::new(EnvBuilder::new().build());
         let ch = ChannelBuilder::new(env).connect(CONTROLLER_END_POINT);
@@ -912,7 +898,7 @@ mod test {
     fn create_volume(
         client: &ControllerClient,
         req: &CreateVolumeRequest,
-    ) -> anyhow::Result<CreateVolumeResponse> {
+    ) -> DatenLordResult<CreateVolumeResponse> {
         let resp = client.create_volume(req)?;
         Ok(resp)
     }
@@ -920,7 +906,7 @@ mod test {
     fn delete_volume(
         client: &ControllerClient,
         req: &DeleteVolumeRequest,
-    ) -> anyhow::Result<DeleteVolumeResponse> {
+    ) -> DatenLordResult<DeleteVolumeResponse> {
         let resp = client.delete_volume(req)?;
         Ok(resp)
     }
@@ -928,7 +914,7 @@ mod test {
     fn create_snapshot(
         client: &ControllerClient,
         req: &CreateSnapshotRequest,
-    ) -> anyhow::Result<CreateSnapshotResponse> {
+    ) -> DatenLordResult<CreateSnapshotResponse> {
         let resp = client.create_snapshot(req)?;
         Ok(resp)
     }
@@ -936,7 +922,7 @@ mod test {
     fn list_volumes(
         client: &ControllerClient,
         req: &ListVolumesRequest,
-    ) -> anyhow::Result<ListVolumesResponse> {
+    ) -> DatenLordResult<ListVolumesResponse> {
         let resp = client.list_volumes(req)?;
         Ok(resp)
     }
@@ -944,7 +930,7 @@ mod test {
     fn delete_snapshot(
         client: &ControllerClient,
         req: &DeleteSnapshotRequest,
-    ) -> anyhow::Result<DeleteSnapshotResponse> {
+    ) -> DatenLordResult<DeleteSnapshotResponse> {
         let resp = client.delete_snapshot(req)?;
         Ok(resp)
     }
@@ -952,7 +938,7 @@ mod test {
     fn list_snapshots(
         client: &ControllerClient,
         req: &ListSnapshotsRequest,
-    ) -> anyhow::Result<ListSnapshotsResponse> {
+    ) -> DatenLordResult<ListSnapshotsResponse> {
         let resp = client.list_snapshots(req)?;
         Ok(resp)
     }
@@ -960,7 +946,7 @@ mod test {
     fn controller_expand_volume(
         client: &ControllerClient,
         req: &ControllerExpandVolumeRequest,
-    ) -> anyhow::Result<ControllerExpandVolumeResponse> {
+    ) -> DatenLordResult<ControllerExpandVolumeResponse> {
         let resp = client.controller_expand_volume(req)?;
         Ok(resp)
     }
@@ -969,7 +955,7 @@ mod test {
         vol_id: &str,
         vol_file_name: &str,
         vol_file_content: &str,
-    ) -> anyhow::Result<()> {
+    ) -> DatenLordResult<()> {
         // Write some date to volume directory
         let vol_path = get_volume_path(vol_id);
         let mut vol_data_file = File::create(vol_path.join(vol_file_name))?;
@@ -981,12 +967,14 @@ mod test {
         vol_id: &str,
         vol_file_name: &str,
         expected_content: &str,
-    ) -> anyhow::Result<()> {
+    ) -> DatenLordResult<()> {
         let vol_file_path = get_volume_path(vol_id).join(vol_file_name);
-        let buffer = fs::read_to_string(&vol_file_path).context(format!(
-            "failed to read the file name={:?} of volume ID={}",
-            vol_file_path, vol_id
-        ))?;
+        let buffer = fs::read_to_string(&vol_file_path).with_context(|| {
+            format!(
+                "failed to read the file name={:?} of volume ID={}",
+                vol_file_path, vol_id
+            )
+        })?;
         assert!(
             !buffer.is_empty(),
             "failed to read content from duplicated volume file"
@@ -999,7 +987,7 @@ mod test {
         Ok(())
     }
 
-    fn test_controller_server() -> anyhow::Result<()> {
+    fn test_controller_server() -> DatenLordResult<()> {
         let controller_client = build_controller_client()?;
 
         test_controller_create_volume_from_volume(&controller_client)?;
@@ -1011,7 +999,7 @@ mod test {
         Ok(())
     }
 
-    fn test_list_volumes(client: &ControllerClient) -> anyhow::Result<()> {
+    fn test_list_volumes(client: &ControllerClient) -> DatenLordResult<()> {
         let vol_names = (1..5)
             .map(|idx| format!("tmp_volume_name_{}", idx))
             .collect::<Vec<_>>();
@@ -1029,7 +1017,7 @@ mod test {
         for vol_name in &vol_names {
             creat_vol_req.set_name((*vol_name).to_owned());
             let creat_resp = create_volume(client, &creat_vol_req)
-                .context("failed to get CreateVolumeResponse")?;
+                .add_context("failed to get CreateVolumeResponse")?;
             let vol = creat_resp.get_volume();
             volumes.push(vol.get_volume_id().to_owned());
         }
@@ -1037,7 +1025,7 @@ mod test {
         // List all volumes
         let mut list_vol_req = ListVolumesRequest::new();
         let list_vol_resp1 = list_volumes(client, &list_vol_req)
-            .context("failed to get ListVolumesResponse of all volumes")?;
+            .add_context("failed to get ListVolumesResponse of all volumes")?;
 
         let list_vols1 = list_vol_resp1.get_entries();
         let all_vol_vec = list_vols1
@@ -1061,7 +1049,7 @@ mod test {
         list_vol_req.set_starting_token(starting_pos.to_string());
         list_vol_req.set_max_entries(max_entries);
         let list_vol_resp2 = list_volumes(client, &list_vol_req)
-            .context("failed to get ListVolumesResponse of two volumes")?;
+            .add_context("failed to get ListVolumesResponse of two volumes")?;
 
         let list_vols2 = list_vol_resp2.get_entries();
         let mut vol_vec2 = list_vols2
@@ -1086,15 +1074,17 @@ mod test {
         let mut del_vol_req = DeleteVolumeRequest::new();
         for vol_id in volumes {
             del_vol_req.set_volume_id(vol_id.to_owned());
-            let _del_vol_resp3 = delete_volume(client, &del_vol_req).context(format!(
-                "failed to get DeleteVolumeResponse when delete volume ID={}",
-                vol_id,
-            ))?;
+            let _del_vol_resp3 = delete_volume(client, &del_vol_req).with_context(|| {
+                format!(
+                    "failed to get DeleteVolumeResponse when delete volume ID={}",
+                    vol_id,
+                )
+            })?;
         }
         Ok(())
     }
 
-    fn test_controller_create_volume_from_volume(client: &ControllerClient) -> anyhow::Result<()> {
+    fn test_controller_create_volume_from_volume(client: &ControllerClient) -> DatenLordResult<()> {
         let vol_name = "tmp_volume";
         let dup_vol_name = "dup_volume";
         let vol_file_name = "volume.dat";
@@ -1111,7 +1101,7 @@ mod test {
         creat_vol_req.set_volume_capabilities(RepeatedField::from_vec(vec![vc]));
 
         let creat_resp1 = create_volume(client, &creat_vol_req)
-            .context("failed to get CreateVolumeResponse when create first volume")?;
+            .add_context("failed to get CreateVolumeResponse when create first volume")?;
         let volume1 = creat_resp1.get_volume();
 
         // Write some date to volume directory
@@ -1125,7 +1115,7 @@ mod test {
         creat_vol_req.set_name(dup_vol_name.to_owned());
 
         let creat_resp2 = create_volume(client, &creat_vol_req)
-            .context("failed to get CreateVolumeResponse when create second volume")?;
+            .add_context("failed to get CreateVolumeResponse when create second volume")?;
         let volume2 = creat_resp2.get_volume();
 
         assert!(
@@ -1140,16 +1130,18 @@ mod test {
 
         // Verify volume data of duplicated volume
         verify_volume_file_content(volume2.get_volume_id(), vol_file_name, vol_file_content)
-            .context(format!(
-                "failed to verify the content of file name={} of volume ID={}",
-                vol_file_name,
-                volume2.get_volume_id(),
-            ))?;
+            .with_context(|| {
+                format!(
+                    "failed to verify the content of file name={} of volume ID={}",
+                    vol_file_name,
+                    volume2.get_volume_id(),
+                )
+            })?;
 
         // List to verify two volumes
         let list_vol_req = ListVolumesRequest::new();
         let list_vol_resp1 = list_volumes(client, &list_vol_req)
-            .context("failed to get ListVolumesResponse of two volumes")?;
+            .add_context("failed to get ListVolumesResponse of two volumes")?;
 
         let vols1 = list_vol_resp1.get_entries();
         let mut vol_vec1 = vols1
@@ -1170,12 +1162,12 @@ mod test {
         let mut del_vol_req = DeleteVolumeRequest::new();
         del_vol_req.set_volume_id(volume2.get_volume_id().to_owned());
         let _del_resp1 = delete_volume(client, &del_vol_req)
-            .context("failed to get DeleteVolumeResponse when delete second volume")?;
+            .add_context("failed to get DeleteVolumeResponse when delete second volume")?;
 
         // List the first volume only
         let list_vol_req = ListVolumesRequest::new();
         let list_vol_resp1 = list_volumes(client, &list_vol_req)
-            .context("failed to get ListVolumesResponse of first volume")?;
+            .add_context("failed to get ListVolumesResponse of first volume")?;
 
         let vols2 = list_vol_resp1.get_entries();
         let vol_vec2 = vols2
@@ -1193,14 +1185,14 @@ mod test {
         // Delete first volume
         del_vol_req.set_volume_id(volume1.get_volume_id().to_owned());
         let _del_vol_resp3 = delete_volume(client, &del_vol_req)
-            .context("failed to get DeleteVolumeResponse when delete first volume")?;
+            .add_context("failed to get DeleteVolumeResponse when delete first volume")?;
 
         Ok(())
     }
 
     fn test_controller_create_volume_from_snapshot(
         client: &ControllerClient,
-    ) -> anyhow::Result<()> {
+    ) -> DatenLordResult<()> {
         let vol_name = "tmp_volume";
         let dup_vol_name = "dup_volume";
         let vol_file_name = "volume.dat";
@@ -1218,7 +1210,7 @@ mod test {
         creat_vol_req.set_volume_capabilities(RepeatedField::from_vec(vec![vc]));
 
         let creat_resp1 = create_volume(client, &creat_vol_req)
-            .context("failed to get CreateVolumeResponse when create source volume")?;
+            .add_context("failed to get CreateVolumeResponse when create source volume")?;
         let volume1 = creat_resp1.get_volume();
 
         // Write some date to volume directory
@@ -1230,7 +1222,7 @@ mod test {
         creat_snap_req.set_name(snap_name.to_owned());
 
         let creat_snap_resp = create_snapshot(client, &creat_snap_req)
-            .context("failed to get CreateSnapshotResponse")?;
+            .add_context("failed to get CreateSnapshotResponse")?;
 
         let snapshot = creat_snap_resp.get_snapshot();
         assert_eq!(
@@ -1252,7 +1244,7 @@ mod test {
         creat_vol_req.set_name(dup_vol_name.to_owned());
 
         let creat_resp3 = create_volume(client, &creat_vol_req)
-            .context("failed to get CreateVolumeResponse when create volume from snapshot")?;
+            .add_context("failed to get CreateVolumeResponse when create volume from snapshot")?;
         let volume3 = creat_resp3.get_volume();
 
         assert!(
@@ -1270,34 +1262,36 @@ mod test {
 
         // Verify volume data of duplicated volume
         verify_volume_file_content(volume3.get_volume_id(), vol_file_name, vol_file_content)
-            .context(format!(
-                "failed to verify the content of file name={} of volume ID={}",
-                vol_file_name,
-                volume3.get_volume_id(),
-            ))?;
+            .with_context(|| {
+                format!(
+                    "failed to verify the content of file name={} of volume ID={}",
+                    vol_file_name,
+                    volume3.get_volume_id(),
+                )
+            })?;
 
         // Delete snapshot
         let mut del_snap_req = DeleteSnapshotRequest::new();
         del_snap_req.set_snapshot_id(snapshot.get_snapshot_id().to_owned());
 
         let _del_snap_resp1 = delete_snapshot(client, &del_snap_req)
-            .context("failed to get DeleteSnapshotResponse")?;
+            .add_context("failed to get DeleteSnapshotResponse")?;
 
         // Delete duplicated volume
         let mut del_vol_req = DeleteVolumeRequest::new();
         del_vol_req.set_volume_id(volume3.get_volume_id().to_owned());
         let _del_vol_resp2 = delete_volume(client, &del_vol_req)
-            .context("failed to get DeleteVolumeResponse when delete twice")?;
+            .add_context("failed to get DeleteVolumeResponse when delete twice")?;
 
         // Delete source volume
         del_vol_req.set_volume_id(volume1.get_volume_id().to_owned());
-        let _del_vol_resp3 =
-            delete_volume(client, &del_vol_req).context("failed to get DeleteVolumeResponse")?;
+        let _del_vol_resp3 = delete_volume(client, &del_vol_req)
+            .add_context("failed to get DeleteVolumeResponse")?;
 
         Ok(())
     }
 
-    fn test_controller_create_delete_idempotency(client: &ControllerClient) -> anyhow::Result<()> {
+    fn test_controller_create_delete_idempotency(client: &ControllerClient) -> DatenLordResult<()> {
         let vol_name = "test_volume";
         let snap_name = "test_snapshot";
 
@@ -1310,13 +1304,13 @@ mod test {
         creat_vol_req.set_name(vol_name.to_owned());
         creat_vol_req.set_volume_capabilities(RepeatedField::from_vec(vec![vc]));
 
-        let creat_resp1 =
-            create_volume(client, &creat_vol_req).context("failed to get CreateVolumeResponse")?;
+        let creat_resp1 = create_volume(client, &creat_vol_req)
+            .add_context("failed to get CreateVolumeResponse")?;
         let volume = creat_resp1.get_volume();
 
         // Idempotency test for create volume
         let creat_resp2 = create_volume(client, &creat_vol_req)
-            .context("failed to get CreateVolumeResponse when create twice")?;
+            .add_context("failed to get CreateVolumeResponse when create twice")?;
         let same_volume = creat_resp2.get_volume();
         assert_eq!(
             volume.get_volume_id(),
@@ -1330,7 +1324,7 @@ mod test {
         creat_snap_req.set_name(snap_name.to_owned());
 
         let creat_snap_resp1 = create_snapshot(client, &creat_snap_req)
-            .context("failed to get CreateSnapshotResponse")?;
+            .add_context("failed to get CreateSnapshotResponse")?;
 
         let snapshot1 = creat_snap_resp1.get_snapshot();
         assert_eq!(
@@ -1346,7 +1340,7 @@ mod test {
 
         // Idempotency test for create snapshot
         let creat_snap_resp2 = create_snapshot(client, &creat_snap_req)
-            .context("failed to get CreateSnapshotResponse when create twice")?;
+            .add_context("failed to get CreateSnapshotResponse when create twice")?;
 
         let snapshot2 = creat_snap_resp2.get_snapshot();
         assert_eq!(
@@ -1370,26 +1364,26 @@ mod test {
         del_snap_req.set_snapshot_id(snapshot1.get_snapshot_id().to_owned());
 
         let _del_snap_resp1 = delete_snapshot(client, &del_snap_req)
-            .context("failed to get DeleteSnapshotResponse")?;
+            .add_context("failed to get DeleteSnapshotResponse")?;
 
         // Idempotency test for delete snapshot
         let _del_snap_resp2 = delete_snapshot(client, &del_snap_req)
-            .context("failed to get DeleteSnapshotResponse when delete twice")?;
+            .add_context("failed to get DeleteSnapshotResponse when delete twice")?;
 
         // Test delete volume
         let mut del_vol_req = DeleteVolumeRequest::new();
         del_vol_req.set_volume_id(volume.get_volume_id().to_owned());
-        let _del_resp1 =
-            delete_volume(client, &del_vol_req).context("failed to get DeleteVolumeResponse")?;
+        let _del_resp1 = delete_volume(client, &del_vol_req)
+            .add_context("failed to get DeleteVolumeResponse")?;
 
         // Idempotency test for delete volume
         let _del_resp2 = delete_volume(client, &del_vol_req)
-            .context("failed to get DeleteVolumeResponse when delete twice")?;
+            .add_context("failed to get DeleteVolumeResponse when delete twice")?;
 
         Ok(())
     }
 
-    fn test_controller_expand_volume(client: &ControllerClient) -> anyhow::Result<()> {
+    fn test_controller_expand_volume(client: &ControllerClient) -> DatenLordResult<()> {
         let vol_name = "test_volume";
 
         // Test create new volume
@@ -1401,8 +1395,8 @@ mod test {
         creat_vol_req.set_name(vol_name.to_owned());
         creat_vol_req.set_volume_capabilities(RepeatedField::from_vec(vec![vc]));
 
-        let creat_resp1 =
-            create_volume(client, &creat_vol_req).context("failed to get CreateVolumeResponse")?;
+        let creat_resp1 = create_volume(client, &creat_vol_req)
+            .add_context("failed to get CreateVolumeResponse")?;
         let volume = creat_resp1.get_volume();
 
         // Test expand volume
@@ -1412,7 +1406,7 @@ mod test {
             .mut_capacity_range()
             .set_required_bytes(util::MAX_VOLUME_STORAGE_CAPACITY);
         let exp_resp = controller_expand_volume(client, &exp_req)
-            .context("failed to get ControllerExpandVolumeResponse")?;
+            .add_context("failed to get ControllerExpandVolumeResponse")?;
         assert_eq!(
             exp_resp.get_capacity_bytes(),
             util::MAX_VOLUME_STORAGE_CAPACITY,
@@ -1427,13 +1421,13 @@ mod test {
         // Test delete volume
         let mut del_vol_req = DeleteVolumeRequest::new();
         del_vol_req.set_volume_id(volume.get_volume_id().to_owned());
-        let _del_resp1 =
-            delete_volume(client, &del_vol_req).context("failed to get DeleteVolumeResponse")?;
+        let _del_resp1 = delete_volume(client, &del_vol_req)
+            .add_context("failed to get DeleteVolumeResponse")?;
 
         Ok(())
     }
 
-    fn test_controller_create_and_list_snapshot(client: &ControllerClient) -> anyhow::Result<()> {
+    fn test_controller_create_and_list_snapshot(client: &ControllerClient) -> DatenLordResult<()> {
         let vol_name = "test_volume";
         let snap_name = "test_snapshot";
 
@@ -1446,8 +1440,8 @@ mod test {
         creat_vol_req.set_name(vol_name.to_owned());
         creat_vol_req.set_volume_capabilities(RepeatedField::from_vec(vec![vc]));
 
-        let creat_resp1 =
-            create_volume(client, &creat_vol_req).context("failed to get CreateVolumeResponse")?;
+        let creat_resp1 = create_volume(client, &creat_vol_req)
+            .add_context("failed to get CreateVolumeResponse")?;
         let volume = creat_resp1.get_volume();
 
         // Test create snapshot
@@ -1456,7 +1450,7 @@ mod test {
         creat_snap_req.set_name(snap_name.to_owned());
 
         let creat_snap_resp1 = create_snapshot(client, &creat_snap_req)
-            .context("failed to get CreateSnapshotResponse")?;
+            .add_context("failed to get CreateSnapshotResponse")?;
 
         let snapshot1 = creat_snap_resp1.get_snapshot();
         assert_eq!(
@@ -1481,7 +1475,7 @@ mod test {
         // Test list snapshot
         let mut list_snap_req = ListSnapshotsRequest::new();
         let list_snap_resp1 = list_snapshots(client, &list_snap_req)
-            .context("failed to get ListSnapshotsResponse")?;
+            .add_context("failed to get ListSnapshotsResponse")?;
 
         let snaps1 = list_snap_resp1.get_entries();
         let snap_vec1 = snaps1
@@ -1502,7 +1496,7 @@ mod test {
         // Test list snapshot by src volume ID
         list_snap_req.set_source_volume_id(volume.get_volume_id().to_owned());
         let list_snap_resp2 = list_snapshots(client, &list_snap_req)
-            .context("failed to get ListSnapshotsResponse")?;
+            .add_context("failed to get ListSnapshotsResponse")?;
 
         let snaps2 = list_snap_resp2.get_entries();
         let snap_vec2 = snaps2
@@ -1519,7 +1513,7 @@ mod test {
         list_snap_req.clear_source_volume_id();
         list_snap_req.set_snapshot_id(snapshot1.get_snapshot_id().to_owned());
         let list_snap_resp3 = list_snapshots(client, &list_snap_req)
-            .context("failed to get ListSnapshotsResponse")?;
+            .add_context("failed to get ListSnapshotsResponse")?;
 
         let snaps3 = list_snap_resp3.get_entries();
         let snap_vec3 = snaps3
@@ -1537,18 +1531,18 @@ mod test {
         del_snap_req.set_snapshot_id(snapshot1.get_snapshot_id().to_owned());
 
         let _del_snap_resp1 = delete_snapshot(client, &del_snap_req)
-            .context("failed to get DeleteSnapshotResponse")?;
+            .add_context("failed to get DeleteSnapshotResponse")?;
 
         // Test delete volume
         let mut del_vol_req = DeleteVolumeRequest::new();
         del_vol_req.set_volume_id(volume.get_volume_id().to_owned());
-        let _del_resp1 =
-            delete_volume(client, &del_vol_req).context("failed to get DeleteVolumeResponse")?;
+        let _del_resp1 = delete_volume(client, &del_vol_req)
+            .add_context("failed to get DeleteVolumeResponse")?;
 
         Ok(())
     }
 
-    fn build_node_client() -> anyhow::Result<NodeClient> {
+    fn build_node_client() -> DatenLordResult<NodeClient> {
         run_test_server()?;
         let env = Arc::new(EnvBuilder::new().build());
         let ch = ChannelBuilder::new(env).connect(NODE_END_POINT);
@@ -1556,23 +1550,24 @@ mod test {
         Ok(node_client)
     }
 
-    fn test_node_server() -> anyhow::Result<()> {
+    fn test_node_server() -> DatenLordResult<()> {
         let node_client = build_node_client()?;
 
         test_node_server_publish_unpublish(&node_client)
-            .context("failed to test node publish unpublish")?;
-        test_node_server_remount_publish(&node_client).context("failed to test node remount")?;
+            .add_context("failed to test node publish unpublish")?;
+        test_node_server_remount_publish(&node_client)
+            .add_context("failed to test node remount")?;
         test_node_server_multiple_publish(&node_client)
-            .context("failed to test node multi-mount")?;
+            .add_context("failed to test node multi-mount")?;
         Ok(())
     }
 
-    fn test_node_server_publish_unpublish(client: &NodeClient) -> anyhow::Result<()> {
+    fn test_node_server_publish_unpublish(client: &NodeClient) -> DatenLordResult<()> {
         // Test node get capabilities
         let cap_req = NodeGetCapabilitiesRequest::new();
         let cap_resp = client
             .node_get_capabilities(&cap_req)
-            .context("failed to get NodeGetCapabilitiesResponse")?;
+            .add_context("failed to get NodeGetCapabilitiesResponse")?;
         let caps = cap_resp.get_capabilities();
         let cap_vec = caps
             .iter()
@@ -1588,7 +1583,7 @@ mod test {
         let info_req = NodeGetInfoRequest::new();
         let info_resp = client
             .node_get_info(&info_req)
-            .context("failed to get NodeGetInfoResponse")?;
+            .add_context("failed to get NodeGetInfoResponse")?;
         assert_eq!(
             info_resp.get_node_id(),
             DEFAULT_NODE_NAME,
@@ -1630,7 +1625,7 @@ mod test {
 
         let _pub_resp1 = client
             .node_publish_volume(&pub_req)
-            .context("failed to get NodePublishVolumeResponse")?;
+            .add_context("failed to get NodePublishVolumeResponse")?;
 
         // Test expand volume
         let mut exp_req = NodeExpandVolumeRequest::new();
@@ -1641,7 +1636,7 @@ mod test {
             .set_required_bytes(util::MAX_VOLUME_STORAGE_CAPACITY);
         let exp_resp = client
             .node_expand_volume(&exp_req)
-            .context("failed to get NodeExpandVolumeResponse")?;
+            .add_context("failed to get NodeExpandVolumeResponse")?;
         assert_eq!(
             exp_resp.get_capacity_bytes(),
             util::MAX_VOLUME_STORAGE_CAPACITY,
@@ -1651,7 +1646,7 @@ mod test {
         // Idempotency test for publish volume
         let _pub_resp2 = client
             .node_publish_volume(&pub_req)
-            .context("failed to get NodePublishVolumeResponse")?;
+            .add_context("failed to get NodePublishVolumeResponse")?;
 
         // Test unpublish volume
         let mut unpub_req = NodeUnpublishVolumeRequest::new();
@@ -1660,12 +1655,12 @@ mod test {
 
         let _unpub_resp1 = client
             .node_unpublish_volume(&unpub_req)
-            .context("failed to get NodeUnpublishVolumeResponse")?;
+            .add_context("failed to get NodeUnpublishVolumeResponse")?;
 
         Ok(())
     }
 
-    fn test_node_server_remount_publish(client: &NodeClient) -> anyhow::Result<()> {
+    fn test_node_server_remount_publish(client: &NodeClient) -> DatenLordResult<()> {
         // First publish volume
         let target_path = NODE_PUBLISH_VOLUME_TARGET_PATH;
         let vol_id = NODE_PUBLISH_VOLUME_ID;
@@ -1690,14 +1685,14 @@ mod test {
 
         let _pub_resp1 = client
             .node_publish_volume(&pub_req)
-            .context("failed to get first NodePublishVolumeResponse when test remount")?;
+            .add_context("failed to get first NodePublishVolumeResponse when test remount")?;
 
         // Second publish volume
         pub_req.set_readonly(true);
 
         let _pub_resp2 = client
             .node_publish_volume(&pub_req)
-            .context("failed to get second NodePublishVolumeResponse when test remount")?;
+            .add_context("failed to get second NodePublishVolumeResponse when test remount")?;
 
         // Test unpublish volume
         let mut unpub_req = NodeUnpublishVolumeRequest::new();
@@ -1706,7 +1701,7 @@ mod test {
 
         let _unpub_resp = client
             .node_unpublish_volume(&unpub_req)
-            .context("failed to get NodeUnpublishVolumeResponse")?;
+            .add_context("failed to get NodeUnpublishVolumeResponse")?;
 
         // Verify second unpublish volume result should fail
         let failed_unpub_resp1 = client.node_unpublish_volume(&unpub_req);
@@ -1715,7 +1710,7 @@ mod test {
         Ok(())
     }
 
-    fn test_node_server_multiple_publish(client: &NodeClient) -> anyhow::Result<()> {
+    fn test_node_server_multiple_publish(client: &NodeClient) -> DatenLordResult<()> {
         // First publish volume
         let target_path1 = NODE_PUBLISH_VOLUME_TARGET_PATH_1;
         let vol_id = NODE_PUBLISH_VOLUME_ID;
@@ -1740,14 +1735,14 @@ mod test {
 
         let _pub_resp1 = client
             .node_publish_volume(&pub_req)
-            .context("failed to get first NodePublishVolumeResponse")?;
+            .add_context("failed to get first NodePublishVolumeResponse")?;
 
         // Second publish volume
         let target_path2 = NODE_PUBLISH_VOLUME_TARGET_PATH_2;
         pub_req.set_target_path(target_path2.to_owned());
         let _pub_resp2 = client
             .node_publish_volume(&pub_req)
-            .context("failed to get second NodePublishVolumeResponse")?;
+            .add_context("failed to get second NodePublishVolumeResponse")?;
 
         // First unpublish volume
         let mut unpub_req = NodeUnpublishVolumeRequest::new();
@@ -1756,13 +1751,13 @@ mod test {
 
         let _unpub_resp1 = client
             .node_unpublish_volume(&unpub_req)
-            .context("failed to get first NodeUnpublishVolumeResponse")?;
+            .add_context("failed to get first NodeUnpublishVolumeResponse")?;
 
         // Second unpublish volume
         unpub_req.set_target_path(target_path2.to_owned());
         let _unpub_resp2 = client
             .node_unpublish_volume(&unpub_req)
-            .context("failed to get first NodeUnpublishVolumeResponse")?;
+            .add_context("failed to get first NodeUnpublishVolumeResponse")?;
         Ok(())
     }
 }

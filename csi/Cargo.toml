@@ -30,6 +30,7 @@ rand = "0.7.3"
 serde = { version = "1.0", features = ["derive"] }
 smol = { version = "1.2.5" }
 tar = "0.4.29"
+thiserror = "1.0"
 utilities = { git = "https://github.com/datenlord/utilities", rev = "4ef408d" }
 uuid = { version = "0.8.1", features = ["v4"] }
 walkdir = "2.3.1"
