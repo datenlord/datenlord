@@ -237,7 +237,7 @@ impl<'b> Deserializer<'b> {
 mod tests {
     use super::{DeserializeError, Deserializer};
 
-    use aligned_bytes::stack::{align8, Align8};
+    use aligned_utils::stack::Align8;
 
     #[test]
     fn fetch_all_bytes() {
@@ -267,7 +267,7 @@ mod tests {
     fn fetch_ref() {
         // this buffer contains two `u32` or one `u64`
         // so it is aligned to 8 bytes
-        let buf: Align8<[u8; 8]> = align8([0, 1, 2, 3, 4, 5, 6, 7]);
+        let buf: Align8<[u8; 8]> = Align8([0, 1, 2, 3, 4, 5, 6, 7]);
 
         {
             let mut de = Deserializer::new(&*buf);
@@ -295,7 +295,7 @@ mod tests {
         // this buffer contains two `u32`
         // so it can be aligned to 4 bytes
         // it is aligned to 8 bytes here
-        let buf: Align8<[u8; 8]> = align8([0, 1, 2, 3, 4, 5, 6, 7]);
+        let buf: Align8<[u8; 8]> = Align8([0, 1, 2, 3, 4, 5, 6, 7]);
 
         {
             let mut de = Deserializer::new(&*buf);
