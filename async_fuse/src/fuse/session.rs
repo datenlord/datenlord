@@ -1,6 +1,6 @@
 //! The implementation of FUSE session
 
-use aligned_bytes::AlignedBytes;
+use aligned_utils::bytes::AlignedBytes;
 use anyhow::{anyhow, Context};
 use crossbeam_channel::{Receiver, Sender};
 use crossbeam_utils::atomic::AtomicCell;
