@@ -178,7 +178,7 @@ impl MetaData {
         );
         let mut rng = rand::thread_rng();
 
-        let idx = rng.gen_range(0, node_list.len());
+        let idx = rng.gen_range(0..node_list.len());
         Ok(node_list
             .get(idx)
             .unwrap_or_else(|| {
