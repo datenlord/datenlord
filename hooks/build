@@ -1,0 +1,14 @@
+#!/bin/bash
+
+set -x
+RUST_VERSION="1.47.0"
+
+repo="$(echo ${DOCKER_REPO} | awk -F'/' '{print $NF}')"
+
+if [[ $repo == "csiplugin" ]]; then
+	docker build . --build-arg RUST_IMAGE_VERSION=${RUST_VERSION} --file ${DOCKERFILE_PATH} --target csi --tag ${IMAGE_NAME}
+elif [[ $repo == "datenlord" ]]; then
+	docker build . --build-arg RUST_IMAGE_VERSION=${RUST_VERSION} --file ${DOCKERFILE_PATH} --target fuse --tag ${IMAGE_NAME}
+else
+	echo "Wrong dockerhub repo"
+fi
