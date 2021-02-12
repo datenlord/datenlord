@@ -2,7 +2,6 @@
 
 use super::dir::{Dir, DirEntry};
 use crate::fuse::protocol::{FuseAttr, INum};
-use crate::util::unblock;
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -14,7 +13,6 @@ use anyhow::Context;
 use log::debug;
 use nix::fcntl::{self, OFlag};
 use nix::sys::stat::{self, FileStat, Mode, SFlag};
-use smol::blocking;
 use utilities::Cast;
 
 /// File attributes
@@ -114,7 +112,8 @@ pub async fn open_dir(path: &Path) -> anyhow::Result<RawFd> {
     let dir_path = path.to_path_buf();
     let oflags = get_dir_oflags();
     let path = path.to_path_buf();
-    let dfd = blocking!(fcntl::open(dir_path.as_os_str(), oflags, Mode::empty()))
+    let dfd = smol::unblock(move || fcntl::open(dir_path.as_os_str(), oflags, Mode::empty()))
+        .await
         .context(format!("open_dir() failed to open directory={:?}", path))?;
     Ok(dfd)
 }
@@ -123,16 +122,13 @@ pub async fn open_dir(path: &Path) -> anyhow::Result<RawFd> {
 pub async fn open_dir_at(dfd: RawFd, child_name: OsString) -> anyhow::Result<RawFd> {
     let sub_dir_name = child_name.clone();
     let oflags = get_dir_oflags();
-    let dir_fd = blocking!(fcntl::openat(
-        dfd,
-        sub_dir_name.as_os_str(),
-        oflags,
-        Mode::empty()
-    ))
-    .context(format!(
-        "open_dir_at() failed to open sub-directory={:?} under parent fd={}",
-        child_name, dfd
-    ))?;
+    let dir_fd =
+        smol::unblock(move || fcntl::openat(dfd, sub_dir_name.as_os_str(), oflags, Mode::empty()))
+            .await
+            .context(format!(
+                "open_dir_at() failed to open sub-directory={:?} under parent fd={}",
+                child_name, dfd
+            ))?;
     Ok(dir_fd)
 }
 
@@ -209,10 +205,12 @@ fn convert_to_file_attr(st: FileStat) -> FileAttr {
 
 /// Load file attribute by fd
 pub async fn load_attr(fd: RawFd) -> anyhow::Result<FileAttr> {
-    let st = blocking!(stat::fstat(fd)).context(format!(
-        "load_attr() failed get the file attribute of fd={}",
-        fd,
-    ))?;
+    let st = smol::unblock(move || stat::fstat(fd))
+        .await
+        .context(format!(
+            "load_attr() failed get the file attribute of fd={}",
+            fd,
+        ))?;
 
     Ok(convert_to_file_attr(st))
 }
@@ -274,7 +272,7 @@ pub fn convert_to_fuse_attr(attr: FileAttr) -> FuseAttr {
 
 /// Helper funtion to load directory data
 pub async fn load_dir_data(dirfd: RawFd) -> anyhow::Result<BTreeMap<OsString, DirEntry>> {
-    unblock(move || {
+    smol::unblock(move || {
         let dir = Dir::opendirat(dirfd, ".", OFlag::empty())
             .with_context(|| format!("failed to build Dir from fd={}", dirfd))?;
         let mut dir_entry_map = BTreeMap::new();
@@ -292,7 +290,7 @@ pub async fn load_dir_data(dirfd: RawFd) -> anyhow::Result<BTreeMap<OsString, Di
 
 /// Helper function to load file data
 pub async fn load_file_data(fd: RawFd, file_size: usize) -> anyhow::Result<Vec<u8>> {
-    let file_data_vec = blocking!(
+    let file_data_vec = smol::unblock(move || {
         let mut file_data_vec: Vec<u8> = Vec::with_capacity(file_size);
         unsafe {
             file_data_vec.set_len(file_data_vec.capacity());
@@ -303,7 +301,8 @@ pub async fn load_file_data(fd: RawFd, file_size: usize) -> anyhow::Result<Vec<u
         }
         // Should explicitly highlight the error type
         Ok::<Vec<u8>, anyhow::Error>(file_data_vec)
-    )?;
+    })
+    .await?;
     debug_assert_eq!(file_data_vec.len(), file_size.cast());
     Ok(file_data_vec)
 }

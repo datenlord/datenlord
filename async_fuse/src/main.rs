@@ -74,7 +74,7 @@ fn main() -> anyhow::Result<()> {
 
     debug!("FUSE mount point: {}", mount_point);
 
-    smol::run(async move {
+    smol::block_on(async move {
         let ss = Session::new(std::path::Path::new(&mount_point)).await?;
         ss.run().await?;
         Ok(())
@@ -86,26 +86,22 @@ mod test {
     mod integration_tests;
     mod test_util;
 
-    use futures::prelude::*;
-    use futures::stream::StreamExt;
     use log::debug;
-    use smol::{self, blocking};
-    use std::fs::{self, File};
+    use std::fs::{self};
     use std::io;
+
+    use futures::StreamExt;
 
     #[test]
     fn test_async_iter() -> io::Result<()> {
-        smol::run(async move {
-            let dir = blocking!(fs::read_dir("."))?;
-            let mut dir = smol::iter(dir);
+        smol::block_on(async move {
+            let dir = smol::unblock(|| fs::read_dir(".")).await?;
+            let mut dir = smol::stream::iter(dir);
             while let Some(entry) = dir.next().await {
                 let path = entry?.path();
                 if path.is_file() {
                     debug!("read file: {:?}", path);
-                    let file = blocking!(File::open(path))?;
-                    let mut file = smol::reader(file);
-                    let mut buf = vec![];
-                    file.read_to_end(&mut buf).await?;
+                    let buf = smol::fs::read(path).await?;
                     let output_length = 16;
                     if buf.len() > output_length {
                         debug!(
