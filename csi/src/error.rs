@@ -10,7 +10,7 @@ pub type DatenLordResult<T> = Result<T, DatenLordError>;
 #[derive(Error, Debug)]
 pub enum DatenLordError {
     /// Error caused by std::io::Error
-    #[error("IoErr, the error is {:?}, context is {:?}", .source, .context)]
+    #[error("IoErr, the error is {:?}, context is {:#?}", .source, .context)]
     IoErr {
         /// Error source
         source: std::io::Error,
@@ -19,7 +19,7 @@ pub enum DatenLordError {
     },
 
     /// Error caused by walkdir::Error
-    #[error("WalkdirErr, the error is {:?}, context is {:?}", .source, .context)]
+    #[error("WalkdirErr, the error is {:?}, context is {:#?}", .source, .context)]
     WalkdirErr {
         /// Error source
         source: walkdir::Error,
@@ -28,7 +28,7 @@ pub enum DatenLordError {
     },
 
     /// Snapshot is not found
-    #[error("Snapshot ID={} not found, context is {:?}", .snapshot_id, .context)]
+    #[error("Snapshot ID={} not found, context is {:#?}", .snapshot_id, .context)]
     SnapshotNotFound {
         /// Snapshot ID
         snapshot_id: String,
@@ -36,7 +36,7 @@ pub enum DatenLordError {
         context: Vec<String>,
     },
     /// Volume is not found
-    #[error("Volume ID={} not found, context is {:?}", .volume_id, .context)]
+    #[error("Volume ID={} not found, context is {:#?}", .volume_id, .context)]
     VolumeNotFound {
         /// Volume ID
         volume_id: String,
@@ -44,7 +44,7 @@ pub enum DatenLordError {
         context: Vec<String>,
     },
     /// Volume has already existed
-    #[error("Volume ID={} already exists, context is {:?}", .volume_id, .context)]
+    #[error("Volume ID={} already exists, context is {:#?}", .volume_id, .context)]
     VolumeAlreadyExist {
         /// Volume ID
         volume_id: String,
@@ -53,7 +53,7 @@ pub enum DatenLordError {
     },
 
     /// Snapshot is not ready
-    #[error("Snapshot ID={} is not ready, context is {:?}", .snapshot_id, .context)]
+    #[error("Snapshot ID={} is not ready, context is {:#?}", .snapshot_id, .context)]
     SnapshotNotReady {
         /// Snapshot ID
         snapshot_id: String,
@@ -62,7 +62,7 @@ pub enum DatenLordError {
     },
 
     /// Snapshot has already existed
-    #[error("Snapshot ID={} already exists, context is {:?}", .snapshot_id, .context)]
+    #[error("Snapshot ID={} already exists, context is {:#?}", .snapshot_id, .context)]
     SnapshotAlreadyExist {
         /// Snapshot ID
         snapshot_id: String,
@@ -71,7 +71,7 @@ pub enum DatenLordError {
     },
 
     /// Node is not found
-    #[error("Node ID={} not found, context is {:?}", .node_id, .context)]
+    #[error("Node ID={} not found, context is {:#?}", .node_id, .context)]
     NodeNotFound {
         /// Node ID
         node_id: String,
@@ -80,14 +80,14 @@ pub enum DatenLordError {
     },
 
     /// Argument is invalid
-    #[error("Argument is invalid, context is {:?}", .context)]
+    #[error("Argument is invalid, context is {:#?}", .context)]
     ArgumentInvalid {
         /// Context of the error
         context: Vec<String>,
     },
 
     /// Starting token is invalid
-    #[error("Starting token={} is invalid, context is {:?}", .starting_token, .context)]
+    #[error("Starting token={} is invalid, context is {:#?}", .starting_token, .context)]
     StartingTokenInvalid {
         /// Starting token
         starting_token: String,
@@ -96,14 +96,14 @@ pub enum DatenLordError {
     },
 
     /// Argument is out of range
-    #[error("Argument is out of range, context is {:?}", .context)]
+    #[error("Argument is out of range, context is {:#?}", .context)]
     ArgumentOutOfRange {
         /// Context of the error
         context: Vec<String>,
     },
 
     /// Error caused by std::path::StripPrefixError
-    #[error("StripPrefixErr, the error is {:?}, context is {:?}", .source, .context)]
+    #[error("StripPrefixErr, the error is {:?}, context is {:#?}", .source, .context)]
     StripPrefixErr {
         /// Error source
         source: std::path::StripPrefixError,
@@ -112,7 +112,7 @@ pub enum DatenLordError {
     },
 
     /// Error caused by etcd_client::Error,
-    #[error("EtcdClientErr, the error is {:?}, context is {:?}", .source, .context)]
+    #[error("EtcdClientErr, the error is {:?}, context is {:#?}", .source, .context)]
     EtcdClientErr {
         /// Error source
         source: etcd_client::Error,
@@ -121,7 +121,7 @@ pub enum DatenLordError {
     },
 
     /// Error caused by bincode::Error
-    #[error("BincodeErr, the error is {:?}, context is {:?}", .source, .context)]
+    #[error("BincodeErr, the error is {:?}, context is {:#?}", .source, .context)]
     BincodeErr {
         /// Error source
         source: bincode::Error,
@@ -130,7 +130,7 @@ pub enum DatenLordError {
     },
 
     /// Error caused by nix::Error
-    #[error("NixErr, the error is {:?}, context is {:?}", .source, .context)]
+    #[error("NixErr, the error is {:?}, context is {:#?}", .source, .context)]
     NixErr {
         /// Error source
         source: nix::Error,
@@ -139,7 +139,7 @@ pub enum DatenLordError {
     },
 
     /// Failed to mount
-    #[error("MountErr, fail to mount {:?} to {:?}, context is {:?}", .from, .target, .context)]
+    #[error("MountErr, fail to mount {:?} to {:?}, context is {:#?}", .from, .target, .context)]
     MountErr {
         /// Source to mount
         from: PathBuf,
@@ -150,7 +150,7 @@ pub enum DatenLordError {
     },
 
     /// Failed to umount
-    #[error("UmountErr, fail to umount {:?}, context is {:?}", .target, .context)]
+    #[error("UmountErr, fail to umount {:?}, context is {:#?}", .target, .context)]
     UmountErr {
         /// Mount point to umount
         target: PathBuf,
@@ -159,7 +159,7 @@ pub enum DatenLordError {
     },
 
     /// Error caused by std::time::SystemTimeError
-    #[error("SystemTimeErr, the error is {:?}, context is {:?}", .source, .context)]
+    #[error("SystemTimeErr, the error is {:?}, context is {:#?}", .source, .context)]
     SystemTimeErr {
         /// Error source
         source: std::time::SystemTimeError,
@@ -168,7 +168,7 @@ pub enum DatenLordError {
     },
 
     /// Error caused by grpcio::Error
-    #[error("GrpcioErr, the error is {:?}, context is {:?}", .source, .context)]
+    #[error("GrpcioErr, the error is {:?}, context is {:#?}", .source, .context)]
     GrpcioErr {
         /// Error source
         source: grpcio::Error,
@@ -177,7 +177,7 @@ pub enum DatenLordError {
     },
 
     /// API is not implemented
-    #[error("Not implemented, context is {:?}", .context)]
+    #[error("Not implemented, context is {:#?}", .context)]
     Unimplemented {
         /// Context of the error
         context: Vec<String>,
