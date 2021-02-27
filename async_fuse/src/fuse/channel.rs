@@ -24,11 +24,10 @@ impl Channel {
     #[allow(dead_code)]
     pub async fn new(session: &Session) -> anyhow::Result<Self> {
         let devname = "/dev/fuse";
-        let clonefd = smol::blocking!(fcntl::open(
-            devname,
-            OFlag::O_RDWR | OFlag::O_CLOEXEC,
-            Mode::empty()
-        ));
+        let clonefd = smol::unblock(move || {
+            fcntl::open(devname, OFlag::O_RDWR | OFlag::O_CLOEXEC, Mode::empty())
+        })
+        .await;
 
         let clonefd = match clonefd {
             Err(err) => {
@@ -38,7 +37,8 @@ impl Channel {
         };
 
         if let Err(err) =
-            smol::blocking!(fcntl::fcntl(clonefd, FcntlArg::F_SETFD(FdFlag::FD_CLOEXEC)))
+            smol::unblock(move || fcntl::fcntl(clonefd, FcntlArg::F_SETFD(FdFlag::FD_CLOEXEC)))
+                .await
         {
             return Err(anyhow!(
                 "fuse: failed to set clonefd to FD_CLOEXEC: {:?}",
@@ -49,7 +49,7 @@ impl Channel {
         ioctl_read!(clone, 229, 0, u32);
         let masterfd = session.dev_fd();
         let mut masterfd_u32 = masterfd.cast();
-        let res = smol::blocking!(unsafe { clone(clonefd, &mut masterfd_u32) });
+        let res = smol::unblock(move || unsafe { clone(clonefd, &mut masterfd_u32) }).await;
         if let Err(err) = res {
             close(clonefd).context("fuse: failed to close clone device")?;
             return Err(anyhow!("fuse: failed to clone device fd: {:?}", err,));

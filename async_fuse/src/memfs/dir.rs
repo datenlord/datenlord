@@ -230,17 +230,16 @@ impl FusedIterator for IntoIter {}
 #[cfg(test)]
 mod test {
     use super::Dir;
-    use crate::util::unblock;
 
     use std::io;
 
-    use futures::stream::StreamExt;
+    use futures::StreamExt;
 
     #[test]
     fn test_dir() -> io::Result<()> {
-        smol::run(async {
-            let dir = unblock(|| Dir::opendir(".")).await?;
-            let mut stream = smol::iter(dir.into_iter());
+        smol::block_on(async {
+            let dir = smol::unblock(|| Dir::opendir(".")).await?;
+            let mut stream = smol::stream::iter(dir.into_iter());
 
             while let Some(entry) = stream.next().await {
                 let entry = entry?;

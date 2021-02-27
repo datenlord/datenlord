@@ -8,7 +8,6 @@ use futures::lock::Mutex;
 use log::{debug, error, info, warn};
 use nix::errno::Errno;
 use nix::unistd;
-use smol::{self, blocking, Task};
 use std::os::unix::io::RawFd;
 use std::path::Path;
 use std::sync::{
@@ -150,10 +149,11 @@ impl Session {
         loop {
             let (buffer_idx, mut byte_buffer) = pool_receiver.recv()?;
 
-            let (res, byte_buffer) = blocking!(
+            let (res, byte_buffer) = smol::unblock(move || {
                 let res = unistd::read(fuse_dev_fd, &mut *byte_buffer);
                 (res, byte_buffer)
-            );
+            })
+            .await;
 
             match res {
                 Ok(read_size) => {
@@ -164,7 +164,7 @@ impl Session {
                     let fs = Arc::clone(&self.filesystem);
                     let sender = pool_sender.clone();
                     let proto_version = self.proto_version.load();
-                    Task::spawn(Self::process_fuse_request(
+                    smol::spawn(Self::process_fuse_request(
                         buffer_idx,
                         byte_buffer,
                         read_size,
@@ -281,10 +281,11 @@ impl Session {
 
         let fuse_fd = self.dev_fd();
         let (idx, mut byte_buf) = pool_receiver.recv()?;
-        let read_result = blocking!(
+        let read_result = smol::unblock(move || {
             let res = unistd::read(fuse_fd, &mut *byte_buf);
             (res, byte_buf)
-        );
+        })
+        .await;
         byte_buf = read_result.1;
         if let Ok(read_size) = read_result.0 {
             debug!("read successfully {} byte data from FUSE device", read_size);

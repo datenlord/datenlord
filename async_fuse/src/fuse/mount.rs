@@ -4,7 +4,6 @@ use anyhow::Context;
 use log::{debug, info};
 use nix::fcntl::{self, OFlag};
 use nix::sys::stat::{self, Mode};
-use smol::blocking;
 use std::fs;
 use std::os::unix::io::RawFd;
 use std::path::Path;
@@ -96,7 +95,7 @@ pub async fn umount(short_path: &Path) -> anyhow::Result<()> {
     use std::process::Command;
 
     let mount_path = short_path.to_path_buf();
-    blocking!(
+    smol::unblock(move || {
         let mntpnt = mount_path.as_os_str();
 
         if unistd::geteuid().is_root() {
@@ -127,7 +126,8 @@ pub async fn umount(short_path: &Path) -> anyhow::Result<()> {
                 ))
             }
         }
-    )
+    })
+    .await
 }
 
 /// Linux mount
@@ -156,21 +156,27 @@ async fn fuser_mount(mount_point: &Path) -> anyhow::Result<RawFd> {
 
     let mount_path = mount_point.to_path_buf();
 
-    let (local, remote) = blocking!(socket::socketpair(
-        AddressFamily::Unix,
-        SockType::Stream,
-        None,
-        SockFlag::empty(),
-    ))
+    let (local, remote) = smol::unblock(|| {
+        socket::socketpair(
+            AddressFamily::Unix,
+            SockType::Stream,
+            None,
+            SockFlag::empty(),
+        )
+    })
+    .await
     .context("failed to create socket pair")?;
 
-    let mount_handle = blocking!(Command::new("fusermount")
-        .arg("-o")
-        // fusermount option allow_other only allowed if user_allow_other is set in /etc/fuse.conf
-        .arg("nosuid,nodev,nonempty") // rw,async,noatime,noexec,auto_unmount,allow_other
-        .arg(mount_path.as_os_str())
-        .env("_FUSE_COMMFD", remote.to_string())
-        .output())
+    let mount_handle = smol::unblock(move || {
+        Command::new("fusermount")
+            .arg("-o")
+            // fusermount option allow_other only allowed if user_allow_other is set in /etc/fuse.conf
+            .arg("nosuid,nodev,nonempty") // rw,async,noatime,noexec,auto_unmount,allow_other
+            .arg(mount_path.as_os_str())
+            .env("_FUSE_COMMFD", remote.to_string())
+            .output()
+    })
+    .await
     .context("fusermount command failed to start")?;
 
     assert!(
@@ -183,7 +189,7 @@ async fn fuser_mount(mount_point: &Path) -> anyhow::Result<RawFd> {
         mount_point,
     );
 
-    blocking!(
+    smol::unblock(move || {
         let mut buf = [0_u8; 5];
         let iov = [IoVec::from_mut_slice(&mut buf[..])];
 
@@ -195,7 +201,8 @@ async fn fuser_mount(mount_point: &Path) -> anyhow::Result<RawFd> {
         let mount_fd = if let Some(cmsg) = msg.cmsgs().next() {
             if let ControlMessageOwned::ScmRights(fds) = cmsg {
                 debug_assert_eq!(fds.len(), 1);
-                *fds.get(0).unwrap_or_else(|| panic!("failed to get the only fd"))
+                *fds.get(0)
+                    .unwrap_or_else(|| panic!("failed to get the only fd"))
             } else {
                 panic!("unexpected cmsg")
             }
@@ -204,7 +211,8 @@ async fn fuser_mount(mount_point: &Path) -> anyhow::Result<RawFd> {
         };
 
         Ok(mount_fd)
-    )
+    })
+    .await
 }
 
 /// Linux directly mount
@@ -216,18 +224,21 @@ async fn direct_mount(mount_point: &Path) -> anyhow::Result<RawFd> {
 
     let devpath = Path::new("/dev/fuse");
 
-    let dev_fd = blocking!(fcntl::open(devpath, OFlag::O_RDWR, Mode::empty()))
+    let dev_fd = smol::unblock(move || fcntl::open(devpath, OFlag::O_RDWR, Mode::empty()))
+        .await
         .context("failed to open fuse device")?;
     let mount_path = mount_point.to_path_buf();
-    let full_path = blocking!(fs::canonicalize(&mount_path))?;
+    let full_path = smol::unblock(move || fs::canonicalize(&mount_path)).await?;
     let target_path = full_path.clone();
     let fstype = "fuse";
     let fsname = "/dev/fuse";
 
-    let mnt_sb = blocking!(stat::stat(&full_path)).context(format!(
-        "failed to get the file stat of mount point={:?}",
-        mount_point,
-    ))?;
+    let mnt_sb = smol::unblock(move || stat::stat(&full_path))
+        .await
+        .context(format!(
+            "failed to get the file stat of mount point={:?}",
+            mount_point,
+        ))?;
     let opts = format!(
         "fd={},rootmode={:o},user_id={},group_id={}",
         dev_fd,
@@ -237,13 +248,16 @@ async fn direct_mount(mount_point: &Path) -> anyhow::Result<RawFd> {
     );
 
     debug!("direct mount opts={:?}", &opts);
-    blocking!(nix::mount::mount(
-        Some(fsname),
-        &target_path,
-        Some(fstype),
-        MsFlags::MS_NOSUID | MsFlags::MS_NODEV,
-        Some(opts.as_str()),
-    ))
+    smol::unblock(move || {
+        nix::mount::mount(
+            Some(fsname),
+            &target_path,
+            Some(fstype),
+            MsFlags::MS_NOSUID | MsFlags::MS_NODEV,
+            Some(opts.as_str()),
+        )
+    })
+    .await
     .context(format!("failed to direct mount {:?}", mount_point))?;
 
     Ok(dev_fd)
@@ -253,7 +267,7 @@ async fn direct_mount(mount_point: &Path) -> anyhow::Result<RawFd> {
 #[cfg(target_os = "macos")]
 pub async fn umount(mount_path: &Path) -> anyhow::Result<()> {
     let mount_point = mount_path.to_path_buf();
-    blocking!(
+    smol::unblock(|| {
         let mntpnt = mount_point.as_os_str();
         let res = unsafe { libc::unmount(utilities::cast_to_ptr(mntpnt), param::MNT_FORCE) };
         if res < 0 {
@@ -261,7 +275,8 @@ pub async fn umount(mount_path: &Path) -> anyhow::Result<()> {
         } else {
             Ok(())
         }
-    )
+    })
+    .await
     .context(format!("failed to un-mount {:?}", mount_path))
 }
 
@@ -289,25 +304,29 @@ pub async fn mount(mount_path: &Path) -> anyhow::Result<RawFd> {
     let mount_point = mount_path.to_path_buf();
     let devpath = Path::new("/dev/osxfuse1");
 
-    let fd = blocking!(fcntl::open(devpath, OFlag::O_RDWR, Mode::empty()))
+    let fd = smol::unblock(|| fcntl::open(devpath, OFlag::O_RDWR, Mode::empty()))
+        .await
         .context("failed to open fuse device")?;
 
-    let sb = blocking!(stat::fstat(fd).context("failed to get the file stat of fuse device"))?;
+    let sb =
+        smol::unblock(|| stat::fstat(fd).context("failed to get the file stat of fuse device"))
+            .await?;
 
     // use ioctl to read device random secret
     // osxfuse/support/mount_osxfuse/mount_osxfuse.c#L1099
     // result = ioctl(fd, FUSEDEVIOCGETRANDOM, &drandom);
     // FUSEDEVIOCGETRANDOM // osxfuse/common/fuse_ioctl.h#L43
-    let drandom = blocking!(
+    let drandom = smol::unblock(|| {
         let mut drandom: u32 = 0;
         nix::ioctl_read!(fuse_read_random, FUSE_IOC_MAGIC, FUSE_IOC_TYPE_MODE, u32);
         let result = unsafe { fuse_read_random(fd, utilities::cast_to_mut_ptr(&mut drandom))? };
         debug_assert_eq!(result, 0);
         debug!("successfully read drandom={}", drandom);
         Ok::<_, anyhow::Error>(drandom)
-    )?;
+    })
+    .await?;
 
-    let full_path = blocking!(fs::canonicalize(mount_point))?;
+    let full_path = smol::unblock(|| fs::canonicalize(mount_point)).await?;
     let cstr_path = full_path.to_str().context(format!(
         "failed to convert full mount path={:?} to string",
         full_path
@@ -357,7 +376,7 @@ pub async fn mount(mount_path: &Path) -> anyhow::Result<RawFd> {
         rdev: sb.st_rdev.cast(),
     };
 
-    blocking!(
+    smol::unblock(|| {
         let result = unsafe {
             libc::mount(
                 fstype.as_ptr(),
@@ -367,7 +386,10 @@ pub async fn mount(mount_path: &Path) -> anyhow::Result<RawFd> {
             )
         };
         if 0 == result {
-            info!("mount path={:?} to FUSE device={:?} successfully!", mntpath, devpath);
+            info!(
+                "mount path={:?} to FUSE device={:?} successfully!",
+                mntpath, devpath
+            );
             Ok(fd)
         } else {
             // Err(anyhow!(
@@ -379,5 +401,6 @@ pub async fn mount(mount_path: &Path) -> anyhow::Result<RawFd> {
                 "failed to mount to fuse device".to_owned(),
             )
         }
-    )
+    })
+    .await
 }
