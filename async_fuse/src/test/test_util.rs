@@ -1,5 +1,4 @@
 use log::{debug, info}; // warn, error
-use smol::Task;
 use std::fs;
 use std::path::Path;
 use std::thread::{self, JoinHandle};
@@ -24,7 +23,7 @@ pub fn setup(mount_dir: &Path) -> anyhow::Result<JoinHandle<()>> {
     fs::create_dir_all(&mount_dir)?;
     let abs_root_path = fs::canonicalize(&mount_dir)?;
 
-    let fs_task = Task::spawn(async move {
+    let fs_task = smol::spawn(async move {
         async fn run_fs(mount_point: &Path) -> anyhow::Result<()> {
             let ss = Session::new(mount_point).await?;
             ss.run().await?;
@@ -39,8 +38,8 @@ pub fn setup(mount_dir: &Path) -> anyhow::Result<JoinHandle<()>> {
     });
     // do not block main thread
     let th = thread::spawn(|| {
-        smol::run(async { fs_task.await });
-        debug!("spawned a thread for smol::run()");
+        smol::block_on(async { fs_task.await });
+        debug!("spawned a thread for smol::block_on()");
     });
     debug!("async_fuse task spawned");
     let seconds = 2;

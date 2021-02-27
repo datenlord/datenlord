@@ -8,6 +8,7 @@ env:
   RUST_VERSION: 1.47.0
   CONFIG_MINIKUBE: scripts/datenlord_minikube.yaml
   CONFIG_KIND: scripts/datenlord.yaml
+  CONFIG_DOCKERHUB: datenlord-deploy.yaml
   CONTROLLER_APP_LABEL: csi-controller-datenlord
   CONTROLLER_CONTAINER_NAME: datenlord-controller-plugin
   DATENLORD_CSI_IMAGE: datenlord/csiplugin:e2e_test
@@ -247,6 +248,14 @@ jobs:
           kubectl config view --raw > $K8S_CONFIG
           #kubernetes/test/bin/e2e.test -v=5 -ginkgo.failFast -ginkgo.failOnPending -ginkgo.debug -ginkgo.v -ginkgo.focus='External.Storage' -kubectl-path=`which kubectl` -kubeconfig=$K8S_CONFIG -storage.testdriver=`realpath $E2E_TEST_CONFIG`
           kubernetes/test/bin/ginkgo -p -v -failFast -failOnPending -debug -focus='External.Storage' -skip='.*Dynamic PV.*filesystem.*should access to two volumes with the same volume mode and retain data across pod recreation on .* node' kubernetes/test/bin/e2e.test -- -v=5 -kubectl-path=`which kubectl` -kubeconfig=`realpath $K8S_CONFIG` -storage.testdriver=`realpath $E2E_TEST_CONFIG` -test.parallel=3
+      - name: Quick Start Test
+        run: |
+          kubectl delete -f $CONFIG_KIND
+          sed -e 's/e2e_test/latest/g' $CONFIG_KIND > $CONFIG_DOCKERHUB
+          kubectl apply -f $CONFIG_DOCKERHUB
+          kubectl wait --for=condition=Ready pod -l app=$CONTROLLER_APP_LABEL -n $DATENLORD_NAMESPACE --timeout=60s
+          kubectl wait --for=condition=Ready pod -l app=$NODE_APP_LABEL -n $DATENLORD_NAMESPACE --timeout=60s
+
       - name: Print DatenLord logs
         if: ${{ failure() }}
         run: |

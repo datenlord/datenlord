@@ -78,16 +78,6 @@ pub fn mode_from_kind_and_perm(kind: SFlag, perm: u16) -> u32 {
     }
 }
 
-/// polyfill from smol 0.1.18 to 1.2.5
-#[allow(dead_code)]
-pub async fn unblock<T, F>(f: F) -> T
-where
-    F: FnOnce() -> T + Send + 'static,
-    T: Send + 'static,
-{
-    smol::Task::blocking(async move { f() }).await
-}
-
 /// Stores short bytes on stack, stores long bytes on heap and provides [`CStr`].
 ///
 /// The threshold of allocation is [`libc::PATH_MAX`] (4096 on linux).
