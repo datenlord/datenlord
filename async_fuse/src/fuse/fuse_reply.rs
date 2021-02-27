@@ -616,7 +616,7 @@ mod test {
     use super::super::protocol::{FuseAttr, FuseAttrOut, FuseOutHeader};
     use super::ReplyAttr;
 
-    use aligned_bytes::AlignedBytes;
+    use aligned_utils::bytes::AlignedBytes;
     use anyhow::Context;
     use nix::fcntl::{self, OFlag};
     use nix::sys::stat::Mode;
