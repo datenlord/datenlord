@@ -30,7 +30,7 @@ log = "0.4.6"
 memchr = "2.3.4"
 nix = "0.19.0"
 pin-project-lite ="0.2.0"
-smol = "0.1.11"
+smol = { version = "1.2.5" }
 thiserror = "1.0.22"
 utilities = { git = "https://github.com/datenlord/utilities", rev = "4ef408d" }
 

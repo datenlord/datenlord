@@ -4,7 +4,6 @@ use log::debug;
 use nix::errno::Errno;
 use nix::sys::stat::SFlag;
 use nix::sys::uio::{self, IoVec};
-use smol::blocking;
 use std::convert::AsRef;
 use std::ffi::OsStr;
 use std::fmt::Debug;
@@ -58,7 +57,7 @@ impl<T: Send + Sync + 'static> ReplyRaw<T> {
     /// Send response to FUSE kernel
     async fn send(self, to_bytes: ToBytes<T>, err: c_int) -> nix::Result<usize> {
         let fd = self.fd;
-        let wsize = blocking!(
+        let wsize = smol::unblock(move || {
             let mut send_error = false;
             let instance: T; // to hold the instance of ToBytes::Struct
             let byte_vec: Vec<u8>; // to hold the Vec<u8> of ToBytes::Bytes
@@ -69,9 +68,9 @@ impl<T: Send + Sync + 'static> ReplyRaw<T> {
                     let len = mem::size_of::<T>();
                     let bytes = match len {
                         0 => &[],
-                        len => {
+                        l => {
                             let p = utilities::cast_to_ptr(&instance);
-                            unsafe { slice::from_raw_parts(p, len) }
+                            unsafe { slice::from_raw_parts(p, l) }
                         }
                     };
                     (len, bytes)
@@ -108,7 +107,8 @@ impl<T: Send + Sync + 'static> ReplyRaw<T> {
             // .context(format!(
             //     "failed to send to FUSE, the reply header is: {:?}", header,
             // ))
-        )?;
+        })
+        .await?;
 
         debug!("sent {} bytes to fuse device successfully", wsize);
         Ok(wsize)
@@ -618,14 +618,14 @@ mod test {
 
     use aligned_utils::bytes::AlignedBytes;
     use anyhow::Context;
-    use futures::prelude::*;
     use nix::fcntl::{self, OFlag};
     use nix::sys::stat::Mode;
-    use nix::unistd::{self, Whence};
-    use smol::{self, blocking};
-    use std::fs::File;
+    use nix::unistd::{self};
     use std::os::unix::io::FromRawFd;
     use std::time::Duration;
+
+    use futures::AsyncReadExt;
+    use futures::AsyncSeekExt;
 
     #[test]
     fn test_slice() {
@@ -648,14 +648,17 @@ mod test {
     }
     #[test]
     fn test_reply_output() -> anyhow::Result<()> {
-        smol::run(async move {
+        smol::block_on(async move {
             let file_name = "fuse_reply.log";
-            let fd = blocking!(fcntl::open(
-                file_name,
-                OFlag::O_CREAT | OFlag::O_TRUNC | OFlag::O_RDWR,
-                Mode::all(),
-            ))?;
-            blocking!(unistd::unlink(file_name))?;
+            let fd = smol::unblock(move || {
+                fcntl::open(
+                    file_name,
+                    OFlag::O_CREAT | OFlag::O_TRUNC | OFlag::O_RDWR,
+                    Mode::all(),
+                )
+            })
+            .await?;
+            smol::unblock(move || unistd::unlink(file_name)).await?;
 
             let ino = 64;
             let size = 64;
@@ -712,10 +715,8 @@ mod test {
             let reply_attr = ReplyAttr::new(unique, fd);
             reply_attr.attr(Duration::from_secs(1), attr).await?;
 
-            // let file = blocking!(File::open(file_name))?;
-            blocking!(unistd::lseek(fd, 0, Whence::SeekSet))?;
-            let file = blocking!(unsafe { File::from_raw_fd(fd) });
-            let mut file = smol::reader(file);
+            let mut file = smol::unblock(move || unsafe { smol::fs::File::from_raw_fd(fd) }).await;
+            file.seek(smol::io::SeekFrom::Start(0)).await?;
             let mut bytes = Vec::new();
             file.read_to_end(&mut bytes).await?;
 

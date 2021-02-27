@@ -10,7 +10,6 @@ use nix::sys::{
     time::TimeSpec,
 };
 use nix::unistd;
-use smol::blocking;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::{OsStr, OsString};
 use std::os::unix::{
@@ -837,12 +836,15 @@ impl FileSystem {
         let old_name_clone = old_name.clone();
         let new_name_clone = new_name.clone();
         // Rename on disk
-        blocking!(nix::fcntl::renameat(
-            Some(old_parent_fd),
-            Path::new(&old_name_clone),
-            Some(new_parent_fd),
-            Path::new(&new_name_clone),
-        ))
+        smol::unblock(move || {
+            nix::fcntl::renameat(
+                Some(old_parent_fd),
+                Path::new(&old_name_clone),
+                Some(new_parent_fd),
+                Path::new(&new_name_clone),
+            )
+        })
+        .await
         .context(format!(
             "rename_may_replace_helper() failed to move the from i-node name={:?} under \
                 from parent ino={} to the to i-node name={:?} under new parent ino={}",
@@ -961,23 +963,29 @@ impl FileSystem {
         {
             // attributes are not allowed on if expressions
             if datasync {
-                blocking!(unistd::fdatasync(fh.cast())).context(format!(
-                    "fsync_helper() failed to flush the i-node of ino={}",
-                    ino
-                ))?;
+                smol::unblock(move || unistd::fdatasync(fh.cast()))
+                    .await
+                    .context(format!(
+                        "fsync_helper() failed to flush the i-node of ino={}",
+                        ino
+                    ))?;
             } else {
-                blocking!(unistd::fsync(fh.cast())).context(format!(
-                    "fsync_helper() failed to flush the i-node of ino={}",
-                    ino
-                ))?;
+                smol::unblock(move || unistd::fsync(fh.cast()))
+                    .await
+                    .context(format!(
+                        "fsync_helper() failed to flush the i-node of ino={}",
+                        ino
+                    ))?;
             }
         }
         #[cfg(target_os = "macos")]
         {
-            blocking!(unistd::fsync(fh.cast())).context(format!(
-                "fsync_helper() failed to flush the i-node of ino={}",
-                ino,
-            ))?;
+            smol::unblock(|| unistd::fsync(fh.cast()))
+                .await
+                .context(format!(
+                    "fsync_helper() failed to flush the i-node of ino={}",
+                    ino,
+                ))?;
         }
         // reply.ok().await?;
         debug!(
@@ -1061,10 +1069,12 @@ impl FileSystem {
                 "setattr_helper() successfully parsed mode={:?} from bits={:#o}",
                 nix_mode, mode_bits,
             );
-            blocking!(stat::fchmod(fd, nix_mode)).context(format!(
-                "setattr_helper() failed to chmod with mode={}",
-                mode_bits,
-            ))?;
+            smol::unblock(move || stat::fchmod(fd, nix_mode))
+                .await
+                .context(format!(
+                    "setattr_helper() failed to chmod with mode={}",
+                    mode_bits,
+                ))?;
             attr.perm = fs_util::parse_mode_bits(mode_bits);
             debug!(
                 "setattr_helper() set permission={:#o}={} from input bits={:#o}={}",
@@ -1080,10 +1090,12 @@ impl FileSystem {
         if param.u_id.is_some() || param.g_id.is_some() {
             let nix_user_id = param.u_id.map(unistd::Uid::from_raw);
             let nix_group_id = param.g_id.map(unistd::Gid::from_raw);
-            blocking!(unistd::fchown(fd, nix_user_id, nix_group_id)).context(format!(
-                "setattr_helper() failed to set uid={:?} and gid={:?}",
-                nix_user_id, nix_group_id,
-            ))?;
+            smol::unblock(move || unistd::fchown(fd, nix_user_id, nix_group_id))
+                .await
+                .context(format!(
+                    "setattr_helper() failed to set uid={:?} and gid={:?}",
+                    nix_user_id, nix_group_id,
+                ))?;
             if let Some(raw_uid) = param.u_id {
                 attr.uid = raw_uid;
             }
@@ -1095,10 +1107,12 @@ impl FileSystem {
             attr_changed = true;
         }
         if let Some(file_size) = param.size {
-            blocking!(unistd::ftruncate(fd, file_size.cast())).context(format!(
-                "setattr_helper() failed to truncate file size to {}",
-                file_size
-            ))?;
+            smol::unblock(move || unistd::ftruncate(fd, file_size.cast()))
+                .await
+                .context(format!(
+                    "setattr_helper() failed to truncate file size to {}",
+                    file_size
+                ))?;
             attr.size = file_size;
             attr.mtime = st_now;
             attr.ctime = st_now;
@@ -1135,12 +1149,12 @@ impl FileSystem {
                         })
                     },
                 );
-                blocking!(stat::futimens(fd, &nix_access_time, &nix_modify_time)).context(
-                    format!(
+                smol::unblock(move || stat::futimens(fd, &nix_access_time, &nix_modify_time))
+                    .await
+                    .context(format!(
                         "setattr_helper() failed to update atime={:?} or mtime={:?}",
                         param.a_time, param.m_time
-                    ),
-                )?;
+                    ))?;
                 if let Some(st_atime) = param.a_time {
                     attr.atime = st_atime;
                     // Change atime do not need to change ctime
@@ -1977,7 +1991,8 @@ impl FileSystem {
         // called multiple times for an open file, this must not really
         // close the file. This is important if used on a network
         // filesystem like NFS which flush the data/metadata on close()
-        let new_fd = blocking!(unistd::dup(fh.cast()))
+        let new_fd = smol::unblock(move || unistd::dup(fh.cast()))
+            .await
             .context(format!(
                 "flush() failed to duplicate the handler ino={} fh={:?}",
                 ino, fh,
@@ -1988,7 +2003,8 @@ impl FileSystem {
                     util::format_anyhow_error(&e)
                 )
             });
-        blocking!(unistd::close(new_fd))
+        smol::unblock(move || unistd::close(new_fd))
+            .await
             .context(format!(
                 "flush() failed to close the duplicated file handler={} of ino={}",
                 new_fd, ino,
@@ -2035,7 +2051,8 @@ impl FileSystem {
         let fd = fh.cast();
         if flush {
             // TODO: double check the meaning of the flush flag
-            blocking!(unistd::fsync(fd))
+            smol::unblock(move || unistd::fsync(fd))
+                .await
                 .context(format!(
                     "release() failed to flush the file of ino={} and name={:?}",
                     ino,
@@ -2048,7 +2065,8 @@ impl FileSystem {
                     );
                 });
         }
-        blocking!(unistd::close(fd))
+        smol::unblock(move || unistd::close(fd))
+            .await
             .context(format!(
                 "release() failed to close the file handler={} of ino={} and name={:?}",
                 fh,
@@ -2245,7 +2263,8 @@ impl FileSystem {
                 ino,
             );
         });
-        blocking!(unistd::close(fh.cast()))
+        smol::unblock(move || unistd::close(fh.cast()))
+            .await
             .context(format!(
                 "releasedir() failed to close the file handler={} of ino={} and name={:?}",
                 fh,
@@ -2315,12 +2334,13 @@ impl FileSystem {
             );
         });
         let fd = inode.get_fd();
-        let statfs_res = blocking!(
+        let statfs_res = smol::unblock(move || {
             let file = unsafe { std::fs::File::from_raw_fd(fd) };
             let stat_res = statvfs::fstatvfs(&file); // statvfs is POSIX, whereas statfs is not
             let _fd = file.into_raw_fd(); // prevent fd to be closed by File
             stat_res
-        )
+        })
+        .await
         .context(format!(
             "statfs() failed to run statvfs() of ino={} and name={:?}",
             ino,
