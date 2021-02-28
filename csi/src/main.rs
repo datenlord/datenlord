@@ -548,10 +548,7 @@ fn main() -> DatenLordResult<()> {
 
 #[cfg(test)]
 mod test {
-    use super::error::Context;
-    use super::util;
-    use super::*;
-    use csi::{
+    use self::csi::{
         ControllerExpandVolumeRequest, ControllerExpandVolumeResponse, CreateSnapshotRequest,
         CreateSnapshotResponse, CreateVolumeRequest, CreateVolumeResponse, DeleteSnapshotRequest,
         DeleteSnapshotResponse, DeleteVolumeRequest, DeleteVolumeResponse,
@@ -562,6 +559,9 @@ mod test {
         ProbeRequest, VolumeCapability, VolumeCapability_AccessMode_Mode,
         VolumeCapability_MountVolume,
     };
+    use super::error::Context;
+    use super::util;
+    use super::*;
     use csi_grpc::{ControllerClient, IdentityClient, NodeClient};
 
     use grpcio::{ChannelBuilder, EnvBuilder};
