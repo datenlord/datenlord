@@ -1,11 +1,12 @@
 //! The helper command to bind mount for non-root user
 
-use anyhow::{bail, Context};
 use clap::{App, Arg};
 use log::debug;
 use nix::mount::{self, MsFlags};
 use std::ffi::OsStr;
 use std::path::Path;
+
+use csi::error::{Context, DatenLordError::ArgumentInvalid, DatenLordResult};
 
 /// Argument name of mount from directory
 const FROM_DIR_ARG_NAME: &str = "from";
@@ -22,7 +23,7 @@ const MOUNT_OPTIONS_ARG_NAME: &str = "options";
 /// Argument name of un-mount
 const UMOUNT_ARG_NAME: &str = "umount";
 
-fn main() -> anyhow::Result<()> {
+fn main() -> DatenLordResult<()> {
     env_logger::init();
 
     let matches = App::new("BindMounter")
@@ -98,7 +99,9 @@ fn main() -> anyhow::Result<()> {
             if do_umount {
                 Path::new("")
             } else {
-                bail!("missing mount source directory")
+                return Err(ArgumentInvalid {
+                    context: vec!["missing mount source directory".to_string()],
+                });
             }
         }
     };
@@ -108,7 +111,9 @@ fn main() -> anyhow::Result<()> {
             if do_umount {
                 Path::new("")
             } else {
-                bail!("missing mount target directory")
+                return Err(ArgumentInvalid {
+                    context: vec!["missing mount target directory".to_string()],
+                });
             }
         }
     };
@@ -150,7 +155,8 @@ fn main() -> anyhow::Result<()> {
     }
 
     if do_umount {
-        mount::umount(umount_path).context(format!("failed to umount {:?}", umount_path))?;
+        mount::umount(umount_path)
+            .with_context(|| format!("failed to umount {:?}", umount_path))?;
     } else {
         mount::mount::<Path, Path, OsStr, OsStr>(
             Some(&from_path),
@@ -167,7 +173,7 @@ fn main() -> anyhow::Result<()> {
                 Some(OsStr::new(&mount_options))
             },
         )
-        .context(format!("failed to mount {:?} to {:?}", from_path, to_path))?;
+        .with_context(|| format!("failed to mount {:?} to {:?}", from_path, to_path))?;
     }
 
     Ok(())
