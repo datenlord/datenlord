@@ -33,6 +33,7 @@ thiserror = "1.0"
 utilities = { git = "https://github.com/datenlord/utilities", rev = "4ef408d" }
 uuid = { version = "0.8.1", features = ["v4"] }
 walkdir = "2.3.1"
+common = {path = "../common"}
 
 [build-dependencies]
 protoc-grpcio = "3.0.0"

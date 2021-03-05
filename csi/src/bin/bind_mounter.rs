@@ -6,7 +6,7 @@ use nix::mount::{self, MsFlags};
 use std::ffi::OsStr;
 use std::path::Path;
 
-use csi::error::{Context, DatenLordError::ArgumentInvalid, DatenLordResult};
+use common::error::{Context, DatenLordError::ArgumentInvalid, DatenLordResult};
 
 /// Argument name of mount from directory
 const FROM_DIR_ARG_NAME: &str = "from";
