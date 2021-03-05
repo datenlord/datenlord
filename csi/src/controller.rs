@@ -20,7 +20,9 @@ use super::csi::{
     VolumeCapability, VolumeCapability_AccessMode_Mode, VolumeContentSource_oneof_type,
 };
 use super::csi_grpc::Controller;
-use super::error::{
+use super::meta_data::{DatenLordSnapshot, MetaData, VolumeSource};
+use super::util;
+use common::error::{
     Context,
     DatenLordError::{
         ArgumentInvalid, ArgumentOutOfRange, SnapshotAlreadyExist, SnapshotNotFound, Unimplemented,
@@ -28,8 +30,6 @@ use super::error::{
     },
     DatenLordResult,
 };
-use super::meta_data::{DatenLordSnapshot, MetaData, VolumeSource};
-use super::util;
 
 /// for `ControllerService` implementation
 #[derive(Clone)]

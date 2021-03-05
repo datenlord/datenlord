@@ -19,7 +19,8 @@ use super::csi::{
     VolumeContentSource_VolumeSource, VolumeContentSource_oneof_type,
 };
 use super::datenlord_worker_grpc::WorkerClient;
-use super::error::{
+use super::util::{self, BindMountMode, RunAsRole};
+use common::error::{
     Context,
     DatenLordError::{
         ArgumentInvalid, NodeNotFound, SnapshotNotFound, SnapshotNotReady, StartingTokenInvalid,
@@ -27,8 +28,7 @@ use super::error::{
     },
     DatenLordResult,
 };
-use super::etcd_delegate::EtcdDelegate;
-use super::util::{self, BindMountMode, RunAsRole};
+use common::etcd_delegate::EtcdDelegate;
 
 /// `DatenLord` node
 #[derive(Clone, Debug, Serialize, Deserialize)]

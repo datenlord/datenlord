@@ -6,7 +6,6 @@ use log::{debug, info};
 use nix::mount::{self, MntFlags, MsFlags};
 use nix::unistd;
 use protobuf::RepeatedField;
-use serde::de::DeserializeOwned;
 use std::ffi::OsStr;
 use std::fmt::Debug;
 use std::fs;
@@ -20,7 +19,7 @@ use super::csi::{
     CreateSnapshotRequest, CreateSnapshotResponse, CreateVolumeRequest, CreateVolumeResponse,
     Snapshot, Topology, Volume,
 };
-use super::error::{
+use common::error::{
     Context, DatenLordError,
     DatenLordError::{IoErr, MountErr, NixErr, UmountErr},
     DatenLordResult,
@@ -209,13 +208,6 @@ pub fn spawn_grpc_task<R: Send + 'static>(
         }
     })
     .detach();
-}
-
-/// Decode from bytes
-pub fn decode_from_bytes<T: DeserializeOwned>(bytes: &[u8]) -> DatenLordResult<T> {
-    let decoded_value = bincode::deserialize(bytes)
-        .with_context(|| format!("failed to decode bytes to {}", std::any::type_name::<T>(),))?;
-    Ok(decoded_value)
 }
 
 /// Get the bind mount helper command path
