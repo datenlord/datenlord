@@ -1,8 +1,7 @@
 //! Utility functions and const variables
 
-use anyhow::{anyhow, Context};
 use futures::prelude::*;
-use grpcio::{RpcStatus, RpcStatusCode, UnarySink};
+use grpcio::{RpcStatus, UnarySink};
 use log::{debug, info};
 use nix::mount::{self, MntFlags, MsFlags};
 use nix::unistd;
@@ -20,6 +19,11 @@ use walkdir::WalkDir;
 use super::csi::{
     CreateSnapshotRequest, CreateSnapshotResponse, CreateVolumeRequest, CreateVolumeResponse,
     Snapshot, Topology, Volume,
+};
+use super::error::{
+    Context, DatenLordError,
+    DatenLordError::{IoErr, MountErr, NixErr, UmountErr},
+    DatenLordResult,
 };
 
 /// The CSI plugin name
@@ -74,25 +78,13 @@ pub enum BindMountMode {
     Remount,
 }
 
-/// Format `anyhow::Error`
-// TODO: refactor this
-pub fn format_anyhow_error(error: &anyhow::Error) -> String {
-    let err_msg_vec = error
-        .chain()
-        .map(std::string::ToString::to_string)
-        .collect::<Vec<_>>();
-    let mut err_msg = err_msg_vec.as_slice().join(", caused by: ");
-    err_msg.push_str(&format!(", root cause: {}", error.root_cause()));
-    err_msg
-}
-
 /// Convert `SystemTime` to proto timestamp
 pub fn generate_proto_timestamp(
     st: &std::time::SystemTime,
-) -> anyhow::Result<protobuf::well_known_types::Timestamp> {
+) -> DatenLordResult<protobuf::well_known_types::Timestamp> {
     let d = st
         .duration_since(std::time::UNIX_EPOCH)
-        .context("failed to get duration since unix epoch")?;
+        .add_context("failed to get duration since unix epoch")?;
     let mut ts = protobuf::well_known_types::Timestamp::new();
     ts.set_seconds(d.as_secs().cast());
     ts.set_nanos(d.subsec_nanos().cast());
@@ -105,7 +97,7 @@ pub fn copy_directory_recursively(
     from: impl AsRef<Path>,
     to: impl AsRef<Path>,
     follow_symlink: bool,
-) -> anyhow::Result<usize> {
+) -> DatenLordResult<usize> {
     let from_path = from.as_ref();
     let to_path = to.as_ref();
     let mut num_copied: usize = 0;
@@ -158,12 +150,14 @@ pub fn build_create_snapshot_response(
     snap_id: &str,
     ts: &std::time::SystemTime,
     size_bytes: i64,
-) -> anyhow::Result<CreateSnapshotResponse> {
-    let proto_ts = generate_proto_timestamp(ts).context(format!(
-        "failed to generate proto timestamp \
+) -> DatenLordResult<CreateSnapshotResponse> {
+    let proto_ts = generate_proto_timestamp(ts).with_context(|| {
+        format!(
+            "failed to generate proto timestamp \
             when creating snapshot from volume ID={}",
-        req.get_source_volume_id(),
-    ))?;
+            req.get_source_volume_id(),
+        )
+    })?;
     let mut s = Snapshot::new();
     s.set_snapshot_id(snap_id.to_owned());
     s.set_source_volume_id(req.get_source_volume_id().to_owned());
@@ -185,14 +179,16 @@ pub async fn async_success<R: Send>(sink: UnarySink<R>, r: R) {
 }
 
 /// Send async failure `gRPC` response
-pub async fn async_fail<R>(sink: UnarySink<R>, rsc: RpcStatusCode, anyhow_err: &anyhow::Error) {
+pub async fn async_fail<R>(sink: UnarySink<R>, err: DatenLordError) {
+    /*
     debug_assert_ne!(
         rsc,
         RpcStatusCode::OK,
         "the input RpcStatusCode should not be OK"
     );
-    let details = format_anyhow_error(anyhow_err);
-    let rs = RpcStatus::new(rsc, Some(details));
+    */
+    let details = format!("{}", err);
+    let rs = RpcStatus::new(err, Some(details));
     let res = sink.fail(rs).await;
 
     if let Err(e) = res {
@@ -203,31 +199,22 @@ pub async fn async_fail<R>(sink: UnarySink<R>, rsc: RpcStatusCode, anyhow_err: &
 /// Spawn a task to execute async task and send `gRPC` response
 pub fn spawn_grpc_task<R: Send + 'static>(
     sink: UnarySink<R>,
-    task: impl Future<Output = Result<R, (RpcStatusCode, anyhow::Error)>> + Send + 'static,
+    task: impl Future<Output = DatenLordResult<R>> + Send + 'static,
 ) {
     smol::spawn(async move {
         let result = task.await;
         match result {
             Ok(resp) => async_success(sink, resp).await,
-            Err((rpc_status_code, e)) => async_fail(sink, rpc_status_code, &e).await,
+            Err(e) => async_fail(sink, e).await,
         }
     })
     .detach();
 }
 
 /// Decode from bytes
-pub fn decode_from_bytes<T: DeserializeOwned>(bytes: &[u8]) -> anyhow::Result<T> {
-    // let decoded_value = bincode::deserialize(bytes).map_err(|e| {
-    //     anyhow!(
-    //         "failed to decode bytes to {}, the error is: {}",
-    //         std::any::type_name::<T>(),
-    //         e,
-    //     )
-    // })?;
-    let decoded_value = bincode::deserialize(bytes).context(format!(
-        "failed to decode bytes to {}",
-        std::any::type_name::<T>(),
-    ))?;
+pub fn decode_from_bytes<T: DeserializeOwned>(bytes: &[u8]) -> DatenLordResult<T> {
+    let decoded_value = bincode::deserialize(bytes)
+        .with_context(|| format!("failed to decode bytes to {}", std::any::type_name::<T>(),))?;
     Ok(decoded_value)
 }
 
@@ -254,7 +241,7 @@ pub fn mount_volume_bind_path(
     mount_options: &str,
     fs_type: &str,
     read_only: bool,
-) -> anyhow::Result<()> {
+) -> DatenLordResult<()> {
     let mut mnt_flags = MsFlags::MS_BIND;
     if read_only {
         mnt_flags |= MsFlags::MS_RDONLY;
@@ -280,10 +267,12 @@ pub fn mount_volume_bind_path(
                 Some(OsStr::new(&mount_options))
             },
         )
-        .context(format!(
-            "failed to direct mount {:?} to {:?}",
-            from_path, target_path
-        ))
+        .with_context(|| {
+            format!(
+                "failed to direct mount {:?} to {:?}",
+                from_path, target_path
+            )
+        })
     } else {
         let mut mount_cmd = Command::new(get_bind_mount_helper_cmd());
         mount_cmd
@@ -306,10 +295,10 @@ pub fn mount_volume_bind_path(
         let mount_handle = match mount_cmd.output() {
             Ok(h) => h,
             Err(e) => {
-                return Err(anyhow!(format!(
-                    "bind mount helper command failed to start, the error is: {}",
-                    e,
-                ),))
+                return Err(IoErr {
+                    source: e,
+                    context: vec!["bind mount helper command failed to start".to_string()],
+                });
             }
         };
         if mount_handle.status.success() {
@@ -320,30 +309,32 @@ pub fn mount_volume_bind_path(
                 "bind mount helper command failed to mount, the error is: {}",
                 &stderr
             );
-            Err(anyhow!(
-                "bind mount helper command failed to mount {:?} to {:?}, the error is: {}",
-                from_path,
-                target_path,
-                stderr,
-            ))
+            Err(MountErr {
+                from: from_path.to_owned(),
+                target: target_path.to_owned(),
+                context: vec![stderr.to_string()],
+            })
         }
     }
 }
 
 /// Un-mount target path, if fail try force un-mount again
-pub fn umount_volume_bind_path(target_dir: &str) -> anyhow::Result<()> {
+pub fn umount_volume_bind_path(target_dir: &str) -> DatenLordResult<()> {
     if unistd::geteuid().is_root() {
         let umount_res = mount::umount(Path::new(target_dir));
         if let Err(umount_e) = umount_res {
             let umount_force_res = mount::umount2(Path::new(target_dir), MntFlags::MNT_FORCE);
             if let Err(umount_force_e) = umount_force_res {
-                return Err(anyhow!(
-                    "failed to un-mount the target path={:?}, \
+                return Err(NixErr {
+                    source: umount_force_e,
+                    context: vec![format!(
+                        "failed to un-mount the target path={:?}, \
                         the un-mount error is: {:?} and the force un-mount error is: {}",
-                    Path::new(target_dir),
-                    umount_e,
-                    umount_force_e,
-                ));
+                        Path::new(target_dir),
+                        umount_e,
+                        umount_force_e,
+                    )],
+                });
             }
         }
     } else {
@@ -351,24 +342,27 @@ pub fn umount_volume_bind_path(target_dir: &str) -> anyhow::Result<()> {
             .arg("-u")
             .arg(&target_dir)
             .output()
-            .context("bind mount helper command failed to start")?;
+            .add_context("bind mount helper command failed to start")?;
         if !umount_handle.status.success() {
             let stderr = String::from_utf8_lossy(&umount_handle.stderr);
             debug!(
                 "bind mount helper command failed to umount, the error is: {}",
                 &stderr
             );
-            return Err(anyhow!(
-                "bind mount helper command failed to umount {:?}, the error is: {}",
-                Path::new(target_dir),
-                stderr,
-            ));
+            return Err(UmountErr {
+                target: Path::new(target_dir).to_owned(),
+                context: vec![format!(
+                    "bind mount helper command failed to umount {:?}, the error is: {}",
+                    Path::new(target_dir),
+                    stderr,
+                )],
+            });
         }
     }
 
     // csi-sanity requires plugin to remove the target mount directory
     fs::remove_dir_all(target_dir)
-        .context(format!("failed to remove mount target path={}", target_dir))?;
+        .with_context(|| format!("failed to remove mount target path={}", target_dir))?;
 
     Ok(())
 }

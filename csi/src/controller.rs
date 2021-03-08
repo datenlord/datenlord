@@ -1,7 +1,6 @@
 //! The implementation for CSI controller service
 
-use anyhow::{anyhow, Context};
-use grpcio::{RpcContext, RpcStatusCode, UnarySink};
+use grpcio::{RpcContext, UnarySink};
 use log::{debug, error, info, warn};
 use protobuf::RepeatedField;
 use std::cmp::Ordering;
@@ -21,6 +20,14 @@ use super::csi::{
     VolumeCapability, VolumeCapability_AccessMode_Mode, VolumeContentSource_oneof_type,
 };
 use super::csi_grpc::Controller;
+use super::error::{
+    Context,
+    DatenLordError::{
+        ArgumentInvalid, ArgumentOutOfRange, SnapshotAlreadyExist, SnapshotNotFound, Unimplemented,
+        VolumeAlreadyExist, VolumeNotFound,
+    },
+    DatenLordResult,
+};
 use super::meta_data::{DatenLordSnapshot, MetaData, VolumeSource};
 use super::util;
 
@@ -89,99 +96,94 @@ impl ControllerImplInner {
     async fn find_existing_volume(
         &self,
         req: &CreateVolumeRequest,
-    ) -> Result<Option<CreateVolumeResponse>, (RpcStatusCode, anyhow::Error)> {
+    ) -> DatenLordResult<CreateVolumeResponse> {
         let vol_name = req.get_name();
-        let get_vol_res = self.meta_data.get_volume_by_name(vol_name).await;
-        if let Some(ex_vol) = get_vol_res {
-            // It means the volume with the same name already exists
-            // need to check if the size of existing volume is the same as in new
-            // request
-            let volume_size = req.get_capacity_range().get_required_bytes();
-            if ex_vol.get_size() != volume_size {
-                return Err((
-                    RpcStatusCode::ALREADY_EXISTS,
-                    anyhow!(format!(
-                        "volume with the same name={} already exist but with different size",
-                        vol_name,
-                    )),
-                ));
-            }
+        let ex_vol = self.meta_data.get_volume_by_name(vol_name).await?;
+        // It means the volume with the same name already exists
+        // need to check if the size of existing volume is the same as in new
+        // request
+        let volume_size = req.get_capacity_range().get_required_bytes();
+        if ex_vol.get_size() != volume_size {
+            return Err(VolumeAlreadyExist {
+                volume_id: vol_name.to_string(),
+                context: vec![format!(
+                    "volume with the same name={} already exist but with different size",
+                    vol_name,
+                )],
+            });
+        }
 
-            if req.has_volume_content_source() {
-                let ex_vol_content_source = if let Some(ref vcs) = ex_vol.content_source {
-                    vcs
-                } else {
-                    return Err((
-                        RpcStatusCode::ALREADY_EXISTS,
-                        anyhow!(format!(
-                            "existing volume ID={} doesn't have content source",
-                            ex_vol.vol_id,
-                        )),
-                    ));
-                };
+        if req.has_volume_content_source() {
+            let ex_vol_content_source = if let Some(ref vcs) = ex_vol.content_source {
+                vcs
+            } else {
+                return Err(VolumeAlreadyExist {
+                    volume_id: ex_vol.vol_id.clone(),
+                    context: vec![format!(
+                        "existing volume ID={} doesn't have content source",
+                        ex_vol.vol_id,
+                    )],
+                });
+            };
 
-                let volume_source = req.get_volume_content_source();
-                if let Some(ref volume_source_type) = volume_source.field_type {
-                    match *volume_source_type {
-                        VolumeContentSource_oneof_type::snapshot(ref snapshot_source) => {
-                            let parent_snap_id = snapshot_source.get_snapshot_id();
-                            if let VolumeSource::Snapshot(ref psid) = *ex_vol_content_source {
-                                if psid != parent_snap_id {
-                                    return Err((
-                                        RpcStatusCode::ALREADY_EXISTS,
-                                        anyhow!(format!(
-                                            "existing volume ID={} has parent snapshot ID={}, \
+            let volume_source = req.get_volume_content_source();
+            if let Some(ref volume_source_type) = volume_source.field_type {
+                match *volume_source_type {
+                    VolumeContentSource_oneof_type::snapshot(ref snapshot_source) => {
+                        let parent_snap_id = snapshot_source.get_snapshot_id();
+                        if let VolumeSource::Snapshot(ref psid) = *ex_vol_content_source {
+                            if psid != parent_snap_id {
+                                return Err(VolumeAlreadyExist {
+                                    volume_id: ex_vol.vol_id.clone(),
+                                    context: vec![format!(
+                                        "existing volume ID={} has parent snapshot ID={}, \
                                                 but VolumeContentSource_SnapshotSource has \
                                                 parent snapshot ID={}",
-                                            ex_vol.vol_id, psid, parent_snap_id,
-                                        )),
-                                    ));
-                                }
-                            } else {
-                                return Err((
-                                    RpcStatusCode::ALREADY_EXISTS,
-                                    anyhow!(format!(
-                                        "existing volume ID={} doesn't have parent snapshot ID",
-                                        ex_vol.vol_id
-                                    )),
-                                ));
+                                        ex_vol.vol_id, psid, parent_snap_id,
+                                    )],
+                                });
                             }
+                        } else {
+                            return Err(VolumeAlreadyExist {
+                                volume_id: ex_vol.vol_id.clone(),
+                                context: vec![format!(
+                                    "existing volume ID={} doesn't have parent snapshot ID",
+                                    ex_vol.vol_id
+                                )],
+                            });
                         }
-                        VolumeContentSource_oneof_type::volume(ref volume_source) => {
-                            let parent_vol_id = volume_source.get_volume_id();
-                            if let VolumeSource::Volume(ref pvid) = *ex_vol_content_source {
-                                if pvid != parent_vol_id {
-                                    return Err((
-                                        RpcStatusCode::ALREADY_EXISTS,
-                                        anyhow!(format!(
-                                            "existing volume ID={} has parent volume ID={}, \
+                    }
+                    VolumeContentSource_oneof_type::volume(ref volume_source) => {
+                        let parent_vol_id = volume_source.get_volume_id();
+                        if let VolumeSource::Volume(ref pvid) = *ex_vol_content_source {
+                            if pvid != parent_vol_id {
+                                return Err(VolumeAlreadyExist {
+                                    volume_id: ex_vol.vol_id.clone(),
+                                    context: vec![format!(
+                                        "existing volume ID={} has parent volume ID={}, \
                                                 but VolumeContentSource_VolumeSource has \
                                                 parent volume ID={}",
-                                            ex_vol.vol_id, pvid, parent_vol_id,
-                                        )),
-                                    ));
-                                }
-                            } else {
-                                return Err((
-                                    RpcStatusCode::ALREADY_EXISTS,
-                                    anyhow!(format!(
-                                        "existing volume ID={} doesn't have parent volume ID",
-                                        ex_vol.vol_id,
-                                    )),
-                                ));
+                                        ex_vol.vol_id, pvid, parent_vol_id,
+                                    )],
+                                });
                             }
+                        } else {
+                            return Err(VolumeAlreadyExist {
+                                volume_id: ex_vol.vol_id.clone(),
+                                context: vec![format!(
+                                    "existing volume ID={} doesn't have parent volume ID",
+                                    ex_vol.vol_id,
+                                )],
+                            });
                         }
                     }
                 }
             }
-            // Return existing volume
-            // TODO: make sure that volume still exists?
-            let resp = util::build_create_volume_response(req, &ex_vol.vol_id, &ex_vol.node_id);
-            Ok(Some(resp))
-        } else {
-            debug!("no volume with name={} exists", vol_name);
-            Ok(None)
         }
+        // Return existing volume
+        // TODO: make sure that volume still exists?
+        let resp = util::build_create_volume_response(req, &ex_vol.vol_id, &ex_vol.node_id);
+        Ok(resp)
     }
 
     /// Check for already existing snapshot name, and if found check for the
@@ -189,55 +191,53 @@ impl ControllerImplInner {
     async fn find_existing_snapshot(
         &self,
         req: &CreateSnapshotRequest,
-    ) -> Result<Option<CreateSnapshotResponse>, (RpcStatusCode, anyhow::Error)> {
-        if let Some(ex_snap) = self.meta_data.get_snapshot_by_name(req.get_name()).await {
-            // The snapshot with the same name already exists need to check
-            // if the source volume ID of existing snapshot is the same as in new request
-            let snap_name = req.get_name();
-            let src_vol_id = req.get_source_volume_id();
-            let node_id = self.meta_data.get_node_id();
+    ) -> DatenLordResult<CreateSnapshotResponse> {
+        let ex_snap = self.meta_data.get_snapshot_by_name(req.get_name()).await?;
+        // The snapshot with the same name already exists need to check
+        // if the source volume ID of existing snapshot is the same as in new request
+        let snap_name = req.get_name();
+        let src_vol_id = req.get_source_volume_id();
+        let node_id = self.meta_data.get_node_id();
 
-            if ex_snap.vol_id == src_vol_id {
-                let build_resp_res = util::build_create_snapshot_response(
-                    req,
-                    &ex_snap.snap_id,
-                    &ex_snap.creation_time,
-                    ex_snap.size_bytes,
-                )
-                .context(format!(
+        if ex_snap.vol_id == src_vol_id {
+            let build_resp_res = util::build_create_snapshot_response(
+                req,
+                &ex_snap.snap_id,
+                &ex_snap.creation_time,
+                ex_snap.size_bytes,
+            )
+            .with_context(|| {
+                format!(
                     "failed to build CreateSnapshotResponse at controller ID={}",
                     node_id,
-                ));
-                match build_resp_res {
-                    Ok(resp) => {
-                        info!(
-                            "find existing snapshot ID={} and name={}",
-                            ex_snap.snap_id, snap_name,
-                        );
-                        Ok(Some(resp))
-                    }
-                    Err(e) => Err((RpcStatusCode::INTERNAL, e)),
+                )
+            });
+            match build_resp_res {
+                Ok(resp) => {
+                    info!(
+                        "find existing snapshot ID={} and name={}",
+                        ex_snap.snap_id, snap_name,
+                    );
+                    Ok(resp)
                 }
-            } else {
-                Err((
-                    RpcStatusCode::ALREADY_EXISTS,
-                    anyhow!(format!(
-                        "snapshot with the same name={} exists on node ID={} \
-                            but of different source volume ID",
-                        snap_name, node_id,
-                    )),
-                ))
+                Err(e) => Err(e),
             }
         } else {
-            debug!("no snapshot with name={} exists", req.get_name());
-            Ok(None)
+            Err(SnapshotAlreadyExist {
+                snapshot_id: snap_name.to_string(),
+                context: vec![format!(
+                    "snapshot with the same name={} exists on node ID={} \
+                            but of different source volume ID",
+                    snap_name, node_id,
+                )],
+            })
         }
     }
 
     /// Build list snapshot response
     fn add_snapshot_to_list_response(
         snap: &DatenLordSnapshot,
-    ) -> anyhow::Result<ListSnapshotsResponse> {
+    ) -> DatenLordResult<ListSnapshotsResponse> {
         let mut entry = ListSnapshotsResponse_Entry::new();
         entry.mut_snapshot().set_size_bytes(snap.size_bytes);
         entry.mut_snapshot().set_snapshot_id(snap.snap_id.clone());
@@ -246,7 +246,7 @@ impl ControllerImplInner {
             .set_source_volume_id(snap.vol_id.clone());
         entry.mut_snapshot().set_creation_time(
             util::generate_proto_timestamp(&snap.creation_time)
-                .context("failed to convert to proto timestamp")?,
+                .add_context("failed to convert to proto timestamp")?,
         );
         entry.mut_snapshot().set_ready_to_use(snap.ready_to_use);
 
@@ -259,82 +259,41 @@ impl ControllerImplInner {
     async fn worker_create_volume(
         &self,
         req: &CreateVolumeRequest,
-    ) -> Result<CreateVolumeResponse, (RpcStatusCode, anyhow::Error)> {
+    ) -> DatenLordResult<CreateVolumeResponse> {
         let worker_node = match self.meta_data.select_node(req).await {
             Ok(n) => n,
             Err(e) => {
-                error!(
-                    "failed to select a node, the error is: {}",
-                    util::format_anyhow_error(&e),
-                );
-                return Err((RpcStatusCode::NOT_FOUND, e));
+                error!("failed to select a node, the error is: {}", e,);
+                return Err(e);
             }
         };
         let client = MetaData::build_worker_client(&worker_node);
-        let create_res = client
-            .worker_create_volume_async(req)
-            .map_err(|e| (RpcStatusCode::INTERNAL, anyhow::Error::new(e)))?;
-        match create_res.await {
-            Ok(resp) => Ok(resp),
-            Err(e) => {
-                match e {
-                    grpcio::Error::RpcFailure(ref s) => Err((
-                        s.status,
-                        anyhow::Error::new(e),
-                        // if let Some(m) = s.details {
-                        //     m
-                        // } else {
-                        //     format!(
-                        //         "failed to create volume by worker at {}",
-                        //         worker_node.node_id,
-                        //     )
-                        // },
-                    )),
-                    e @ grpcio::Error::Codec(..)
-                    | e @ grpcio::Error::CallFailure(..)
-                    | e @ grpcio::Error::RpcFinished(..)
-                    | e @ grpcio::Error::RemoteStopped
-                    | e @ grpcio::Error::ShutdownFailed
-                    | e @ grpcio::Error::BindFail(..)
-                    | e @ grpcio::Error::QueueShutdown
-                    | e @ grpcio::Error::GoogleAuthenticationFailed
-                    | e @ grpcio::Error::InvalidMetadata(..) => Err((
-                        RpcStatusCode::INTERNAL,
-                        anyhow::Error::new(e),
-                        // format!("failed to create volume, the error is: {}", e),
-                    )),
-                }
-            }
-        }
+        let create_res = client.worker_create_volume_async(req)?;
+
+        create_res.await.map_err(|e| e.into())
     }
 
     /// The pre-check helper function for `create_volume`
-    fn create_volume_pre_check(
-        &self,
-        req: &CreateVolumeRequest,
-    ) -> Result<(), (RpcStatusCode, anyhow::Error)> {
+    fn create_volume_pre_check(&self, req: &CreateVolumeRequest) -> DatenLordResult<()> {
         let rpc_type = ControllerServiceCapability_RPC_Type::CREATE_DELETE_VOLUME;
         if !self.validate_request_capability(rpc_type) {
-            return Err((
-                RpcStatusCode::INVALID_ARGUMENT,
-                anyhow!(format!("unsupported capability {:?}", rpc_type)),
-            ));
+            return Err(ArgumentInvalid {
+                context: vec![format!("unsupported capability {:?}", rpc_type)],
+            });
         }
 
         let vol_name = req.get_name();
         if vol_name.is_empty() {
-            return Err((
-                RpcStatusCode::INVALID_ARGUMENT,
-                anyhow!("name missing in request"),
-            ));
+            return Err(ArgumentInvalid {
+                context: vec!["name missing in request".to_string()],
+            });
         }
 
         let req_caps = req.get_volume_capabilities();
         if req_caps.is_empty() {
-            return Err((
-                RpcStatusCode::INVALID_ARGUMENT,
-                anyhow!("volume capabilities missing in request"),
-            ));
+            return Err(ArgumentInvalid {
+                context: vec!["volume capabilities missing in request".to_string()],
+            });
         }
 
         let access_type_block = req_caps.iter().any(VolumeCapability::has_block);
@@ -345,31 +304,25 @@ impl ControllerImplInner {
                 || vol_access_mode == VolumeCapability_AccessMode_Mode::MULTI_NODE_SINGLE_WRITER
         });
         if access_type_block {
-            return Err((
-                RpcStatusCode::INVALID_ARGUMENT,
-                anyhow!("access type block not supported"),
-            ));
+            return Err(ArgumentInvalid {
+                context: vec!["access type block not supported".to_string()],
+            });
         }
         if access_mode_multi_writer {
-            return Err((
-                RpcStatusCode::INVALID_ARGUMENT,
-                anyhow!(
-                    "access mode MULTI_NODE_SINGLE_WRITER and \
-                        MULTI_NODE_MULTI_WRITER not supported"
-                ),
-            ));
+            return Err(ArgumentInvalid {
+                context: vec!["access mode MULTI_NODE_SINGLE_WRITER and MULTI_NODE_MULTI_WRITER not supported".to_string()],
+            });
         }
 
         let volume_size = req.get_capacity_range().get_required_bytes();
         if volume_size > util::MAX_VOLUME_STORAGE_CAPACITY {
-            return Err((
-                RpcStatusCode::OUT_OF_RANGE,
-                anyhow!(format!(
+            return Err(ArgumentOutOfRange {
+                context: vec![format!(
                     "requested size {} exceeds maximum allowed {}",
                     volume_size,
                     util::MAX_VOLUME_STORAGE_CAPACITY,
-                )),
-            ));
+                )],
+            });
         }
 
         Ok(())
@@ -386,49 +339,37 @@ impl Controller for ControllerImpl {
         debug!("create_volume request: {:?}", req);
         let self_inner = Arc::<ControllerImplInner>::clone(&self.inner);
 
-        let task =
-            async move {
-                self_inner.create_volume_pre_check(&req)?;
+        let task = async move {
+            self_inner.create_volume_pre_check(&req)?;
 
-                let vol_name = req.get_name();
-                let resp_opt = self_inner.find_existing_volume(&req).await.map_err(
-                    |(rpc_status_code, e)| {
-                        debug!(
-                            "failed to find existing volume name={}, the error is: {}",
-                            vol_name,
-                            util::format_anyhow_error(&e),
-                        );
-                        (rpc_status_code, e)
-                    },
-                )?;
-
-                if let Some(resp) = resp_opt {
+            let vol_name = req.get_name();
+            match self_inner.find_existing_volume(&req).await {
+                Ok(resp) => {
                     debug!(
                         "found existing volume ID={} and name={}",
                         resp.get_volume().get_volume_id(),
                         vol_name,
                     );
                     return Ok(resp);
-                } else {
-                    debug!("no volume name={} found", vol_name);
                 }
-
-                self_inner
-                    .worker_create_volume(&req)
-                    .await
-                    .map_err(|(rpc_status_code, e)| {
-                        debug_assert_ne!(
-                            rpc_status_code,
-                            RpcStatusCode::OK,
-                            "the RpcStatusCode should not be OK when error",
-                        );
+                Err(e) => {
+                    if let VolumeNotFound { .. } = e {
+                        debug!("no volume name={} found", vol_name);
+                    } else {
                         debug!(
-                            "failed to create volume, the error is: {}",
-                            util::format_anyhow_error(&e)
+                            "failed to find existing volume name={}, the error is: {}",
+                            vol_name, e,
                         );
-                        (rpc_status_code, e)
-                    })
-            };
+                        return Err(e);
+                    }
+                }
+            }
+
+            self_inner.worker_create_volume(&req).await.map_err(|e| {
+                debug!("failed to create volume, the error is: {}", e);
+                e
+            })
+        };
 
         util::spawn_grpc_task(sink, task);
     }
@@ -446,56 +387,59 @@ impl Controller for ControllerImpl {
             // Check arguments
             let vol_id = req.get_volume_id();
             if vol_id.is_empty() {
-                return Err((
-                    RpcStatusCode::INVALID_ARGUMENT,
-                    anyhow!("volume ID missing in request"),
-                ));
+                return Err(ArgumentInvalid {
+                    context: vec!["volume ID missing in request".to_string()],
+                });
             }
 
             let rpc_type = ControllerServiceCapability_RPC_Type::CREATE_DELETE_VOLUME;
             if !self_inner.validate_request_capability(rpc_type) {
-                return Err((
-                    RpcStatusCode::INVALID_ARGUMENT,
-                    anyhow!(format!("unsupported capability {:?}", rpc_type)),
-                ));
+                return Err(ArgumentInvalid {
+                    context: vec![format!("unsupported capability {:?}", rpc_type)],
+                });
             }
 
             // Do not return gRPC error when delete failed for idempotency
-            let vol_res = self_inner.meta_data.get_volume_by_id(vol_id).await;
-            if let Some(vol) = vol_res {
-                let node_res = self_inner.meta_data.get_node_by_id(&vol.node_id).await;
-                if let Some(node) = node_res {
+            match self_inner.meta_data.get_volume_by_id(vol_id).await {
+                Ok(vol) => {
+                    let node = self_inner.meta_data.get_node_by_id(&vol.node_id).await?;
                     let client = MetaData::build_worker_client(&node);
                     let worker_delete_res = client
-                        .worker_delete_volume_async(&req)
-                        .map_err(|e| (RpcStatusCode::INTERNAL, anyhow::Error::new(e)))?
+                        .worker_delete_volume_async(&req)?
                         .await
-                        .context(format!(
-                            "failed to delete volume ID={} on node ID={}",
-                            vol_id, vol.node_id,
-                        ));
+                        .with_context(|| {
+                            format!(
+                                "failed to delete volume ID={} on node ID={}",
+                                vol_id, vol.node_id,
+                            )
+                        });
                     match worker_delete_res {
                         Ok(_) => info!("successfully deleted volume ID={}", vol_id),
                         Err(e) => {
                             // Return error here?
+                            // Should we return this error, old logic will ignore this
                             warn!(
                                 "failed to delete volume ID={} on node ID={}, the error is: {}",
-                                vol_id,
-                                vol.node_id,
-                                util::format_anyhow_error(&e),
+                                vol_id, vol.node_id, e,
                             );
+                            return Err(e);
                         }
                     }
-                } else {
-                    warn!("failed to find node ID={} to get work port", vol.node_id);
                 }
-            } else {
-                warn!(
-                    "failed to find volume ID={} to delete on controller ID={}",
-                    vol_id,
-                    self_inner.meta_data.get_node_id(),
-                );
+                Err(e) => {
+                    warn!(
+                        "failed to find volume ID={} to delete on controller ID={}",
+                        vol_id,
+                        self_inner.meta_data.get_node_id(),
+                    );
+                    if let VolumeNotFound { .. } = e {
+                    } else {
+                        // Should we return this error, old logic will ignore this
+                        return Err(e);
+                    }
+                }
             }
+
             let r = DeleteVolumeResponse::new();
             Ok(r)
         };
@@ -511,7 +455,9 @@ impl Controller for ControllerImpl {
         debug!("controller_publish_volume request: {:?}", req);
 
         util::spawn_grpc_task(sink, async {
-            Err((RpcStatusCode::UNIMPLEMENTED, anyhow!("unimplemented")))
+            Err(Unimplemented {
+                context: vec!["unimplemented".to_string()],
+            })
         });
     }
 
@@ -524,7 +470,9 @@ impl Controller for ControllerImpl {
         debug!("controller_unpublish_volume request: {:?}", req);
 
         util::spawn_grpc_task(sink, async {
-            Err((RpcStatusCode::UNIMPLEMENTED, anyhow!("unimplemented")))
+            Err(Unimplemented {
+                context: vec!["unimplemented".to_string()],
+            })
         });
     }
 
@@ -541,39 +489,34 @@ impl Controller for ControllerImpl {
             let vol_id = req.get_volume_id();
             // Check arguments
             if vol_id.is_empty() {
-                return Err((
-                    RpcStatusCode::INVALID_ARGUMENT,
-                    anyhow!("volume ID cannot be empty"),
-                ));
+                return Err(ArgumentInvalid {
+                    context: vec!["volume ID cannot be empty".to_string()],
+                });
             }
             let vol_caps = req.get_volume_capabilities();
             if vol_caps.is_empty() {
-                return Err((
-                    RpcStatusCode::INVALID_ARGUMENT,
-                    anyhow!(format!(
+                return Err(ArgumentInvalid {
+                    context: vec![format!(
                         "volume ID={} has no volume capabilities in reqeust",
-                        vol_id,
-                    )),
-                ));
+                        vol_id
+                    )],
+                });
             }
 
-            self_inner.meta_data.get_volume_by_id(vol_id).await.ok_or((
-                RpcStatusCode::NOT_FOUND,
-                anyhow!(format!("failed to find volume ID={}", vol_id)),
-            ))?;
+            self_inner.meta_data.get_volume_by_id(vol_id).await?;
 
             for cap in vol_caps {
                 if !cap.has_mount() && !cap.has_block() {
-                    return Err((
-                        RpcStatusCode::INVALID_ARGUMENT,
-                        anyhow!("cannot have neither mount nor block access type undefined"),
-                    ));
+                    return Err(ArgumentInvalid {
+                        context: vec![
+                            "cannot have neither mount nor block access type undefined".to_string()
+                        ],
+                    });
                 }
                 if cap.has_block() {
-                    return Err((
-                        RpcStatusCode::INVALID_ARGUMENT,
-                        anyhow!("access type block is not supported"),
-                    ));
+                    return Err(ArgumentInvalid {
+                        context: vec!["access type block is not supported".to_string()],
+                    });
                 }
                 // TODO: a real driver would check the capabilities of the given volume with
                 // the set of requested capabilities.
@@ -603,10 +546,9 @@ impl Controller for ControllerImpl {
         let task = async move {
             let rpc_type = ControllerServiceCapability_RPC_Type::LIST_VOLUMES;
             if !self_inner.validate_request_capability(rpc_type) {
-                return Err((
-                    RpcStatusCode::INVALID_ARGUMENT,
-                    anyhow!(format!("unsupported capability {:?}", rpc_type)),
-                ));
+                return Err(ArgumentInvalid {
+                    context: vec![format!("unsupported capability {:?}", rpc_type)],
+                });
             }
 
             let max_entries = req.get_max_entries();
@@ -617,20 +559,13 @@ impl Controller for ControllerImpl {
                 .await;
             let (vol_vec, next_pos) = match list_res {
                 Ok((vol_vec, next_pos)) => (vol_vec, next_pos),
-                Err((rpc_status_code, e)) => {
-                    debug_assert_ne!(
-                        rpc_status_code,
-                        RpcStatusCode::OK,
-                        "the RpcStatusCode should not be OK when error",
-                    );
+                Err(e) => {
                     warn!(
                         "failed to list volumes from starting position={} and \
                             max entries={}, the error is: {}",
-                        starting_token,
-                        max_entries,
-                        util::format_anyhow_error(&e),
+                        starting_token, max_entries, e,
                     );
-                    return Err((rpc_status_code, e));
+                    return Err(e);
                 }
             };
             let list_size = vol_vec.len();
@@ -652,7 +587,9 @@ impl Controller for ControllerImpl {
         debug!("get_capacity request: {:?}", req);
 
         util::spawn_grpc_task(sink, async {
-            Err((RpcStatusCode::UNIMPLEMENTED, anyhow!("unimplemented")))
+            Err(Unimplemented {
+                context: vec!["unimplemented".to_string()],
+            })
         });
     }
 
@@ -681,86 +618,64 @@ impl Controller for ControllerImpl {
         let task = async move {
             let rpc_type = ControllerServiceCapability_RPC_Type::CREATE_DELETE_SNAPSHOT;
             if !self_inner.validate_request_capability(rpc_type) {
-                return Err((
-                    RpcStatusCode::INVALID_ARGUMENT,
-                    anyhow!(format!("unsupported capability {:?}", rpc_type)),
-                ));
+                return Err(ArgumentInvalid {
+                    context: vec![format!("unsupported capability {:?}", rpc_type)],
+                });
             }
 
             let snap_name = req.get_name();
             if snap_name.is_empty() {
-                return Err((
-                    RpcStatusCode::INVALID_ARGUMENT,
-                    anyhow!("name missing in request"),
-                ));
+                return Err(ArgumentInvalid {
+                    context: vec!["name missing in request".to_string()],
+                });
             }
             // Check source volume exists
             let src_vol_id = req.get_source_volume_id();
             if src_vol_id.is_empty() {
-                return Err((
-                    RpcStatusCode::INVALID_ARGUMENT,
-                    anyhow!("source volume ID missing in request"),
-                ));
+                return Err(ArgumentInvalid {
+                    context: vec!["source volume ID missing in request".to_string()],
+                });
             }
 
-            let find_res = self_inner.find_existing_snapshot(&req).await;
-            match find_res {
-                Ok(resp_opt) => {
-                    if let Some(resp) = resp_opt {
-                        info!(
-                            "find existing snapshot ID={} and name={}",
-                            resp.get_snapshot().get_snapshot_id(),
-                            snap_name,
-                        );
-                        return Ok(resp);
-                    } else {
+            match self_inner.find_existing_snapshot(&req).await {
+                Ok(resp) => {
+                    info!(
+                        "find existing snapshot ID={} and name={}",
+                        resp.get_snapshot().get_snapshot_id(),
+                        snap_name,
+                    );
+                    return Ok(resp);
+                }
+                Err(e) => {
+                    if let SnapshotNotFound { .. } = e {
                         debug!("no snapshot name={} found", snap_name);
+                    } else {
+                        debug!(
+                            "failed to find existing snapshot name={}, the error is: {}",
+                            snap_name, e,
+                        );
+                        return Err(e);
                     }
                 }
-                Err((rpc_status_code, e)) => {
-                    debug!(
-                        "failed to find existing snapshot name={}, the error is: {}",
-                        snap_name,
-                        util::format_anyhow_error(&e),
-                    );
-                    return Err((rpc_status_code, e));
-                }
             }
 
-            match self_inner.meta_data.get_volume_by_id(src_vol_id).await {
-                Some(src_vol) => {
-                    let node_res = self_inner.meta_data.get_node_by_id(&src_vol.node_id).await;
-                    if let Some(node) = node_res {
-                        let client = MetaData::build_worker_client(&node);
-                        let create_res = client
-                            .worker_create_snapshot_async(&req)
-                            .map_err(|e| (RpcStatusCode::INTERNAL, anyhow::Error::new(e)))?
-                            .await
-                            .context(format!(
+            let src_vol = self_inner.meta_data.get_volume_by_id(src_vol_id).await?;
+            match self_inner.meta_data.get_node_by_id(&src_vol.node_id).await {
+                Ok(node) => {
+                    let client = MetaData::build_worker_client(&node);
+                    client
+                        .worker_create_snapshot_async(&req)?
+                        .await
+                        .with_context(|| {
+                            format!(
                                 "failed to create snapshot name={} on node ID={}",
                                 snap_name, src_vol.node_id,
-                            ));
-                        match create_res {
-                            Ok(r) => return Ok(r),
-                            Err(e) => return Err((RpcStatusCode::INTERNAL, e)),
-                        }
-                    } else {
-                        warn!("failed to find node ID={} from etcd", src_vol.node_id);
-                        // Should we panic here??????
-                        return Err((
-                            RpcStatusCode::INTERNAL,
-                            anyhow!(format!(
-                                "failed to find node ID={} from etcd",
-                                src_vol.node_id
-                            )),
-                        ));
-                    }
+                            )
+                        })
                 }
-                None => {
-                    return Err((
-                        RpcStatusCode::INTERNAL,
-                        anyhow!(format!("failed to find source volume ID={}", src_vol_id)),
-                    ))
+                Err(e) => {
+                    warn!("failed to find node ID={} from etcd", src_vol.node_id);
+                    Err(e)
                 }
             }
         };
@@ -780,50 +695,57 @@ impl Controller for ControllerImpl {
             // Check arguments
             let snap_id = req.get_snapshot_id();
             if snap_id.is_empty() {
-                return Err((
-                    RpcStatusCode::INVALID_ARGUMENT,
-                    anyhow!("snapshot ID missing in request"),
-                ));
+                return Err(ArgumentInvalid {
+                    context: vec!["snapshot ID missing in request".to_string()],
+                });
             }
 
             let rpc_type = ControllerServiceCapability_RPC_Type::CREATE_DELETE_SNAPSHOT;
             if !self_inner.validate_request_capability(rpc_type) {
-                return Err((
-                    RpcStatusCode::INVALID_ARGUMENT,
-                    anyhow!(format!("unsupported capability {:?}", rpc_type)),
-                ));
+                return Err(ArgumentInvalid {
+                    context: vec![format!("unsupported capability {:?}", rpc_type)],
+                });
             }
 
             // Do not return gRPC error when delete failed for idempotency
-            let snap_res = self_inner.meta_data.get_snapshot_by_id(snap_id).await;
-            if let Some(snap) = snap_res {
-                let node_res = self_inner.meta_data.get_node_by_id(&snap.node_id).await;
-                if let Some(node) = node_res {
-                    let client = MetaData::build_worker_client(&node);
-                    let worker_delete_res = client
-                        .worker_delete_snapshot_async(&req)
-                        .map_err(|e| (RpcStatusCode::INTERNAL, anyhow::Error::new(e)))?
-                        .await
-                        .context(format!(
-                            "failed to delete snapshot ID={} on node ID={}",
-                            snap_id, snap.node_id,
-                        ));
-                    match worker_delete_res {
-                        Ok(_r) => info!("successfully deleted sanpshot ID={}", snap_id),
-                        Err(e) => {
-                            error!(
-                                "failed to delete snapshot ID={} on node ID={}, the error is: {}",
-                                snap_id,
-                                snap.node_id,
-                                util::format_anyhow_error(&e),
-                            );
+            match self_inner.meta_data.get_snapshot_by_id(snap_id).await {
+                Ok(snap) => match self_inner.meta_data.get_node_by_id(&snap.node_id).await {
+                    Ok(node) => {
+                        let client = MetaData::build_worker_client(&node);
+                        let worker_delete_res = client
+                            .worker_delete_snapshot_async(&req)?
+                            .await
+                            .with_context(|| {
+                                format!(
+                                    "failed to delete snapshot ID={} on node ID={}",
+                                    snap_id, snap.node_id,
+                                )
+                            });
+                        match worker_delete_res {
+                            Ok(_r) => info!("successfully deleted sanpshot ID={}", snap_id),
+                            Err(e) => {
+                                error!(
+                                    "failed to delete snapshot ID={} on node ID={}, the error is: {}",
+                                    snap_id,
+                                    snap.node_id,
+                                    e,
+                                );
+                            }
                         }
                     }
-                } else {
-                    warn!("failed to find node ID={} to get work port", snap.node_id);
+                    Err(e) => {
+                        warn!(
+                            "failed to find node ID={} to get work port, the error is: {}",
+                            snap.node_id, e
+                        );
+                    }
+                },
+                Err(e) => {
+                    warn!(
+                        "failed to find snapshot ID={} to delete, the error is: {}",
+                        snap_id, e
+                    );
                 }
-            } else {
-                warn!("failed to find snapshot ID={} to delete", snap_id);
             }
 
             let r = DeleteSnapshotResponse::new();
@@ -844,48 +766,58 @@ impl Controller for ControllerImpl {
         let task = async move {
             let rpc_type = ControllerServiceCapability_RPC_Type::LIST_SNAPSHOTS;
             if !self_inner.validate_request_capability(rpc_type) {
-                return Err((
-                    RpcStatusCode::INVALID_ARGUMENT,
-                    anyhow!(format!("unsupported capability {:?}", rpc_type)),
-                ));
+                return Err(ArgumentInvalid {
+                    context: vec![format!("unsupported capability {:?}", rpc_type)],
+                });
             }
 
             // case 1: snapshot ID is not empty, return snapshots that match the snapshot id.
             let snap_id = req.get_snapshot_id();
             if !snap_id.is_empty() {
-                let snap_res = self_inner.meta_data.get_snapshot_by_id(snap_id).await;
-                if let Some(snap) = snap_res {
-                    let r = ControllerImplInner::add_snapshot_to_list_response(&snap)
-                        .context("failed to generate ListSnapshotsResponse")
-                        .map_err(|e| (RpcStatusCode::INTERNAL, e))?;
-                    return Ok(r);
-                } else {
-                    warn!("failed to list snapshot ID={}", snap_id);
-                    let r = ListSnapshotsResponse::new();
-                    return Ok(r);
+                match self_inner.meta_data.get_snapshot_by_id(snap_id).await {
+                    Ok(snap) => {
+                        let r = ControllerImplInner::add_snapshot_to_list_response(&snap)
+                            .add_context("failed to generate ListSnapshotsResponse")?;
+                        return Ok(r);
+                    }
+                    Err(e) => {
+                        warn!(
+                            "failed to list snapshot ID={}, the error is: {}",
+                            snap_id, e
+                        );
+                        if let SnapshotNotFound { .. } = e {
+                            return Ok(ListSnapshotsResponse::new());
+                        } else {
+                            return Err(e);
+                        }
+                    }
                 }
             }
 
             // case 2: source volume ID is not empty, return snapshots that match the source volume id.
             let src_volume_id = req.get_source_volume_id();
             if !src_volume_id.is_empty() {
-                let snap_res = self_inner
+                match self_inner
                     .meta_data
                     .get_snapshot_by_src_volume_id(src_volume_id)
-                    .await;
-                if let Some(snap) = snap_res {
-                    let r = ControllerImplInner::add_snapshot_to_list_response(&snap)
-                        .context("failed to generate ListSnapshotsResponse")
-                        .map_err(|e| (RpcStatusCode::INTERNAL, e))?;
-
-                    return Ok(r);
-                } else {
-                    warn!(
-                        "failed to list snapshot with source volume ID={}",
-                        src_volume_id,
-                    );
-                    let r = ListSnapshotsResponse::new();
-                    return Ok(r);
+                    .await
+                {
+                    Ok(snap) => {
+                        let r = ControllerImplInner::add_snapshot_to_list_response(&snap)
+                            .add_context("failed to generate ListSnapshotsResponse")?;
+                        return Ok(r);
+                    }
+                    Err(e) => {
+                        warn!(
+                            "failed to list snapshot with source volume ID={}, the error is: {}",
+                            src_volume_id, e,
+                        );
+                        if let SnapshotNotFound { .. } = e {
+                            return Ok(ListSnapshotsResponse::new());
+                        } else {
+                            return Err(e);
+                        }
+                    }
                 }
             }
 
@@ -898,20 +830,13 @@ impl Controller for ControllerImpl {
                 .await;
             let (snap_vec, next_pos) = match list_res {
                 Ok((snap_vec, next_pos)) => (snap_vec, next_pos),
-                Err((rpc_status_code, e)) => {
-                    debug_assert_ne!(
-                        rpc_status_code,
-                        RpcStatusCode::OK,
-                        "the RpcStatusCode should not be OK when error",
-                    );
+                Err(e) => {
                     warn!(
                         "failed to list snapshots from starting position={}, \
                             max entries={}, the error is: {}",
-                        starting_token,
-                        max_entries,
-                        util::format_anyhow_error(&e),
+                        starting_token, max_entries, e,
                     );
-                    return Err((rpc_status_code, e));
+                    return Err(e);
                 }
             };
 
@@ -935,53 +860,43 @@ impl Controller for ControllerImpl {
         let task = async move {
             let vol_id = req.get_volume_id();
             if vol_id.is_empty() {
-                return Err((
-                    RpcStatusCode::INVALID_ARGUMENT,
-                    anyhow!("volume ID not provided"),
-                ));
+                return Err(ArgumentInvalid {
+                    context: vec!["volume ID is not provided".to_string()],
+                });
             }
 
             if !req.has_capacity_range() {
-                return Err((
-                    RpcStatusCode::INVALID_ARGUMENT,
-                    anyhow!("capacity range not provided"),
-                ));
+                return Err(ArgumentInvalid {
+                    context: vec!["capacity range not provided".to_string()],
+                });
             }
             let cap_range = req.get_capacity_range();
             let capacity = cap_range.get_required_bytes();
             if capacity > util::MAX_VOLUME_STORAGE_CAPACITY {
-                return Err((
-                    RpcStatusCode::OUT_OF_RANGE,
-                    anyhow!(format!(
-                        "requested capacity {} exceeds maximum allowed {}",
+                return Err(ArgumentOutOfRange {
+                    context: vec![format!(
+                        "requested size {} exceeds maximum allowed {}",
                         capacity,
                         util::MAX_VOLUME_STORAGE_CAPACITY,
-                    )),
-                ));
+                    )],
+                });
             }
 
-            let mut ex_vol = self_inner.meta_data.get_volume_by_id(vol_id).await.ok_or((
-                // Assume not found error
-                RpcStatusCode::NOT_FOUND,
-                anyhow!(format!("failed to find volume ID={}", vol_id)),
-            ))?;
+            let mut ex_vol = self_inner.meta_data.get_volume_by_id(vol_id).await?;
 
             match ex_vol.get_size().cmp(&capacity) {
                 Ordering::Less => {
                     let expand_res = self_inner.meta_data.expand(&mut ex_vol, capacity).await;
                     if let Err(e) = expand_res {
-                        panic!(
-                            "failed to expand volume ID={}, the error is: {}",
-                            vol_id,
-                            util::format_anyhow_error(&e),
-                        );
+                        panic!("failed to expand volume ID={}, the error is: {}", vol_id, e,);
                     }
                 }
                 Ordering::Greater => {
-                    return Err((RpcStatusCode::INVALID_ARGUMENT, anyhow!(format!(
+                    return Err(ArgumentInvalid {
+                        context: vec![format!(
                         "capacity={} to expand in request is smaller than the size={} of volume ID={}",
                         capacity, ex_vol.get_size(), vol_id,
-                    ))));
+                    )]});
                 }
                 Ordering::Equal => {
                     debug!("capacity equals to volume size, no need to expand");
@@ -1005,7 +920,9 @@ impl Controller for ControllerImpl {
         debug!("controller_get_volume request: {:?}", req);
 
         util::spawn_grpc_task(sink, async {
-            Err((RpcStatusCode::UNIMPLEMENTED, anyhow!("unimplemented")))
+            Err(Unimplemented {
+                context: vec!["unimplemented".to_string()],
+            })
         });
     }
 }

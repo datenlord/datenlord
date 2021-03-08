@@ -1,7 +1,6 @@
 //! The implementation for `DatenLord` worker service
 
-use anyhow::Context;
-use grpcio::{RpcContext, RpcStatusCode, UnarySink};
+use grpcio::{RpcContext, UnarySink};
 use log::{debug, info};
 use std::sync::Arc;
 use uuid::Uuid;
@@ -11,6 +10,7 @@ use super::csi::{
     DeleteSnapshotRequest, DeleteSnapshotResponse, DeleteVolumeRequest, DeleteVolumeResponse,
 };
 use super::datenlord_worker_grpc::Worker;
+use super::error::{Context, DatenLordResult};
 use super::meta_data::{DatenLordVolume, MetaData, VolumeSource};
 use super::util;
 
@@ -48,20 +48,12 @@ impl WorkerImplInner {
         vol_name: &str,
         vol_size: i64,
         content_source: &VolumeSource,
-    ) -> Result<(), (RpcStatusCode, anyhow::Error)> {
+    ) -> DatenLordResult<()> {
         match *content_source {
             VolumeSource::Snapshot(ref source_snapshot_id) => {
                 self.meta_data
-                    .copy_volume_from_snapshot(vol_size, source_snapshot_id, &vol_id.to_string()).await
-                    .map_err(|(rsc, anyhow_err)| {
-                        (
-                            rsc,
-                            anyhow_err.context(format!(
-                                "failed to populate volume ID={} and name={} from source snapshot ID={}",
-                                vol_id, vol_name, source_snapshot_id,
-                            )),
-                        )
-                    })?;
+                    .copy_volume_from_snapshot(vol_size, source_snapshot_id, &vol_id.to_string())
+                    .await?;
                 info!(
                     "successfully populated volume ID={} and name={} \
                         from source snapshot ID={} on node ID={}",
@@ -75,20 +67,7 @@ impl WorkerImplInner {
             VolumeSource::Volume(ref source_volume_id) => {
                 self.meta_data
                     .copy_volume_from_volume(vol_size, source_volume_id, &vol_id.to_string())
-                    .await
-                    .map_err(|(rsc, anyhow_err)| {
-                        (
-                            rsc,
-                            anyhow_err.context(format!(
-                                "failed to populate volume ID={} and name={} \
-                                    from source volume ID={} on node ID={}",
-                                vol_id,
-                                vol_name,
-                                source_volume_id,
-                                self.meta_data.get_node_id(),
-                            )),
-                        )
-                    })?;
+                    .await?;
                 info!(
                     "successfully populated volume ID={} and name={} \
                         from source volume ID={} on node ID={}",
@@ -125,26 +104,19 @@ impl Worker for WorkerImpl {
                 self_inner.meta_data.get_node_id(),
                 &self_inner.meta_data.get_volume_path(&vol_id_str),
             )
-            .context(format!(
-                "failed to create volume ID={} and name={} on node ID={}",
-                vol_id,
-                vol_name,
-                self_inner.meta_data.get_node_id(),
-            ))
-            .map_err(|err| (RpcStatusCode::INTERNAL, err))?;
+            .with_context(|| {
+                format!(
+                    "failed to create volume ID={} and name={} on node ID={}",
+                    vol_id,
+                    vol_name,
+                    self_inner.meta_data.get_node_id(),
+                )
+            })?;
 
             if let Some(ref content_source) = volume.content_source {
                 self_inner
                     .build_volume_from_source(&vol_id_str, vol_name, vol_size, content_source)
-                    .await
-                    .map_err(|(rsc, anyhow_err)| {
-                        let err = anyhow_err.context("failed to create volume from source");
-                        debug!(
-                            "failed to create volume from source, the error is: {}",
-                            util::format_anyhow_error(&err),
-                        );
-                        (rsc, err)
-                    })?;
+                    .await?;
             }
 
             info!(
@@ -189,11 +161,13 @@ impl Worker for WorkerImpl {
                 .meta_data
                 .delete_volume_meta_data(vol_id)
                 .await
-                .context(format!(
-                    "failed to find the volume ID={} to delete on node ID={}",
-                    vol_id,
-                    self_inner.meta_data.get_node_id(),
-                ));
+                .with_context(|| {
+                    format!(
+                        "failed to find the volume ID={} to delete on node ID={}",
+                        vol_id,
+                        self_inner.meta_data.get_node_id(),
+                    )
+                });
             match delete_res {
                 Ok(volume) => {
                     let del_res = volume.delete_directory();
@@ -202,8 +176,8 @@ impl Worker for WorkerImpl {
                         "failed to delete volume ID={} directory on node ID={}, the error is: {}",
                         vol_id,
                         self_inner.meta_data.get_node_id(),
-                        util::format_anyhow_error(&e),
-                    );
+                        e,
+                        );
                     }
                     debug!(
                         "successfully delete volume ID={} on node ID={}",
@@ -213,7 +187,7 @@ impl Worker for WorkerImpl {
                     let r = DeleteVolumeResponse::new();
                     Ok(r)
                 }
-                Err(e) => Err((RpcStatusCode::NOT_FOUND, e)),
+                Err(e) => Err(e),
             }
         };
         util::spawn_grpc_task(sink, task);
@@ -239,10 +213,12 @@ impl Worker for WorkerImpl {
                 .meta_data
                 .build_snapshot_from_volume(src_volume_id, &snap_id_str, snap_name)
                 .await
-                .context(format!(
-                    "failed to create snapshot ID={} on node ID={}",
-                    snap_id_str, node_id,
-                ));
+                .with_context(|| {
+                    format!(
+                        "failed to create snapshot ID={} on node ID={}",
+                        snap_id_str, node_id,
+                    )
+                });
             match build_snap_res {
                 Ok(snapshot) => {
                     let build_resp_res = util::build_create_snapshot_response(
@@ -251,10 +227,12 @@ impl Worker for WorkerImpl {
                         &snapshot.creation_time,
                         snapshot.size_bytes,
                     )
-                    .context(format!(
-                        "failed to build CreateSnapshotResponse on node ID={}",
-                        node_id,
-                    ));
+                    .with_context(|| {
+                        format!(
+                            "failed to build CreateSnapshotResponse on node ID={}",
+                            node_id,
+                        )
+                    });
                     match build_resp_res {
                         Ok(r) => {
                             let add_res = self_inner
@@ -262,11 +240,11 @@ impl Worker for WorkerImpl {
                                 .add_snapshot_meta_data(&snap_id_str, &snapshot)
                                 .await;
                             debug_assert!(
-                            add_res.is_ok(),
-                            "snapshot with the same ID={} exists on node ID={}, impossible case",
-                            snap_id,
-                            node_id,
-                        );
+                                add_res.is_ok(),
+                                "snapshot with the same ID={} exists on node ID={}, impossible case",
+                                snap_id,
+                                node_id,
+                            );
                             info!(
                                 "create snapshot ID={} and name={} on node ID={}",
                                 snap_id,
@@ -275,10 +253,10 @@ impl Worker for WorkerImpl {
                             );
                             Ok(r)
                         }
-                        Err(e) => Err((RpcStatusCode::INTERNAL, e)),
+                        Err(e) => Err(e),
                     }
                 }
-                Err(e) => Err((RpcStatusCode::INTERNAL, e)),
+                Err(e) => Err(e),
             }
         };
         util::spawn_grpc_task(sink, task);
@@ -299,11 +277,13 @@ impl Worker for WorkerImpl {
                 .meta_data
                 .delete_snapshot_meta_data(snap_id)
                 .await
-                .context(format!(
-                    "failed to find the snapshot ID={} to delete on node ID={}",
-                    snap_id,
-                    self_inner.meta_data.get_node_id(),
-                ));
+                .with_context(|| {
+                    format!(
+                        "failed to find the snapshot ID={} to delete on node ID={}",
+                        snap_id,
+                        self_inner.meta_data.get_node_id(),
+                    )
+                });
             match delete_res {
                 Ok(snapshot) => {
                     let del_res = snapshot.delete_file();
@@ -312,7 +292,7 @@ impl Worker for WorkerImpl {
                             "failed to delete snapshot ID={} file on node ID={}, the error is: {}",
                             snap_id,
                             self_inner.meta_data.get_node_id(),
-                            util::format_anyhow_error(&e),
+                            e,
                         );
                     }
                     debug!(
@@ -323,7 +303,7 @@ impl Worker for WorkerImpl {
                     let r = DeleteSnapshotResponse::new();
                     Ok(r)
                 }
-                Err(e) => Err((RpcStatusCode::NOT_FOUND, e)),
+                Err(e) => Err(e),
             }
         };
         util::spawn_grpc_task(sink, task);
