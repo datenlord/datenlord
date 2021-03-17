@@ -3,6 +3,12 @@ name = "common"
 version = "0.1.0"
 authors = ["Jicheng Shi <jicheng.shi@datenlord.io>"]
 edition = "2018"
+description = "Common module used by fuse and csi"
+repository = "https://github.com/datenlord/datenlord"
+readme = "README.md"
+license = "MIT"
+keywords = ["Storage"]
+categories = ["utils"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -11,7 +17,7 @@ async-compat = "0.2.0"
 log = "0.4.11"
 env_logger = "0.8.1"
 serde = { version = "1.0", features = ["derive"] }
-etcd-client = { git = "https://github.com/rogercloud/etcd-client", rev="5f92235" }
+etcd-client = { git="https://github.com/datenlord/etcd-client", rev = "ee58108"}
 smol = { version = "1.2.5" }
 grpcio = { version = "0.8.0", default-features = false, features = ["protobuf-codec"] }
 thiserror = "1.0"

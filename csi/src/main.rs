@@ -546,10 +546,7 @@ fn main() -> DatenLordResult<()> {
 
 #[cfg(test)]
 mod test {
-    use super::error::Context;
     use super::util;
-    use super::util;
-    use super::*;
     use super::*;
     use common::error::Context;
     use csi::{
