@@ -152,3 +152,54 @@ pub fn nix_to_io_error(err: nix::Error) -> io::Error {
         }
     }
 }
+
+/// Converts [`u32`] to [`usize`]
+#[allow(clippy::missing_const_for_fn)] // <- false positive
+#[inline]
+#[must_use]
+pub fn u32_to_usize(x: u32) -> usize {
+    #[allow(clippy::as_conversions)]
+    #[cfg(not(target_pointer_width = "16"))]
+    {
+        x as usize
+    }
+    #[cfg(target_pointer_width = "16")]
+    {
+        use std::convert::TryInto;
+        x.try_into().expect("number cast failed")
+    }
+}
+
+/// Converts [`usize`] to [`u64`]
+#[allow(clippy::missing_const_for_fn)] // <- false positive
+#[inline]
+#[must_use]
+pub fn usize_to_u64(x: usize) -> u64 {
+    #[allow(clippy::as_conversions)]
+    #[cfg(not(target_pointer_width = "128"))]
+    {
+        x as u64
+    }
+    #[cfg(target_pointer_width = "128")]
+    {
+        use std::convert::TryInto;
+        x.try_into().expect("number cast failed")
+    }
+}
+
+/// Converts [`u64`] to [`*const ()`]
+#[allow(clippy::missing_const_for_fn)] // <- false positive
+#[inline]
+#[must_use]
+pub fn u64_to_ptr(x: u64) -> *const () {
+    #[allow(clippy::as_conversions)]
+    #[cfg(not(any(target_pointer_width = "16", target_pointer_width = "32")))]
+    {
+        x as *const ()
+    }
+    #[cfg(any(target_pointer_width = "16", target_pointer_width = "32"))]
+    {
+        use std::convert::TryInto;
+        x.try_into().expect("number cast failed")
+    }
+}
