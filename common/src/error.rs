@@ -111,11 +111,11 @@ pub enum DatenLordError {
         context: Vec<String>,
     },
 
-    /// Error caused by etcd_client::Error,
+    /// Error caused by etcd_client::EtcdError,
     #[error("EtcdClientErr, the error is {:?}, context is {:#?}", .source, .context)]
     EtcdClientErr {
         /// Error source
-        source: etcd_client::Error,
+        source: etcd_client::EtcdError,
         /// Context of the error
         context: Vec<String>,
     },
@@ -285,7 +285,7 @@ macro_rules! implement_from {
 implement_from!(std::io::Error, IoErr);
 implement_from!(walkdir::Error, WalkdirErr);
 implement_from!(std::path::StripPrefixError, StripPrefixErr);
-implement_from!(etcd_client::Error, EtcdClientErr);
+implement_from!(etcd_client::EtcdError, EtcdClientErr);
 implement_from!(bincode::Error, BincodeErr);
 implement_from!(nix::Error, NixErr);
 implement_from!(std::time::SystemTimeError, SystemTimeErr);
