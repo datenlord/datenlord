@@ -43,6 +43,7 @@ use log::debug;
 
 mod fuse;
 mod memfs;
+pub mod proactor;
 pub mod util;
 use fuse::session::Session;
 
