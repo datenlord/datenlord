@@ -35,6 +35,7 @@ use crate::fuse::fuse_request::Request;
 use crate::fuse::protocol::{FuseAttr, INum, FUSE_ROOT_ID};
 use crate::util;
 
+mod cache;
 mod dir;
 mod fs_util;
 mod node;
