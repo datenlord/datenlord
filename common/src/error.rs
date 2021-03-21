@@ -176,6 +176,15 @@ pub enum DatenLordError {
         context: Vec<String>,
     },
 
+    /// Error caused by serde_json::Error
+    #[error("serde_json::Error, the error is {:?}, context is {:#?}", .source, .context)]
+    SerdeJsonErr {
+        /// Error source
+        source: serde_json::Error,
+        /// Context of the error
+        context: Vec<String>,
+    },
+
     /// API is not implemented
     #[error("Not implemented, context is {:#?}", .context)]
     Unimplemented {
@@ -255,6 +264,7 @@ impl DatenLordError {
                 UmountErr,
                 SystemTimeErr,
                 GrpcioErr,
+                SerdeJsonErr,
                 Unimplemented
             ]
         );
@@ -290,6 +300,7 @@ implement_from!(bincode::Error, BincodeErr);
 implement_from!(nix::Error, NixErr);
 implement_from!(std::time::SystemTimeError, SystemTimeErr);
 implement_from!(grpcio::Error, GrpcioErr);
+implement_from!(serde_json::Error, SerdeJsonErr);
 
 impl From<DatenLordError> for RpcStatusCode {
     fn from(error: DatenLordError) -> Self {
@@ -302,6 +313,7 @@ impl From<DatenLordError> for RpcStatusCode {
             | DatenLordError::MountErr { .. }
             | DatenLordError::UmountErr { .. }
             | DatenLordError::SystemTimeErr { .. }
+            | DatenLordError::SerdeJsonErr { .. }
             | DatenLordError::WalkdirErr { .. } => Self::INTERNAL,
             DatenLordError::GrpcioErr { source, .. } => match source {
                 grpcio::Error::RpcFailure(ref s) => s.status,

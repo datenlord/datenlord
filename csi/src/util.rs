@@ -64,6 +64,8 @@ pub enum RunAsRole {
     Controller,
     /// Run node service only
     Node,
+    /// Run scheduler extender only
+    SchedulerExtender,
 }
 
 /// The bind mount mode of a volume

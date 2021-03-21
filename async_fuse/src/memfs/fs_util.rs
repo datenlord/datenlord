@@ -303,6 +303,6 @@ pub async fn load_file_data(fd: RawFd, file_size: usize) -> anyhow::Result<Vec<u
         Ok::<Vec<u8>, anyhow::Error>(file_data_vec)
     })
     .await?;
-    debug_assert_eq!(file_data_vec.len(), file_size.cast());
+    debug_assert_eq!(file_data_vec.len(), file_size.cast::<usize>());
     Ok(file_data_vec)
 }

@@ -1377,7 +1377,10 @@ impl FileSystem for MemFs {
             let previous_count = node.dec_lookup_count_by(nlookup);
             current_count = node.get_lookup_count();
             debug_assert!(current_count >= 0);
-            debug_assert_eq!(previous_count.overflow_sub(current_count), nlookup.cast()); // assert no race forget
+            debug_assert_eq!(
+                previous_count.overflow_sub(current_count),
+                nlookup.cast::<i64>()
+            ); // assert no race forget
             debug!(
                 "forget() successfully reduced lookup count of ino={} and name={:?} from {} to {}",
                 ino,
