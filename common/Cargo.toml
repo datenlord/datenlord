@@ -17,6 +17,7 @@ async-compat = "0.2.0"
 log = "0.4.11"
 env_logger = "0.8.1"
 serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0.64"
 etcd-client = { git="https://github.com/datenlord/etcd-client", rev = "ee58108"}
 smol = { version = "1.2.5" }
 grpcio = { version = "0.8.0", default-features = false, features = ["protobuf-codec"] }

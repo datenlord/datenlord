@@ -613,7 +613,7 @@ async fn dispatch<'a>(
                 .await
         }
         Operation::Write { arg, data } => {
-            assert_eq!(data.len(), arg.size.cast());
+            assert_eq!(data.len(), arg.size.cast::<usize>());
             let reply = ReplyWrite::new(req.unique(), fd);
             fs.write(
                 req,
@@ -676,7 +676,7 @@ async fn dispatch<'a>(
             const fn get_position(_arg: &FuseSetXAttrIn) -> u32 {
                 0
             }
-            assert!(value.len() == arg.size.cast());
+            assert!(value.len() == arg.size.cast::<usize>());
             let reply = ReplyEmpty::new(req.unique(), fd);
             fs.setxattr(req, name, value, arg.flags, get_position(arg), reply)
                 .await

@@ -86,6 +86,8 @@ pub struct MetaData {
 const CONTROLLER_PREFIX: &str = "controller";
 /// The etcd key prefix to node ID
 const NODE_PREFIX: &str = "node";
+/// The etcd key prefix to scheduler extender
+const SCHEDULER_EXTENDER_PREFIX: &str = "scheduler_extender";
 /// The etcd key prefix to node ID and snapshot ID
 const NODE_SNAPSHOT_PREFIX: &str = "node_snapshot_id";
 /// The etcd key prefix to node ID and volume ID
@@ -129,6 +131,9 @@ impl MetaData {
                 }
                 RunAsRole::Controller => md.register_to_etcd(CONTROLLER_PREFIX).await?,
                 RunAsRole::Node => md.register_to_etcd(NODE_PREFIX).await?,
+                RunAsRole::SchedulerExtender => {
+                    md.register_to_etcd(SCHEDULER_EXTENDER_PREFIX).await?
+                }
             }
 
             Ok(md)
@@ -577,10 +582,13 @@ impl MetaData {
                 if let Some(v) = val {
                     v
                 } else {
-                    debug!("failed to find volume by name={} from etcd", vol_name,);
+                    debug!("volume with name={} is not found in etcd", vol_name,);
                     return Err(VolumeNotFound {
                         volume_id: vol_name.to_string(),
-                        context: vec![format!("Volume name={} is not found in etcd", vol_name)],
+                        context: vec![format!(
+                            "Volume with name={} is not found in etcd",
+                            vol_name
+                        )],
                     });
                 }
             }
