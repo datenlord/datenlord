@@ -184,13 +184,13 @@ fn test_rename_file(mount_dir: &Path) -> anyhow::Result<()> {
     if from_dir.exists() {
         fs::remove_dir_all(&from_dir)?;
     }
-    fs::create_dir(&from_dir)?;
+    fs::create_dir_all(&from_dir)?;
 
     let to_dir = Path::new(&mount_dir).join("to_dir");
     if to_dir.exists() {
         fs::remove_dir_all(&to_dir)?;
     }
-    fs::create_dir(&to_dir)?;
+    fs::create_dir_all(&to_dir)?;
 
     let old_file = from_dir.join("old.txt");
     fs::write(&old_file, FILE_CONTENT)?;
@@ -310,16 +310,16 @@ fn test_rename_dir(mount_dir: &Path) -> anyhow::Result<()> {
     if from_dir.exists() {
         fs::remove_dir_all(&from_dir)?;
     }
-    fs::create_dir(&from_dir)?;
+    fs::create_dir_all(&from_dir)?;
 
     let to_dir = Path::new(&mount_dir).join("to_dir");
     if to_dir.exists() {
         fs::remove_dir_all(&to_dir)?;
     }
-    fs::create_dir(&to_dir)?;
+    fs::create_dir_all(&to_dir)?;
 
     let old_sub_dir = from_dir.join("old_sub");
-    fs::create_dir(&old_sub_dir)?;
+    fs::create_dir_all(&old_sub_dir)?;
     let new_sub_dir = to_dir.join("new_sub");
     fs::rename(&old_sub_dir, &new_sub_dir)?;
 
@@ -346,7 +346,7 @@ fn test_symlink_dir(mount_dir: &Path) -> anyhow::Result<()> {
     if src_dir.exists() {
         fs::remove_dir_all(&src_dir)?;
     }
-    fs::create_dir(&src_dir).context(format!("failed to create directory={:?}", src_dir))?;
+    fs::create_dir_all(&src_dir).context(format!("failed to create directory={:?}", src_dir))?;
 
     let src_file_name = "src.txt";
     let src_path = Path::new(&src_dir).join(src_file_name);
@@ -461,13 +461,13 @@ fn test_bind_mount(fuse_mount_dir: &Path) -> anyhow::Result<()> {
     if from_dir.exists() {
         cleanup_dir(&from_dir).context(format!("failed to cleanup {:?}", from_dir))?;
     }
-    fs::create_dir(&from_dir).context(format!("failed to create {:?}", from_dir))?;
+    fs::create_dir_all(&from_dir).context(format!("failed to create {:?}", from_dir))?;
 
     let target_dir = Path::new("/tmp/bind_target_dir");
     if target_dir.exists() {
         cleanup_dir(target_dir).context(format!("failed to cleanup {:?}", target_dir))?;
     }
-    fs::create_dir(&target_dir).context(format!("failed to create {:?}", from_dir))?;
+    fs::create_dir_all(&target_dir).context(format!("failed to create {:?}", from_dir))?;
 
     nix::mount::mount::<Path, Path, Path, Path>(
         Some(&from_dir),

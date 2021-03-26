@@ -1,6 +1,17 @@
 //! The implementation of user space file system
 
+use std::collections::{BTreeMap, BTreeSet};
+use std::ffi::{OsStr, OsString};
+use std::os::unix::{
+    ffi::OsStringExt,
+    io::{FromRawFd, IntoRawFd, RawFd},
+};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::{Duration, SystemTime};
+
 use anyhow::Context;
+use async_trait::async_trait;
 use log::{debug, warn};
 use nix::errno::Errno;
 use nix::fcntl::OFlag;
@@ -10,16 +21,10 @@ use nix::sys::{
     time::TimeSpec,
 };
 use nix::unistd;
-use std::collections::{BTreeMap, BTreeSet};
-use std::ffi::{OsStr, OsString};
-use std::os::unix::{
-    ffi::OsStringExt,
-    io::{FromRawFd, IntoRawFd, RawFd},
-};
-use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime};
+use smol::lock::Mutex;
 use utilities::{Cast, OverflowArithmetic};
 
+use crate::fuse::file_system::FileSystem;
 #[cfg(target_os = "macos")]
 use crate::fuse::fuse_reply::ReplyXTimes;
 use crate::fuse::fuse_reply::{
@@ -42,9 +47,12 @@ const MY_TTL_SEC: u64 = 3600; // TODO: should be a long value, say 1 hour
 /// The generation ID of FUSE attributes
 const MY_GENERATION: u64 = 1; // TODO: find a proper way to set generation
 
+/// In-memory file system
+pub struct MemFs(Arc<Mutex<MetaData>>);
+
 /// File system in-memory meta-data
 #[derive(Debug)]
-pub struct FileSystem {
+struct MetaData {
     /// The root path and the mount point of the FUSE filesystem
     root_path: PathBuf,
     /// The cache to hold opened directories and files
@@ -144,7 +152,7 @@ pub struct FileLockParam {
     pub pid: u32,
 }
 
-impl FileSystem {
+impl MemFs {
     /// Create `FileSystem`
     pub async fn new(mount_point: &Path) -> anyhow::Result<Self> {
         let root_path = mount_point
@@ -157,18 +165,15 @@ impl FileSystem {
         cache.insert(FUSE_ROOT_ID, root_inode);
         let trash = BTreeSet::new(); // for deferred deletion nodes
 
-        Ok(Self {
+        Ok(Self(Arc::new(Mutex::new(MetaData {
             root_path,
             cache,
             trash,
-        })
+        }))))
     }
+}
 
-    /// Get the root path and the mount point of the FUSE filesystem
-    pub fn get_root_path(&self) -> &Path {
-        &self.root_path
-    }
-
+impl MetaData {
     // FUSE operation helper functions
 
     /// The pre-check before create node
@@ -1178,51 +1183,58 @@ impl FileSystem {
         Ok((attr_changed, attr))
     }
 
-    /// Return ENOSYS for not implemented operations
-    pub async fn not_implement_helper(
-        &mut self,
-        req: &Request<'_>,
-        fd: RawFd,
-    ) -> nix::Result<usize> {
-        let reply = ReplyEmpty::new(req.unique(), fd);
-        reply.error_code(Errno::ENOSYS).await
-    }
+    // /// Return ENOSYS for not implemented operations
+    // pub async fn not_implement_helper(
+    //     &mut self,
+    //     req: &Request<'_>,
+    //     fd: RawFd,
+    // ) -> nix::Result<usize> {
+    //     let reply = ReplyEmpty::new(req.unique(), fd);
+    //     reply.error_code(Errno::ENOSYS).await
+    // }
+}
 
+#[async_trait]
+impl FileSystem for MemFs {
     // Implemented FUSE operations
 
     /// Initialize filesystem.
     /// Called before any other filesystem method.
-    pub fn init(&self, req: &Request<'_>) -> nix::Result<()> {
+    async fn init(&self, req: &Request<'_>) -> nix::Result<()> {
+        let this = self.0.lock().await;
         debug!(
             "init(req={:?}), cache size={}, trash size={}",
             req,
-            self.cache.len(),
-            self.trash.len(),
+            this.cache.len(),
+            this.trash.len(),
         );
         Ok(())
     }
 
     /// Clean up filesystem.
     /// Called on filesystem exit.
-    pub fn destroy(&self, req: &Request<'_>) {
+    async fn destroy(&self, req: &Request<'_>) {
+        let this = self.0.lock().await;
         debug!(
             "destroy(req={:?}), cache size={}, trash size={}",
             req,
-            self.cache.len(),
-            self.trash.len(),
+            this.cache.len(),
+            this.trash.len(),
         );
     }
 
     /// Look up a directory entry by name and get its attributes.
-    pub async fn lookup(
-        &mut self,
+    async fn lookup(
+        &self,
         req: &Request<'_>,
         parent: INum,
         name: &OsStr,
         reply: ReplyEntry,
     ) -> nix::Result<usize> {
+        let mut this = self.0.lock().await;
+
         debug!("lookup(parent={}, name={:?}, req={:?})", parent, name, req,);
-        let pre_check_res = self.lookup_pre_check(parent, name);
+        let pre_check_res = this.lookup_pre_check(parent, name);
         let (ino, child_type) = match pre_check_res {
             Ok((ino, child_type)) => (ino, child_type),
             Err(e) => {
@@ -1233,7 +1245,7 @@ impl FileSystem {
                 return reply.error(e).await;
             }
         };
-        let lookup_res = self.lookup_helper(parent, ino, name, child_type).await;
+        let lookup_res = this.lookup_helper(parent, ino, name, child_type).await;
         match lookup_res {
             Ok((ttl, fuse_attr, generation)) => {
                 debug!(
@@ -1257,11 +1269,13 @@ impl FileSystem {
     }
 
     /// Get file attributes.
-    pub async fn getattr(&mut self, req: &Request<'_>, reply: ReplyAttr) -> nix::Result<usize> {
+    async fn getattr(&self, req: &Request<'_>, reply: ReplyAttr) -> nix::Result<usize> {
+        let this = self.0.lock().await;
+
         let ino = req.nodeid();
         debug!("getattr(ino={}, req={:?})", ino, req);
 
-        let node = self.cache.get(&ino).unwrap_or_else(|| {
+        let node = this.cache.get(&ino).unwrap_or_else(|| {
             panic!(
                 "getattr() found fs is inconsistent, \
                     the i-node of ino={} should be in cache",
@@ -1293,16 +1307,13 @@ impl FileSystem {
     /// anything in fh. There are also some flags (`direct_io`, `keep_cache`) which the
     /// filesystem may set, to change the way the file is opened. See `fuse_file_info`
     /// structure in `fuse_common.h` for more details.
-    pub async fn open(
-        &mut self,
-        req: &Request<'_>,
-        flags: u32,
-        reply: ReplyOpen,
-    ) -> nix::Result<usize> {
+    async fn open(&self, req: &Request<'_>, flags: u32, reply: ReplyOpen) -> nix::Result<usize> {
+        let this = self.0.lock().await;
+
         let ino = req.nodeid();
         debug!("open(ino={}, flags={}, req={:?})", ino, flags, req);
 
-        let node = self.cache.get(&ino).unwrap_or_else(|| {
+        let node = this.cache.get(&ino).unwrap_or_else(|| {
             panic!(
                 "open() found fs is inconsistent, the i-node of ino={} should be in cache",
                 ino,
@@ -1349,12 +1360,14 @@ impl FileSystem {
     /// each forget. The filesystem may ignore forget calls, if the inodes don't need to
     /// have a limited lifetime. On unmount it is not guaranteed, that all referenced
     /// inodes will receive a forget message.
-    pub fn forget(&mut self, req: &Request<'_>, nlookup: u64) {
+    async fn forget(&self, req: &Request<'_>, nlookup: u64) {
+        let mut this = self.0.lock().await;
+
         let ino = req.nodeid();
         debug!("forget(ino={}, nlookup={}, req={:?})", ino, nlookup, req,);
         let current_count: i64;
         {
-            let node = self.cache.get(&ino).unwrap_or_else(|| {
+            let node = this.cache.get(&ino).unwrap_or_else(|| {
                 panic!(
                     "forget() found fs is inconsistent, \
                         the i-node of ino={} should be in cache",
@@ -1376,16 +1389,16 @@ impl FileSystem {
         {
             if current_count == 0 {
                 // TODO: support thread-safe
-                if self.trash.contains(&ino) {
+                if this.trash.contains(&ino) {
                     // deferred deletion
-                    let deleted_node = self.cache.remove(&ino).unwrap_or_else(|| {
+                    let deleted_node = this.cache.remove(&ino).unwrap_or_else(|| {
                         panic!(
                             "forget() found fs is inconsistent, i-node of ino={} \
                                 found in trash, but no i-node found for deferred deletion",
                             ino,
                         );
                     });
-                    self.trash.remove(&ino);
+                    this.trash.remove(&ino);
                     debug_assert_eq!(deleted_node.get_lookup_count(), 0);
                     debug!(
                         "forget() deferred deleted i-node of ino={} and name={:?}",
@@ -1398,12 +1411,13 @@ impl FileSystem {
     }
 
     /// Set file attributes.
-    pub async fn setattr(
-        &mut self,
+    async fn setattr(
+        &self,
         req: &Request<'_>,
         param: SetAttrParam,
         reply: ReplyAttr,
     ) -> nix::Result<usize> {
+        let mut this = self.0.lock().await;
         let ino = req.nodeid();
         let valid = param.valid;
         let fh = param.fh;
@@ -1448,7 +1462,7 @@ impl FileSystem {
             warn!("setattr() enountered valid=0, the req={:?}", req);
         }
 
-        let inode = self.cache.get_mut(&ino).unwrap_or_else(|| {
+        let inode = this.cache.get_mut(&ino).unwrap_or_else(|| {
             panic!(
                 "setattr() found fs is inconsistent, \
                     the i-node of ino={} should be in cache",
@@ -1520,7 +1534,7 @@ impl FileSystem {
         //     // Err(anyhow!("no change to attr"))
         // }
 
-        let set_res = Self::setattr_helper(fd, param, attr).await;
+        let set_res = MetaData::setattr_helper(fd, param, attr).await;
         match set_res {
             Ok((attr_changed, file_attr)) => {
                 if attr_changed {
@@ -1553,8 +1567,8 @@ impl FileSystem {
 
     /// Create file node.
     /// Create a regular file, character device, block device, fifo or socket node.
-    pub async fn mknod(
-        &mut self,
+    async fn mknod(
+        &self,
         req: &Request<'_>,
         parent: INum,
         name: &OsStr,
@@ -1562,12 +1576,14 @@ impl FileSystem {
         rdev: u32,
         reply: ReplyEntry,
     ) -> nix::Result<usize> {
+        let mut this = self.0.lock().await;
+
         debug!(
             "mknod(parent={}, name={:?}, mode={}, rdev={}, req={:?})",
             parent, name, mode, rdev, req,
         );
 
-        let mknod_res = self
+        let mknod_res = this
             .create_node_helper(parent, name.into(), mode, SFlag::S_IFREG, None)
             .await
             .context(format!(
@@ -1591,20 +1607,22 @@ impl FileSystem {
     }
 
     /// Create a directory.
-    pub async fn mkdir(
-        &mut self,
+    async fn mkdir(
+        &self,
         req: &Request<'_>,
         parent: INum,
         name: &OsStr,
         mode: u32,
         reply: ReplyEntry,
     ) -> nix::Result<usize> {
+        let mut this = self.0.lock().await;
+
         debug!(
             "mkdir(parent={}, name={:?}, mode={}, req={:?})",
             parent, name, mode, req,
         );
 
-        let mkdir_res = self
+        let mkdir_res = this
             .create_node_helper(parent, name.into(), mode, SFlag::S_IFDIR, None)
             .await
             .context(format!(
@@ -1628,16 +1646,18 @@ impl FileSystem {
     }
 
     /// Remove a file.
-    pub async fn unlink(
-        &mut self,
+    async fn unlink(
+        &self,
         req: &Request<'_>,
         parent: INum,
         name: &OsStr,
         reply: ReplyEmpty,
     ) -> nix::Result<usize> {
+        let mut this = self.0.lock().await;
+
         debug!("unlink(parent={}, name={:?}, req={:?}", parent, name, req,);
         let entry_type = {
-            let parent_node = self.cache.get(&parent).unwrap_or_else(|| {
+            let parent_node = this.cache.get(&parent).unwrap_or_else(|| {
                 panic!(
                     "unlink() found fs is inconsistent, \
                         parent of ino={} should be in cache before remove its child",
@@ -1662,7 +1682,7 @@ impl FileSystem {
             entry_type
         };
 
-        let unlink_res = self
+        let unlink_res = this
             .remove_node_helper(parent, name.into(), entry_type)
             .await
             .context(format!(
@@ -1685,19 +1705,21 @@ impl FileSystem {
     }
 
     /// Remove a directory.
-    pub async fn rmdir(
-        &mut self,
+    async fn rmdir(
+        &self,
         req: &Request<'_>,
         parent: INum,
         name: &OsStr,
         reply: ReplyEmpty,
     ) -> nix::Result<usize> {
+        let mut this = self.0.lock().await;
+
         let dir_name = OsString::from(name);
         debug!(
             "rmdir(parent={}, name={:?}, req={:?})",
             parent, dir_name, req,
         );
-        let rmdir_res = self
+        let rmdir_res = this
             .remove_node_helper(parent, dir_name, SFlag::S_IFDIR)
             .await
             .context(format!(
@@ -1733,12 +1755,14 @@ impl FileSystem {
     /// instead. If `RENAME_EXCHANGE` is specified, the filesystem
     /// must atomically exchange the two files, i.e. both must
     /// exist and neither may be deleted.
-    pub async fn rename(
-        &mut self,
+    async fn rename(
+        &self,
         req: &Request<'_>,
         param: RenameParam,
         reply: ReplyEmpty,
     ) -> nix::Result<usize> {
+        let mut this = self.0.lock().await;
+
         let old_parent = param.old_parent;
         let old_name = param.old_name;
         let new_parent = param.new_parent;
@@ -1752,7 +1776,7 @@ impl FileSystem {
         let exchange = flags == 2; // RENAME_EXCHANGE
 
         let pre_check_res =
-            self.rename_pre_check(old_parent, &old_name, new_parent, &new_name, no_replace);
+            this.rename_pre_check(old_parent, &old_name, new_parent, &new_name, no_replace);
         let (old_parent_fd, old_entry_ino, new_parent_fd, new_entry_ino) = match pre_check_res {
             Ok((old_parent_fd, old_entry_ino, new_parent_fd, new_entry_ino)) => {
                 (old_parent_fd, old_entry_ino, new_parent_fd, new_entry_ino)
@@ -1776,15 +1800,15 @@ impl FileSystem {
         };
         let rename_res = if let Some(new_ino) = new_entry_ino {
             if exchange {
-                self.rename_exchange_helper(helper_param, new_ino).await
+                this.rename_exchange_helper(helper_param, new_ino).await
             } else {
                 // Rename replace
-                self.rename_may_replace_helper(helper_param, Some(new_ino))
+                this.rename_may_replace_helper(helper_param, Some(new_ino))
                     .await
             }
         } else {
             // No need to replace
-            self.rename_may_replace_helper(
+            this.rename_may_replace_helper(
                 helper_param,
                 None, // new_entry_ino
             )
@@ -1809,14 +1833,15 @@ impl FileSystem {
     /// return value of the read system call will reflect the return value of this
     /// operation. fh will contain the value set by the open method, or will be undefined
     /// if the open method didn't set any value.
-    pub async fn read(
-        &mut self,
+    async fn read(
+        &self,
         req: &Request<'_>,
         fh: u64,
         offset: i64,
         size: u32,
         reply: ReplyData,
     ) -> nix::Result<usize> {
+        let mut this = self.0.lock().await;
         let ino = req.nodeid();
         debug!(
             "read(ino={}, fh={}, offset={}, size={}, req={:?})",
@@ -1828,7 +1853,7 @@ impl FileSystem {
             offset
         );
 
-        let inode = self.cache.get_mut(&ino).unwrap_or_else(|| {
+        let inode = this.cache.get_mut(&ino).unwrap_or_else(|| {
             panic!(
                 "read() found fs is inconsistent, \
                     the i-node of ino={} should be in cache",
@@ -1875,7 +1900,7 @@ impl FileSystem {
         // } else {
         //     panic!("read() cannot read directory data");
         // };
-        match Self::read_helper(file_data, offset.cast(), size.cast()) {
+        match MetaData::read_helper(file_data, offset.cast(), size.cast()) {
             Ok(read_data_vec) => {
                 debug!(
                     "read() successfully read {} bytes from the file of ino={} and name={:?}",
@@ -1903,8 +1928,8 @@ impl FileSystem {
     /// which case the return value of the write system call will reflect the return
     /// value of this operation. fh will contain the value set by the open method, or
     /// will be undefined if the open method did not set any value.
-    pub async fn write(
-        &mut self,
+    async fn write(
+        &self,
         req: &Request<'_>,
         fh: u64,
         offset: i64,
@@ -1912,6 +1937,8 @@ impl FileSystem {
         flags: u32,
         reply: ReplyWrite,
     ) -> nix::Result<usize> {
+        let mut this = self.0.lock().await;
+
         let ino = req.nodeid();
         debug!(
             "write(ino={}, fh={}, offset={}, data-size={}, flags={})",
@@ -1924,7 +1951,7 @@ impl FileSystem {
             // req.request,
         );
 
-        let inode = self.cache.get_mut(&ino).unwrap_or_else(|| {
+        let inode = this.cache.get_mut(&ino).unwrap_or_else(|| {
             panic!(
                 "write() found fs is inconsistent, \
                     the i-node of ino={} should be in cache",
@@ -1973,8 +2000,8 @@ impl FileSystem {
     /// is not forced to flush pending writes. One reason to flush data, is if the
     /// filesystem wants to return write errors. If the filesystem supports file locking
     /// operations (setlk, getlk) it should remove all locks belonging to `lock_owner`.
-    pub async fn flush(
-        &mut self,
+    async fn flush(
+        &self,
         req: &Request<'_>,
         fh: u64,
         lock_owner: u64,
@@ -2026,8 +2053,8 @@ impl FileSystem {
     /// the release. fh will contain the value set by the open method, or will be undefined
     /// if the open method didn't set any value. flags will contain the same flags as for
     /// open.
-    pub async fn release(
-        &mut self,
+    async fn release(
+        &self,
         req: &Request<'_>,
         fh: u64,
         flags: u32, // same as the open flags
@@ -2035,13 +2062,15 @@ impl FileSystem {
         flush: bool,
         reply: ReplyEmpty,
     ) -> nix::Result<usize> {
+        let this = self.0.lock().await;
+
         let ino = req.nodeid();
         debug!(
             "release(ino={}, fh={}, flags={}, lock_owner={}, flush={}, req={:?})",
             ino, fh, flags, lock_owner, flush, req,
         );
         // TODO: handle lock_owner
-        let inode = self.cache.get(&ino).unwrap_or_else(|| {
+        let inode = this.cache.get(&ino).unwrap_or_else(|| {
             panic!(
                 "release() found fs is inconsistent, \
                     the i-node of ino={} should be in cache",
@@ -2092,8 +2121,8 @@ impl FileSystem {
     /// Synchronize file contents.
     /// If the datasync parameter is non-zero, then only the user data should be flushed,
     /// not the meta data.
-    pub async fn fsync(
-        &mut self,
+    async fn fsync(
+        &self,
         req: &Request<'_>,
         fh: u64,
         datasync: bool,
@@ -2104,7 +2133,7 @@ impl FileSystem {
             "fsync(ino={}, fh={}, datasync={}, req={:?})",
             ino, fh, datasync, req,
         );
-        match Self::fsync_helper(ino, fh, datasync).await {
+        match MetaData::fsync_helper(ino, fh, datasync).await {
             Ok(()) => reply.ok().await,
             Err(e) => {
                 debug!(
@@ -2123,16 +2152,13 @@ impl FileSystem {
     /// anything in fh, though that makes it impossible to implement standard conforming
     /// directory stream operations in case the contents of the directory can change
     /// between opendir and releasedir.
-    pub async fn opendir(
-        &mut self,
-        req: &Request<'_>,
-        flags: u32,
-        reply: ReplyOpen,
-    ) -> nix::Result<usize> {
+    async fn opendir(&self, req: &Request<'_>, flags: u32, reply: ReplyOpen) -> nix::Result<usize> {
+        let this = self.0.lock().await;
+
         let ino = req.nodeid();
         debug!("opendir(ino={}, flags={}, req={:?})", ino, flags, req,);
 
-        let inode = self.cache.get(&ino).unwrap_or_else(|| {
+        let inode = this.cache.get(&ino).unwrap_or_else(|| {
             panic!(
                 "opendir() found fs is inconsistent, \
                     the i-node of ino={} should be in cache",
@@ -2171,13 +2197,15 @@ impl FileSystem {
     /// requested size. Send an empty buffer on end of stream. fh will contain the
     /// value set by the opendir method, or will be undefined if the opendir method
     /// didn't set any value.
-    pub async fn readdir(
-        &mut self,
+    async fn readdir(
+        &self,
         req: &Request<'_>,
         fh: u64,
         offset: i64,
         mut reply: ReplyDirectory,
     ) -> nix::Result<usize> {
+        let mut this = self.0.lock().await;
+
         let ino = req.nodeid();
         debug!(
             "readdir(ino={}, fh={}, offset={}, req={:?})",
@@ -2208,7 +2236,7 @@ impl FileSystem {
             num_child_entries
         };
 
-        let inode = self.cache.get_mut(&ino).unwrap_or_else(|| {
+        let inode = this.cache.get_mut(&ino).unwrap_or_else(|| {
             panic!(
                 "readdir() found fs is inconsistent, \
                     the i-node of ino={} should be in cache",
@@ -2243,20 +2271,22 @@ impl FileSystem {
     /// For every opendir call there will be exactly one releasedir call. fh will
     /// contain the value set by the opendir method, or will be undefined if the
     /// opendir method didn't set any value.
-    pub async fn releasedir(
-        &mut self,
+    async fn releasedir(
+        &self,
         req: &Request<'_>,
         fh: u64,
         flags: u32,
         reply: ReplyEmpty,
     ) -> nix::Result<usize> {
+        let this = self.0.lock().await;
+
         let ino = req.nodeid();
         debug!(
             "releasedir(ino={}, fh={}, flags={}, req={:?})",
             ino, fh, flags, req,
         );
         // TODO: handle flags
-        let inode = self.cache.get(&ino).unwrap_or_else(|| {
+        let inode = this.cache.get(&ino).unwrap_or_else(|| {
             panic!(
                 "releasedir() found fs is inconsistent, \
                     the i-node of ino={} should be in cache",
@@ -2291,8 +2321,8 @@ impl FileSystem {
     /// If the datasync parameter is set, then only the directory contents should
     /// be flushed, not the meta data. fh will contain the value set by the opendir
     /// method, or will be undefined if the opendir method didn't set any value.
-    pub async fn fsyncdir(
-        &mut self,
+    async fn fsyncdir(
+        &self,
         req: &Request<'_>,
         fh: u64,
         datasync: bool,
@@ -2304,7 +2334,7 @@ impl FileSystem {
             ino, fh, datasync, req,
         );
         // Self::fsync_helper(ino, fh, datasync, reply).await
-        match Self::fsync_helper(ino, fh, datasync).await {
+        match MetaData::fsync_helper(ino, fh, datasync).await {
             Ok(()) => reply.ok().await,
             Err(e) => {
                 debug!(
@@ -2318,7 +2348,9 @@ impl FileSystem {
 
     /// Get file system statistics.
     /// The `f_favail`, `f_fsid` and `f_flag` fields are ignored
-    pub async fn statfs(&mut self, req: &Request<'_>, reply: ReplyStatFs) -> nix::Result<usize> {
+    async fn statfs(&self, req: &Request<'_>, reply: ReplyStatFs) -> nix::Result<usize> {
+        let this = self.0.lock().await;
+
         let ino = if req.nodeid() == 0 {
             FUSE_ROOT_ID
         } else {
@@ -2326,7 +2358,7 @@ impl FileSystem {
         };
         debug!("statfs(ino={}, req={:?})", ino, req);
 
-        let inode = self.cache.get(&ino).unwrap_or_else(|| {
+        let inode = this.cache.get(&ino).unwrap_or_else(|| {
             panic!(
                 "statfs() found fs is inconsistent, \
                     the i-node of ino={} should be in cache",
@@ -2378,10 +2410,12 @@ impl FileSystem {
     }
 
     /// Read symbolic link.
-    pub async fn readlink(&mut self, req: &Request<'_>, reply: ReplyData) -> nix::Result<usize> {
+    async fn readlink(&self, req: &Request<'_>, reply: ReplyData) -> nix::Result<usize> {
+        let this = self.0.lock().await;
+
         let ino = req.nodeid();
         debug!("readlink(ino={}, req={:?})", ino, req,);
-        let symlink_node = self.cache.get(&ino).unwrap_or_else(|| {
+        let symlink_node = this.cache.get(&ino).unwrap_or_else(|| {
             panic!(
                 "readlink() found fs is inconsistent, \
                     the symlink i-node of ino={} should be in cache",
@@ -2400,19 +2434,21 @@ impl FileSystem {
     }
 
     /// Create a symbolic link.
-    pub async fn symlink(
-        &mut self,
+    async fn symlink(
+        &self,
         req: &Request<'_>,
         parent: INum,
         name: &OsStr,
         target_path: &Path,
         reply: ReplyEntry,
     ) -> nix::Result<usize> {
+        let mut this = self.0.lock().await;
+
         debug!(
             "symlink(parent={}, name={:?}, target_path={:?}, req={:?})",
             parent, name, target_path, req
         );
-        let symlink_res = self.create_node_helper(
+        let symlink_res = this.create_node_helper(
             parent,
             name.to_owned(),
             0o777, // Symbolic links have no permissions
@@ -2443,12 +2479,14 @@ impl FileSystem {
     // Un-implemented FUSE operations
 
     /// Interrupt another FUSE request
-    pub fn interrupt(&self, req: &Request<'_>, unique: u64) {
+    async fn interrupt(&self, req: &Request<'_>, unique: u64) {
+        let this = self.0.lock().await;
+
         debug!(
             "interrupt(req={:?}), cache size={}, trash size={}",
             req,
-            self.cache.len(),
-            self.trash.len(),
+            this.cache.len(),
+            this.trash.len(),
         );
         // TODO: handle FUSE_INTERRUPT
         warn!(
@@ -2458,8 +2496,8 @@ impl FileSystem {
     }
 
     /// Create a hard link.
-    pub async fn link(
-        &mut self,
+    async fn link(
+        &self,
         _req: &Request<'_>,
         _newparent: u64,
         _newname: &OsStr,
@@ -2469,8 +2507,8 @@ impl FileSystem {
     }
 
     /// Set an extended attribute.
-    pub async fn setxattr(
-        &mut self,
+    async fn setxattr(
+        &self,
         _req: &Request<'_>,
         _name: &OsStr,
         _value: &[u8],
@@ -2485,8 +2523,8 @@ impl FileSystem {
     /// If `size` is 0, the size of the value should be sent with `reply.size()`.
     /// If `size` is not 0, and the value fits, send it with `reply.data()`, or
     /// `reply.error(ERANGE)` if it doesn't.
-    pub async fn getxattr(
-        &mut self,
+    async fn getxattr(
+        &self,
         _req: &Request<'_>,
         _name: &OsStr,
         _size: u32,
@@ -2499,8 +2537,8 @@ impl FileSystem {
     /// If `size` is 0, the size of the value should be sent with `reply.size()`.
     /// If `size` is not 0, and the value fits, send it with `reply.data()`, or
     /// `reply.error(ERANGE)` if it doesn't.
-    pub async fn listxattr(
-        &mut self,
+    async fn listxattr(
+        &self,
         _req: &Request<'_>,
         _size: u32,
         reply: ReplyXAttr,
@@ -2509,8 +2547,8 @@ impl FileSystem {
     }
 
     /// Remove an extended attribute.
-    pub async fn removexattr(
-        &mut self,
+    async fn removexattr(
+        &self,
         _req: &Request<'_>,
         _name: &OsStr,
         reply: ReplyEmpty,
@@ -2522,8 +2560,8 @@ impl FileSystem {
     /// This will be called for the `access()` system call. If the `default_permissions`
     /// mount option is given, this method is not called. This method is not called
     /// under Linux kernel versions 2.4.x
-    pub async fn access(
-        &mut self,
+    async fn access(
+        &self,
         _req: &Request<'_>,
         _mask: u32,
         reply: ReplyEmpty,
@@ -2541,8 +2579,8 @@ impl FileSystem {
     /// structure in `fuse_common.h` for more details. If this method is not
     /// implemented or under Linux kernel versions earlier than 2.6.15, the mknod()
     /// and open() methods will be called instead.
-    pub async fn create(
-        &mut self,
+    async fn create(
+        &self,
         _req: &Request<'_>,
         _parent: u64,
         _name: &OsStr,
@@ -2554,8 +2592,8 @@ impl FileSystem {
     }
 
     /// Test for a POSIX file lock.
-    pub async fn getlk(
-        &mut self,
+    async fn getlk(
+        &self,
         _req: &Request<'_>,
         _lk_param: FileLockParam,
         reply: ReplyLock,
@@ -2570,8 +2608,8 @@ impl FileSystem {
     /// used to fill in this field in `getlk()`. Note: if the locking methods are not
     /// implemented, the kernel will still allow file locking to work locally.
     /// Hence these are only interesting for network filesystems and similar.
-    pub async fn setlk(
-        &mut self,
+    async fn setlk(
+        &self,
         _req: &Request<'_>,
         _lk_param: FileLockParam,
         _sleep: bool,
@@ -2583,8 +2621,8 @@ impl FileSystem {
     /// Map block index within file to block index within device.
     /// Note: This makes sense only for block device backed filesystems mounted
     /// with the `blkdev` option
-    pub async fn bmap(
-        &mut self,
+    async fn bmap(
+        &self,
         _req: &Request<'_>,
         _blocksize: u32,
         _idx: u64,
@@ -2596,8 +2634,8 @@ impl FileSystem {
     /// macOS only: Rename the volume. Set `fuse_init_out.flags` during init to
     /// `FUSE_VOL_RENAME` to enable
     #[cfg(target_os = "macos")]
-    pub async fn setvolname(
-        &mut self,
+    async fn setvolname(
+        &self,
         _req: &Request<'_>,
         _name: &OsStr,
         reply: ReplyEmpty,
@@ -2607,8 +2645,8 @@ impl FileSystem {
 
     /// macOS only: Rename exchange
     #[cfg(target_os = "macos")]
-    pub async fn exchange(
-        &mut self,
+    async fn exchange(
+        &self,
         _req: &Request<'_>,
         _param: RenameParam,
         reply: ReplyEmpty,
@@ -2619,11 +2657,7 @@ impl FileSystem {
     /// macOS only: Query extended times (`bkuptime` and `crtime`). Set `fuse_init_out.flags`
     /// during init to `FUSE_XTIMES` to enable
     #[cfg(target_os = "macos")]
-    pub async fn getxtimes(
-        &mut self,
-        _req: &Request<'_>,
-        reply: ReplyXTimes,
-    ) -> nix::Result<usize> {
+    async fn getxtimes(&self, _req: &Request<'_>, reply: ReplyXTimes) -> nix::Result<usize> {
         reply.error_code(Errno::ENOSYS).await
     }
 }

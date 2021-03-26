@@ -450,7 +450,10 @@ pub const FUSE_POLL_SCHEDULE_NOTIFY: u32 = 1 << 0;
 pub const FUSE_FSYNC_FDATASYNC: u32 = 1 << 0;
 
 /// FUSE operation code `fuse_opcode`
-#[allow(non_camel_case_types)]
+#[allow(
+    non_camel_case_types,
+    // clippy::upper_case_acronyms,
+)]
 #[derive(Debug)]
 #[non_exhaustive]
 #[repr(C)]
@@ -572,7 +575,10 @@ pub enum FuseOpCode {
 
 /// FUSE nofity code `fuse_notify_code`
 #[allow(dead_code)]
-#[allow(non_camel_case_types)]
+#[allow(
+    non_camel_case_types,
+    // clippy::upper_case_acronyms,
+)]
 #[cfg(feature = "abi-7-11")]
 #[derive(Debug)]
 #[repr(C)]

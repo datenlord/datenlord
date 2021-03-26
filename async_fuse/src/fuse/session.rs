@@ -1,29 +1,11 @@
 //! The implementation of FUSE session
 
-use aligned_utils::bytes::AlignedBytes;
-use anyhow::{anyhow, Context};
-use crossbeam_channel::{Receiver, Sender};
-use crossbeam_utils::atomic::AtomicCell;
-use futures::lock::Mutex;
-use log::{debug, error, info, warn};
-use nix::errno::Errno;
-use nix::unistd;
-use std::os::unix::io::RawFd;
-use std::path::Path;
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    Arc,
-};
-#[cfg(target_os = "macos")]
-use std::time::SystemTime;
-use std::time::{Duration, UNIX_EPOCH};
-use utilities::Cast;
-
 use super::context::ProtoVersion;
-use crate::memfs::{FileLockParam, FileSystem, RenameParam, SetAttrParam};
+use super::file_system::FileSystem;
+use crate::memfs::{FileLockParam, RenameParam, SetAttrParam};
 //use super::channel::Channel;
-#[cfg(target_os = "macos")]
-use super::fuse_reply::ReplyXTimes;
+// #[cfg(target_os = "macos")]
+// use super::fuse_reply::ReplyXTimes;
 use super::fuse_reply::{
     ReplyAttr, ReplyBMap, ReplyCreate, ReplyData, ReplyDirectory, ReplyEmpty, ReplyEntry,
     ReplyInit, ReplyLock, ReplyOpen, ReplyStatFs, ReplyWrite, ReplyXAttr,
@@ -39,11 +21,28 @@ use super::protocol::{
     FATTR_MTIME, FATTR_SIZE, FATTR_UID, FUSE_ASYNC_READ, FUSE_KERNEL_MINOR_VERSION,
     FUSE_KERNEL_VERSION, FUSE_RELEASE_FLUSH,
 };
-#[cfg(target_os = "macos")]
-use super::protocol::{
-    FATTR_BKUPTIME, FATTR_CHGTIME, FATTR_CRTIME, FATTR_FLAGS, FUSE_CASE_INSENSITIVE,
-    FUSE_VOL_RENAME, FUSE_XTIMES,
-};
+// #[cfg(target_os = "macos")]
+// use super::protocol::{
+//     FATTR_BKUPTIME, FATTR_CHGTIME, FATTR_CRTIME, FATTR_FLAGS, FUSE_CASE_INSENSITIVE,
+//     FUSE_VOL_RENAME, FUSE_XTIMES,
+// };
+
+use std::os::unix::io::RawFd;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::{Duration, UNIX_EPOCH};
+
+use aligned_utils::bytes::AlignedBytes;
+use anyhow::{anyhow, Context};
+use crossbeam_channel::{Receiver, Sender};
+use crossbeam_utils::atomic::AtomicCell;
+use log::{debug, error, info};
+use nix::errno::Errno;
+use nix::unistd;
+use utilities::Cast;
+
+// #[cfg(target_os = "macos")]
+// use std::time::SystemTime;
 
 /// We generally support async reads
 #[cfg(target_os = "linux")]
@@ -74,52 +73,63 @@ const PAGE_SIZE: usize = 4096;
 const MAX_BACKGROUND: u16 = 10; // TODO: set to larger value when release
 
 /// Static variable to indicate whether FUSE is initialized or not
-static FUSE_INITIALIZED: AtomicBool = AtomicBool::new(false);
+// static FUSE_INITIALIZED: AtomicBool = AtomicBool::new(false);
 /// Static variable to indicate whether FUSE is destroyed or not
-static FUSE_DESTROYED: AtomicBool = AtomicBool::new(false);
+// static FUSE_DESTROYED: AtomicBool = AtomicBool::new(false);
 
 /// FUSE session
-#[derive(Debug)]
 pub struct Session {
     /// FUSE device fd
-    fuse_fd: RawFd,
-    /// kernel FUSE protocol version
+    fuse_fd: Arc<FuseFd>,
+    /// Kernel FUSE protocol version
     proto_version: AtomicCell<ProtoVersion>,
+    /// Mount path (relative)
+    mount_path: PathBuf,
     /// The underlying FUSE file system
-    filesystem: Arc<Mutex<FileSystem>>,
+    filesystem: Arc<dyn FileSystem + Send + Sync + 'static>,
+    /// All sub-tasks
+    tasks: Vec<smol::Task<()>>,
+}
+
+/// FUSE device fd
+#[derive(Debug)]
+struct FuseFd(RawFd);
+
+impl Drop for FuseFd {
+    fn drop(&mut self) {
+        unistd::close(self.0).ok();
+    }
 }
 
 impl Drop for Session {
     fn drop(&mut self) {
-        if !FUSE_DESTROYED.load(Ordering::Acquire) {
-            smol::block_on(async {
-                let fs = self.filesystem.lock().await;
-                let res = mount::umount(fs.get_root_path()).await;
-                match res {
-                    Ok(..) => info!(
-                        "Session::drop() successfully umount {:?}",
-                        fs.get_root_path()
-                    ),
-                    Err(e) => error!(
-                        "Session::drop() failed to umount {:?}, the error is: {}",
-                        fs.get_root_path(),
-                        e,
-                    ),
-                };
-            });
-        }
+        smol::block_on(async {
+            futures::future::join_all(self.tasks.drain(..).map(smol::Task::cancel)).await;
+            let mount_path = &self.mount_path;
+            let res = mount::umount(mount_path).await;
+            match res {
+                Ok(..) => info!("Session::drop() successfully umount {:?}", mount_path),
+                Err(e) => error!(
+                    "Session::drop() failed to umount {:?}, the error is: {}",
+                    mount_path, e,
+                ),
+            };
+        });
     }
 }
 
 impl Session {
     /// Get FUSE device fd
     #[inline]
-    pub const fn dev_fd(&self) -> RawFd {
-        self.fuse_fd
+    pub fn dev_fd(&self) -> RawFd {
+        self.fuse_fd.0
     }
 
     /// Create FUSE session
-    pub async fn new(mount_path: &Path) -> anyhow::Result<Self> {
+    pub async fn new(
+        mount_path: &Path,
+        fs: impl FileSystem + Send + Sync + 'static,
+    ) -> anyhow::Result<Self> {
         // let mount_path = Path::new(mount_point);
         assert!(
             mount_path.is_dir(),
@@ -127,20 +137,21 @@ impl Session {
             mount_path
         );
 
-        let filesystem = FileSystem::new(mount_path).await?;
         // Must create filesystem before mount
         let fuse_fd = mount::mount(mount_path)
             .await
             .context("failed to mount fuse device")?;
         Ok(Self {
-            fuse_fd,
+            fuse_fd: Arc::new(FuseFd(fuse_fd)),
             proto_version: AtomicCell::new(ProtoVersion::UNSPECIFIED),
-            filesystem: Arc::new(Mutex::new(filesystem)),
+            filesystem: Arc::new(fs),
+            mount_path: mount_path.to_owned(),
+            tasks: Vec::new(),
         })
     }
 
     /// Run the FUSE session
-    pub async fn run(&self) -> anyhow::Result<()> {
+    pub async fn run(mut self) -> anyhow::Result<()> {
         let (pool_sender, pool_receiver) = self
             .setup_buffer_pool()
             .await
@@ -164,7 +175,7 @@ impl Session {
                     let fs = Arc::clone(&self.filesystem);
                     let sender = pool_sender.clone();
                     let proto_version = self.proto_version.load();
-                    smol::spawn(Self::process_fuse_request(
+                    self.tasks.push(smol::spawn(Self::process_fuse_request(
                         buffer_idx,
                         byte_buffer,
                         read_size,
@@ -172,9 +183,7 @@ impl Session {
                         fs,
                         sender,
                         proto_version,
-                    ))
-                    // .await; // Run in series
-                    .detach(); // Run in parallel
+                    )));
                 }
                 Err(err) => {
                     let err_msg = crate::util::format_nix_error(err); // TODO: refactor format_nix_error()
@@ -195,11 +204,7 @@ impl Session {
                         Some(Errno::EAGAIN) => info!("Explicitly retry"),
                         // Filesystem was unmounted, quit the loop
                         Some(Errno::ENODEV) => {
-                            if FUSE_DESTROYED.load(Ordering::Acquire) {
-                                info!("filesystem destroyed, quit the run loop");
-                            } else {
-                                error!("FUSE device got un-mounted");
-                            }
+                            info!("filesystem destroyed, quit the run loop");
                             break;
                         }
                         // Unhandled error
@@ -224,7 +229,7 @@ impl Session {
         byte_buffer: AlignedBytes,
         read_size: usize,
         fuse_fd: RawFd,
-        fs: Arc<Mutex<FileSystem>>,
+        fs: Arc<dyn FileSystem + Send + Sync + 'static>,
         sender: Sender<(u16, AlignedBytes)>,
         proto_version: ProtoVersion,
     ) {
@@ -299,7 +304,7 @@ impl Session {
             if let Ok(req) = Request::new(bytes, self.proto_version.load()) {
                 if let Operation::Init { arg } = *req.operation() {
                     let filesystem = Arc::clone(&self.filesystem);
-                    self.init(arg, &req, filesystem, fuse_fd).await?;
+                    self.init(arg, &req, &*filesystem, fuse_fd).await?;
                 }
             }
         }
@@ -307,7 +312,6 @@ impl Session {
             "failed to put buffer idx={} back to buffer pool after FUSE init",
             idx,
         ))?;
-        debug_assert!(FUSE_INITIALIZED.load(Ordering::Acquire));
 
         Ok((pool_sender, pool_receiver))
     }
@@ -315,9 +319,9 @@ impl Session {
     /// Initialize FUSE session
     async fn init<'a>(
         &self,
-        arg: &'a FuseInitIn,
-        req: &'a Request<'a>,
-        fs: Arc<Mutex<FileSystem>>,
+        arg: &'_ FuseInitIn,
+        req: &'_ Request<'a>,
+        fs: &'_ (dyn FileSystem + Send + Sync + 'static),
         fd: RawFd,
     ) -> anyhow::Result<()> {
         debug!("Init args={:?}", arg);
@@ -331,8 +335,8 @@ impl Session {
             return Err(anyhow!("FUSE ABI version too low"));
         }
         // Call filesystem init method and give it a chance to return an error
-        let filesystem = fs.lock().await;
-        let init_res = filesystem.init(req);
+        let filesystem = &*fs;
+        let init_res = filesystem.init(req).await;
         if let Err(err) = init_res {
             reply.error_code(Errno::ENOSYS).await?;
             return Err(anyhow!("user defined init failed, the error is: {}", err,));
@@ -401,8 +405,6 @@ impl Session {
             minor: arg.minor,
         });
 
-        FUSE_INITIALIZED.store(true, Ordering::Release);
-
         Ok(())
     }
 }
@@ -414,132 +416,35 @@ impl Session {
 async fn dispatch<'a>(
     req: &'a Request<'a>,
     fd: RawFd,
-    fs: Arc<Mutex<FileSystem>>,
+    fs: Arc<dyn FileSystem + Send + Sync + 'static>,
 ) -> nix::Result<usize> {
-    // TODO: consider remove this global lock to filesystem
-    let mut filesystem = fs.lock().await;
-
     match *req.operation() {
         // Filesystem initialization
         Operation::Init { .. } => panic!("FUSE should have already initialized"),
-        // Any operation is invalid before initialization
-        Operation::Lookup { .. }
-        | Operation::Forget { .. }
-        | Operation::SetAttr { .. }
-        | Operation::SymLink { .. }
-        | Operation::MkNod { .. }
-        | Operation::MkDir { .. }
-        | Operation::Unlink { .. }
-        | Operation::RmDir { .. }
-        | Operation::Rename { .. }
-        | Operation::Link { .. }
-        | Operation::Open { .. }
-        | Operation::Read { .. }
-        | Operation::Write { .. }
-        | Operation::Release { .. }
-        | Operation::FSync { .. }
-        | Operation::SetXAttr { .. }
-        | Operation::GetXAttr { .. }
-        | Operation::ListXAttr { .. }
-        | Operation::RemoveXAttr { .. }
-        | Operation::Flush { .. }
-        | Operation::OpenDir { .. }
-        | Operation::ReadDir { .. }
-        | Operation::ReleaseDir { .. }
-        | Operation::FSyncDir { .. }
-        | Operation::GetLk { .. }
-        | Operation::SetLk { .. }
-        | Operation::SetLkW { .. }
-        | Operation::Access { .. }
-        | Operation::Create { .. }
-        | Operation::Interrupt { .. }
-        | Operation::BMap { .. }
-        | Operation::IoCtl { .. }
-        | Operation::Poll { .. }
-        | Operation::NotifyReply { .. }
-        | Operation::BatchForget { .. }
-        | Operation::FAllocate { .. }
-        | Operation::ReadDirPlus { .. }
-        | Operation::Rename2 { .. }
-        | Operation::LSeek { .. }
-        | Operation::CopyFileRange { .. }
-            if !FUSE_INITIALIZED.load(Ordering::Acquire) =>
-        {
-            warn!("ignoring FUSE operation before init, the request={}", req);
-            let reply = ReplyEmpty::new(req.unique(), fd);
-            reply.error_code(Errno::EIO).await
-        }
+
         // Filesystem destroyed
         Operation::Destroy => {
-            filesystem.destroy(req);
-            FUSE_DESTROYED.fetch_or(true, Ordering::Release);
+            fs.destroy(req).await;
             let reply = ReplyEmpty::new(req.unique(), fd);
             reply.ok().await
         }
-        // Any operation is invalid after destroy
-        Operation::Lookup { .. }
-        | Operation::Forget { .. }
-        | Operation::SetAttr { .. }
-        | Operation::SymLink { .. }
-        | Operation::MkNod { .. }
-        | Operation::MkDir { .. }
-        | Operation::Unlink { .. }
-        | Operation::RmDir { .. }
-        | Operation::Rename { .. }
-        | Operation::Link { .. }
-        | Operation::Open { .. }
-        | Operation::Read { .. }
-        | Operation::Write { .. }
-        | Operation::Release { .. }
-        | Operation::FSync { .. }
-        | Operation::SetXAttr { .. }
-        | Operation::GetXAttr { .. }
-        | Operation::ListXAttr { .. }
-        | Operation::RemoveXAttr { .. }
-        | Operation::Flush { .. }
-        | Operation::OpenDir { .. }
-        | Operation::ReadDir { .. }
-        | Operation::ReleaseDir { .. }
-        | Operation::FSyncDir { .. }
-        | Operation::GetLk { .. }
-        | Operation::SetLk { .. }
-        | Operation::SetLkW { .. }
-        | Operation::Access { .. }
-        | Operation::Create { .. }
-        | Operation::Interrupt { .. }
-        | Operation::BMap { .. }
-        | Operation::IoCtl { .. }
-        | Operation::Poll { .. }
-        | Operation::NotifyReply { .. }
-        | Operation::BatchForget { .. }
-        | Operation::FAllocate { .. }
-        | Operation::ReadDirPlus { .. }
-        | Operation::Rename2 { .. }
-        | Operation::LSeek { .. }
-        | Operation::CopyFileRange { .. }
-            if FUSE_DESTROYED.load(Ordering::Acquire) =>
-        {
-            warn!("ignoring FUSE operation after destroy, the request={}", req);
-            let reply = ReplyEmpty::new(req.unique(), fd);
-            reply.error_code(Errno::EIO).await
-        }
 
         Operation::Interrupt { arg } => {
-            filesystem.interrupt(req, arg.unique); // No reply
+            fs.interrupt(req, arg.unique).await; // No reply
             Ok(0)
         }
 
         Operation::Lookup { name } => {
             let reply = ReplyEntry::new(req.unique(), fd);
-            filesystem.lookup(req, req.nodeid(), name, reply).await
+            fs.lookup(req, req.nodeid(), name, reply).await
         }
         Operation::Forget { arg } => {
-            filesystem.forget(req, arg.nlookup); // No reply
+            fs.forget(req, arg.nlookup).await; // No reply
             Ok(0)
         }
         Operation::GetAttr => {
             let reply = ReplyAttr::new(req.unique(), fd);
-            filesystem.getattr(req, reply).await
+            fs.getattr(req, reply).await
         }
         Operation::SetAttr { arg } => {
             let mode = match arg.valid & FATTR_MODE {
@@ -651,36 +556,32 @@ async fn dispatch<'a>(
                 #[cfg(target_os = "macos")]
                 flags,
             };
-            filesystem.setattr(req, param, reply).await
+            fs.setattr(req, param, reply).await
         }
         Operation::ReadLink => {
             let reply = ReplyData::new(req.unique(), fd);
-            filesystem.readlink(req, reply).await
+            fs.readlink(req, reply).await
         }
         Operation::MkNod { arg, name } => {
             let reply = ReplyEntry::new(req.unique(), fd);
-            filesystem
-                .mknod(req, req.nodeid(), name, arg.mode, arg.rdev, reply)
+            fs.mknod(req, req.nodeid(), name, arg.mode, arg.rdev, reply)
                 .await
         }
         Operation::MkDir { arg, name } => {
             let reply = ReplyEntry::new(req.unique(), fd);
-            filesystem
-                .mkdir(req, req.nodeid(), name, arg.mode, reply)
-                .await
+            fs.mkdir(req, req.nodeid(), name, arg.mode, reply).await
         }
         Operation::Unlink { name } => {
             let reply = ReplyEmpty::new(req.unique(), fd);
-            filesystem.unlink(req, req.nodeid(), name, reply).await
+            fs.unlink(req, req.nodeid(), name, reply).await
         }
         Operation::RmDir { name } => {
             let reply = ReplyEmpty::new(req.unique(), fd);
-            filesystem.rmdir(req, req.nodeid(), name, reply).await
+            fs.rmdir(req, req.nodeid(), name, reply).await
         }
         Operation::SymLink { name, link } => {
             let reply = ReplyEntry::new(req.unique(), fd);
-            filesystem
-                .symlink(req, req.nodeid(), name, Path::new(link), reply)
+            fs.symlink(req, req.nodeid(), name, Path::new(link), reply)
                 .await
         }
         Operation::Rename {
@@ -696,74 +597,69 @@ async fn dispatch<'a>(
                 new_name: newname.to_os_string(),
                 flags: 0,
             };
-            filesystem.rename(req, param, reply).await
+            fs.rename(req, param, reply).await
         }
         Operation::Link { arg, name } => {
             let reply = ReplyEntry::new(req.unique(), fd);
-            filesystem.link(req, arg.oldnodeid, name, reply).await
+            fs.link(req, arg.oldnodeid, name, reply).await
         }
         Operation::Open { arg } => {
             let reply = ReplyOpen::new(req.unique(), fd);
-            filesystem.open(req, arg.flags, reply).await
+            fs.open(req, arg.flags, reply).await
         }
         Operation::Read { arg } => {
             let reply = ReplyData::new(req.unique(), fd);
-            filesystem
-                .read(req, arg.fh, arg.offset.cast(), arg.size, reply)
+            fs.read(req, arg.fh, arg.offset.cast(), arg.size, reply)
                 .await
         }
         Operation::Write { arg, data } => {
             assert_eq!(data.len(), arg.size.cast());
             let reply = ReplyWrite::new(req.unique(), fd);
-            filesystem
-                .write(
-                    req,
-                    arg.fh,
-                    arg.offset.cast(),
-                    data.to_vec(), // TODO: consider zero copy
-                    arg.write_flags,
-                    reply,
-                )
-                .await
+            fs.write(
+                req,
+                arg.fh,
+                arg.offset.cast(),
+                data.to_vec(), // TODO: consider zero copy
+                arg.write_flags,
+                reply,
+            )
+            .await
         }
         Operation::Flush { arg } => {
             let reply = ReplyEmpty::new(req.unique(), fd);
-            filesystem.flush(req, arg.fh, arg.lock_owner, reply).await
+            fs.flush(req, arg.fh, arg.lock_owner, reply).await
         }
         Operation::Release { arg } => {
             let flush = !matches!(arg.release_flags & FUSE_RELEASE_FLUSH, 0);
             let reply = ReplyEmpty::new(req.unique(), fd);
-            filesystem
-                .release(req, arg.fh, arg.flags, arg.lock_owner, flush, reply)
+            fs.release(req, arg.fh, arg.flags, arg.lock_owner, flush, reply)
                 .await
         }
         Operation::FSync { arg } => {
             let datasync = !matches!(arg.fsync_flags & 1, 0);
             let reply = ReplyEmpty::new(req.unique(), fd);
-            filesystem.fsync(req, arg.fh, datasync, reply).await
+            fs.fsync(req, arg.fh, datasync, reply).await
         }
         Operation::OpenDir { arg } => {
             let reply = ReplyOpen::new(req.unique(), fd);
-            filesystem.opendir(req, arg.flags, reply).await
+            fs.opendir(req, arg.flags, reply).await
         }
         Operation::ReadDir { arg } => {
             let reply = ReplyDirectory::new(req.unique(), fd, arg.size.cast());
-            filesystem
-                .readdir(req, arg.fh, arg.offset.cast(), reply)
-                .await
+            fs.readdir(req, arg.fh, arg.offset.cast(), reply).await
         }
         Operation::ReleaseDir { arg } => {
             let reply = ReplyEmpty::new(req.unique(), fd);
-            filesystem.releasedir(req, arg.fh, arg.flags, reply).await
+            fs.releasedir(req, arg.fh, arg.flags, reply).await
         }
         Operation::FSyncDir { arg } => {
             let datasync = !matches!(arg.fsync_flags & 1, 0);
             let reply = ReplyEmpty::new(req.unique(), fd);
-            filesystem.fsyncdir(req, arg.fh, datasync, reply).await
+            fs.fsyncdir(req, arg.fh, datasync, reply).await
         }
         Operation::StatFs => {
             let reply = ReplyStatFs::new(req.unique(), fd);
-            filesystem.statfs(req, reply).await
+            fs.statfs(req, reply).await
         }
         Operation::SetXAttr { arg, name, value } => {
             /// Set the position of an extended attribute
@@ -782,30 +678,28 @@ async fn dispatch<'a>(
             }
             assert!(value.len() == arg.size.cast());
             let reply = ReplyEmpty::new(req.unique(), fd);
-            filesystem
-                .setxattr(req, name, value, arg.flags, get_position(arg), reply)
+            fs.setxattr(req, name, value, arg.flags, get_position(arg), reply)
                 .await
         }
         Operation::GetXAttr { arg, name } => {
             let reply = ReplyXAttr::new(req.unique(), fd);
-            filesystem.getxattr(req, name, arg.size, reply).await
+            fs.getxattr(req, name, arg.size, reply).await
         }
         Operation::ListXAttr { arg } => {
             let reply = ReplyXAttr::new(req.unique(), fd);
-            filesystem.listxattr(req, arg.size, reply).await
+            fs.listxattr(req, arg.size, reply).await
         }
         Operation::RemoveXAttr { name } => {
             let reply = ReplyEmpty::new(req.unique(), fd);
-            filesystem.removexattr(req, name, reply).await
+            fs.removexattr(req, name, reply).await
         }
         Operation::Access { arg } => {
             let reply = ReplyEmpty::new(req.unique(), fd);
-            filesystem.access(req, arg.mask, reply).await
+            fs.access(req, arg.mask, reply).await
         }
         Operation::Create { arg, name } => {
             let reply = ReplyCreate::new(req.unique(), fd);
-            filesystem
-                .create(req, req.nodeid(), name, arg.mode, arg.flags, reply)
+            fs.create(req, req.nodeid(), name, arg.mode, arg.flags, reply)
                 .await
         }
         Operation::GetLk { arg } => {
@@ -818,7 +712,7 @@ async fn dispatch<'a>(
                 typ: arg.lk.typ,
                 pid: arg.lk.pid,
             };
-            filesystem.getlk(req, lock_param, reply).await
+            fs.getlk(req, lock_param, reply).await
         }
         Operation::SetLk { arg } => {
             let reply = ReplyEmpty::new(req.unique(), fd);
@@ -830,7 +724,7 @@ async fn dispatch<'a>(
                 typ: arg.lk.typ,
                 pid: arg.lk.pid,
             };
-            filesystem.setlk(req, lock_param, false, reply).await
+            fs.setlk(req, lock_param, false, reply).await
         }
         Operation::SetLkW { arg } => {
             let reply = ReplyEmpty::new(req.unique(), fd);
@@ -842,32 +736,31 @@ async fn dispatch<'a>(
                 typ: arg.lk.typ,
                 pid: arg.lk.pid,
             };
-            filesystem
-                .setlk(
-                    req, lock_param, true, // sleep
-                    reply,
-                )
-                .await
+            fs.setlk(
+                req, lock_param, true, // sleep
+                reply,
+            )
+            .await
         }
         Operation::BMap { arg } => {
             let reply = ReplyBMap::new(req.unique(), fd);
-            filesystem.bmap(req, arg.blocksize, arg.block, reply).await
+            fs.bmap(req, arg.blocksize, arg.block, reply).await
         }
 
         // #[cfg(feature = "abi-7-11")]
         Operation::IoCtl { arg, data } => {
             error!("IoCtl not implemented, arg={:?}, data={:?}", arg, data);
-            filesystem.not_implement_helper(req, fd).await
+            not_implement_helper(req, fd).await
         }
         // #[cfg(feature = "abi-7-11")]
         Operation::Poll { arg } => {
             error!("Poll not implemented, arg={:?}", arg);
-            filesystem.not_implement_helper(req, fd).await
+            not_implement_helper(req, fd).await
         }
         // #[cfg(feature = "abi-7-15")]
         Operation::NotifyReply { data } => {
             error!("NotifyReply not implemented, data={:?}", data);
-            filesystem.not_implement_helper(req, fd).await
+            not_implement_helper(req, fd).await
         }
         // #[cfg(feature = "abi-7-16")]
         Operation::BatchForget { arg, nodes } => {
@@ -875,17 +768,17 @@ async fn dispatch<'a>(
                 "BatchForget not implemented, arg={:?}, nodes={:?}",
                 arg, nodes
             );
-            filesystem.not_implement_helper(req, fd).await
+            not_implement_helper(req, fd).await
         }
         // #[cfg(feature = "abi-7-19")]
         Operation::FAllocate { arg } => {
             error!("FAllocate not implemented, arg={:?}", arg);
-            filesystem.not_implement_helper(req, fd).await
+            not_implement_helper(req, fd).await
         }
         // #[cfg(feature = "abi-7-21")]
         Operation::ReadDirPlus { arg } => {
             error!("ReadDirPlus not implemented, arg={:?}", arg);
-            filesystem.not_implement_helper(req, fd).await
+            not_implement_helper(req, fd).await
         }
         // #[cfg(feature = "abi-7-23")]
         Operation::Rename2 {
@@ -904,49 +797,54 @@ async fn dispatch<'a>(
                 #[cfg(target_os = "macos")]
                 flags: arg.flags.cast(),
             };
-            filesystem.rename(req, param, reply).await
+            fs.rename(req, param, reply).await
         }
         // #[cfg(feature = "abi-7-24")]
         Operation::LSeek { arg } => {
             error!("LSeek not implemented, arg={:?}", arg);
-            filesystem.not_implement_helper(req, fd).await
+            not_implement_helper(req, fd).await
         }
         // #[cfg(feature = "abi-7-28")]
         Operation::CopyFileRange { arg } => {
             error!("ReadDirPlusCopyFileRange not implemented, arg={:?}", arg);
-            filesystem.not_implement_helper(req, fd).await
+            not_implement_helper(req, fd).await
         }
 
-        #[cfg(target_os = "macos")]
-        Operation::SetVolName { name } => {
-            let reply = ReplyEmpty::new(req.unique(), fd);
-            filesystem.setvolname(req, name, reply).await
-        }
-        #[cfg(target_os = "macos")]
-        Operation::Exchange {
-            arg,
-            oldname,
-            newname,
-        } => {
-            let reply = ReplyEmpty::new(req.unique(), fd);
-            let param = RenameParam {
-                old_parent: req.nodeid(),
-                old_name: oldname.to_os_string(),
-                new_parent: arg.newdir,
-                new_name: newname.to_os_string(),
-                flags: arg.options,
-            };
-            filesystem.exchange(req, param, reply).await
-        }
-        #[cfg(target_os = "macos")]
-        Operation::GetXTimes => {
-            let reply = ReplyXTimes::new(req.unique(), fd);
-            filesystem.getxtimes(req, reply).await
-        }
-
+        // #[cfg(target_os = "macos")]
+        // Operation::SetVolName { name } => {
+        //     let reply = ReplyEmpty::new(req.unique(), fd);
+        //     filesystem.setvolname(req, name, reply).await
+        // }
+        // #[cfg(target_os = "macos")]
+        // Operation::Exchange {
+        //     arg,
+        //     oldname,
+        //     newname,
+        // } => {
+        //     let reply = ReplyEmpty::new(req.unique(), fd);
+        //     let param = RenameParam {
+        //         old_parent: req.nodeid(),
+        //         old_name: oldname.to_os_string(),
+        //         new_parent: arg.newdir,
+        //         new_name: newname.to_os_string(),
+        //         flags: arg.options,
+        //     };
+        //     filesystem.exchange(req, param, reply).await
+        // }
+        // #[cfg(target_os = "macos")]
+        // Operation::GetXTimes => {
+        //     let reply = ReplyXTimes::new(req.unique(), fd);
+        //     filesystem.getxtimes(req, reply).await
+        // }
         #[cfg(feature = "abi-7-11")]
         Operation::CuseInit { arg } => {
             panic!("unsupported CuseInit arg={:?}", arg);
         }
     }
+}
+
+/// Replys ENOSYS
+async fn not_implement_helper(req: &Request<'_>, fd: RawFd) -> nix::Result<usize> {
+    let reply = ReplyEmpty::new(req.unique(), fd);
+    reply.error_code(Errno::ENOSYS).await
 }

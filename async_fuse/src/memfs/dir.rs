@@ -198,9 +198,8 @@ unsafe fn next_entry(dirp: *mut libc::DIR, eos: &mut bool) -> Option<io::Result<
             clear_errno();
             if errno() == 0 {
                 return None;
-            } else {
-                return Some(Err(io::Error::last_os_error()));
             }
+            return Some(Err(io::Error::last_os_error()));
         }
         let dirent = &*p_dirent;
         let name_bytes = cstr_to_bytes(&dirent.d_name);

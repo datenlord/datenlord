@@ -5,6 +5,7 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use crate::fuse::{mount, session::Session};
+use crate::memfs;
 use crate::util;
 
 pub fn setup(mount_dir: &Path) -> anyhow::Result<JoinHandle<()>> {
@@ -25,10 +26,11 @@ pub fn setup(mount_dir: &Path) -> anyhow::Result<JoinHandle<()>> {
 
     let fs_task = smol::spawn(async move {
         async fn run_fs(mount_point: &Path) -> anyhow::Result<()> {
-            let ss = Session::new(mount_point).await?;
+            let fs = memfs::MemFs::new(mount_point).await?;
+            let ss = Session::new(mount_point, fs).await?;
             ss.run().await?;
             Ok(())
-        };
+        }
         if let Err(e) = run_fs(&abs_root_path).await {
             panic!(
                 "failed to run filesystem, the error is: {}",
