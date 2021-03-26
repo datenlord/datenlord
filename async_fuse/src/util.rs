@@ -53,6 +53,8 @@ pub const fn convert_nix_errno_to_cint(error_no: Errno) -> c_int {
 }
 
 /// Build file mode from `SFlag` and file permission
+/// # Panics
+/// Panics if `SFlag` is unknown
 #[must_use]
 pub fn mode_from_kind_and_perm(kind: SFlag, perm: u16) -> u32 {
     let file_type = match kind {

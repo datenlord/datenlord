@@ -5,7 +5,7 @@
     // https://doc.rust-lang.org/rustc/lints/listing/allowed-by-default.html
     anonymous_parameters,
     bare_trait_objects,
-    box_pointers,
+    // box_pointers,
     elided_lifetimes_in_paths, // allow anonymous lifetime
     missing_copy_implementations,
     missing_debug_implementations,
@@ -37,6 +37,7 @@
     clippy::module_name_repetitions, // repeation of module name in a struct name is not big deal
     clippy::multiple_crate_versions, // multi-version dependency crates is not able to fix
     clippy::panic, // allow debug_assert, panic in production code
+    // clippy::panic_in_result_fn,
 )]
 
 use log::debug;
@@ -76,7 +77,9 @@ fn main() -> anyhow::Result<()> {
     debug!("FUSE mount point: {}", mount_point);
 
     smol::block_on(async move {
-        let ss = Session::new(std::path::Path::new(&mount_point)).await?;
+        let mount_point = std::path::Path::new(&mount_point);
+        let fs = memfs::MemFs::new(mount_point).await?;
+        let ss = Session::new(mount_point, fs).await?;
         ss.run().await?;
         Ok(())
     })

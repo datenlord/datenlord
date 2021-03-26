@@ -15,6 +15,7 @@ categories = ["filesystem"]
 [dependencies]
 aligned-utils = "1.0.0"
 anyhow = "1.0.31"
+async-trait = "0.1.48"
 better-as = "0.2.0"
 clap = "2.33.3"
 crossbeam-channel = "0.5.0"

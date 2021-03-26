@@ -759,9 +759,9 @@ impl Node {
         ))?;
 
         // get new file attribute
-        let child_attr = fs_util::load_attr(child_fd).await.context(
-            "open_child_file_helper() failed to get the attribute of the new child".to_string(),
-        )?;
+        let child_attr = fs_util::load_attr(child_fd)
+            .await
+            .context("open_child_file_helper() failed to get the attribute of the new child")?;
         debug_assert_eq!(SFlag::S_IFREG, child_attr.kind);
 
         if create_file {

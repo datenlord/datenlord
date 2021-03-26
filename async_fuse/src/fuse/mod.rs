@@ -4,6 +4,8 @@ mod abi_marker;
 mod context;
 mod de;
 
+pub mod file_system;
+
 // ioctl_read!() macro involves inter arithmetic
 #[allow(clippy::integer_arithmetic)]
 pub mod channel;
