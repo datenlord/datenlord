@@ -87,7 +87,7 @@ enum Step {
 }
 
 /// An IO request which can be executed by the global proactor.
-pub struct IoRequest<T: Operation + Send + Unpin> {
+pub struct IoRequest<T: Operation + Send + Unpin + 'static> {
     /// Inner state shared with the global proactor
     state: SharedState,
     /// The listener of complete event.
@@ -136,7 +136,7 @@ impl State {
     }
 }
 
-impl<T: Operation + Send + Unpin> IoRequest<T> {
+impl<T: Operation + Send + Unpin + 'static> IoRequest<T> {
     /// Creates a new [`IoRequest`]
     pub fn new(op: T) -> Self {
         let proactor = Proactor::global();
@@ -150,7 +150,7 @@ impl<T: Operation + Send + Unpin> IoRequest<T> {
     }
 }
 
-impl<T: Operation + Send + Unpin> Future for IoRequest<T> {
+impl<T: Operation + Send + Unpin + 'static> Future for IoRequest<T> {
     type Output = (io::Result<u32>, T);
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
@@ -222,7 +222,7 @@ impl<T: Operation + Send + Unpin> Future for IoRequest<T> {
     }
 }
 
-impl<T: Operation + Send + Unpin> Drop for IoRequest<T> {
+impl<T: Operation + Send + Unpin + 'static> Drop for IoRequest<T> {
     fn drop(&mut self) {
         let ProactorInner { ref pool, .. } = *Proactor::global().inner;
         let mut state = self.state.lock();
