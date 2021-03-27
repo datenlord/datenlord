@@ -44,7 +44,7 @@ impl SmallBox {
     }
 
     /// Puts a value into the [`SmallBox`]. The previous value in it will be dropped.
-    pub fn put<T: Send>(&mut self, value: T) -> *mut T {
+    pub fn put<T: Send + 'static>(&mut self, value: T) -> *mut T {
         assert!(mem::align_of::<usize>().wrapping_rem(mem::align_of::<T>()) == 0);
         unsafe { self.put_unchecked(value) }
     }
@@ -52,7 +52,7 @@ impl SmallBox {
     /// Puts a value into the [`SmallBox`]. The previous value in it will be dropped.
     ///
     /// # Safety
-    /// + `T` must be [`Send`].
+    /// + `T` must be [`Send`] + 'static.
     /// + `align_of::<T>()` must not be larger than `align_of::<usize>()`.
     #[allow(box_pointers)]
     pub unsafe fn put_unchecked<T>(&mut self, value: T) -> *mut T {
