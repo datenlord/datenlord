@@ -1,9 +1,12 @@
 use aligned_utils::bytes::AlignedBytes;
 use common::error::DatenLordResult;
-use lockfree_cuckoohash::{pin, LockFreeCuckooHash as Hash};
+use lockfree_cuckoohash::{pin, LockFreeCuckooHash as HashMap};
 use log::debug;
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
+use priority_queue::PriorityQueue;
+use std::hash::{Hash, Hasher};
 use std::ops::Deref;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 /// The size of a page
@@ -16,18 +19,39 @@ const MEMORY_BLOCK_SIZE_IN_BYTE: usize = MEMORY_BLOCK_SIZE_IN_KB * 1024;
 const MEMORY_BUCKET_VEC_SIZE: usize = 16;
 /// The size of a memory bucket in byte default is, 64 * 16 kB.
 const MEMORY_BUCKET_SIZE_IN_BYTE: usize = MEMORY_BUCKET_VEC_SIZE * MEMORY_BLOCK_SIZE_IN_KB * 1024;
+/// The default capacity in bytes, 10GB
+const GLOBAL_CACHE_DEFAULT_CAPACITY: AtomicUsize = AtomicUsize::new(10 * 1024 * 1024 * 1024);
 
 /// A mapping from file name to per-file memory block mapping
 struct GlobalCache {
-    inner: Hash<String, Hash<usize, MemBlockBucket>>,
+    inner: HashMap<String, HashMap<usize, MemBlockBucket>>,
+    queue: Mutex<PriorityQueue<MemBlockBucket, i64>>,
+    size: AtomicUsize,
+    capacity: AtomicUsize,
 }
 
 /// This is global cache, which store the cache for all the files
 impl GlobalCache {
     #[allow(dead_code)]
-    /// Constructor
+    /// Constructor with 10GB default capacity
     pub(crate) fn new() -> Self {
-        Self { inner: Hash::new() }
+        Self {
+            inner: HashMap::new(),
+            queue: Mutex::new(PriorityQueue::new()),
+            size: AtomicUsize::new(0),
+            capacity: GLOBAL_CACHE_DEFAULT_CAPACITY,
+        }
+    }
+
+    #[allow(dead_code)]
+    /// Constructor
+    pub(crate) fn new_with_capacity(capacity: usize) -> Self {
+        Self {
+            inner: HashMap::new(),
+            queue: Mutex::new(PriorityQueue::new()),
+            size: AtomicUsize::new(0),
+            capacity: AtomicUsize::new(capacity),
+        }
     }
 
     #[allow(dead_code)]
@@ -70,6 +94,7 @@ impl GlobalCache {
 
             match file_cache.get(&i, &guard) {
                 Some(bucket) => {
+                    self.queue.lock().push(bucket.clone(), 0 - now_monotonic());
                     result.extend((bucket.read()[s..l]).iter().cloned());
                 }
                 None => {
@@ -100,7 +125,7 @@ impl GlobalCache {
             None => {
                 debug!("cache for {} is empty, create one", file_name);
                 // Here maybe a racing case where two thread are updating the cache
-                self.inner.insert(file_name.to_string(), Hash::new());
+                self.inner.insert(file_name.to_string(), HashMap::new());
                 self.inner.get(file_name, &guard).unwrap_or_else(|| {
                     panic!("Just insert a file cache ({}) into global cache mapping, but cannot get it.", file_name)
                 })
@@ -120,11 +145,12 @@ impl GlobalCache {
         let end_index = (offset + len - 1) / MEMORY_BUCKET_SIZE_IN_BYTE;
 
         let mut have_read: usize = 0;
+        let mut grow_memory: usize = 0;
         let mut copy_fn = |b: &mut Option<MemBlock>| {
-            debug!("copy one memblock");
             let end = std::cmp::min(have_read + MEMORY_BLOCK_SIZE_IN_BYTE, len);
             if b.is_none() {
                 *b = Some(MemBlock::new());
+                grow_memory += 1;
             }
             b.as_ref().unwrap().overwrite(&(*buf)[have_read..end]);
             have_read = end;
@@ -142,7 +168,11 @@ impl GlobalCache {
                 MEMORY_BUCKET_VEC_SIZE
             };
             let _ = match file_cache.get(&i, &guard) {
-                Some(bucket) => bucket.write()[s..l].iter_mut().for_each(&mut copy_fn),
+                Some(bucket) => {
+                    self.queue.lock().push(bucket.clone(), 0 - now_monotonic());
+                    bucket.write()[s..l].iter_mut().for_each(&mut copy_fn)
+                }
+
                 None => {
                     // Here might be a racing case
                     debug!(
@@ -150,7 +180,9 @@ impl GlobalCache {
                         file_name, start_index
                     );
                     debug!("start offset {}, end offset {}", s, l);
-                    file_cache.insert(i, MemBlockBucket::new());
+                    let bucket = MemBlockBucket::new();
+                    self.queue.lock().push(bucket.clone(), 0 - now_monotonic());
+                    file_cache.insert(i, bucket);
                     file_cache
                         .get(&i, &guard)
                         .unwrap_or_else(|| {
@@ -163,13 +195,73 @@ impl GlobalCache {
             };
         }
 
+        self.size
+            .fetch_add(grow_memory * MEMORY_BLOCK_SIZE_IN_BYTE, Ordering::Relaxed);
+
+        let mut dealloc_fn = |b: &mut Option<MemBlock>| {
+            if b.is_some() {
+                b.take();
+            }
+        };
+
+        let mut exceed: i64 =
+            self.size.load(Ordering::Relaxed) as i64 - self.capacity.load(Ordering::Relaxed) as i64;
+        while exceed > 0 {
+            match self.queue.lock().pop() {
+                Some((bucket, _)) => {
+                    let mut bucket_lock = bucket.write();
+                    let removed_count = bucket_lock.iter_mut().filter(|b| b.is_some()).count();
+                    bucket_lock
+                        .iter_mut()
+                        .filter(|b| b.is_some())
+                        .for_each(&mut dealloc_fn);
+                    exceed -= (removed_count * MEMORY_BLOCK_SIZE_IN_BYTE) as i64;
+                }
+                None => break,
+            };
+        }
+
         return Ok(());
     }
 }
 
-// This is a memory block collection
+/// Get current time
+#[inline]
+fn now_monotonic() -> i64 {
+    let mut time = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    let ret = unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC_COARSE, &mut time) };
+    assert!(ret == 0);
+    time.tv_sec * 1000 + time.tv_nsec / 1000000
+}
+
+// A memory block collection
 struct MemBlockBucket {
     inner: Arc<RwLock<Vec<Option<MemBlock>>>>,
+}
+
+impl Hash for MemBlockBucket {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        (*self.inner).data_ptr().hash(state);
+    }
+}
+
+impl PartialEq<MemBlockBucket> for MemBlockBucket {
+    fn eq(&self, other: &MemBlockBucket) -> bool {
+        (*self.inner).data_ptr() == (*other.inner).data_ptr()
+    }
+}
+
+impl Eq for MemBlockBucket {}
+
+impl Clone for MemBlockBucket {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+        }
+    }
 }
 
 /// A vector holding `MEMORY_BUCKET_VEC_SIZE` MemBlock, wrapped in an Arc.
@@ -245,7 +337,9 @@ impl Clone for MemBlock {
 
 #[cfg(test)]
 mod test {
-    use super::{GlobalCache, MEMORY_BLOCK_SIZE_IN_BYTE};
+    use super::{
+        GlobalCache, MEMORY_BLOCK_SIZE_IN_BYTE, MEMORY_BUCKET_SIZE_IN_BYTE, MEMORY_BUCKET_VEC_SIZE,
+    };
     use aligned_utils::bytes::AlignedBytes;
 
     #[test]
@@ -257,7 +351,6 @@ mod test {
 
     #[test]
     fn test_insert_one_byte_cache() {
-        env_logger::init();
         let global = GlobalCache::new();
         let file_name = "test_file";
         let content = AlignedBytes::new_from_slice(&[b'a'], 1);
@@ -273,7 +366,6 @@ mod test {
 
     #[test]
     fn test_get_partial_result() {
-        env_logger::init();
         let global = GlobalCache::new();
         let file_name = "test_file";
         let content = AlignedBytes::new_from_slice(&[b'a'], 1);
@@ -290,10 +382,34 @@ mod test {
     #[test]
     #[should_panic(expected = "offset should be align with 65536")]
     fn test_panic_write_unaligned_data() {
-        env_logger::init();
         let global = GlobalCache::new();
         let file_name = "test_file";
         let content = AlignedBytes::new_from_slice(&[b'a'], 1);
         let _ = global.write_or_update(file_name, 1, 1, &content);
+    }
+
+    #[test]
+    fn test_eviction() {
+        let global = GlobalCache::new_with_capacity(MEMORY_BLOCK_SIZE_IN_BYTE);
+        let file_name = "test_file";
+        let block_one = AlignedBytes::new_from_slice(&[b'a'], 1);
+        let result = global.write_or_update(file_name, 0, 1, &block_one);
+        assert!(result.is_ok());
+
+        let block_two = AlignedBytes::new_from_slice(&[b'b'], 1);
+        let result = global.write_or_update(file_name, MEMORY_BUCKET_SIZE_IN_BYTE, 1, &block_two);
+        assert!(result.is_ok());
+
+        // First cache should be evicted
+        let cache = global.get_file_cache(file_name, 0, MEMORY_BUCKET_SIZE_IN_BYTE + 1);
+        assert_eq!(cache.len(), 17);
+        for i in 0..MEMORY_BUCKET_VEC_SIZE {
+            assert!(cache[i].is_none());
+        }
+        assert!(cache[MEMORY_BUCKET_VEC_SIZE].is_some());
+        assert_eq!(
+            cache[MEMORY_BUCKET_VEC_SIZE].as_ref().unwrap().read()[0],
+            b'b'
+        );
     }
 }
