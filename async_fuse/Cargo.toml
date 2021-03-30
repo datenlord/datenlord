@@ -37,7 +37,7 @@ thiserror = "1.0.22"
 utilities = { git = "https://github.com/datenlord/utilities", rev = "4ef408d" }
 common = {path = "../common"}
 lockfree-cuckoohash = {git = "https://github.com/datenlord/lockfree-cuckoohash", rev = "e5849f18"}
-parking_lot = "0.11.1"
+priority-queue = "1.1.0"
 
 [features]
 abi-7-9 = []
