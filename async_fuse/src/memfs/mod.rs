@@ -21,19 +21,20 @@ use nix::sys::{
     time::TimeSpec,
 };
 use nix::unistd;
-use smol::lock::Mutex;
+use smol::lock::{Mutex, RwLock, RwLockWriteGuard};
 use utilities::{Cast, OverflowArithmetic};
 
 use crate::fuse::file_system::FileSystem;
 #[cfg(target_os = "macos")]
 use crate::fuse::fuse_reply::ReplyXTimes;
 use crate::fuse::fuse_reply::{
-    ReplyAttr, ReplyBMap, ReplyCreate, ReplyData, ReplyDirectory, ReplyEmpty, ReplyEntry,
+    AsIoVec, ReplyAttr, ReplyBMap, ReplyCreate, ReplyData, ReplyDirectory, ReplyEmpty, ReplyEntry,
     ReplyLock, ReplyOpen, ReplyStatFs, ReplyWrite, ReplyXAttr, StatFsParam,
 };
 use crate::fuse::fuse_request::Request;
 use crate::fuse::protocol::{FuseAttr, INum, FUSE_ROOT_ID};
 use crate::util;
+use cache::{GlobalCache, IoMemBlock};
 
 mod cache;
 mod dir;
@@ -57,9 +58,11 @@ struct MetaData {
     /// The root path and the mount point of the FUSE filesystem
     root_path: PathBuf,
     /// The cache to hold opened directories and files
-    cache: BTreeMap<INum, Node>,
+    cache: RwLock<BTreeMap<INum, Node>>,
     /// The trash to hold deferred deleted directories and files
     trash: BTreeSet<INum>,
+    /// Global data cache
+    data_cache: Arc<GlobalCache>,
 }
 
 /// Set attribute parameters
@@ -155,7 +158,7 @@ pub struct FileLockParam {
 
 impl MemFs {
     /// Create `FileSystem`
-    pub async fn new(mount_point: &Path) -> anyhow::Result<Self> {
+    pub async fn new(mount_point: &Path, capacity: usize) -> anyhow::Result<Self> {
         let root_path = mount_point
             .canonicalize()
             .with_context(|| format!("failed to canonicalize the mount path={:?}", mount_point))?;
@@ -168,8 +171,9 @@ impl MemFs {
 
         Ok(Self(Arc::new(Mutex::new(MetaData {
             root_path,
-            cache,
+            cache: RwLock::new(cache),
             trash,
+            data_cache: Arc::new(GlobalCache::new_with_capacity(capacity)),
         }))))
     }
 }
@@ -178,12 +182,14 @@ impl MetaData {
     // FUSE operation helper functions
 
     /// The pre-check before create node
-    fn create_node_pre_check(
-        &mut self,
+    #[allow(single_use_lifetimes)]
+    async fn create_node_pre_check<'a, 'b>(
+        &self,
         parent: INum,
         node_name: &OsStr,
-    ) -> anyhow::Result<&mut Node> {
-        let parent_node = self.cache.get_mut(&parent).unwrap_or_else(|| {
+        cache: &'b mut RwLockWriteGuard<'a, BTreeMap<INum, Node>>,
+    ) -> anyhow::Result<&'b mut Node> {
+        let parent_node = cache.get_mut(&parent).unwrap_or_else(|| {
             panic!(
                 "create_node_pre_check() found fs is inconsistent, \
                     parent of ino={} should be in cache before create it new child",
@@ -224,8 +230,10 @@ impl MetaData {
         target_path: Option<&Path>,
     ) -> anyhow::Result<(Duration, FuseAttr, u64)> {
         // pre-check
+        let mut cache = self.cache.write().await;
         let parent_node = self
-            .create_node_pre_check(parent, &node_name)
+            .create_node_pre_check(parent, &node_name, &mut cache)
+            .await
             .context("create_node_helper() failed to pre check")?;
         let parent_name = parent_node.get_name().to_owned();
         // all checks are passed, ready to create new node
@@ -237,7 +245,7 @@ impl MetaData {
                 debug!(
                     "create_node_helper() about to create a sub-directory with name={:?} and mode={:?} \
                         under parent directory of ino={} and name={:?}",
-                    node_name, m_flags, parent, parent_node.get_name(),
+                    node_name, m_flags, parent, parent_name,
                 );
                 parent_node
                     .create_child_dir(node_name.clone(), m_flags)
@@ -245,7 +253,7 @@ impl MetaData {
                     .context(format!(
                         "create_node_helper() failed to create directory with name={:?} and mode={:?} \
                             under parent directory of ino={} and name={:?}",
-                        node_name, m_flags, parent, parent_node.get_name(),
+                        node_name, m_flags, parent, parent_name,
                     ))?
             }
             SFlag::S_IFREG => {
@@ -254,22 +262,20 @@ impl MetaData {
                     "helper_create_node() about to \
                         create a file with name={:?}, oflags={:?}, mode={:?} \
                         under parent directory of ino={} and name={:?}",
-                    node_name,
-                    o_flags,
-                    m_flags,
-                    parent,
-                    parent_node.get_name(),
+                    node_name, o_flags, m_flags, parent, parent_name,
                 );
                 parent_node
-                    .create_child_file(node_name.clone(), o_flags, m_flags)
+                    .create_child_file(
+                        node_name.clone(),
+                        o_flags,
+                        m_flags,
+                        Arc::<GlobalCache>::clone(&self.data_cache),
+                    )
                     .await
                     .context(format!(
                         "create_node_helper() failed to create file with name={:?} and mode={:?} \
                             under parent directory of ino={} and name={:?}",
-                        node_name,
-                        m_flags,
-                        parent,
-                        parent_node.get_name(),
+                        node_name, m_flags, parent, parent_name,
                     ))?
             }
             SFlag::S_IFLNK => {
@@ -277,10 +283,7 @@ impl MetaData {
                     "create_node_helper() about to \
                         create a symlink with name={:?} to target path={:?} \
                         under parent directory of ino={} and name={:?}",
-                    node_name,
-                    target_path,
-                    parent,
-                    parent_node.get_name(),
+                    node_name, target_path, parent, parent_name
                 );
                 parent_node
                     .create_child_symlink(
@@ -296,20 +299,20 @@ impl MetaData {
                     .context(format!(
                         "create_node_helper() failed to create symlink with name={:?} to target path={:?} \
                             under parent directory of ino={} and name={:?}",
-                        node_name, target_path, parent, parent_node.get_name(),
+                        node_name, target_path, parent, parent_name,
                     ))?
             }
             _ => {
                 panic!(
                     "create_node_helper() found unsupported i-node type={:?} with name={:?} to create \
                         under parent directory of ino={} and name={:?}",
-                    node_type, node_name, parent, parent_node.get_name(),
+                        node_type, node_name, parent, parent_name,
                 );
             }
         };
         new_ino = new_node.get_ino();
         let new_node_attr = new_node.get_attr();
-        self.cache.insert(new_ino, new_node);
+        cache.insert(new_ino, new_node);
 
         let ttl = Duration::new(MY_TTL_SEC, 0);
         let fuse_attr = fs_util::convert_to_fuse_attr(new_node_attr);
@@ -328,7 +331,8 @@ impl MetaData {
         let mut deferred_deletion = false;
         {
             // pre-check whether deferred delete or not
-            let node = self.cache.get(&ino).unwrap_or_else(|| {
+            let cache = self.cache.read().await;
+            let node = cache.get(&ino).unwrap_or_else(|| {
                 panic!(
                     "may_deferred_delete_node_helper() failed to \
                         find the i-node of ino={} to remove",
@@ -346,7 +350,8 @@ impl MetaData {
         }
         {
             // remove entry from parent i-node
-            let parent_node = self.cache.get_mut(&parent_ino).unwrap_or_else(|| {
+            let mut cache = self.cache.write().await;
+            let parent_node = cache.get_mut(&parent_ino).unwrap_or_else(|| {
                 panic!(
                     "may_deferred_delete_node_helper() failed to \
                         find the parent of ino={} for i-node of ino={}",
@@ -370,7 +375,8 @@ impl MetaData {
         if deferred_deletion {
             // deferred deletion
             // TODO: support thread-safe
-            let node = self.cache.get(&ino).unwrap_or_else(|| {
+            let cache = self.cache.read().await;
+            let node = cache.get(&ino).unwrap_or_else(|| {
                 panic!(
                     "impossible case, may_deferred_delete_node_helper() \
                         should already find the i-node of ino={} to remove",
@@ -395,7 +401,8 @@ impl MetaData {
             );
         } else {
             // immediate deletion
-            let inode = self.cache.remove(&ino).unwrap_or_else(|| {
+            let mut cache = self.cache.write().await;
+            let inode = cache.remove(&ino).unwrap_or_else(|| {
                 panic!(
                     "impossible case, may_deferred_delete_node_helper() \
                     should remove the i-node of ino={} immediately",
@@ -426,7 +433,8 @@ impl MetaData {
         let node_ino: INum;
         {
             // pre-checks
-            let parent_node = self.cache.get(&parent).unwrap_or_else(|| {
+            let cache = self.cache.read().await;
+            let parent_node = cache.get(&parent).unwrap_or_else(|| {
                 panic!(
                     "remove_node_helper() found fs is inconsistent, \
                         parent of ino={} should be in cache before remove its child",
@@ -453,7 +461,7 @@ impl MetaData {
                     node_ino = child_entry.ino();
                     if let SFlag::S_IFDIR = node_type {
                         // check the directory to delete is empty
-                        let dir_node = self.cache.get(&node_ino).unwrap_or_else(|| {
+                        let dir_node = cache.get(&node_ino).unwrap_or_else(|| {
                             panic!(
                                 "remove_node_helper() found fs is inconsistent, \
                                     directory name={:?} of ino={} \
@@ -481,7 +489,7 @@ impl MetaData {
                         }
                     }
 
-                    let child_inode = self.cache.get(&node_ino).unwrap_or_else(|| {
+                    let child_inode = cache.get(&node_ino).unwrap_or_else(|| {
                         panic!(
                             "remove_node_helper() found fs is inconsistent, \
                                 i-node name={:?} of ino={} found under the parent of ino={}, \
@@ -518,9 +526,10 @@ impl MetaData {
     }
 
     /// Lookup helper function to pre-check
-    fn lookup_pre_check(&self, parent: INum, name: &OsStr) -> anyhow::Result<(INum, SFlag)> {
+    async fn lookup_pre_check(&self, parent: INum, name: &OsStr) -> anyhow::Result<(INum, SFlag)> {
         // lookup child ino and type first
-        let parent_node = self.cache.get(&parent).unwrap_or_else(|| {
+        let cache = self.cache.read().await;
+        let parent_node = cache.get(&parent).unwrap_or_else(|| {
             panic!(
                 "lookup_helper() found fs is inconsistent, \
                         the parent i-node of ino={} should be in cache",
@@ -565,7 +574,8 @@ impl MetaData {
         let ttl = Duration::new(MY_TTL_SEC, 0);
         {
             // cache hit
-            if let Some(node) = self.cache.get(&ino) {
+            let cache = self.cache.read().await;
+            if let Some(node) = cache.get(&ino) {
                 debug!(
                     "lookup_helper() cache hit when searching i-node of \
                         ino={} and name={:?} under parent ino={}",
@@ -588,7 +598,8 @@ impl MetaData {
                     and i-node of ino={} and name={:?}",
                 parent, ino, child_name,
             );
-            let parent_node = self.cache.get_mut(&parent).unwrap_or_else(|| {
+            let mut cache = self.cache.write().await;
+            let parent_node = cache.get_mut(&parent).unwrap_or_else(|| {
                 panic!(
                     "lookup_helper() found fs is inconsistent, \
                         parent i-node of ino={} should be in cache",
@@ -608,7 +619,11 @@ impl MetaData {
                 SFlag::S_IFREG => {
                     let oflags = OFlag::O_RDWR;
                     parent_node
-                        .open_child_file(child_name, oflags)
+                        .open_child_file(
+                            child_name,
+                            oflags,
+                            Arc::<GlobalCache>::clone(&self.data_cache),
+                        )
                         .await
                         .context(format!(
                             "lookup_helper() failed to open child file name={:?} with flags={:?} \
@@ -633,7 +648,7 @@ impl MetaData {
             };
             let child_ino = child_node.get_ino();
             let attr = child_node.lookup_attr();
-            self.cache.insert(child_ino, child_node);
+            cache.insert(child_ino, child_node);
             let fuse_attr = fs_util::convert_to_fuse_attr(attr);
             debug!(
                 "lookup_helper() successfully found the i-node of ino={} and name={:?} \
@@ -645,7 +660,7 @@ impl MetaData {
     }
 
     /// Rename helper function to pre-check
-    fn rename_pre_check(
+    async fn rename_pre_check(
         &self,
         old_parent: INum,
         old_name: &OsStr,
@@ -653,7 +668,8 @@ impl MetaData {
         new_name: &OsStr,
         no_replace: bool,
     ) -> anyhow::Result<(RawFd, INum, RawFd, Option<INum>)> {
-        let old_parent_node = self.cache.get(&old_parent).unwrap_or_else(|| {
+        let cache = self.cache.read().await;
+        let old_parent_node = cache.get(&old_parent).unwrap_or_else(|| {
             panic!(
                 "rename() found fs is inconsistent, \
                     the parent i-node of ino={} should be in cache",
@@ -680,7 +696,7 @@ impl MetaData {
             }
             Some(old_entry) => {
                 debug_assert_eq!(&old_name, &old_entry.entry_name());
-                if self.cache.get(&old_entry.ino()).is_none() {
+                if cache.get(&old_entry.ino()).is_none() {
                     panic!(
                         "rename() found fs is inconsistent, the i-node of ino={} and name={:?} \
                             under parent directory of ino={} and name={:?} to rename should be in cache",
@@ -692,7 +708,7 @@ impl MetaData {
             }
         };
 
-        let new_parent_node = self.cache.get(&new_parent).unwrap_or_else(|| {
+        let new_parent_node = cache.get(&new_parent).unwrap_or_else(|| {
             panic!(
                 "rename() found fs is inconsistent, \
                     the new parent i-node of ino={} should be in cache",
@@ -703,7 +719,7 @@ impl MetaData {
         let new_entry_ino = if let Some(new_entry) = new_parent_node.get_entry(new_name) {
             debug_assert_eq!(&new_name, &new_entry.entry_name());
             let new_ino = new_entry.ino();
-            if self.cache.get(&new_ino).is_none() {
+            if cache.get(&new_ino).is_none() {
                 panic!(
                     "rename() found fs is inconsistent, the i-node of ino={} and name={:?} \
                         under parent directory of ino={} and name={:?} to replace should be in cache",
@@ -750,8 +766,9 @@ impl MetaData {
         // let new_parent_fd = param.new_parent_fd;
         let new_name = param.new_name;
 
-        let rename_in_cache_res =
-            self.rename_in_cache_helper(old_parent, &old_name, new_parent, &new_name);
+        let rename_in_cache_res = self
+            .rename_in_cache_helper(old_parent, &old_name, new_parent, &new_name)
+            .await;
         if let Some(replaced_entry) = rename_in_cache_res {
             debug_assert_eq!(
                 new_entry_ino,
@@ -762,7 +779,8 @@ impl MetaData {
                 DirEntry::new(new_entry_ino, old_name.clone(), replaced_entry.entry_type());
 
             // TODO: support thread-safe
-            let old_parent_node = self.cache.get_mut(&old_parent).unwrap_or_else(|| {
+            let mut cache = self.cache.write().await;
+            let old_parent_node = cache.get_mut(&old_parent).unwrap_or_else(|| {
                 panic!(
                     "impossible case when rename, the from parent i-node of ino={} should be in cache",
                     old_parent,
@@ -779,7 +797,7 @@ impl MetaData {
             );
             // TODO: finish rename exchange when libc::rename2 is available
             // call rename2 here to exchange two nodes
-            let exchanged_node = self.cache.get_mut(&new_entry_ino).unwrap_or_else(|| {
+            let exchanged_node = cache.get_mut(&new_entry_ino).unwrap_or_else(|| {
                 panic!(
                     "impossible case when rename, the new entry i-node of ino={} should be in cache",
                     new_entry_ino,
@@ -857,65 +875,53 @@ impl MetaData {
             old_name, old_parent, new_name, new_parent,
         ))?;
 
-        let moved_node = self.cache.get_mut(&old_entry_ino).unwrap_or_else(|| {
-            panic!(
+        {
+            let mut cache = self.cache.write().await;
+            let moved_node = cache.get_mut(&old_entry_ino).unwrap_or_else(|| {
+                panic!(
                 "impossible case when rename, the from entry i-node of ino={} should be in cache",
                 old_entry_ino,
             )
-        });
-        moved_node.set_parent_ino(new_parent);
-        moved_node.set_name(new_name.to_os_string());
-        let moved_attr = moved_node
-            .load_attribute()
-            .await
-            .context(format!(
-                "rename_may_replace_helper() failed to \
-                    load attribute of old entry i-node of ino={}",
-                old_entry_ino,
-            ))
-            .unwrap_or_else(|e| {
-                panic!(
-                    "rename() failed, the error is: {}",
-                    util::format_anyhow_error(&e)
-                )
             });
-        debug_assert_eq!(moved_attr.ino, moved_node.get_ino());
-        debug_assert_eq!(moved_attr.ino, old_entry_ino);
-        debug!(
-            "rename_may_replace_helper() successfully moved the from i-node \
+            moved_node.set_parent_ino(new_parent);
+            moved_node.set_name(new_name.to_os_string());
+            let moved_attr = moved_node
+                .load_attribute()
+                .await
+                .context(format!(
+                    "rename_may_replace_helper() failed to \
+                    load attribute of old entry i-node of ino={}",
+                    old_entry_ino,
+                ))
+                .unwrap_or_else(|e| {
+                    panic!(
+                        "rename() failed, the error is: {}",
+                        util::format_anyhow_error(&e)
+                    )
+                });
+            debug_assert_eq!(moved_attr.ino, moved_node.get_ino());
+            debug_assert_eq!(moved_attr.ino, old_entry_ino);
+            debug!(
+                "rename_may_replace_helper() successfully moved the from i-node \
                 of ino={} and name={:?} under from parent ino={} to \
                 the to i-node of ino={} and name={:?} under to parent ino={}",
-            old_entry_ino, old_name, old_parent, old_entry_ino, new_name, new_parent,
-        );
+                old_entry_ino, old_name, old_parent, old_entry_ino, new_name, new_parent,
+            );
+        }
 
-        let rename_replace_res =
-            self.rename_in_cache_helper(old_parent, &old_name, new_parent, &new_name);
+        let rename_replace_res = self
+            .rename_in_cache_helper(old_parent, &old_name, new_parent, &new_name)
+            .await;
         debug_assert!(
             rename_replace_res.is_none(),
             "may_deferred_delete_node_helper() should already have \
                 deleted the target i-node to be replaced",
         );
-        // if let Some(replaced_entry) = rename_replace_res {
-        //     debug_assert!(
-        //         new_entry_ino.is_some(),
-        //         "rename_may_replace_helper() should replace new entry",
-        //     );
-        //     debug_assert_eq!(
-        //         new_entry_ino,
-        //         Some(replaced_entry.ino()),
-        //         "rename_may_replace_helper() replaced entry i-number not match",
-        //     );
-        // } else {
-        //     debug_assert!(
-        //         new_entry_ino.is_none(),
-        //         "rename_may_replace_helper() should not replace new entry",
-        //     );
-        // }
         Ok(())
     }
 
     /// Rename in cache helper
-    fn rename_in_cache_helper(
+    async fn rename_in_cache_helper(
         &mut self,
         old_parent: INum,
         old_name: &OsStr,
@@ -923,8 +929,8 @@ impl MetaData {
         new_name: &OsStr,
     ) -> Option<DirEntry> {
         let entry_to_move = {
-            // TODO: support thread-safe
-            let old_parent_node = self.cache.get_mut(&old_parent).unwrap_or_else(|| {
+            let mut cache = self.cache.write().await;
+            let old_parent_node = cache.get_mut(&old_parent).unwrap_or_else(|| {
                 panic!(
                     "impossible case when rename, the from parent i-node of ino={} should be in cache",
                     old_parent,
@@ -945,9 +951,10 @@ impl MetaData {
                 ),
             }
         };
+        node::rename_fullpath_recursive(entry_to_move.ino(), new_parent, &self.cache).await;
         {
-            // TODO: support thread-safe
-            let new_parent_node = self.cache.get_mut(&new_parent).unwrap_or_else(|| {
+            let mut cache = self.cache.write().await;
+            let new_parent_node = cache.get_mut(&new_parent).unwrap_or_else(|| {
                 panic!(
                     "impossible case when rename, the to parent i-node of ino={} should be in cache",
                     new_parent
@@ -1002,52 +1009,16 @@ impl MetaData {
     }
 
     /// Read helper
-    fn read_helper(content: &[u8], offset: usize, size: usize) -> anyhow::Result<Vec<u8>> {
-        match content.len().cmp(&(offset.cast())) {
-            std::cmp::Ordering::Greater => {
-                let read_data = if offset.overflow_add(size) <= content.len() {
-                    debug!("read exact {} bytes", size);
-                    content
-                        .get(offset..offset.overflow_add(size))
-                        .ok_or_else(|| util::build_sys_error_from_errno(Errno::EINVAL))
-                        .context(format!(
-                            "read_helper() failed to get file content from offset={} and size={}",
-                            offset, size,
-                        ))?
-                } else {
-                    debug!(
-                        "read_helper() read {} bytes only, less than expected size={}",
-                        offset.overflow_add(size).overflow_sub(content.len()),
-                        size,
-                    );
-                    content
-                        .get(offset..)
-                        .ok_or_else(|| util::build_sys_error_from_errno(Errno::EINVAL))
-                        .context(format!(
-                            "read_helper() failed to get file content from offset={}",
-                            offset
-                        ))?
-                };
-                // TODO: consider zero copy
-                Ok(read_data.to_vec())
-            }
-            std::cmp::Ordering::Equal => {
-                debug!(
-                    "read_helper() found offset={} equals file length={}, nothing to read",
-                    offset,
-                    content.len(),
-                );
-                Ok(Vec::new())
-            }
-            std::cmp::Ordering::Less => util::build_error_result_from_errno(
+    fn read_helper(content: Vec<IoMemBlock>, size: usize) -> anyhow::Result<Vec<IoMemBlock>> {
+        if content.iter().filter(|c| !c.can_convert()).count() > 0 {
+            return util::build_error_result_from_errno(
                 Errno::EINVAL,
-                format!(
-                    "read_helper() failed to read, offset={} beyond file length={}",
-                    offset,
-                    content.len(),
-                ),
-            ),
+                "The content is out of scope".to_string(),
+            );
         }
+        let content_total_len: usize = content.iter().map(|s| s.len()).sum();
+        debug!("read {} data, expected size {}", content_total_len, size);
+        Ok(content)
     }
 
     /// Set attribute helper function
@@ -1203,10 +1174,11 @@ impl FileSystem for MemFs {
     /// Called before any other filesystem method.
     async fn init(&self, req: &Request<'_>) -> nix::Result<()> {
         let this = self.0.lock().await;
+        let cache = this.cache.read().await;
         debug!(
             "init(req={:?}), cache size={}, trash size={}",
             req,
-            this.cache.len(),
+            cache.len(),
             this.trash.len(),
         );
         Ok(())
@@ -1216,10 +1188,11 @@ impl FileSystem for MemFs {
     /// Called on filesystem exit.
     async fn destroy(&self, req: &Request<'_>) {
         let this = self.0.lock().await;
+        let cache = this.cache.read().await;
         debug!(
             "destroy(req={:?}), cache size={}, trash size={}",
             req,
-            this.cache.len(),
+            cache.len(),
             this.trash.len(),
         );
     }
@@ -1235,7 +1208,7 @@ impl FileSystem for MemFs {
         let mut this = self.0.lock().await;
 
         debug!("lookup(parent={}, name={:?}, req={:?})", parent, name, req,);
-        let pre_check_res = this.lookup_pre_check(parent, name);
+        let pre_check_res = this.lookup_pre_check(parent, name).await;
         let (ino, child_type) = match pre_check_res {
             Ok((ino, child_type)) => (ino, child_type),
             Err(e) => {
@@ -1276,7 +1249,8 @@ impl FileSystem for MemFs {
         let ino = req.nodeid();
         debug!("getattr(ino={}, req={:?})", ino, req);
 
-        let node = this.cache.get(&ino).unwrap_or_else(|| {
+        let cache = this.cache.read().await;
+        let node = cache.get(&ino).unwrap_or_else(|| {
             panic!(
                 "getattr() found fs is inconsistent, \
                     the i-node of ino={} should be in cache",
@@ -1314,7 +1288,8 @@ impl FileSystem for MemFs {
         let ino = req.nodeid();
         debug!("open(ino={}, flags={}, req={:?})", ino, flags, req);
 
-        let node = this.cache.get(&ino).unwrap_or_else(|| {
+        let cache = this.cache.read().await;
+        let node = cache.get(&ino).unwrap_or_else(|| {
             panic!(
                 "open() found fs is inconsistent, the i-node of ino={} should be in cache",
                 ino,
@@ -1368,7 +1343,8 @@ impl FileSystem for MemFs {
         debug!("forget(ino={}, nlookup={}, req={:?})", ino, nlookup, req,);
         let current_count: i64;
         {
-            let node = this.cache.get(&ino).unwrap_or_else(|| {
+            let cache = this.cache.read().await;
+            let node = cache.get(&ino).unwrap_or_else(|| {
                 panic!(
                     "forget() found fs is inconsistent, \
                         the i-node of ino={} should be in cache",
@@ -1395,14 +1371,15 @@ impl FileSystem for MemFs {
                 // TODO: support thread-safe
                 if this.trash.contains(&ino) {
                     // deferred deletion
-                    let deleted_node = this.cache.remove(&ino).unwrap_or_else(|| {
+                    this.trash.remove(&ino);
+                    let mut cache = this.cache.write().await;
+                    let deleted_node = cache.remove(&ino).unwrap_or_else(|| {
                         panic!(
                             "forget() found fs is inconsistent, i-node of ino={} \
                                 found in trash, but no i-node found for deferred deletion",
                             ino,
                         );
                     });
-                    this.trash.remove(&ino);
                     debug_assert_eq!(deleted_node.get_lookup_count(), 0);
                     debug!(
                         "forget() deferred deleted i-node of ino={} and name={:?}",
@@ -1421,7 +1398,7 @@ impl FileSystem for MemFs {
         param: SetAttrParam,
         reply: ReplyAttr,
     ) -> nix::Result<usize> {
-        let mut this = self.0.lock().await;
+        let this = self.0.lock().await;
         let ino = req.nodeid();
         let valid = param.valid;
         let fh = param.fh;
@@ -1466,7 +1443,8 @@ impl FileSystem for MemFs {
             warn!("setattr() enountered valid=0, the req={:?}", req);
         }
 
-        let inode = this.cache.get_mut(&ino).unwrap_or_else(|| {
+        let mut cache = this.cache.write().await;
+        let inode = cache.get_mut(&ino).unwrap_or_else(|| {
             panic!(
                 "setattr() found fs is inconsistent, \
                     the i-node of ino={} should be in cache",
@@ -1661,7 +1639,8 @@ impl FileSystem for MemFs {
 
         debug!("unlink(parent={}, name={:?}, req={:?}", parent, name, req,);
         let entry_type = {
-            let parent_node = this.cache.get(&parent).unwrap_or_else(|| {
+            let cache = this.cache.read().await;
+            let parent_node = cache.get(&parent).unwrap_or_else(|| {
                 panic!(
                     "unlink() found fs is inconsistent, \
                         parent of ino={} should be in cache before remove its child",
@@ -1779,8 +1758,9 @@ impl FileSystem for MemFs {
         let no_replace = flags == 1; // RENAME_NOREPLACE
         let exchange = flags == 2; // RENAME_EXCHANGE
 
-        let pre_check_res =
-            this.rename_pre_check(old_parent, &old_name, new_parent, &new_name, no_replace);
+        let pre_check_res = this
+            .rename_pre_check(old_parent, &old_name, new_parent, &new_name, no_replace)
+            .await;
         let (old_parent_fd, old_entry_ino, new_parent_fd, new_entry_ino) = match pre_check_res {
             Ok((old_parent_fd, old_entry_ino, new_parent_fd, new_entry_ino)) => {
                 (old_parent_fd, old_entry_ino, new_parent_fd, new_entry_ino)
@@ -1845,7 +1825,7 @@ impl FileSystem for MemFs {
         size: u32,
         reply: ReplyData,
     ) -> nix::Result<usize> {
-        let mut this = self.0.lock().await;
+        let this = self.0.lock().await;
         let ino = req.nodeid();
         debug!(
             "read(ino={}, fh={}, offset={}, size={}, req={:?})",
@@ -1857,17 +1837,26 @@ impl FileSystem for MemFs {
             offset
         );
 
-        let inode = this.cache.get_mut(&ino).unwrap_or_else(|| {
+        let mut cache = this.cache.write().await;
+        let inode = cache.get_mut(&ino).unwrap_or_else(|| {
             panic!(
                 "read() found fs is inconsistent, \
                     the i-node of ino={} should be in cache",
                 ino,
             );
         });
+
+        let size: u64 =
+            if offset.cast::<u64>().overflow_add(size.cast::<u64>()) > inode.get_attr().size {
+                inode.get_attr().size.overflow_sub(offset.cast::<u64>())
+            } else {
+                size.cast()
+            };
+
         // let node_type = node.get_type();
         // let file_data = if SFlag::S_IFREG == node_type {
-        if inode.need_load_file_data() {
-            let load_res = inode.load_data().await;
+        if inode.need_load_file_data(offset.cast(), size.cast()) {
+            let load_res = inode.load_data(offset.cast(), size.cast()).await;
             if let Err(e) = load_res {
                 debug!(
                     "read() failed to load file data of ino={} and name={:?}, the error is: {}",
@@ -1878,7 +1867,8 @@ impl FileSystem for MemFs {
                 return reply.error(e).await;
             }
         }
-        let file_data = inode.get_file_data();
+        let file_data = inode.get_file_data(offset.cast(), size.cast());
+        debug!("file_data is {:?}", file_data);
         // } else if SFlag::S_IFLNK == node_type {
         //     if node.need_load_symlink_target_data() {
         //         let load_res = node.load_data().await;
@@ -1904,15 +1894,15 @@ impl FileSystem for MemFs {
         // } else {
         //     panic!("read() cannot read directory data");
         // };
-        match MetaData::read_helper(file_data, offset.cast(), size.cast()) {
-            Ok(read_data_vec) => {
+        match MetaData::read_helper(file_data, size.cast()) {
+            Ok(content) => {
                 debug!(
                     "read() successfully read {} bytes from the file of ino={} and name={:?}",
-                    read_data_vec.len(),
+                    content.iter().map(|s| s.len()).sum::<usize>(),
                     ino,
                     inode.get_name(),
                 );
-                reply.data(read_data_vec).await
+                reply.data(content).await
             }
             Err(e) => {
                 debug!(
@@ -1941,7 +1931,7 @@ impl FileSystem for MemFs {
         flags: u32,
         reply: ReplyWrite,
     ) -> nix::Result<usize> {
-        let mut this = self.0.lock().await;
+        let this = self.0.lock().await;
 
         let ino = req.nodeid();
         debug!(
@@ -1955,7 +1945,8 @@ impl FileSystem for MemFs {
             // req.request,
         );
 
-        let inode = this.cache.get_mut(&ino).unwrap_or_else(|| {
+        let mut cache = this.cache.write().await;
+        let inode = cache.get_mut(&ino).unwrap_or_else(|| {
             panic!(
                 "write() found fs is inconsistent, \
                     the i-node of ino={} should be in cache",
@@ -2074,7 +2065,8 @@ impl FileSystem for MemFs {
             ino, fh, flags, lock_owner, flush, req,
         );
         // TODO: handle lock_owner
-        let inode = this.cache.get(&ino).unwrap_or_else(|| {
+        let cache = this.cache.read().await;
+        let inode = cache.get(&ino).unwrap_or_else(|| {
             panic!(
                 "release() found fs is inconsistent, \
                     the i-node of ino={} should be in cache",
@@ -2162,7 +2154,8 @@ impl FileSystem for MemFs {
         let ino = req.nodeid();
         debug!("opendir(ino={}, flags={}, req={:?})", ino, flags, req,);
 
-        let inode = this.cache.get(&ino).unwrap_or_else(|| {
+        let cache = this.cache.read().await;
+        let inode = cache.get(&ino).unwrap_or_else(|| {
             panic!(
                 "opendir() found fs is inconsistent, \
                     the i-node of ino={} should be in cache",
@@ -2208,7 +2201,7 @@ impl FileSystem for MemFs {
         offset: i64,
         mut reply: ReplyDirectory,
     ) -> nix::Result<usize> {
-        let mut this = self.0.lock().await;
+        let this = self.0.lock().await;
 
         let ino = req.nodeid();
         debug!(
@@ -2240,7 +2233,8 @@ impl FileSystem for MemFs {
             num_child_entries
         };
 
-        let inode = this.cache.get_mut(&ino).unwrap_or_else(|| {
+        let mut cache = this.cache.write().await;
+        let inode = cache.get_mut(&ino).unwrap_or_else(|| {
             panic!(
                 "readdir() found fs is inconsistent, \
                     the i-node of ino={} should be in cache",
@@ -2248,7 +2242,7 @@ impl FileSystem for MemFs {
             );
         });
         if inode.need_load_dir_data() {
-            let load_res = inode.load_data().await;
+            let load_res = inode.load_data(0, 0).await;
             if let Err(e) = load_res {
                 debug!(
                     "readdir() failed to load the data for directory of ino={} and name={:?}, \
@@ -2290,7 +2284,8 @@ impl FileSystem for MemFs {
             ino, fh, flags, req,
         );
         // TODO: handle flags
-        let inode = this.cache.get(&ino).unwrap_or_else(|| {
+        let cache = this.cache.read().await;
+        let inode = cache.get(&ino).unwrap_or_else(|| {
             panic!(
                 "releasedir() found fs is inconsistent, \
                     the i-node of ino={} should be in cache",
@@ -2362,7 +2357,8 @@ impl FileSystem for MemFs {
         };
         debug!("statfs(ino={}, req={:?})", ino, req);
 
-        let inode = this.cache.get(&ino).unwrap_or_else(|| {
+        let cache = this.cache.read().await;
+        let inode = cache.get(&ino).unwrap_or_else(|| {
             panic!(
                 "statfs() found fs is inconsistent, \
                     the i-node of ino={} should be in cache",
@@ -2419,7 +2415,8 @@ impl FileSystem for MemFs {
 
         let ino = req.nodeid();
         debug!("readlink(ino={}, req={:?})", ino, req,);
-        let symlink_node = this.cache.get(&ino).unwrap_or_else(|| {
+        let cache = this.cache.read().await;
+        let symlink_node = cache.get(&ino).unwrap_or_else(|| {
             panic!(
                 "readlink() found fs is inconsistent, \
                     the symlink i-node of ino={} should be in cache",
@@ -2428,9 +2425,10 @@ impl FileSystem for MemFs {
         });
         let target_path = symlink_node.get_symlink_target();
         debug!(
-            "readlink() successfully read the link of symlink node of ino={} and name={:?}",
+            "readlink() successfully read the link of symlink node of ino={} and name={:?}, target_path={:?}",
             ino,
             symlink_node.get_name(),
+            target_path,
         );
         reply
             .data(target_path.as_os_str().to_owned().into_vec())
@@ -2486,10 +2484,11 @@ impl FileSystem for MemFs {
     async fn interrupt(&self, req: &Request<'_>, unique: u64) {
         let this = self.0.lock().await;
 
+        let cache = this.cache.read().await;
         debug!(
             "interrupt(req={:?}), cache size={}, trash size={}",
             req,
-            this.cache.len(),
+            cache.len(),
             this.trash.len(),
         );
         // TODO: handle FUSE_INTERRUPT

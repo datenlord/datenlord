@@ -208,6 +208,7 @@ spec:
             - "--mountpoint=$(FUSE_MOUNT_DIR)"
             - "--volume_info=$(FUSE_VOLUME_INFO)"
             - "--etcd=$(ETCD_ENDPOINT)"
+            - "--capacity=$(CACHE_CAPACITY)"
           lifecycle:
             #postStart:
             #  exec:
@@ -222,6 +223,9 @@ spec:
               value: csi-etcd-svc:2379
             - name: FUSE_VOLUME_INFO
               value: https://mybucket
+              # The capacity for the cache in memfs, 1GB
+            - name: CACHE_CAPACITY
+              value: "1073741824"
             - name: RUST_LOG
               value: debug
             - name: RUST_BACKTRACE
