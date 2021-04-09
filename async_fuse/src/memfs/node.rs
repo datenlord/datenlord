@@ -1,22 +1,27 @@
 //! The implementation of filesystem node
 
+use super::cache::{GlobalCache, IoMemBlock};
+use super::dir::DirEntry;
+use super::fs_util::{self, FileAttr};
+use crate::fuse::fuse_reply::AsIoVec;
+use crate::fuse::protocol::INum;
+use crate::util;
 use anyhow::Context;
 use log::debug;
 use nix::fcntl::{self, FcntlArg, OFlag};
 use nix::sys::stat::SFlag;
 use nix::sys::stat::{self, Mode};
 use nix::unistd;
+use smol::lock::RwLock;
 use std::collections::BTreeMap;
+use std::collections::VecDeque;
 use std::ffi::{OsStr, OsString};
-use std::os::unix::io::RawFd;
+use std::os::unix::{ffi::OsStrExt, io::RawFd};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{self, AtomicI64};
+use std::sync::Arc;
 use std::time::SystemTime;
 use utilities::{Cast, OverflowArithmetic};
-
-use super::dir::DirEntry;
-use super::fs_util::{self, FileAttr};
-use crate::fuse::protocol::INum;
 
 // /// The symlink target node data
 // #[derive(Debug)]
@@ -166,7 +171,7 @@ enum NodeData {
     /// Directory entry data
     Directory(BTreeMap<OsString, DirEntry>),
     /// File content data
-    RegFile(Vec<u8>),
+    RegFile(Arc<GlobalCache>),
     /// Symlink target data
     // SymLink(Box<SymLinkData>),
     SymLink(PathBuf),
@@ -179,6 +184,8 @@ pub struct Node {
     parent: u64,
     /// Node name
     name: OsString,
+    /// Full path
+    full_path: OsString,
     /// Node attribute
     attr: FileAttr,
     /// Node data
@@ -216,10 +223,18 @@ impl Drop for Node {
 
 impl Node {
     /// Create `Node`
-    const fn new(parent: u64, name: OsString, attr: FileAttr, data: NodeData, fd: RawFd) -> Self {
+    const fn new(
+        parent: u64,
+        name: OsString,
+        full_path: OsString,
+        attr: FileAttr,
+        data: NodeData,
+        fd: RawFd,
+    ) -> Self {
         Self {
             parent,
             name,
+            full_path,
             attr,
             data,
             fd,
@@ -262,6 +277,16 @@ impl Node {
     /// Set node name
     pub fn set_name(&mut self, name: OsString) {
         self.name = name;
+    }
+
+    /// Get full path
+    pub fn full_path(&self) -> &OsStr {
+        self.full_path.as_os_str()
+    }
+
+    /// Set full path
+    pub fn set_full_path(&mut self, full_path: OsString) {
+        self.full_path = full_path;
     }
 
     /// Get node type, directory or file
@@ -389,7 +414,7 @@ impl Node {
     pub fn is_node_data_empty(&self) -> bool {
         match self.data {
             NodeData::Directory(ref dir_node) => dir_node.is_empty(),
-            NodeData::RegFile(ref file_node) => file_node.is_empty(),
+            NodeData::RegFile(..) => true, // always check the cache
             NodeData::SymLink(..) => panic!("forbidden to check symlink is empty or not"),
         }
     }
@@ -434,13 +459,27 @@ impl Node {
     }
 
     /// Check whether to load file content data or not
-    pub fn need_load_file_data(&self) -> bool {
+    pub fn need_load_file_data(&self, offset: usize, len: usize) -> bool {
         debug_assert_eq!(
             self.attr.kind,
             SFlag::S_IFREG,
             "fobidden to check non-file node need load data or not",
         );
-        self.need_load_node_data_helper()
+
+        if offset > self.attr.size.cast() {
+            return false;
+        }
+
+        match self.data {
+            NodeData::RegFile(ref cache) => {
+                let file_cache = cache.get_file_cache(self.full_path.as_bytes(), offset, len);
+                file_cache.is_empty()
+                    || file_cache.iter().filter(|b| !(*b).can_convert()).count() != 0
+            }
+            NodeData::Directory(..) | NodeData::SymLink(..) => {
+                panic!("need_load_file_data should handle regular file")
+            }
+        }
     }
 
     // /// Check whether to load symlink target data or not
@@ -594,9 +633,13 @@ impl Node {
             Path::new(&target_path_osstr).to_owned()
         };
 
+        let mut full_path = OsString::clone(&self.full_path);
+        full_path.push(OsString::clone(&child_symlink_name));
+
         Ok(Self::new(
             self.get_ino(),
             child_symlink_name,
+            full_path,
             child_attr,
             // NodeData::SymLink(Box::new(SymLinkData::new(child_fd, target_path).await)),
             NodeData::SymLink(target_path),
@@ -680,10 +723,15 @@ impl Node {
             debug_assert!(previous_value.is_none()); // double check creation race
         }
 
+        let mut full_path = OsString::clone(&self.full_path);
+        full_path.push(OsString::clone(&child_dir_name));
+        full_path.push("/");
+
         // lookup count and open count are increased to 1 by creation
         let child_node = Self::new(
             self.get_ino(),
             child_dir_name,
+            full_path,
             child_attr,
             NodeData::Directory(BTreeMap::new()),
             child_raw_fd,
@@ -735,6 +783,7 @@ impl Node {
         oflags: OFlag,
         mode: Mode,
         create_file: bool,
+        global_cache: Arc<GlobalCache>,
     ) -> anyhow::Result<Self> {
         let ino = self.get_ino();
         let fd = self.fd;
@@ -774,11 +823,15 @@ impl Node {
             debug_assert!(previous_value.is_none()); // double check creation race
         }
 
+        let mut full_path = OsString::clone(&self.full_path);
+        full_path.push(OsString::clone(&child_file_name));
+
         Ok(Self::new(
             self.get_ino(),
             child_file_name,
+            full_path,
             child_attr,
-            NodeData::RegFile(Vec::new()),
+            NodeData::RegFile(global_cache),
             child_fd,
         ))
     }
@@ -788,12 +841,14 @@ impl Node {
         &mut self,
         child_file_name: OsString,
         oflags: OFlag,
+        global_cache: Arc<GlobalCache>,
     ) -> anyhow::Result<Self> {
         self.open_child_file_helper(
             child_file_name,
             oflags,
             Mode::empty(),
             false, // create
+            global_cache,
         )
         .await
     }
@@ -804,6 +859,7 @@ impl Node {
         child_file_name: OsString,
         oflags: OFlag,
         mode: Mode,
+        global_cache: Arc<GlobalCache>,
     ) -> anyhow::Result<Self> {
         let create_res = self
             .open_child_file_helper(
@@ -811,6 +867,7 @@ impl Node {
                 oflags,
                 mode,
                 true, // create
+                global_cache,
             )
             .await;
         if create_res.is_ok() {
@@ -820,8 +877,9 @@ impl Node {
     }
 
     // TODO: improve `load_data`, do not load all file content and directory entries at once
-    /// Load data from directory, file or symlink target
-    pub async fn load_data(&mut self) -> anyhow::Result<usize> {
+    /// Load data from directory, file or symlink target.
+    /// The `offset` and `len` is used for regular file
+    pub async fn load_data(&mut self, offset: usize, len: usize) -> anyhow::Result<usize> {
         match self.data {
             NodeData::Directory(..) => {
                 // let dir_entry_map = self.load_dir_data_helper().await?;
@@ -836,18 +894,35 @@ impl Node {
                 );
                 Ok(entry_count)
             }
-            NodeData::RegFile(..) => {
-                // let file_data_vec = self.load_file_data_helper().await?;
-                let file_data_vec =
-                    fs_util::load_file_data(self.get_fd(), self.get_attr().size.cast())
-                        .await
-                        .context("load_data() failed to load file content data")?;
+            NodeData::RegFile(ref global_cache) => {
+                let aligned_offset = global_cache.round_down(offset);
+                let new_len =
+                    global_cache.round_up(offset.overflow_sub(aligned_offset).overflow_add(len));
+
+                let new_len = if new_len.overflow_add(aligned_offset) > self.attr.size.cast() {
+                    self.attr.size.cast::<usize>().overflow_sub(aligned_offset)
+                } else {
+                    new_len
+                };
+
+                let file_data_vec = fs_util::load_file_data(self.get_fd(), aligned_offset, new_len)
+                    .await
+                    .context("load_data() failed to load file content data")?;
                 let read_size = file_data_vec.len();
-                self.data = NodeData::RegFile(file_data_vec);
                 debug!(
                     "load_data() successfully load {} byte file content data",
                     read_size
                 );
+
+                if let Err(e) = global_cache.write_or_update(
+                    self.full_path.as_bytes(),
+                    aligned_offset,
+                    read_size,
+                    &file_data_vec,
+                ) {
+                    panic!("writing data error while loading data: {}", e);
+                }
+
                 Ok(read_size)
             }
             NodeData::SymLink(..) => {
@@ -1050,12 +1125,14 @@ impl Node {
     // File only methods
 
     /// Get file data
-    pub fn get_file_data(&self) -> &Vec<u8> {
+    pub fn get_file_data(&self, offset: usize, len: usize) -> Vec<IoMemBlock> {
         match self.data {
             NodeData::Directory(..) | NodeData::SymLink(..) => {
                 panic!("forbidden to load FileData from non-file node")
             }
-            NodeData::RegFile(ref file_data) => file_data,
+            NodeData::RegFile(ref cache) => {
+                cache.get_file_cache(self.full_path.as_bytes(), offset, len)
+            }
         }
     }
 
@@ -1068,52 +1145,37 @@ impl Node {
         oflags: OFlag,
         write_to_disk: bool,
     ) -> anyhow::Result<usize> {
-        let ino = self.get_ino();
-        let file_data_vec = match self.data {
+        let this: &Self = self;
+
+        let ino = this.get_ino();
+        if this.need_load_file_data(offset.cast(), data.len()) {
+            let load_res = self.load_data(offset.cast(), data.len()).await;
+            if let Err(e) = load_res {
+                debug!(
+                    "read() failed to load file data of ino={} and name={:?}, the error is: {}",
+                    ino,
+                    self.get_name(),
+                    util::format_anyhow_error(&e),
+                );
+                return Err(e);
+            }
+        }
+
+        let cache = match self.data {
             NodeData::Directory(..) | NodeData::SymLink(..) => {
                 panic!("forbidden to load FileData from non-file node")
             }
-            NodeData::RegFile(ref mut file_data) => file_data,
+            NodeData::RegFile(ref file_data) => file_data,
         };
 
-        let size_after_write = data.len().overflow_add(offset.cast::<usize>());
-        if file_data_vec.capacity() < size_after_write {
-            let before_cap = file_data_vec.capacity();
-            let extra_space_size = size_after_write.overflow_sub(file_data_vec.capacity());
-            file_data_vec.reserve(extra_space_size);
-            // TODO: handle OOM when reserving
-            // let result = file_data.try_reserve(extra_space_size);
-            // if result.is_err() {
-            //     warn!(
-            //         "write_file() cannot reserve enough space, \
-            //            the write space needed {} bytes",
-            //         extra_space_size);
-            //     reply.error(ENOMEM);
-            //     return;
-            // }
-            debug!(
-                "write_file() enlarged the file data vector capacity from {} to {}",
-                before_cap,
-                file_data_vec.capacity(),
-            );
+        if let Err(e) = cache.write_or_update(
+            self.full_path.as_bytes(),
+            offset.cast(),
+            data.len(),
+            data.as_slice(),
+        ) {
+            panic!("writing cache error while writing data: {}", e);
         }
-        match file_data_vec.len().cmp(&(offset.cast())) {
-            std::cmp::Ordering::Greater => {
-                file_data_vec.truncate(offset.cast());
-                debug!(
-                    "write_file() truncated the file of ino={} to size={}",
-                    ino, offset
-                );
-            }
-            std::cmp::Ordering::Less => {
-                let zero_padding_size = offset.cast::<usize>().overflow_sub(file_data_vec.len());
-                let mut zero_padding_vec = vec![0_u8; zero_padding_size];
-                file_data_vec.append(&mut zero_padding_vec);
-            }
-            std::cmp::Ordering::Equal => (),
-        }
-        // TODO: consider zero copy
-        file_data_vec.extend_from_slice(&data);
 
         let fcntl_oflags = fcntl::FcntlArg::F_SETFL(oflags);
         let fd = fh.cast();
@@ -1129,8 +1191,13 @@ impl Node {
                 .context("write_file() failed to write to disk")?;
             debug_assert_eq!(data_len, written_size);
         }
+
         // update the attribute of the written file
-        self.attr.size = file_data_vec.len().cast();
+        self.attr.size = std::cmp::max(
+            self.attr.size,
+            (offset.cast::<u64>()).overflow_add(written_size.cast()),
+        );
+        debug!("file {:?} size = {:?}", self.name, self.attr.size);
         self.update_mtime_ctime_to_now();
 
         Ok(written_size)
@@ -1149,6 +1216,7 @@ impl Node {
         let root_node = Self::new(
             root_ino,
             name,
+            OsString::from("/"),
             attr,
             NodeData::Directory(BTreeMap::new()),
             dir_fd,
@@ -1160,6 +1228,69 @@ impl Node {
         //     .context("open_root_node() failed to load root directory entry data")?;
 
         Ok(root_node)
+    }
+}
+
+/// Rename all the files
+pub async fn rename_fullpath_recursive(
+    ino: INum,
+    parent: INum,
+    cache: &RwLock<BTreeMap<INum, Node>>,
+) {
+    let mut node_pool: VecDeque<(INum, INum)> = VecDeque::new();
+    node_pool.push_back((ino, parent));
+
+    while !node_pool.is_empty() {
+        let (child, parent) = node_pool
+            .pop_front()
+            .unwrap_or_else(|| panic!("Should not be None, just checked before"));
+
+        let mut parent_path = {
+            let r_cache = cache.read().await;
+            let parent_node = r_cache.get(&parent).unwrap_or_else(|| {
+                panic!(
+                "impossible case when rename, the parent i-node of ino={} should be in the cache",
+                parent
+            )
+            });
+            parent_node.full_path().to_owned()
+        };
+
+        {
+            let mut w_cache = cache.write().await;
+            let child_node = w_cache.get_mut(&child).unwrap_or_else(|| {
+                panic!(
+                "impossible case when rename, the child i-node of ino={} should be in the cache",
+                child
+            )
+            });
+            child_node.set_parent_ino(parent);
+            let old_path = child_node.full_path();
+            let new_path = match child_node.data {
+                NodeData::Directory(ref dir_data) => {
+                    dir_data.values().into_iter().for_each(|grandchild_node| {
+                        node_pool.push_back((grandchild_node.ino(), child));
+                    });
+                    parent_path.push(child_node.get_name());
+                    parent_path.push("/");
+                    parent_path
+                }
+                NodeData::SymLink(..) | NodeData::RegFile(..) => {
+                    parent_path.push(child_node.get_name());
+                    parent_path
+                }
+            };
+
+            if let NodeData::RegFile(ref global_cache) = child_node.data {
+                if let Err(e) = global_cache.rename(old_path.as_bytes(), new_path.as_bytes()) {
+                    panic!(
+                        "rename {:?} to {:?} in cache should not fail, error: {}",
+                        old_path, new_path, e
+                    );
+                }
+            }
+            child_node.set_full_path(new_path);
+        }
     }
 }
 

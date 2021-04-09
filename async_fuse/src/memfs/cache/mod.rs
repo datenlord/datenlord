@@ -1,15 +1,24 @@
+//! This is the cache implementation for the memfs
+
+use crate::fuse::fuse_reply::{AsIoVec, CouldBeAsIoVecList};
 use aligned_utils::bytes::AlignedBytes;
 use common::error::DatenLordResult;
 use lockfree_cuckoohash::{pin, LockFreeCuckooHash as HashMap};
 use log::debug;
+use nix::sys::uio::IoVec;
+// TODO: use smol RwLock
 use parking_lot::{Mutex, RwLock};
 use priority_queue::PriorityQueue;
+use std::ffi::OsStr;
+use std::fmt::{Debug, Error, Formatter};
 use std::hash::{Hash, Hasher};
 use std::ops::Deref;
+use std::os::unix::ffi::OsStrExt;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use utilities::{Cast, OverflowArithmetic};
 
-/// The size of a page
+/// Page Size
 const PAGE_SIZE: usize = 4096;
 /// The size of a memory block in KB, default is 64kB
 const MEMORY_BLOCK_SIZE_IN_KB: usize = 64;
@@ -18,16 +27,34 @@ const MEMORY_BLOCK_SIZE_IN_BYTE: usize = MEMORY_BLOCK_SIZE_IN_KB * 1024;
 /// The number of memory block in a Memory Bucket
 const MEMORY_BUCKET_VEC_SIZE: usize = 16;
 /// The size of a memory bucket in byte default is, 64 * 16 kB.
+#[allow(dead_code)]
 const MEMORY_BUCKET_SIZE_IN_BYTE: usize = MEMORY_BUCKET_VEC_SIZE * MEMORY_BLOCK_SIZE_IN_KB * 1024;
 /// The default capacity in bytes, 10GB
-const GLOBAL_CACHE_DEFAULT_CAPACITY: AtomicUsize = AtomicUsize::new(10 * 1024 * 1024 * 1024);
+const GLOBAL_CACHE_DEFAULT_CAPACITY: usize = 10 * 1024 * 1024 * 1024;
 
 /// A mapping from file name to per-file memory block mapping
-struct GlobalCache {
-    inner: HashMap<String, HashMap<usize, MemBlockBucket>>,
+pub struct GlobalCache {
+    /// Map from file identifier to cache content map
+    inner: HashMap<Vec<u8>, HashMap<usize, MemBlockBucket>>,
+    /// Priority queue to track bucket usage
     queue: Mutex<PriorityQueue<MemBlockBucket, i64>>,
+    /// The current size of this global cache in byte
     size: AtomicUsize,
-    capacity: AtomicUsize,
+    /// The capacity of this global cache
+    capacity: usize,
+    /// Block size
+    block_size: usize,
+    /// Count of block size in a bucket
+    bucket_size_in_block: usize,
+}
+
+impl Debug for GlobalCache {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), Error> {
+        f.debug_tuple("")
+            .field(&self.size.load(Ordering::Relaxed))
+            .field(&self.capacity)
+            .finish()
+    }
 }
 
 /// This is global cache, which store the cache for all the files
@@ -40,66 +67,153 @@ impl GlobalCache {
             queue: Mutex::new(PriorityQueue::new()),
             size: AtomicUsize::new(0),
             capacity: GLOBAL_CACHE_DEFAULT_CAPACITY,
+            block_size: MEMORY_BLOCK_SIZE_IN_BYTE,
+            bucket_size_in_block: MEMORY_BUCKET_VEC_SIZE,
         }
     }
 
     #[allow(dead_code)]
-    /// Constructor
+    /// Constructor with capacity
     pub(crate) fn new_with_capacity(capacity: usize) -> Self {
         Self {
             inner: HashMap::new(),
             queue: Mutex::new(PriorityQueue::new()),
             size: AtomicUsize::new(0),
-            capacity: AtomicUsize::new(capacity),
+            capacity,
+            block_size: MEMORY_BLOCK_SIZE_IN_BYTE,
+            bucket_size_in_block: MEMORY_BUCKET_VEC_SIZE,
         }
     }
 
+    /// Currently just remove the `old_key` cache
     #[allow(dead_code)]
-    /// Get a number of continous MemoryBlock from cache
+    pub(crate) fn rename(&self, old_key: &[u8], _new_key: &[u8]) -> DatenLordResult<()> {
+        let guard = pin();
+
+        match self.inner.get(old_key, &guard) {
+            None => Ok(()),
+            Some(_) => {
+                let _ = self.inner.remove(old_key);
+                Ok(())
+            }
+        }
+    }
+
+    /// Get the aligment of this cache
+    #[inline]
+    pub(crate) const fn get_align(&self) -> usize {
+        self.block_size
+    }
+
+    /// Get current size of the cache
+    #[inline]
+    #[allow(dead_code)]
+    pub(crate) fn get_size(&self) -> usize {
+        self.size.load(Ordering::Relaxed)
+    }
+
+    /// Get a number of continous `MemoryBlock` from cache
     /// Some element in the return value could be None, which means there's no buffer in this range.
     ///
-    /// The request can not be MemoryBlock size aligned. The return value will try to cover all the memory range.
+    /// The request can not be `MemoryBlock` size aligned. The return value will try to cover all the memory range.
+    #[allow(dead_code)]
     pub(crate) fn get_file_cache(
         &self,
-        file_name: &str,
+        file_name: &[u8],
         offset: usize,
         len: usize,
-    ) -> Vec<Option<MemBlock>> {
+    ) -> Vec<IoMemBlock> {
         let guard = pin();
         let file_cache = match self.inner.get(file_name, &guard) {
             Some(cache) => cache,
             None => return vec![],
         };
 
-        let mut result = Vec::with_capacity(len / MEMORY_BLOCK_SIZE_IN_BYTE + 1);
-        let bucket_start_offset = (offset % MEMORY_BUCKET_SIZE_IN_BYTE) / MEMORY_BLOCK_SIZE_IN_BYTE;
-        // This end_offset is included
-        let bucket_end_offset =
-            ((offset + len - 1) % MEMORY_BUCKET_SIZE_IN_BYTE) / MEMORY_BLOCK_SIZE_IN_BYTE;
-        let start_index = offset / MEMORY_BUCKET_SIZE_IN_BYTE;
-        // This index is included
-        let end_index = (offset + len - 1) / MEMORY_BUCKET_SIZE_IN_BYTE;
+        if len == 0 {
+            return vec![];
+        }
 
-        for i in start_index..=end_index {
-            let s = if i == start_index {
-                bucket_start_offset
+        let mut result =
+            Vec::with_capacity(len.overflow_div(self.block_size).overflow_add(1_usize));
+
+        let bucket_size = self.bucket_size_in_block.overflow_mul(self.block_size);
+        // The key in the hashmap, the end key is included
+        let start_key = offset.overflow_div(bucket_size);
+        let end_key = offset
+            .overflow_add(len)
+            .overflow_sub(1)
+            .overflow_div(bucket_size);
+        // The index in the bucket, the end index is included
+        let bucket_start_index = offset
+            .overflow_rem(bucket_size)
+            .overflow_div(self.block_size);
+        let bucket_end_index = offset
+            .overflow_add(len)
+            .overflow_sub(1)
+            .overflow_rem(bucket_size)
+            .overflow_div(self.block_size);
+        // The offset in the block, the end offset is included
+        let start_offset = offset.overflow_rem(self.block_size);
+        let end_offset = offset
+            .overflow_add(len)
+            .overflow_sub(1)
+            .overflow_rem(self.block_size);
+
+        debug!(
+            "start_key = {}, end_key = {}, bucket_start_index = {}, bucket_end_index = {}, start_offset = {}, end_offset = {}",
+            start_key, end_key, bucket_start_index, bucket_end_index, start_offset, end_offset,
+        );
+
+        for k in start_key..=end_key {
+            let start_index = if k == start_key {
+                bucket_start_index
             } else {
                 0
             };
-            let l = if i == end_index {
-                bucket_end_offset + 1
+            let end_index = if k == end_key {
+                bucket_end_index.overflow_add(1)
             } else {
-                MEMORY_BUCKET_VEC_SIZE
+                self.bucket_size_in_block
             };
 
-            match file_cache.get(&i, &guard) {
+            match file_cache.get(&k, &guard) {
                 Some(bucket) => {
-                    self.queue.lock().push(bucket.clone(), 0 - now_monotonic());
-                    result.extend((bucket.read()[s..l]).iter().cloned());
+                    self.queue
+                        .lock()
+                        .push(bucket.clone(), 0.overflow_sub(now_monotonic()));
+                    for (pos, block) in bucket
+                        .read()
+                        .get(start_index..end_index)
+                        .unwrap_or_else(|| {
+                            panic!(
+                                "error when getting range of {}..{} in the cache bucket",
+                                start_index, end_index
+                            )
+                        })
+                        .iter()
+                        .cloned()
+                        .enumerate()
+                    {
+                        let s = if k == start_key && pos == 0 {
+                            start_offset
+                        } else {
+                            0
+                        };
+
+                        let e = if k == end_key
+                            && pos == end_index.overflow_sub(start_index).overflow_sub(1)
+                        {
+                            end_offset.overflow_add(1)
+                        } else {
+                            self.block_size
+                        };
+
+                        result.push(IoMemBlock::new(block, s, e));
+                    }
                 }
                 None => {
-                    for _ in s..l {
-                        result.push(None)
+                    for _ in start_index..end_index {
+                        result.push(IoMemBlock::new(None, 0, 0))
                     }
                 }
             }
@@ -107,105 +221,163 @@ impl GlobalCache {
         result
     }
 
-    #[allow(dead_code)]
     /// Update the Cache.
     ///
-    /// 1. `offset` be MemoryBlock aligned.
-    /// 2. `len` should be multiple times of MemoryBlock Size unless it contains the file's last MemoryBlock.
+    /// 1. `offset` be `MemoryBlock` aligned.
+    /// 2. `len` should be multiple times of `MemoryBlock` Size unless it contains the file's last `MemoryBlock`.
+    #[allow(dead_code, clippy::too_many_lines)]
     pub(crate) fn write_or_update(
         &self,
-        file_name: &str,
+        file_name: &[u8],
         offset: usize,
         len: usize,
-        buf: &AlignedBytes,
+        buf: &[u8],
     ) -> DatenLordResult<()> {
         let guard = pin();
-        let file_cache = match self.inner.get(file_name, &guard) {
-            Some(cache) => cache,
-            None => {
-                debug!("cache for {} is empty, create one", file_name);
-                // Here maybe a racing case where two thread are updating the cache
-                self.inner.insert(file_name.to_string(), HashMap::new());
-                self.inner.get(file_name, &guard).unwrap_or_else(|| {
-                    panic!("Just insert a file cache ({}) into global cache mapping, but cannot get it.", file_name)
-                })
-            }
+        let file_cache = if let Some(cache) = self.inner.get(file_name, &guard) {
+            cache
+        } else {
+            debug!(
+                "cache for {:?} is empty, create one",
+                OsStr::from_bytes(file_name)
+            );
+            // Here maybe a racing case where two thread are updating the cache
+            self.inner.insert(file_name.to_vec(), HashMap::new());
+            self.inner.get(file_name, &guard).unwrap_or_else(|| {
+                panic!(
+                    "Just insert a file cache ({:?}) into global cache mapping, but cannot get it.",
+                    OsStr::from_bytes(file_name)
+                )
+            })
         };
 
-        if offset % MEMORY_BLOCK_SIZE_IN_BYTE != 0 {
-            panic!("offset should be align with {}", MEMORY_BLOCK_SIZE_IN_BYTE);
+        if len == 0 {
+            return Ok(());
         }
 
-        let bucket_start_offset = (offset % MEMORY_BUCKET_SIZE_IN_BYTE) / MEMORY_BLOCK_SIZE_IN_BYTE;
+        let bucket_size = self.bucket_size_in_block.overflow_mul(self.block_size);
+        let bucket_start_offset = offset
+            .overflow_rem(bucket_size)
+            .overflow_div(self.block_size);
         // This end_offset is included
-        let bucket_end_offset =
-            ((offset + len - 1) % MEMORY_BUCKET_SIZE_IN_BYTE) / MEMORY_BLOCK_SIZE_IN_BYTE;
-        let start_index = offset / MEMORY_BUCKET_SIZE_IN_BYTE;
+        let bucket_end_offset = offset
+            .overflow_add(len)
+            .overflow_sub(1)
+            .overflow_rem(bucket_size)
+            .overflow_div(self.block_size);
+        let start_key = offset.overflow_div(bucket_size);
         // This index is included
-        let end_index = (offset + len - 1) / MEMORY_BUCKET_SIZE_IN_BYTE;
+        let end_key = offset
+            .overflow_add(len)
+            .overflow_sub(1)
+            .overflow_div(bucket_size);
 
         let mut have_read: usize = 0;
         let mut grow_memory: usize = 0;
+        let mut is_first_block: bool = true;
         let mut copy_fn = |b: &mut Option<MemBlock>| {
-            let end = std::cmp::min(have_read + MEMORY_BLOCK_SIZE_IN_BYTE, len);
             if b.is_none() {
-                *b = Some(MemBlock::new());
-                grow_memory += 1;
+                *b = Some(MemBlock::new(self.block_size));
+                grow_memory = grow_memory.overflow_add(1);
             }
-            b.as_ref().unwrap().overwrite(&(*buf)[have_read..end]);
-            have_read = end;
+
+            let end = if is_first_block {
+                let off = offset.overflow_rem(self.block_size);
+                std::cmp::min(
+                    have_read.overflow_add(self.block_size).overflow_sub(off),
+                    len,
+                )
+            } else {
+                std::cmp::min(have_read.overflow_add(self.block_size), len)
+            };
+
+            assert!(b.is_some());
+            if let Some(ref block) = *b {
+                if is_first_block {
+                    is_first_block = false;
+                    let off = offset.overflow_rem(self.block_size);
+                    block.overwrite_offset(
+                        off,
+                        (*buf).get(have_read..end).unwrap_or_else(|| {
+                            panic!("should not reach here, buf out of range in cache write")
+                        }),
+                    );
+                    have_read = end;
+                } else {
+                    block.overwrite((*buf).get(have_read..end).unwrap_or_else(|| {
+                        panic!("should not reach here, buf out of range in cache write")
+                    }));
+                    have_read = end;
+                }
+            }
         };
 
-        for i in start_index..=end_index {
-            let s = if i == start_index {
+        for i in start_key..=end_key {
+            let s = if i == start_key {
                 bucket_start_offset
             } else {
                 0
             };
-            let l = if i == end_index {
-                bucket_end_offset + 1
+            let l = if i == end_key {
+                bucket_end_offset.overflow_add(1)
             } else {
-                MEMORY_BUCKET_VEC_SIZE
+                self.bucket_size_in_block
             };
-            let _ = match file_cache.get(&i, &guard) {
-                Some(bucket) => {
-                    self.queue.lock().push(bucket.clone(), 0 - now_monotonic());
-                    bucket.write()[s..l].iter_mut().for_each(&mut copy_fn)
-                }
 
-                None => {
-                    // Here might be a racing case
-                    debug!(
-                        "memory_block_bucket for file {} index {} is empty, create one",
-                        file_name, start_index
-                    );
-                    debug!("start offset {}, end offset {}", s, l);
-                    let bucket = MemBlockBucket::new();
-                    self.queue.lock().push(bucket.clone(), 0 - now_monotonic());
-                    file_cache.insert(i, bucket);
-                    file_cache
-                        .get(&i, &guard)
-                        .unwrap_or_else(|| {
-                            panic!("Just insert MemBlockBucket into file cache, but cannot get it.")
-                        })
-                        .write()[s..l]
-                        .iter_mut()
-                        .for_each(&mut copy_fn);
-                }
+            if let Some(bucket) = file_cache.get(&i, &guard) {
+                self.queue
+                    .lock()
+                    .push(bucket.clone(), 0.overflow_sub(now_monotonic()));
+                bucket
+                    .write()
+                    .get_mut(s..l)
+                    .unwrap_or_else(|| {
+                        panic!("Just insert MemBlockBucket into file cache, but cannot get it.")
+                    })
+                    .iter_mut()
+                    .for_each(&mut copy_fn);
+            } else {
+                // Here might be a racing case
+                debug!(
+                    "memory_block_bucket for file {:?} index {} is empty, create one",
+                    OsStr::from_bytes(file_name),
+                    start_key
+                );
+                debug!("start offset {}, end offset {}", s, l);
+                let bucket = MemBlockBucket::new();
+                self.queue
+                    .lock()
+                    .push(bucket.clone(), 0.overflow_sub(now_monotonic()));
+                file_cache.insert(i, bucket);
+                file_cache
+                    .get(&i, &guard)
+                    .unwrap_or_else(|| {
+                        panic!("Just insert MemBlockBucket into file cache, but cannot get it.")
+                    })
+                    .write()
+                    .get_mut(s..l)
+                    .unwrap_or_else(|| panic!("should not reach here, out of range in cache write"))
+                    .iter_mut()
+                    .for_each(&mut copy_fn);
             };
         }
 
         self.size
-            .fetch_add(grow_memory * MEMORY_BLOCK_SIZE_IN_BYTE, Ordering::Relaxed);
+            .fetch_add(grow_memory.overflow_mul(self.block_size), Ordering::Relaxed);
 
+        let mut dealloc_cnt = 0;
         let mut dealloc_fn = |b: &mut Option<MemBlock>| {
             if b.is_some() {
+                dealloc_cnt = dealloc_cnt.overflow_add(1);
                 b.take();
             }
         };
 
-        let mut exceed: i64 =
-            self.size.load(Ordering::Relaxed) as i64 - self.capacity.load(Ordering::Relaxed) as i64;
+        let mut exceed: i64 = self
+            .size
+            .load(Ordering::Relaxed)
+            .cast::<i64>()
+            .overflow_sub(self.capacity.cast::<i64>());
         while exceed > 0 {
             match self.queue.lock().pop() {
                 Some((bucket, _)) => {
@@ -215,13 +387,34 @@ impl GlobalCache {
                         .iter_mut()
                         .filter(|b| b.is_some())
                         .for_each(&mut dealloc_fn);
-                    exceed -= (removed_count * MEMORY_BLOCK_SIZE_IN_BYTE) as i64;
+                    exceed = exceed
+                        .overflow_sub(removed_count.overflow_mul(self.block_size).cast::<i64>());
                 }
                 None => break,
             };
         }
 
-        return Ok(());
+        if dealloc_cnt > 0 {
+            self.size
+                .fetch_sub(dealloc_cnt.overflow_mul(self.block_size), Ordering::Relaxed);
+        }
+
+        Ok(())
+    }
+
+    /// Round down `value` to `align`, align must be power of 2
+    #[inline]
+    pub fn round_down(&self, value: usize) -> usize {
+        (value.cast::<i64>() & (!(self.get_align().cast::<i64>().overflow_sub(1)))).cast()
+    }
+
+    /// Round up `value` to `align`, align must be power of 2
+    #[inline]
+    pub fn round_up(&self, value: usize) -> usize {
+        match value & (self.get_align().overflow_sub(1)) {
+            0 => value,
+            _ => self.round_down(value).overflow_add(self.get_align()),
+        }
     }
 }
 
@@ -234,11 +427,14 @@ fn now_monotonic() -> i64 {
     };
     let ret = unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC_COARSE, &mut time) };
     assert!(ret == 0);
-    time.tv_sec * 1000 + time.tv_nsec / 1000000
+    time.tv_sec
+        .overflow_mul(1000)
+        .overflow_add(time.tv_nsec.overflow_div(1_000_000))
 }
 
-// A memory block collection
+/// A memory block collection
 struct MemBlockBucket {
+    /// The inner is read-write lock protected vector of `MemBlock`
     inner: Arc<RwLock<Vec<Option<MemBlock>>>>,
 }
 
@@ -249,7 +445,7 @@ impl Hash for MemBlockBucket {
 }
 
 impl PartialEq<MemBlockBucket> for MemBlockBucket {
-    fn eq(&self, other: &MemBlockBucket) -> bool {
+    fn eq(&self, other: &Self) -> bool {
         (*self.inner).data_ptr() == (*other.inner).data_ptr()
     }
 }
@@ -259,12 +455,14 @@ impl Eq for MemBlockBucket {}
 impl Clone for MemBlockBucket {
     fn clone(&self) -> Self {
         Self {
-            inner: self.inner.clone(),
+            inner: Arc::<
+                parking_lot::lock_api::RwLock<parking_lot::RawRwLock, Vec<Option<MemBlock>>>,
+            >::clone(&self.inner),
         }
     }
 }
 
-/// A vector holding `MEMORY_BUCKET_VEC_SIZE` MemBlock, wrapped in an Arc.
+/// A vector holding `MEMORY_BUCKET_VEC_SIZE` `MemBlock`, wrapped in an Arc.
 /// Arc is used to shared this vector with priority queue.
 impl MemBlockBucket {
     #[allow(dead_code)]
@@ -279,9 +477,10 @@ impl MemBlockBucket {
         }
     }
 
+    /// Insert one `MemBlock` into the `index` position of the bucket
     #[allow(dead_code)]
     pub(crate) fn insert(&mut self, index: usize, mem: MemBlock) {
-        self.inner.write()[index] = Some(mem);
+        self.inner.write().insert(index, Some(mem));
     }
 }
 
@@ -292,21 +491,92 @@ impl Deref for MemBlockBucket {
     }
 }
 
+/// A wrapper for `IoMemBlock`, which is used for I/O operations
+pub struct IoMemBlock {
+    /// The inner `MemBlock` that contains data
+    inner: Option<MemBlock>,
+    /// The offset for this `MemBlock`
+    offset: usize,
+    /// The end offset for this `MemBlock`
+    end: usize,
+}
+
+impl Debug for IoMemBlock {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("IoMemBlock")
+            .field("offset", &self.offset)
+            .field("end", &self.end)
+            .finish()
+    }
+}
+
+impl IoMemBlock {
+    /// The constructor of `IoMemBlock`
+    const fn new(inner: Option<MemBlock>, offset: usize, end: usize) -> Self {
+        Self { inner, offset, end }
+    }
+
+    /// Turn `IoMemBlock` into slice
+    #[allow(dead_code)]
+    pub(crate) unsafe fn as_slice(&self) -> &[u8] {
+        if self.inner.is_none() {
+            panic!("IoMemBlock inner is None, cannot as_slice");
+        }
+
+        if let Some(ref block) = self.inner {
+            let ptr = block.as_ptr_from_offset(self.offset);
+            std::slice::from_raw_parts(ptr, self.end.overflow_sub(self.offset))
+        } else {
+            panic!("the inner Option<MemBlock> should not be none");
+        }
+    }
+}
+
+impl CouldBeAsIoVecList for IoMemBlock {}
+
+impl AsIoVec for IoMemBlock {
+    fn as_io_vec(&self) -> IoVec<&[u8]> {
+        if !self.can_convert() {
+            panic!("Please check before convert to IoVec")
+        }
+        IoVec::from_slice(unsafe { self.as_slice() })
+    }
+
+    fn can_convert(&self) -> bool {
+        self.inner.is_some()
+    }
+
+    fn len(&self) -> usize {
+        self.end.overflow_sub(self.offset)
+    }
+}
+
+impl Clone for IoMemBlock {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            offset: self.offset,
+            end: self.end,
+        }
+    }
+}
+
+/// `Memblock` that holds a block of memory
 struct MemBlock {
+    /// A rwlock wrapper of the inner memory block
     inner: Arc<RwLock<AlignedBytes>>,
 }
 
 impl MemBlock {
+    /// constructor for the `MemBlock` with capacity setting
     #[allow(dead_code)]
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(capacity: usize) -> Self {
         Self {
-            inner: Arc::new(RwLock::new(AlignedBytes::new_zeroed(
-                MEMORY_BLOCK_SIZE_IN_BYTE,
-                PAGE_SIZE,
-            ))),
+            inner: Arc::new(RwLock::new(AlignedBytes::new_zeroed(capacity, PAGE_SIZE))),
         }
     }
 
+    /// constructor for the `MemBlock` from a u8 slice
     #[allow(dead_code)]
     pub(crate) fn new_from_slice(slice: &[u8]) -> Self {
         Self {
@@ -315,8 +585,45 @@ impl MemBlock {
     }
 
     #[allow(dead_code)]
+    /// Overwrite the content in the `MemBlock`
     pub(crate) fn overwrite(&self, slice: &[u8]) {
-        (*(*(self.inner).write()))[..slice.len()].copy_from_slice(slice);
+        (*(*(self.inner).write()))
+            .get_mut(..slice.len())
+            .unwrap_or_else(|| {
+                panic!(
+                    "overflow when overrwite Memblock, slice length {} is too long",
+                    slice.len()
+                )
+            })
+            .copy_from_slice(slice);
+    }
+
+    #[allow(dead_code)]
+    /// Overwrite the content in the `Memblock` starting from offset
+    pub(crate) fn overwrite_offset(&self, offset: usize, slice: &[u8]) {
+        (*(*(self.inner).write()))
+            .get_mut(offset..slice.len().overflow_add(offset))
+            .unwrap_or_else(|| {
+                panic!(
+                    "overflow when overrwite Memblock, slice length {} from offset  {} is too long",
+                    slice.len(),
+                    offset,
+                )
+            })
+            .copy_from_slice(slice);
+    }
+
+    /// Get the pointer point to the inner memory starting from offset
+    pub(crate) fn as_ptr_from_offset(&self, offset: usize) -> *mut u8 {
+        (**self.write())
+            .get_mut(offset..)
+            .unwrap_or_else(|| {
+                panic!(
+                    "overflow when get pointer for Memblock from offset {}",
+                    offset
+                )
+            })
+            .as_mut_ptr()
     }
 }
 
@@ -330,7 +637,7 @@ impl Deref for MemBlock {
 impl Clone for MemBlock {
     fn clone(&self) -> Self {
         Self {
-            inner: self.inner.clone(),
+            inner: Arc::<RwLock<AlignedBytes>>::clone(&self.inner),
         }
     }
 }
@@ -340,12 +647,13 @@ mod test {
     use super::{
         GlobalCache, MEMORY_BLOCK_SIZE_IN_BYTE, MEMORY_BUCKET_SIZE_IN_BYTE, MEMORY_BUCKET_VEC_SIZE,
     };
+    use crate::fuse::fuse_reply::AsIoVec;
     use aligned_utils::bytes::AlignedBytes;
 
     #[test]
     fn test_get_empty_cache() {
         let global = GlobalCache::new();
-        let cache = global.get_file_cache("test_file", 0, 1024);
+        let cache = global.get_file_cache(b"test_file", 0, 1024);
         assert!(cache.is_empty())
     }
 
@@ -354,14 +662,27 @@ mod test {
         let global = GlobalCache::new();
         let file_name = "test_file";
         let content = AlignedBytes::new_from_slice(&[b'a'], 1);
-        let result = global.write_or_update(file_name, 0, 1, &content);
+        let result = global.write_or_update(file_name.as_bytes(), 0, 1, &content);
 
         assert!(result.is_ok());
 
-        let cache = global.get_file_cache(file_name, 0, 1);
+        let cache = global.get_file_cache(file_name.as_bytes(), 0, 1);
         assert_eq!(cache.len(), 1);
-        assert!(cache[0].is_some());
-        assert_eq!(cache[0].as_ref().unwrap().read()[0], b'a');
+        assert!(cache
+            .get(0)
+            .unwrap_or_else(|| panic!("index error"))
+            .can_convert());
+        assert_eq!(
+            unsafe {
+                cache
+                    .get(0)
+                    .unwrap_or_else(|| panic!("index error"))
+                    .as_slice()
+                    .get(0)
+                    .unwrap_or_else(|| panic!("index error"))
+            },
+            &b'a'
+        );
     }
 
     #[test]
@@ -369,23 +690,58 @@ mod test {
         let global = GlobalCache::new();
         let file_name = "test_file";
         let content = AlignedBytes::new_from_slice(&[b'a'], 1);
-        let result = global.write_or_update(file_name, MEMORY_BLOCK_SIZE_IN_BYTE, 1, &content);
+        let result =
+            global.write_or_update(file_name.as_bytes(), MEMORY_BLOCK_SIZE_IN_BYTE, 1, &content);
         assert!(result.is_ok());
 
-        let cache = global.get_file_cache(file_name, 0, MEMORY_BLOCK_SIZE_IN_BYTE + 1);
+        let cache = global.get_file_cache(file_name.as_bytes(), 0, MEMORY_BLOCK_SIZE_IN_BYTE + 1);
         assert_eq!(cache.len(), 2);
-        assert!(cache[0].is_none());
-        assert!(cache[1].is_some());
-        assert_eq!(cache[1].as_ref().unwrap().read()[0], b'a');
+        assert!(!cache
+            .get(0)
+            .unwrap_or_else(|| panic!("index error"))
+            .can_convert());
+        assert!(cache
+            .get(1)
+            .unwrap_or_else(|| panic!("index error"))
+            .can_convert());
+        assert_eq!(
+            unsafe {
+                cache
+                    .get(1)
+                    .unwrap_or_else(|| panic!("index error"))
+                    .as_slice()
+                    .get(0)
+                    .unwrap_or_else(|| panic!("index error"))
+            },
+            &b'a'
+        );
     }
 
     #[test]
-    #[should_panic(expected = "offset should be align with 65536")]
     fn test_panic_write_unaligned_data() {
         let global = GlobalCache::new();
         let file_name = "test_file";
         let content = AlignedBytes::new_from_slice(&[b'a'], 1);
-        let _ = global.write_or_update(file_name, 1, 1, &content);
+        let result = global.write_or_update(file_name.as_bytes(), 1, 1, &content);
+        assert!(result.is_ok());
+
+        let cache = global.get_file_cache(file_name.as_bytes(), 0, 2);
+        assert_eq!(cache.len(), 1);
+        assert!(cache
+            .get(0)
+            .unwrap_or_else(|| panic!("index error"))
+            .can_convert());
+        assert_eq!(
+            unsafe {
+                cache
+                    .get(0)
+                    .unwrap_or_else(|| panic!("index error"))
+                    .as_slice()
+                    .get(..2)
+                    .unwrap()
+            },
+            [b'\0', b'a']
+        );
     }
 
     #[test]
@@ -393,23 +749,39 @@ mod test {
         let global = GlobalCache::new_with_capacity(MEMORY_BLOCK_SIZE_IN_BYTE);
         let file_name = "test_file";
         let block_one = AlignedBytes::new_from_slice(&[b'a'], 1);
-        let result = global.write_or_update(file_name, 0, 1, &block_one);
+        let result = global.write_or_update(file_name.as_bytes(), 0, 1, &block_one);
         assert!(result.is_ok());
 
         let block_two = AlignedBytes::new_from_slice(&[b'b'], 1);
-        let result = global.write_or_update(file_name, MEMORY_BUCKET_SIZE_IN_BYTE, 1, &block_two);
+        let result = global.write_or_update(
+            file_name.as_bytes(),
+            MEMORY_BUCKET_SIZE_IN_BYTE,
+            1,
+            &block_two,
+        );
         assert!(result.is_ok());
 
         // First cache should be evicted
-        let cache = global.get_file_cache(file_name, 0, MEMORY_BUCKET_SIZE_IN_BYTE + 1);
+        let cache = global.get_file_cache(file_name.as_bytes(), 0, MEMORY_BUCKET_SIZE_IN_BYTE + 1);
         assert_eq!(cache.len(), 17);
-        for i in 0..MEMORY_BUCKET_VEC_SIZE {
-            assert!(cache[i].is_none());
+        for item in cache.iter().take(MEMORY_BUCKET_VEC_SIZE) {
+            assert!(!item.can_convert());
         }
-        assert!(cache[MEMORY_BUCKET_VEC_SIZE].is_some());
+        assert!(cache
+            .get(MEMORY_BUCKET_VEC_SIZE)
+            .unwrap_or_else(|| panic!("index error"))
+            .can_convert());
         assert_eq!(
-            cache[MEMORY_BUCKET_VEC_SIZE].as_ref().unwrap().read()[0],
-            b'b'
+            unsafe {
+                cache
+                    .get(MEMORY_BUCKET_VEC_SIZE)
+                    .unwrap_or_else(|| panic!("index error"))
+                    .as_slice()
+                    .get(0)
+                    .unwrap_or_else(|| panic!("index error"))
+            },
+            &b'b'
         );
+        assert_eq!(global.get_size(), MEMORY_BLOCK_SIZE_IN_BYTE);
     }
 }

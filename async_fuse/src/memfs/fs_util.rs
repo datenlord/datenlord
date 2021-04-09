@@ -289,13 +289,27 @@ pub async fn load_dir_data(dirfd: RawFd) -> anyhow::Result<BTreeMap<OsString, Di
 }
 
 /// Helper function to load file data
-pub async fn load_file_data(fd: RawFd, file_size: usize) -> anyhow::Result<Vec<u8>> {
+pub async fn load_file_data(fd: RawFd, offset: usize, len: usize) -> anyhow::Result<Vec<u8>> {
     let file_data_vec = smol::unblock(move || {
-        let mut file_data_vec: Vec<u8> = Vec::with_capacity(file_size);
-        unsafe {
-            file_data_vec.set_len(file_data_vec.capacity());
-        }
-        let read_size = nix::unistd::read(fd, &mut *file_data_vec)?;
+        let mut file_data_vec: Vec<u8> = Vec::with_capacity(len);
+
+        let read_size = unsafe {
+            let res = libc::pread(
+                fd,
+                file_data_vec.as_mut_ptr().cast(),
+                len.cast(),
+                offset.cast(),
+            );
+
+            if res < 0 {
+                return Err(anyhow::Error::msg(format!(
+                    "linux pread failed with Error code: {}",
+                    res
+                )));
+            } else {
+                res.cast::<usize>()
+            }
+        };
         unsafe {
             file_data_vec.set_len(read_size);
         }
@@ -303,6 +317,6 @@ pub async fn load_file_data(fd: RawFd, file_size: usize) -> anyhow::Result<Vec<u
         Ok::<Vec<u8>, anyhow::Error>(file_data_vec)
     })
     .await?;
-    debug_assert_eq!(file_data_vec.len(), file_size.cast::<usize>());
+    debug_assert_eq!(file_data_vec.len(), len);
     Ok(file_data_vec)
 }

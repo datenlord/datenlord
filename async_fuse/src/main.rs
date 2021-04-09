@@ -55,10 +55,12 @@ use std::env;
 const ENV_IP_ADDRESS: &str = "pod_ip_address";
 /// Argument name of FUSE mount point
 const MOUNT_POINT_ARG_NAME: &str = "mountpoint";
+/// Argument name of FUSE mount point
+const CACHE_CAPACITY_ARG_NAME: &str = "capacity";
 /// Argument name of ETCD addresses
 const ETCD_ADDRESS_ARG_NAME: &str = "etcd";
 /// Argument name of Volume information
-const VOLUME_INFO: &str = "volume_info";
+const VOLUME_INFO_ARG_NAME: &str = "volume_info";
 /// ETCD node id lock
 const ETCD_NODE_ID_LOCK: &str = "datenlord_etcd_node_id_lock";
 /// ETCD node id counter key
@@ -69,6 +71,9 @@ const ETCD_NODE_ID_INFO_PREFIX: &str = "datenlord_etcd_node_id_info_";
 const ETCD_VOLUME_INFO_LOCK: &str = "datenlord_etcd_volume_info_lock";
 /// ETCD volume information prefix
 const ETCD_VOLUME_INFO_PREFIX: &str = "datenlord_etcd_volume_info_";
+
+/// The default capacity in bytes, 10GB
+const CACHE_DEFAULT_CAPACITY: usize = 10 * 1024 * 1024 * 1024;
 
 /// Register current node to etcd and get a dedicated node id.
 /// The registered information contains IP.
@@ -205,6 +210,18 @@ fn main() -> anyhow::Result<()> {
                 ),
         )
         .arg(
+            clap::Arg::with_name(CACHE_CAPACITY_ARG_NAME)
+                .short("c")
+                .long(CACHE_CAPACITY_ARG_NAME)
+                .value_name("CACHE_CAPACITY")
+                .takes_value(true)
+                .required(false)
+                .help(
+                    "Set cache capacity in bytes, \
+                        required argument, no default value",
+                ),
+        )
+        .arg(
             clap::Arg::with_name(ETCD_ADDRESS_ARG_NAME)
                 .short("e")
                 .long(ETCD_ADDRESS_ARG_NAME)
@@ -218,9 +235,9 @@ fn main() -> anyhow::Result<()> {
                 ),
         )
         .arg(
-            clap::Arg::with_name(VOLUME_INFO)
+            clap::Arg::with_name(VOLUME_INFO_ARG_NAME)
                 .short("v")
-                .long(VOLUME_INFO)
+                .long(VOLUME_INFO_ARG_NAME)
                 .value_name("VOLUME_INFO")
                 .takes_value(true)
                 .required(true)
@@ -249,20 +266,28 @@ fn main() -> anyhow::Result<()> {
         None => panic!("etcd addresses must be set, no default value"),
     };
 
-    let volume_info = match matches.value_of(VOLUME_INFO) {
+    let volume_info = match matches.value_of(VOLUME_INFO_ARG_NAME) {
         Some(vi) => vi,
         None => panic!("No volume information input"),
     };
-
     let etcd_delegate = EtcdDelegate::new(etcd_address_vec)?;
-
     debug!("FUSE mount point: {}", mount_point);
+
+    let cache_capacity = match matches.value_of(CACHE_CAPACITY_ARG_NAME) {
+        Some(cc) => cc.parse::<usize>().unwrap_or_else(|_| {
+            panic!(format!(
+                "cannot parse cache capacity in usize, the input is: {}",
+                cc
+            ))
+        }),
+        None => CACHE_DEFAULT_CAPACITY,
+    };
 
     smol::block_on(async move {
         let node_id = register_node_id(&etcd_delegate).await?;
         register_volume(&etcd_delegate, node_id, volume_info).await?;
         let mount_point = std::path::Path::new(&mount_point);
-        let fs = memfs::MemFs::new(mount_point).await?;
+        let fs = memfs::MemFs::new(mount_point, cache_capacity).await?;
         let ss = Session::new(mount_point, fs).await?;
         ss.run().await?;
         Ok(())
