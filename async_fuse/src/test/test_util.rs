@@ -37,7 +37,7 @@ pub fn setup(mount_dir: &Path) -> anyhow::Result<JoinHandle<()>> {
         if let Err(e) = run_fs(&abs_root_path).await {
             panic!(
                 "failed to run filesystem, the error is: {}",
-                util::format_anyhow_error(&e),
+                common::util::format_anyhow_error(&e),
             );
         }
     });
@@ -66,7 +66,7 @@ pub fn teardown(mount_dir: &Path, th: JoinHandle<()>) -> anyhow::Result<()> {
             panic!(
                 "failed to un-mount {:?}, the error is: {}",
                 mount_dir,
-                util::format_anyhow_error(&err),
+                common::util::format_anyhow_error(&err),
             )
         });
     });

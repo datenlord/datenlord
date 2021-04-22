@@ -51,7 +51,7 @@ pub struct FileAttr {
 /// Parse `OFlag`
 pub fn parse_oflag(flags: u32) -> OFlag {
     debug_assert!(
-        flags < std::i32::MAX.cast(),
+        flags < std::i32::MAX.cast::<u32>(),
         "helper_parse_oflag() found flags={} overflow, larger than u16::MAX",
         flags,
     );
@@ -63,7 +63,7 @@ pub fn parse_oflag(flags: u32) -> OFlag {
 /// Parse file mode
 pub fn parse_mode(mode: u32) -> Mode {
     debug_assert!(
-        mode < std::u16::MAX.cast(),
+        mode < std::u16::MAX.cast::<u32>(),
         "helper_parse_mode() found mode={} overflow, larger than u16::MAX",
         mode,
     );
@@ -89,7 +89,7 @@ pub fn parse_mode_bits(mode: u32) -> u16 {
 /// Parse `SFlag`
 pub fn parse_sflag(flags: u32) -> SFlag {
     debug_assert!(
-        flags < std::u16::MAX.cast(),
+        flags < std::u16::MAX.cast::<u32>(),
         "parse_sflag() found flags={} overflow, larger than u16::MAX",
         flags,
     );
@@ -228,7 +228,7 @@ pub fn time_from_system_time(system_time: &SystemTime) -> (u64, u32) {
                 "time_from_system_time() failed to convert SystemTime={:?} \
                 to timestamp(seconds, nano-seconds), the error is: {}",
                 system_time,
-                crate::util::format_anyhow_error(&e),
+                common::util::format_anyhow_error(&e),
             )
         });
     (duration.as_secs(), duration.subsec_nanos())

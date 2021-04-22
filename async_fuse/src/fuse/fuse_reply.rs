@@ -195,7 +195,7 @@ impl ReplyRaw {
                     panic!(
                         "should not send nix::errno::Errno::UnknownErrno to FUSE kernel, \
                             the error is: {}",
-                        crate::util::format_anyhow_error(&err),
+                        common::util::format_anyhow_error(&err),
                     );
                 } else {
                     error_code
@@ -203,13 +203,13 @@ impl ReplyRaw {
             } else {
                 panic!(
                     "should not send non-nix::Error::Sys to FUSE kernel, the error is: {}",
-                    crate::util::format_anyhow_error(&err),
+                    common::util::format_anyhow_error(&err),
                 )
             }
         } else {
             panic!(
                 "should not send non-nix error to FUSE kernel, the error is: {}",
-                crate::util::format_anyhow_error(&err),
+                common::util::format_anyhow_error(&err),
             );
         };
         self.send_error_code(error_code).await

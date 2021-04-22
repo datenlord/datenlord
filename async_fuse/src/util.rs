@@ -11,19 +11,6 @@ use memchr::memchr;
 use nix::errno::Errno;
 use nix::sys::stat::SFlag;
 
-/// Format `anyhow::Error`
-// TODO: refactor this
-#[must_use]
-pub fn format_anyhow_error(error: &anyhow::Error) -> String {
-    let err_msg_vec = error
-        .chain()
-        .map(std::string::ToString::to_string)
-        .collect::<Vec<_>>();
-    let mut err_msg = err_msg_vec.as_slice().join(", caused by: ");
-    err_msg.push_str(&format!(", root cause: {}", error.root_cause()));
-    err_msg
-}
-
 /// Format `nix::Error`
 // TODO: refactor this
 #[must_use]
