@@ -99,7 +99,7 @@ use utilities::{Cast, OverflowArithmetic};
 //                         .unwrap_or_else(|err| {
 //                             panic!(
 //                                 "SymLinkData::new() failed, the error is: {}",
-//                                 util::format_anyhow_error(&err)
+//                                 common::util::format_anyhow_error(&err)
 //                             )
 //                         });
 //                         Some(SymLinkTargetData::Dir(
@@ -124,7 +124,7 @@ use utilities::{Cast, OverflowArithmetic};
 //                         .unwrap_or_else(|err| {
 //                             panic!(
 //                                 "SymLinkData::new() failed, the error is: {}",
-//                                 util::format_anyhow_error(&err)
+//                                 common::util::format_anyhow_error(&err)
 //                             )
 //                         });
 //                         Some(SymLinkTargetData::File(
@@ -147,7 +147,7 @@ use utilities::{Cast, OverflowArithmetic};
 //                 debug!(
 //                     "SymLinkData::new() failed to get the symlink target node attribute, \
 //                     the error is: {}",
-//                     util::format_anyhow_error(&e),
+//                     common::util::format_anyhow_error(&e),
 //                 );
 //                 Self {
 //                     target_path,
@@ -401,7 +401,7 @@ impl Node {
             .unwrap_or_else(|err| {
                 panic!(
                     "failed to duplicate fd, the error is: {}",
-                    crate::util::format_anyhow_error(&err),
+                    common::util::format_anyhow_error(&err),
                 )
             });
         // blocking!(unistd::dup3(raw_fd, new_fd, oflags)).context(format!(
@@ -1162,7 +1162,7 @@ impl Node {
                     "read() failed to load file data of ino={} and name={:?}, the error is: {}",
                     ino,
                     self.get_name(),
-                    util::format_anyhow_error(&e),
+                    common::util::format_anyhow_error(&e),
                 );
                 return Err(e);
             }

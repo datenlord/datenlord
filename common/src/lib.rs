@@ -43,4 +43,4 @@
 pub mod error;
 pub mod etcd_delegate;
 /// Utility module
-mod util;
+pub mod util;

@@ -3,6 +3,7 @@
 use crate::fuse::fuse_reply::{AsIoVec, CouldBeAsIoVecList};
 use aligned_utils::bytes::AlignedBytes;
 use common::error::DatenLordResult;
+use libc;
 use lockfree_cuckoohash::{pin, LockFreeCuckooHash as HashMap};
 use log::debug;
 use nix::sys::uio::IoVec;
