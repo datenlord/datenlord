@@ -5,6 +5,7 @@ use log::debug;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use std::fmt::Debug;
+use std::time::Duration;
 
 use super::error::{Context, DatenLordResult};
 use super::util;
@@ -22,6 +23,9 @@ impl EtcdDelegate {
             etcd_client::Client::connect(etcd_client::ClientConfig {
                 endpoints: etcd_address_vec.clone(),
                 auth: None,
+                cache_enable: true,
+                // TODO: cache size should come from parameter
+                cache_size: 64,
             })
             .await
             .with_context(|| {
@@ -32,6 +36,55 @@ impl EtcdDelegate {
             })
         }))?;
         Ok(Self { etcd_rs_client })
+    }
+
+    /// Lock a name with time out
+    pub async fn lock(&self, name: &[u8], timeout: u64) -> DatenLordResult<Vec<u8>> {
+        let lease_id = self
+            .etcd_rs_client
+            .lease()
+            .grant(etcd_client::EtcdLeaseGrantRequest::new(
+                Duration::from_secs(timeout),
+            ))
+            .await
+            .with_context(|| {
+                format!(
+                    "failed to get LeaseGrantResponse from etcd, the timeout={}",
+                    timeout
+                )
+            })?
+            .id();
+
+        let key = self
+            .etcd_rs_client
+            .lock()
+            .lock(etcd_client::EtcdLockRequest::new(name, lease_id))
+            .await
+            .with_context(|| {
+                format!(
+                    "failed to get LockResponse from etcd, the lease id={}",
+                    lease_id
+                )
+            })?
+            .take_key();
+
+        Ok(key)
+    }
+
+    /// Unlock with the key, which comes from the lock operation
+    pub async fn unlock<T: Into<Vec<u8>> + Clone>(&self, key: T) -> DatenLordResult<()> {
+        self.etcd_rs_client
+            .lock()
+            .unlock(etcd_client::EtcdUnlockRequest::new(key.clone()))
+            .await
+            .with_context(|| {
+                format!(
+                    "failed to get UnlockResponse from etcd, the lease key={:?}",
+                    key.into()
+                )
+            })?;
+
+        Ok(())
     }
 
     /// Get one key-value pair from etcd

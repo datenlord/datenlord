@@ -55,6 +55,8 @@ jobs:
     name: FUSE-Cargo-Test
     runs-on: ubuntu-latest
     steps:
+      - name: Install dependencies
+        run: sudo apt install -y cmake g++ libprotobuf-dev protobuf-compiler
       - name: Install benchmark tool fio
         run: | 
           sudo apt update
@@ -276,6 +278,11 @@ jobs:
       #    make
       #    #sudo ./check-datenlord
       #    cd -
+      - name: Run etcd service
+        run: |
+          docker run -d --rm --net host --name $ETCD_CONTAINER_NAME gcr.io/etcd-development/etcd:latest
+          docker ps
+          docker logs $ETCD_CONTAINER_NAME
       - name: Run ntfs-3g-pjd-fstest
         run: |
           git clone https://git.code.sf.net/p/ntfs-3g/pjd-fstest ntfs-3g-pjd-fstest
@@ -292,7 +299,7 @@ jobs:
           gcc -Wall -DHAS_TRUNCATE64 -DHAS_STAT64 fstest.c -o fstest
           cd -
           mkdir fuse_mount_dir
-          sudo RUST_LOG=debug target/debug/async_fuse -m ./fuse_mount_dir &>datenlord.log &
+          sudo pod_ip_address=127.0.0.1 RUST_LOG=debug target/debug/async_fuse -m ./fuse_mount_dir --volume_info fake_info --etcd=127.0.0.1:2379 &>datenlord.log &
           cd fuse_mount_dir
           sudo prove -rv ../ntfs-3g-pjd-fstest/tests/chflags
           sudo prove -rv ../ntfs-3g-pjd-fstest/tests/xacl

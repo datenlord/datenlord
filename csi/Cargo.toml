@@ -17,7 +17,6 @@ async-compat = "0.2.0"
 bincode = "1.3.1"
 clap = "2.33.3"
 env_logger = "0.8.1"
-etcd-client = { git = "https://github.com/datenlord/etcd-client", rev="749f873" }
 flate2 = "1.0.16"
 futures = "0.3.5"
 grpcio = { version = "0.8.0", default-features = false, features = ["protobuf-codec"] }
@@ -33,12 +32,13 @@ thiserror = "1.0"
 utilities = { git = "https://github.com/datenlord/utilities", rev = "4ef408d" }
 uuid = { version = "0.8.1", features = ["v4"] }
 walkdir = "2.3.1"
+common = {path = "../common"}
 
 [build-dependencies]
 protoc-grpcio = "3.0.0"
 
 [dev-dependencies]
-mock-etcd = { git = "https://github.com/datenlord/mock-etcd", rev = "37a65eb" }
+mock-etcd = { git = "https://github.com/datenlord/mock-etcd", rev = "75f09e2" }
 
 [[bin]]
 path = "src/bin/bind_mounter.rs"

@@ -84,17 +84,15 @@ mod datenlord_worker;
 mod datenlord_worker_grpc;
 
 mod controller;
-mod error;
-mod etcd_delegate;
 mod identity;
 mod meta_data;
 mod node;
 mod util;
 mod worker;
 
+use common::error::{Context, DatenLordResult};
+use common::etcd_delegate::EtcdDelegate;
 use controller::ControllerImpl;
-use error::{Context, DatenLordResult};
-use etcd_delegate::EtcdDelegate;
 use identity::IdentityImpl;
 use meta_data::{DatenLordNode, MetaData};
 use node::NodeImpl;
@@ -548,7 +546,10 @@ fn main() -> DatenLordResult<()> {
 
 #[cfg(test)]
 mod test {
-    use self::csi::{
+    use super::util;
+    use super::*;
+    use common::error::Context;
+    use csi::{
         ControllerExpandVolumeRequest, ControllerExpandVolumeResponse, CreateSnapshotRequest,
         CreateSnapshotResponse, CreateVolumeRequest, CreateVolumeResponse, DeleteSnapshotRequest,
         DeleteSnapshotResponse, DeleteVolumeRequest, DeleteVolumeResponse,
@@ -559,9 +560,6 @@ mod test {
         ProbeRequest, VolumeCapability, VolumeCapability_AccessMode_Mode,
         VolumeCapability_MountVolume,
     };
-    use super::error::Context;
-    use super::util;
-    use super::*;
     use csi_grpc::{ControllerClient, IdentityClient, NodeClient};
 
     use grpcio::{ChannelBuilder, EnvBuilder};
