@@ -8,7 +8,6 @@ mod s3_wrapper;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::{OsStr, OsString};
-use std::os::unix::io::{FromRawFd, IntoRawFd, RawFd};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -17,8 +16,7 @@ use anyhow::Context;
 use async_trait::async_trait;
 use log::{debug, warn};
 use nix::errno::Errno;
-use nix::sys::{stat::SFlag, statvfs};
-use nix::unistd;
+use nix::sys::stat::SFlag;
 use smol::lock::{Mutex, RwLock};
 use utilities::{Cast, OverflowArithmetic};
 
@@ -26,12 +24,13 @@ use crate::fuse::file_system::FileSystem;
 use crate::fuse::fuse_reply::AsIoVec;
 use crate::fuse::fuse_reply::{
     ReplyAttr, ReplyBMap, ReplyCreate, ReplyData, ReplyDirectory, ReplyEmpty, ReplyEntry,
-    ReplyLock, ReplyOpen, ReplyStatFs, ReplyWrite, ReplyXAttr, StatFsParam,
+    ReplyLock, ReplyOpen, ReplyStatFs, ReplyWrite, ReplyXAttr,
 };
 use crate::fuse::fuse_request::Request;
 use crate::fuse::protocol::{INum, FUSE_ROOT_ID};
-use cache::GlobalCache;
+use cache::{GlobalCache, IoMemBlock};
 use dir::DirEntry;
+pub use metadata::DefaultMetaData;
 use metadata::MetaData;
 use node::Node;
 use std::os::unix::ffi::OsStringExt;
@@ -40,7 +39,7 @@ use std::os::unix::ffi::OsStringExt;
 const MY_TTL_SEC: u64 = 3600; // TODO: should be a long value, say 1 hour
 
 /// In-memory file system
-pub struct MemFs(Arc<Mutex<MetaData>>);
+pub struct MemFs<M: MetaData + Send + Sync + 'static>(Arc<Mutex<M>>);
 
 /// Set attribute parameters
 pub struct SetAttrParam {
@@ -91,29 +90,7 @@ pub struct RenameParam {
     /// New name
     pub new_name: OsString,
     /// Rename flags
-    #[cfg(target_os = "linux")]
     pub flags: u32,
-    /// Rename exchange options
-    #[cfg(target_os = "macos")]
-    pub flags: u64,
-}
-
-/// Rename helper parameters
-pub(crate) struct RenameHelperParam {
-    /// Old parent directory i-number
-    old_parent: INum,
-    /// Old parent directory fd
-    old_parent_fd: RawFd,
-    /// Old name
-    old_name: OsString,
-    /// Old entry i-number
-    old_entry_ino: INum,
-    /// New parent directory i-number
-    new_parent: INum,
-    /// New parent directory fd
-    new_parent_fd: RawFd,
-    /// New name
-    new_name: OsString,
 }
 
 /// POSIX file lock parameters
@@ -133,7 +110,7 @@ pub struct FileLockParam {
     pub pid: u32,
 }
 
-impl MemFs {
+impl<M: MetaData + Send + Sync + 'static> MemFs<M> {
     /// Create `FileSystem`
     pub async fn new(mount_point: &Path, capacity: usize) -> anyhow::Result<Self> {
         let root_path = mount_point
@@ -146,30 +123,38 @@ impl MemFs {
         cache.insert(FUSE_ROOT_ID, root_inode);
         let trash = BTreeSet::new(); // for deferred deletion nodes
 
-        Ok(Self(Arc::new(Mutex::new(MetaData {
-            root_path,
-            cache: RwLock::new(cache),
-            trash,
-            data_cache: Arc::new(GlobalCache::new_with_capacity(capacity)),
-        }))))
+        Ok(Self(Arc::new(Mutex::new(M::new(
+            root_path.into_os_string().into_string().unwrap(),
+            RwLock::new(cache),
+            RwLock::new(trash),
+            Arc::new(GlobalCache::new_with_capacity(capacity)),
+        )))))
+    }
+
+    /// Read content check
+    fn read_helper(content: Vec<IoMemBlock>, size: usize) -> anyhow::Result<Vec<IoMemBlock>> {
+        if content.iter().filter(|c| !c.can_convert()).count() > 0 {
+            return super::util::build_error_result_from_errno(
+                Errno::EINVAL,
+                "The content is out of scope".to_string(),
+            );
+        }
+        let content_total_len: usize = content.iter().map(|s| s.len()).sum();
+        debug!("read {} data, expected size {}", content_total_len, size);
+        Ok(content)
     }
 }
 
 #[async_trait]
-impl FileSystem for MemFs {
+impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
     // Implemented FUSE operations
 
     /// Initialize filesystem.
     /// Called before any other filesystem method.
     async fn init(&self, req: &Request<'_>) -> nix::Result<()> {
         let this = self.0.lock().await;
-        let cache = this.cache.read().await;
-        debug!(
-            "init(req={:?}), cache size={}, trash size={}",
-            req,
-            cache.len(),
-            this.trash.len(),
-        );
+        let cache = this.cache().read().await;
+        debug!("init(req={:?}), cache size={}", req, cache.len(),);
         Ok(())
     }
 
@@ -177,13 +162,8 @@ impl FileSystem for MemFs {
     /// Called on filesystem exit.
     async fn destroy(&self, req: &Request<'_>) {
         let this = self.0.lock().await;
-        let cache = this.cache.read().await;
-        debug!(
-            "destroy(req={:?}), cache size={}, trash size={}",
-            req,
-            cache.len(),
-            this.trash.len(),
-        );
+        let cache = this.cache().read().await;
+        debug!("destroy(req={:?}), cache size={}", req, cache.len(),);
     }
 
     /// Look up a directory entry by name and get its attributes.
@@ -197,24 +177,13 @@ impl FileSystem for MemFs {
         let mut this = self.0.lock().await;
 
         debug!("lookup(parent={}, name={:?}, req={:?})", parent, name, req,);
-        let pre_check_res = this.lookup_pre_check(parent, name).await;
-        let (ino, child_type) = match pre_check_res {
-            Ok((ino, child_type)) => (ino, child_type),
-            Err(e) => {
-                debug!(
-                    "lookup() failed to pre-check, the error is: {}",
-                    common::util::format_anyhow_error(&e),
-                );
-                return reply.error(e).await;
-            }
-        };
-        let lookup_res = this.lookup_helper(parent, ino, name, child_type).await;
+        let lookup_res = this.lookup_helper(parent, name).await;
         match lookup_res {
             Ok((ttl, fuse_attr, generation)) => {
                 debug!(
-                    "lookup() successfully found the node name={:?} of ino={} \
+                    "lookup() successfully found the node name={:?} \
                         under parent ino={}, the attr={:?}",
-                    name, ino, parent, &fuse_attr,
+                    name, parent, &fuse_attr,
                 );
                 reply.entry(ttl, fuse_attr, generation).await
             }
@@ -238,7 +207,7 @@ impl FileSystem for MemFs {
         let ino = req.nodeid();
         debug!("getattr(ino={}, req={:?})", ino, req);
 
-        let cache = this.cache.read().await;
+        let cache = this.cache().read().await;
         let node = cache.get(&ino).unwrap_or_else(|| {
             panic!(
                 "getattr() found fs is inconsistent, \
@@ -277,7 +246,7 @@ impl FileSystem for MemFs {
         let ino = req.nodeid();
         debug!("open(ino={}, flags={}, req={:?})", ino, flags, req);
 
-        let cache = this.cache.read().await;
+        let cache = this.cache().read().await;
         let node = cache.get(&ino).unwrap_or_else(|| {
             panic!(
                 "open() found fs is inconsistent, the i-node of ino={} should be in cache",
@@ -326,13 +295,13 @@ impl FileSystem for MemFs {
     /// have a limited lifetime. On unmount it is not guaranteed, that all referenced
     /// inodes will receive a forget message.
     async fn forget(&self, req: &Request<'_>, nlookup: u64) {
-        let mut this = self.0.lock().await;
+        let this = self.0.lock().await;
 
         let ino = req.nodeid();
         debug!("forget(ino={}, nlookup={}, req={:?})", ino, nlookup, req,);
         let current_count: i64;
         {
-            let cache = this.cache.read().await;
+            let cache = this.cache().read().await;
             let node = cache.get(&ino).unwrap_or_else(|| {
                 panic!(
                     "forget() found fs is inconsistent, \
@@ -358,24 +327,7 @@ impl FileSystem for MemFs {
         {
             if current_count == 0 {
                 // TODO: support thread-safe
-                if this.trash.contains(&ino) {
-                    // deferred deletion
-                    this.trash.remove(&ino);
-                    let mut cache = this.cache.write().await;
-                    let deleted_node = cache.remove(&ino).unwrap_or_else(|| {
-                        panic!(
-                            "forget() found fs is inconsistent, i-node of ino={} \
-                                found in trash, but no i-node found for deferred deletion",
-                            ino,
-                        );
-                    });
-                    debug_assert_eq!(deleted_node.get_lookup_count(), 0);
-                    debug!(
-                        "forget() deferred deleted i-node of ino={} and name={:?}",
-                        ino,
-                        deleted_node.get_name(),
-                    );
-                }
+                let _ = this.delete_trash(&ino);
             }
         }
     }
@@ -401,14 +353,6 @@ impl FileSystem for MemFs {
         let _lock_owner = param.lock_owner;
         #[cfg(feature = "abi-7-23")]
         let _c_time = param.c_time;
-        #[cfg(target_os = "macos")]
-        let crtime = param.crtime;
-        #[cfg(target_os = "macos")]
-        let chgtime = param.chgtime;
-        #[cfg(target_os = "macos")]
-        let bkuptime = param.bkuptime;
-        #[cfg(target_os = "macos")]
-        let flags = param.flags;
         debug!(
             "setattr(ino={}, valid={:?}, mode={:?}, uid={:?}, gid={:?}, size={:?}, \
                 atime={:?}, mtime={:?}, fh={:?}, req={:?})",
@@ -423,16 +367,11 @@ impl FileSystem for MemFs {
             fh,
             req,
         );
-        #[cfg(target_os = "macos")]
-        debug!(
-            "crtime={:?}, chgtime={:?}, bkuptime={:?}, flags={:?}",
-            crtime, chgtime, bkuptime, flags,
-        );
         if 0 == valid {
             warn!("setattr() enountered valid=0, the req={:?}", req);
         }
 
-        let mut cache = this.cache.write().await;
+        let mut cache = this.cache().write().await;
         let inode = cache.get_mut(&ino).unwrap_or_else(|| {
             panic!(
                 "setattr() found fs is inconsistent, \
@@ -440,79 +379,16 @@ impl FileSystem for MemFs {
                 ino,
             );
         });
-        let fd = inode.get_fd();
-        let attr = inode.get_attr();
         let ttl = Duration::new(MY_TTL_SEC, 0);
 
-        // if let Some(b) = mode {
-        //     attr.perm = fs_util::parse_mode_bits(b);
-        //     debug!("setattr() set permission={}", attr.perm);
-
-        //     let kind = fs_util::parse_sflag(b);
-        //     debug_assert_eq!(kind, attr.kind);
-        // }
-        // // no replace
-        // attr.uid = u_id.unwrap_or(attr.uid);
-        // attr.gid = g_id.unwrap_or(attr.gid);
-        // attr.size = size.unwrap_or(attr.size);
-        // attr.atime = a_time.unwrap_or(attr.atime);
-        // attr.mtime = m_time.unwrap_or(attr.mtime);
-        // #[cfg(target_os = "macos")]
-        // {
-        //     attr.crtime = crtime.unwrap_or(attr.crtime);
-        //     // attr.chgtime = chgtime.unwrap_or(attr.chgtime);
-        //     // attr.bkuptime = bkuptime.unwrap_or(attr.bkuptime);
-        //     attr.flags = flags.unwrap_or(attr.flags);
-        // }
-
-        // let sth_changed = mode.is_some()
-        //     || u_id.is_some()
-        //     || g_id.is_some()
-        //     || size.is_some()
-        //     || a_time.is_some()
-        //     || m_time.is_some()
-        //     || fh.is_some();
-        // #[cfg(feature = "abi-7-9")]
-        // let sth_changed = sth_changed || lock_owner.is_some();
-        // #[cfg(feature = "abi-7-23")]
-        // let sth_changed = sth_changed || c_time.is_some();
-        // #[cfg(target_os = "macos")]
-        // let sth_changed = sth_changed
-        //     || crtime.is_some()
-        //     || chgtime.is_some()
-        //     || bkuptime.is_some()
-        //     || flags.is_some();
-
-        // let fuse_attr = fs_util::convert_to_fuse_attr(attr);
-        // if sth_changed {
-        //     // update ctime, since meta data might change in setattr
-        //     // attr.ctime = SystemTime::now();
-        //     i_node.set_attr(attr);
-        //     debug!(
-        //         "setattr() successfully set the attribute of ino={}, the set attr={:?}",
-        //         ino, attr,
-        //     );
-        //     // TODO: write attribute change to disk using chmod, chown, chflags
-        //     reply.attr(ttl, fuse_attr).await
-        // } else if valid == 0 {
-        //     // Nothing chagned, just reply the attribute
-        //     reply.attr(ttl, fuse_attr).await
-        // } else {
-        //     panic!(
-        //         "setattr() found all the input attributes are empty for the file of ino={}",
-        //         ino,
-        //     );
-        //     // Err(anyhow!("no change to attr"))
-        // }
-
-        let set_res = MetaData::setattr_helper(fd, param, attr).await;
+        let set_res = inode.setattr_precheck(param).await;
         match set_res {
             Ok((attr_changed, file_attr)) => {
                 if attr_changed {
                     inode.set_attr(file_attr);
                     debug!(
                         "setattr() successfully set the attribute of ino={} and name={:?}, the set attr={:?}",
-                        ino, inode.get_name(), attr,
+                        ino, inode.get_name(), file_attr,
                     );
                 } else {
                     warn!(
@@ -628,7 +504,7 @@ impl FileSystem for MemFs {
 
         debug!("unlink(parent={}, name={:?}, req={:?}", parent, name, req,);
         let entry_type = {
-            let cache = this.cache.read().await;
+            let cache = this.cache().read().await;
             let parent_node = cache.get(&parent).unwrap_or_else(|| {
                 panic!(
                     "unlink() found fs is inconsistent, \
@@ -729,64 +605,20 @@ impl FileSystem for MemFs {
     /// exist and neither may be deleted.
     async fn rename(
         &self,
-        req: &Request<'_>,
+        _: &Request<'_>,
         param: RenameParam,
         reply: ReplyEmpty,
     ) -> nix::Result<usize> {
         let mut this = self.0.lock().await;
 
-        let old_parent = param.old_parent;
-        let old_name = param.old_name;
-        let new_parent = param.new_parent;
-        let new_name = param.new_name;
-        let flags = param.flags;
-        debug!(
-            "rename(old parent={}, old name={:?}, new parent={}, new name={:?}, req={:?})",
-            old_parent, old_name, new_parent, new_name, req,
-        );
-        let no_replace = flags == 1; // RENAME_NOREPLACE
-        let exchange = flags == 2; // RENAME_EXCHANGE
-
-        let pre_check_res = this
-            .rename_pre_check(old_parent, &old_name, new_parent, &new_name, no_replace)
-            .await;
-        let (old_parent_fd, old_entry_ino, new_parent_fd, new_entry_ino) = match pre_check_res {
-            Ok((old_parent_fd, old_entry_ino, new_parent_fd, new_entry_ino)) => {
-                (old_parent_fd, old_entry_ino, new_parent_fd, new_entry_ino)
-            }
-            Err(e) => {
-                debug!(
-                    "rename() pre-check failed, the error is: {}",
-                    common::util::format_anyhow_error(&e)
-                );
-                return reply.error(e).await;
-            }
-        };
-        let helper_param = RenameHelperParam {
-            old_parent,
-            old_parent_fd,
-            old_name,
-            old_entry_ino,
-            new_parent,
-            new_parent_fd,
-            new_name,
-        };
-        let rename_res = if let Some(new_ino) = new_entry_ino {
-            if exchange {
-                this.rename_exchange_helper(helper_param, new_ino).await
-            } else {
-                // Rename replace
-                this.rename_may_replace_helper(helper_param, Some(new_ino))
-                    .await
-            }
+        let exchange = param.flags == 2; // RENAME_EXCHANGE
+        let rename_res = if exchange {
+            this.rename_exchange_helper(param).await
         } else {
-            // No need to replace
-            this.rename_may_replace_helper(
-                helper_param,
-                None, // new_entry_ino
-            )
-            .await
+            // Rename replace
+            this.rename_may_replace_helper(param).await
         };
+
         match rename_res {
             Ok(()) => reply.ok().await,
             Err(e) => {
@@ -826,7 +658,7 @@ impl FileSystem for MemFs {
             offset
         );
 
-        let mut cache = this.cache.write().await;
+        let mut cache = this.cache().write().await;
         let inode = cache.get_mut(&ino).unwrap_or_else(|| {
             panic!(
                 "read() found fs is inconsistent, \
@@ -858,32 +690,7 @@ impl FileSystem for MemFs {
         }
         let file_data = inode.get_file_data(offset.cast(), size.cast());
         debug!("file_data is {:?}", file_data);
-        // } else if SFlag::S_IFLNK == node_type {
-        //     if node.need_load_symlink_target_data() {
-        //         let load_res = node.load_data().await;
-        //         if let Err(e) = load_res {
-        //             debug!(
-        //                 "read() failed to load symlink target data, the error is: {}",
-        //                 common::util::format_anyhow_error(&e)
-        //             );
-        //             return reply.error(e).await;
-        //         }
-        //     }
-        //     let target_path = node.get_symlink_target();
-        //     let target_data_res = node.get_symlink_target_data();
-        //     if let Some(target_data) = target_data_res {
-        //         target_data.get_file_data()
-        //     } else {
-        //         panic!(
-        //             "read() found fs is inconsistent, \
-        //                 the symlink target path={:?} should not be broken",
-        //             target_path,
-        //         );
-        //     }
-        // } else {
-        //     panic!("read() cannot read directory data");
-        // };
-        match MetaData::read_helper(file_data, size.cast()) {
+        match Self::read_helper(file_data, size.cast()) {
             Ok(content) => {
                 debug!(
                     "read() successfully read {} bytes from the file of ino={} and name={:?}",
@@ -934,7 +741,7 @@ impl FileSystem for MemFs {
             // req.request,
         );
 
-        let mut cache = this.cache.write().await;
+        let mut cache = this.cache().write().await;
         let inode = cache.get_mut(&ino).unwrap_or_else(|| {
             panic!(
                 "write() found fs is inconsistent, \
@@ -991,6 +798,7 @@ impl FileSystem for MemFs {
         lock_owner: u64,
         reply: ReplyEmpty,
     ) -> nix::Result<usize> {
+        let this = self.0.lock().await;
         let ino = req.nodeid();
         debug!(
             "flush(ino={}, fh={}, lock_owner={}, req={:?})",
@@ -1002,30 +810,15 @@ impl FileSystem for MemFs {
         // called multiple times for an open file, this must not really
         // close the file. This is important if used on a network
         // filesystem like NFS which flush the data/metadata on close()
-        let new_fd = smol::unblock(move || unistd::dup(fh.cast()))
-            .await
-            .context(format!(
-                "flush() failed to duplicate the handler ino={} fh={:?}",
-                ino, fh,
-            ))
-            .unwrap_or_else(|e| {
-                panic!(
-                    "flush() failed, the error is: {}",
-                    common::util::format_anyhow_error(&e)
-                )
-            });
-        smol::unblock(move || unistd::close(new_fd))
-            .await
-            .context(format!(
-                "flush() failed to close the duplicated file handler={} of ino={}",
-                new_fd, ino,
-            ))
-            .unwrap_or_else(|e| {
-                panic!(
-                    "flush() failed, the error is: {}",
-                    common::util::format_anyhow_error(&e)
-                )
-            });
+        let cache = this.cache().read().await;
+        let inode = cache.get(&ino).unwrap_or_else(|| {
+            panic!(
+                "release() found fs is inconsistent, \
+                    the i-node of ino={} should be in cache",
+                ino,
+            );
+        });
+        inode.flush(ino, fh).await;
         reply.ok().await
     }
 
@@ -1054,7 +847,7 @@ impl FileSystem for MemFs {
             ino, fh, flags, lock_owner, flush, req,
         );
         // TODO: handle lock_owner
-        let cache = this.cache.read().await;
+        let cache = this.cache().read().await;
         let inode = cache.get(&ino).unwrap_or_else(|| {
             panic!(
                 "release() found fs is inconsistent, \
@@ -1062,38 +855,7 @@ impl FileSystem for MemFs {
                 ino,
             );
         });
-        let fd = fh.cast();
-        if flush {
-            // TODO: double check the meaning of the flush flag
-            smol::unblock(move || unistd::fsync(fd))
-                .await
-                .context(format!(
-                    "release() failed to flush the file of ino={} and name={:?}",
-                    ino,
-                    inode.get_name(),
-                ))
-                .unwrap_or_else(|e| {
-                    panic!(
-                        "release() failed, the error is: {}",
-                        common::util::format_anyhow_error(&e)
-                    );
-                });
-        }
-        smol::unblock(move || unistd::close(fd))
-            .await
-            .context(format!(
-                "release() failed to close the file handler={} of ino={} and name={:?}",
-                fh,
-                ino,
-                inode.get_name(),
-            ))
-            .unwrap_or_else(|e| {
-                panic!(
-                    "release() failed, the error is: {}",
-                    common::util::format_anyhow_error(&e)
-                );
-            });
-        inode.dec_open_count(); // decrease open count before reply in case reply failed
+        inode.close(ino, fh, flush).await;
         debug!(
             "release() successfully closed the file handler={} of ino={} and name={:?}",
             fh,
@@ -1114,11 +876,12 @@ impl FileSystem for MemFs {
         reply: ReplyEmpty,
     ) -> nix::Result<usize> {
         let ino = req.nodeid();
+        let this = self.0.lock().await;
         debug!(
             "fsync(ino={}, fh={}, datasync={}, req={:?})",
             ino, fh, datasync, req,
         );
-        match MetaData::fsync_helper(ino, fh, datasync).await {
+        match this.fsync_helper(ino, fh, datasync).await {
             Ok(()) => reply.ok().await,
             Err(e) => {
                 debug!(
@@ -1143,7 +906,7 @@ impl FileSystem for MemFs {
         let ino = req.nodeid();
         debug!("opendir(ino={}, flags={}, req={:?})", ino, flags, req,);
 
-        let cache = this.cache.read().await;
+        let cache = this.cache().read().await;
         let inode = cache.get(&ino).unwrap_or_else(|| {
             panic!(
                 "opendir() found fs is inconsistent, \
@@ -1198,7 +961,7 @@ impl FileSystem for MemFs {
             ino, fh, offset, req,
         );
 
-        let readdir_helper = |data: &BTreeMap<OsString, DirEntry>| -> usize {
+        let mut readdir_helper = |data: &BTreeMap<OsString, DirEntry>| -> usize {
             let mut num_child_entries = 0;
             for (i, (child_name, child_entry)) in data.iter().enumerate().skip(offset.cast()) {
                 let child_ino = child_entry.ino();
@@ -1222,7 +985,7 @@ impl FileSystem for MemFs {
             num_child_entries
         };
 
-        let mut cache = this.cache.write().await;
+        let mut cache = this.cache().write().await;
         let inode = cache.get_mut(&ino).unwrap_or_else(|| {
             panic!(
                 "readdir() found fs is inconsistent, \
@@ -1243,7 +1006,7 @@ impl FileSystem for MemFs {
                 return reply.error(e).await;
             }
         }
-        let num_child_entries = inode.read_dir(readdir_helper);
+        let num_child_entries = inode.read_dir(&mut readdir_helper);
         debug!(
             "readdir() successfully read {} entries \
                 under the directory of ino={} and name={:?}",
@@ -1273,7 +1036,7 @@ impl FileSystem for MemFs {
             ino, fh, flags, req,
         );
         // TODO: handle flags
-        let cache = this.cache.read().await;
+        let cache = this.cache().read().await;
         let inode = cache.get(&ino).unwrap_or_else(|| {
             panic!(
                 "releasedir() found fs is inconsistent, \
@@ -1281,27 +1044,7 @@ impl FileSystem for MemFs {
                 ino,
             );
         });
-        smol::unblock(move || unistd::close(fh.cast()))
-            .await
-            .context(format!(
-                "releasedir() failed to close the file handler={} of ino={} and name={:?}",
-                fh,
-                ino,
-                inode.get_name(),
-            ))
-            .unwrap_or_else(|e| {
-                panic!(
-                    "releasedir() failed, the error is: {}",
-                    common::util::format_anyhow_error(&e),
-                );
-            });
-        inode.dec_open_count();
-        debug!(
-            "releasedir() successfully closed the file handler={} of ino={} and name={:?}",
-            fh,
-            ino,
-            inode.get_name(),
-        );
+        inode.closedir(ino, fh).await;
         reply.ok().await
     }
 
@@ -1316,13 +1059,14 @@ impl FileSystem for MemFs {
         datasync: bool,
         reply: ReplyEmpty,
     ) -> nix::Result<usize> {
+        let this = self.0.lock().await;
         let ino = req.nodeid();
         debug!(
             "fsyncdir(ino={}, fh={}, datasync={}, req={:?})",
             ino, fh, datasync, req,
         );
         // Self::fsync_helper(ino, fh, datasync, reply).await
-        match MetaData::fsync_helper(ino, fh, datasync).await {
+        match this.fsync_helper(ino, fh, datasync).await {
             Ok(()) => reply.ok().await,
             Err(e) => {
                 debug!(
@@ -1346,7 +1090,7 @@ impl FileSystem for MemFs {
         };
         debug!("statfs(ino={}, req={:?})", ino, req);
 
-        let cache = this.cache.read().await;
+        let cache = this.cache().read().await;
         let inode = cache.get(&ino).unwrap_or_else(|| {
             panic!(
                 "statfs() found fs is inconsistent, \
@@ -1354,15 +1098,8 @@ impl FileSystem for MemFs {
                 ino,
             );
         });
-        let fd = inode.get_fd();
-        let statfs_res = smol::unblock(move || {
-            let file = unsafe { std::fs::File::from_raw_fd(fd) };
-            let stat_res = statvfs::fstatvfs(&file); // statvfs is POSIX, whereas statfs is not
-            let _fd = file.into_raw_fd(); // prevent fd to be closed by File
-            stat_res
-        })
-        .await
-        .context(format!(
+
+        let statfs_res = inode.statefs().await.context(format!(
             "statfs() failed to run statvfs() of ino={} and name={:?}",
             ino,
             inode.get_name(),
@@ -1373,18 +1110,7 @@ impl FileSystem for MemFs {
                     "statfs() successfully read the statvfs of ino={} and name={:?}, the statvfs={:?}",
                     ino, inode.get_name(), statvfs,
                 );
-                reply
-                    .statfs(StatFsParam {
-                        blocks: statvfs.blocks().cast(),
-                        bfree: statvfs.blocks_free().cast(),
-                        bavail: statvfs.blocks_available().cast(),
-                        files: statvfs.files().cast(),
-                        f_free: statvfs.files_free().cast(),
-                        bsize: statvfs.block_size().cast(), // TODO: consider use customized block size
-                        namelen: statvfs.name_max().cast(),
-                        frsize: statvfs.fragment_size().cast(),
-                    })
-                    .await
+                reply.statfs(statvfs).await
             }
             Err(e) => {
                 debug!(
@@ -1404,7 +1130,7 @@ impl FileSystem for MemFs {
 
         let ino = req.nodeid();
         debug!("readlink(ino={}, req={:?})", ino, req,);
-        let cache = this.cache.read().await;
+        let cache = this.cache().read().await;
         let symlink_node = cache.get(&ino).unwrap_or_else(|| {
             panic!(
                 "readlink() found fs is inconsistent, \
@@ -1473,13 +1199,8 @@ impl FileSystem for MemFs {
     async fn interrupt(&self, req: &Request<'_>, unique: u64) {
         let this = self.0.lock().await;
 
-        let cache = this.cache.read().await;
-        debug!(
-            "interrupt(req={:?}), cache size={}, trash size={}",
-            req,
-            cache.len(),
-            this.trash.len(),
-        );
+        let cache = this.cache().read().await;
+        debug!("interrupt(req={:?}), cache size={}", req, cache.len(),);
         // TODO: handle FUSE_INTERRUPT
         warn!(
             "FUSE INTERRUPT recieved, request w/ unique={} interrupted",
@@ -1620,36 +1341,6 @@ impl FileSystem for MemFs {
         _idx: u64,
         reply: ReplyBMap,
     ) -> nix::Result<usize> {
-        reply.error_code(Errno::ENOSYS).await
-    }
-
-    /// macOS only: Rename the volume. Set `fuse_init_out.flags` during init to
-    /// `FUSE_VOL_RENAME` to enable
-    #[cfg(target_os = "macos")]
-    async fn setvolname(
-        &self,
-        _req: &Request<'_>,
-        _name: &OsStr,
-        reply: ReplyEmpty,
-    ) -> nix::Result<usize> {
-        reply.error_code(Errno::ENOSYS).await
-    }
-
-    /// macOS only: Rename exchange
-    #[cfg(target_os = "macos")]
-    async fn exchange(
-        &self,
-        _req: &Request<'_>,
-        _param: RenameParam,
-        reply: ReplyEmpty,
-    ) -> nix::Result<usize> {
-        reply.error_code(Errno::ENOSYS).await
-    }
-
-    /// macOS only: Query extended times (`bkuptime` and `crtime`). Set `fuse_init_out.flags`
-    /// during init to `FUSE_XTIMES` to enable
-    #[cfg(target_os = "macos")]
-    async fn getxtimes(&self, _req: &Request<'_>, reply: ReplyXTimes) -> nix::Result<usize> {
         reply.error_code(Errno::ENOSYS).await
     }
 }

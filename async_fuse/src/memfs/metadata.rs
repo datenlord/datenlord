@@ -3,92 +3,148 @@ use std::ffi::{OsStr, OsString};
 use std::os::unix::io::RawFd;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 use anyhow::Context;
 use log::debug;
 use nix::errno::Errno;
 use nix::fcntl::OFlag;
-use nix::sys::{
-    stat::{self, SFlag},
-    time::TimeSpec,
-};
+use nix::sys::stat::SFlag;
 use nix::unistd;
 use smol::lock::{RwLock, RwLockWriteGuard};
 use utilities::Cast;
 
-use crate::fuse::fuse_reply::AsIoVec;
 use crate::fuse::protocol::{FuseAttr, INum};
 use crate::util;
 
-use super::cache::{GlobalCache, IoMemBlock};
+use super::cache::GlobalCache;
 use super::dir::DirEntry;
-use super::fs_util::{self, FileAttr};
-use super::node::{self, Node};
-use super::{RenameHelperParam, SetAttrParam};
+use super::fs_util;
+use super::node::{self, DefaultNode, Node};
+use super::RenameParam;
+
+use async_trait::async_trait;
 
 /// The time-to-live seconds of FUSE attributes
 const MY_TTL_SEC: u64 = 3600; // TODO: should be a long value, say 1 hour
 /// The generation ID of FUSE attributes
 const MY_GENERATION: u64 = 1; // TODO: find a proper way to set generation
 
-/// File system in-memory meta-data
-#[derive(Debug)]
-pub(crate) struct MetaData {
-    /// The root path and the mount point of the FUSE filesystem
-    pub(crate) root_path: PathBuf,
-    /// The cache to hold opened directories and files
-    pub(crate) cache: RwLock<BTreeMap<INum, Node>>,
-    /// The trash to hold deferred deleted directories and files
-    pub(crate) trash: BTreeSet<INum>,
-    /// Global data cache
-    pub(crate) data_cache: Arc<GlobalCache>,
+#[async_trait]
+pub trait MetaData {
+    type N: Node + Send + Sync + 'static;
+
+    fn new(
+        root_path: String,
+        cache: RwLock<BTreeMap<INum, Self::N>>,
+        trash: RwLock<BTreeSet<INum>>,
+        data_cache: Arc<GlobalCache>,
+    ) -> Self;
+
+    /// Helper function to create node
+    async fn create_node_helper(
+        &mut self,
+        parent: INum,
+        node_name: OsString,
+        mode: u32,
+        node_type: SFlag,
+        target_path: Option<&Path>,
+    ) -> anyhow::Result<(Duration, FuseAttr, u64)>;
+
+    /// Helper function to remove node
+    async fn remove_node_helper(
+        &mut self,
+        parent: INum,
+        node_name: OsString,
+        node_type: SFlag,
+    ) -> anyhow::Result<()>;
+
+    /// Helper function to lookup
+    async fn lookup_helper(
+        &mut self,
+        parent: INum,
+        name: &OsStr,
+    ) -> anyhow::Result<(Duration, FuseAttr, u64)>;
+
+    /// Rename helper to exchange on disk
+    async fn rename_exchange_helper(&mut self, param: RenameParam) -> anyhow::Result<()>;
+
+    /// Rename helper to move on disk, it may replace destination entry
+    async fn rename_may_replace_helper(&mut self, param: RenameParam) -> anyhow::Result<()>;
+
+    /// Helper function of fsync
+    async fn fsync_helper(&self, ino: u64, fh: u64, datasync: bool) -> anyhow::Result<()>;
+
+    // TODO: Should hide this implementation detail
+    /// Get metadata cache
+    fn cache(&self) -> &RwLock<BTreeMap<INum, Self::N>>;
+
+    /// Delete cache in trash if necessary
+    async fn delete_trash(&self, ino: &INum) -> bool;
 }
 
-impl MetaData {
-    // FUSE operation helper functions
+/// File system in-memory meta-data
+#[derive(Debug)]
+pub struct DefaultMetaData {
+    /// The root path and the mount point of the FUSE filesystem
+    root_path: PathBuf,
+    /// The cache to hold opened directories and files
+    cache: RwLock<BTreeMap<INum, DefaultNode>>,
+    /// The trash to hold deferred deleted directories and files
+    trash: RwLock<BTreeSet<INum>>,
+    /// Global data cache
+    data_cache: Arc<GlobalCache>,
+}
 
-    /// The pre-check before create node
-    #[allow(single_use_lifetimes)]
-    pub(crate) async fn create_node_pre_check<'a, 'b>(
-        &self,
-        parent: INum,
-        node_name: &OsStr,
-        cache: &'b mut RwLockWriteGuard<'a, BTreeMap<INum, Node>>,
-    ) -> anyhow::Result<&'b mut Node> {
-        let parent_node = cache.get_mut(&parent).unwrap_or_else(|| {
-            panic!(
-                "create_node_pre_check() found fs is inconsistent, \
-                    parent of ino={} should be in cache before create it new child",
-                parent,
-            );
-        });
-        if let Some(occupied) = parent_node.get_entry(node_name) {
-            debug!(
-                "create_node_pre_check() found the directory of ino={} and name={:?} \
-                    already exists a child with name={:?} and ino={}",
-                parent,
-                parent_node.get_name(),
-                node_name,
-                occupied.ino(),
-            );
-            return util::build_error_result_from_errno(
-                Errno::EEXIST,
-                format!(
-                    "create_node_pre_check() found the directory of ino={} and name={:?} \
-                        already exists a child with name={:?} and ino={}",
-                    parent,
-                    parent_node.get_name(),
-                    node_name,
-                    occupied.ino(),
-                ),
-            );
+#[async_trait]
+impl MetaData for DefaultMetaData {
+    type N = DefaultNode;
+
+    fn new(
+        root_path: String,
+        cache: RwLock<BTreeMap<INum, Self::N>>,
+        trash: RwLock<BTreeSet<INum>>,
+        data_cache: Arc<GlobalCache>,
+    ) -> Self {
+        Self {
+            root_path: root_path.into(),
+            cache,
+            trash,
+            data_cache,
         }
-        Ok(parent_node)
+    }
+
+    /// Get metadata cache
+    fn cache(&self) -> &RwLock<BTreeMap<INum, Self::N>> {
+        &self.cache
+    }
+
+    async fn delete_trash(&self, ino: &INum) -> bool {
+        let mut trash = self.trash.write().await;
+        if trash.contains(ino) {
+            // deferred deletion
+            trash.remove(ino);
+            let mut cache = self.cache.write().await;
+            let deleted_node = cache.remove(&ino).unwrap_or_else(|| {
+                panic!(
+                    "forget() found fs is inconsistent, i-node of ino={} \
+                                found in trash, but no i-node found for deferred deletion",
+                    ino,
+                );
+            });
+            debug_assert_eq!(deleted_node.get_lookup_count(), 0);
+            debug!(
+                "forget() deferred deleted i-node of ino={} and name={:?}",
+                ino,
+                deleted_node.get_name(),
+            );
+            return true;
+        }
+        false
     }
 
     /// Helper function to create node
-    pub(crate) async fn create_node_helper(
+    async fn create_node_helper(
         &mut self,
         parent: INum,
         node_name: OsString,
@@ -186,110 +242,8 @@ impl MetaData {
         Ok((ttl, fuse_attr, MY_GENERATION))
     }
 
-    /// Helper function to delete or deferred delete node
-    pub(crate) async fn may_deferred_delete_node_helper(
-        &mut self,
-        ino: INum,
-    ) -> anyhow::Result<()> {
-        let parent_ino: INum;
-        let node_name: OsString;
-        let mut deferred_deletion = false;
-        {
-            // pre-check whether deferred delete or not
-            let cache = self.cache.read().await;
-            let node = cache.get(&ino).unwrap_or_else(|| {
-                panic!(
-                    "may_deferred_delete_node_helper() failed to \
-                        find the i-node of ino={} to remove",
-                    ino,
-                );
-            });
-            parent_ino = node.get_parent_ino();
-            node_name = node.get_name().into();
-
-            debug_assert!(node.get_lookup_count() >= 0); // lookup count cannot be negative
-            if node.get_lookup_count() > 0 {
-                // TODO: support thread-safe to avoid race condition
-                deferred_deletion = true;
-            }
-        }
-        {
-            // remove entry from parent i-node
-            let mut cache = self.cache.write().await;
-            let parent_node = cache.get_mut(&parent_ino).unwrap_or_else(|| {
-                panic!(
-                    "may_deferred_delete_node_helper() failed to \
-                        find the parent of ino={} for i-node of ino={}",
-                    parent_ino, ino,
-                );
-            });
-            let node_name_clone = node_name.clone();
-            let deleted_entry =
-                parent_node
-                    .unlink_entry(node_name_clone)
-                    .await
-                    .context(format!(
-                        "may_deferred_delete_node_helper() failed to remove entry name={:?} \
-                            and ino={} from parent directory ino={}",
-                        node_name, ino, parent_ino,
-                    ))?;
-            debug_assert_eq!(&node_name, deleted_entry.entry_name());
-            debug_assert_eq!(deleted_entry.ino(), ino);
-        }
-
-        if deferred_deletion {
-            // deferred deletion
-            // TODO: support thread-safe
-            let cache = self.cache.read().await;
-            let node = cache.get(&ino).unwrap_or_else(|| {
-                panic!(
-                    "impossible case, may_deferred_delete_node_helper() \
-                        should already find the i-node of ino={} to remove",
-                    ino,
-                );
-            });
-            let insert_result = self.trash.insert(ino); // check thread-safe in case of deferred deletion race
-            debug_assert!(
-                insert_result,
-                "failed to insert i-node of ino={} into trash for deferred deletion",
-                ino,
-            );
-            debug!(
-                "may_deferred_delete_node_helper() defered removed \
-                    the i-node name={:?} of ino={} under parent ino={}, \
-                    open count={}, lookup count={}",
-                node.get_name(),
-                ino,
-                parent_ino,
-                node.get_open_count(),
-                node.get_lookup_count(),
-            );
-        } else {
-            // immediate deletion
-            let mut cache = self.cache.write().await;
-            let inode = cache.remove(&ino).unwrap_or_else(|| {
-                panic!(
-                    "impossible case, may_deferred_delete_node_helper() \
-                    should remove the i-node of ino={} immediately",
-                    ino,
-                );
-            }); // TODO: support thread-safe
-            debug!(
-                "may_deferred_delete_node_helper() immediately removed \
-                    the i-node name={:?} of ino={} under parent ino={}, \
-                    open count={}, lookup count={}",
-                inode.get_name(),
-                ino,
-                parent_ino,
-                inode.get_open_count(),
-                inode.get_lookup_count(),
-            );
-        }
-        Ok(())
-    }
-
     /// Helper function to remove node
-    pub(crate) async fn remove_node_helper(
+    async fn remove_node_helper(
         &mut self,
         parent: INum,
         node_name: OsString,
@@ -390,55 +344,24 @@ impl MetaData {
         }
     }
 
-    /// Lookup helper function to pre-check
-    pub(crate) async fn lookup_pre_check(
-        &self,
-        parent: INum,
-        name: &OsStr,
-    ) -> anyhow::Result<(INum, SFlag)> {
-        // lookup child ino and type first
-        let cache = self.cache.read().await;
-        let parent_node = cache.get(&parent).unwrap_or_else(|| {
-            panic!(
-                "lookup_helper() found fs is inconsistent, \
-                        the parent i-node of ino={} should be in cache",
-                parent,
-            );
-        });
-        if let Some(child_entry) = parent_node.get_entry(name) {
-            let ino = child_entry.ino();
-            let child_type = child_entry.entry_type();
-            Ok((ino, child_type))
-        } else {
-            debug!(
-                "lookup_helper() failed to find the file name={:?} \
-                    under parent directory of ino={} and name={:?}",
-                name,
-                parent,
-                parent_node.get_name(),
-            );
-            // lookup() didn't find anything, this is normal
-            util::build_error_result_from_errno(
-                Errno::ENOENT,
-                format!(
-                    "lookup_helper() failed to find the file name={:?} \
-                        under parent directory of ino={} and name={:?}",
-                    name,
-                    parent,
-                    parent_node.get_name(),
-                ),
-            )
-        }
-    }
-
     /// Helper function to lookup
-    pub(crate) async fn lookup_helper(
+    async fn lookup_helper(
         &mut self,
         parent: INum,
-        ino: INum,
         name: &OsStr,
-        child_type: SFlag,
     ) -> anyhow::Result<(Duration, FuseAttr, u64)> {
+        let pre_check_res = self.lookup_pre_check(parent, name).await;
+        let (ino, child_type) = match pre_check_res {
+            Ok((ino, child_type)) => (ino, child_type),
+            Err(e) => {
+                debug!(
+                    "lookup() failed to pre-check, the error is: {}",
+                    common::util::format_anyhow_error(&e),
+                );
+                return Err(e);
+            }
+        };
+
         let child_name = OsString::from(name);
         let ttl = Duration::new(MY_TTL_SEC, 0);
         {
@@ -524,116 +447,40 @@ impl MetaData {
         }
     }
 
-    /// Rename helper function to pre-check
-    pub(crate) async fn rename_pre_check(
-        &self,
-        old_parent: INum,
-        old_name: &OsStr,
-        new_parent: INum,
-        new_name: &OsStr,
-        no_replace: bool,
-    ) -> anyhow::Result<(RawFd, INum, RawFd, Option<INum>)> {
-        let cache = self.cache.read().await;
-        let old_parent_node = cache.get(&old_parent).unwrap_or_else(|| {
-            panic!(
-                "rename() found fs is inconsistent, \
-                    the parent i-node of ino={} should be in cache",
-                old_parent,
-            );
-        });
-        let old_parent_fd = old_parent_node.get_fd();
-        let old_entry_ino = match old_parent_node.get_entry(old_name) {
-            None => {
-                debug!(
-                    "rename() failed to find child entry of name={:?} under parent directory ino={} and name={:?}",
-                    old_name, old_parent, old_parent_node.get_name(),
-                );
-                return util::build_error_result_from_errno(
-                    Errno::ENOENT,
-                    format!(
-                        "rename_pre_check() failed to find child entry of name={:?} \
-                            under parent directory ino={} and name={:?}",
-                        old_name,
-                        old_parent,
-                        old_parent_node.get_name(),
-                    ),
-                );
-            }
-            Some(old_entry) => {
-                debug_assert_eq!(&old_name, &old_entry.entry_name());
-                if cache.get(&old_entry.ino()).is_none() {
-                    panic!(
-                        "rename() found fs is inconsistent, the i-node of ino={} and name={:?} \
-                            under parent directory of ino={} and name={:?} to rename should be in cache",
-                        old_entry.ino(), old_name, old_parent, old_parent_node.get_name(),
-                    );
-                    // return;
-                }
-                old_entry.ino()
-            }
-        };
-
-        let new_parent_node = cache.get(&new_parent).unwrap_or_else(|| {
-            panic!(
-                "rename() found fs is inconsistent, \
-                    the new parent i-node of ino={} should be in cache",
-                new_parent,
-            );
-        });
-        let new_parent_fd = new_parent_node.get_fd();
-        let new_entry_ino = if let Some(new_entry) = new_parent_node.get_entry(new_name) {
-            debug_assert_eq!(&new_name, &new_entry.entry_name());
-            let new_ino = new_entry.ino();
-            if cache.get(&new_ino).is_none() {
-                panic!(
-                    "rename() found fs is inconsistent, the i-node of ino={} and name={:?} \
-                        under parent directory of ino={} and name={:?} to replace should be in cache",
-                    new_ino, new_name, new_parent, new_parent_node.get_name(),
-                );
-                // return;
-            }
-            if no_replace {
-                debug!(
-                    "rename() found i-node of ino={} and name={:?} under new parent ino={} and name={:?}, \
-                        but RENAME_NOREPLACE is specified",
-                    new_ino, new_name, new_parent, new_parent_node.get_name(),
-                );
-                return util::build_error_result_from_errno(
-                    Errno::EEXIST, // RENAME_NOREPLACE
-                    format!(
-                        "rename() found i-node of ino={} and name={:?} under new parent ino={} and name={:?}, \
-                            but RENAME_NOREPLACE is specified",
-                        new_ino, new_name, new_parent, new_parent_node.get_name(),
-                    ),
-                );
-            }
-            debug!(
-                "rename() found the new parent directory of ino={} and name={:?} already has a child with name={:?}",
-                new_parent, new_parent_node.get_name(), new_name,
-            );
-            Some(new_ino)
-        } else {
-            None
-        };
-        Ok((old_parent_fd, old_entry_ino, new_parent_fd, new_entry_ino))
-    }
-
     /// Rename helper to exchange on disk
-    pub(crate) async fn rename_exchange_helper(
-        &mut self,
-        param: RenameHelperParam,
-        new_entry_ino: INum,
-    ) -> anyhow::Result<()> {
+    async fn rename_exchange_helper(&mut self, param: RenameParam) -> anyhow::Result<()> {
         let old_parent = param.old_parent;
-        // let old_parent_fd = param.old_parent_fd;
         let old_name = param.old_name;
         let new_parent = param.new_parent;
-        // let new_parent_fd = param.new_parent_fd;
         let new_name = param.new_name;
+        let flags = param.flags;
+        debug!(
+            "rename(old parent={}, old name={:?}, new parent={}, new name={:?})",
+            old_parent, old_name, new_parent, new_name,
+        );
+        let no_replace = flags == 1; // RENAME_NOREPLACE
+
+        let pre_check_res = self
+            .rename_pre_check(old_parent, &old_name, new_parent, &new_name, no_replace)
+            .await;
+        let (_, _, _, new_entry_ino) = match pre_check_res {
+            Ok((old_parent_fd, old_entry_ino, new_parent_fd, new_entry_ino)) => {
+                (old_parent_fd, old_entry_ino, new_parent_fd, new_entry_ino)
+            }
+            Err(e) => {
+                debug!(
+                    "rename() pre-check failed, the error is: {}",
+                    common::util::format_anyhow_error(&e)
+                );
+                return Err(e);
+            }
+        };
+        let new_entry_ino = new_entry_ino.unwrap();
 
         let rename_in_cache_res = self
             .rename_in_cache_helper(old_parent, &old_name, new_parent, &new_name)
             .await;
+
         if let Some(replaced_entry) = rename_in_cache_res {
             debug_assert_eq!(
                 new_entry_ino,
@@ -699,18 +546,33 @@ impl MetaData {
     }
 
     /// Rename helper to move on disk, it may replace destination entry
-    pub(crate) async fn rename_may_replace_helper(
-        &mut self,
-        param: RenameHelperParam,
-        new_entry_ino: Option<INum>,
-    ) -> anyhow::Result<()> {
+    async fn rename_may_replace_helper(&mut self, param: RenameParam) -> anyhow::Result<()> {
         let old_parent = param.old_parent;
-        let old_parent_fd = param.old_parent_fd;
         let old_name = param.old_name;
-        let old_entry_ino = param.old_entry_ino;
         let new_parent = param.new_parent;
-        let new_parent_fd = param.new_parent_fd;
         let new_name = param.new_name;
+        let flags = param.flags;
+        debug!(
+            "rename(old parent={}, old name={:?}, new parent={}, new name={:?})",
+            old_parent, old_name, new_parent, new_name,
+        );
+        let no_replace = flags == 1; // RENAME_NOREPLACE
+
+        let pre_check_res = self
+            .rename_pre_check(old_parent, &old_name, new_parent, &new_name, no_replace)
+            .await;
+        let (old_parent_fd, old_entry_ino, new_parent_fd, new_entry_ino) = match pre_check_res {
+            Ok((old_parent_fd, old_entry_ino, new_parent_fd, new_entry_ino)) => {
+                (old_parent_fd, old_entry_ino, new_parent_fd, new_entry_ino)
+            }
+            Err(e) => {
+                debug!(
+                    "rename() pre-check failed, the error is: {}",
+                    common::util::format_anyhow_error(&e)
+                );
+                return Err(e);
+            }
+        };
 
         // Just replace new entry, may deferred delete
         if let Some(new_ino) = new_entry_ino {
@@ -785,8 +647,328 @@ impl MetaData {
         Ok(())
     }
 
+    /// Helper function of fsync
+    async fn fsync_helper(
+        &self,
+        ino: u64,
+        fh: u64,
+        datasync: bool,
+        // reply: ReplyEmpty,
+    ) -> anyhow::Result<()> {
+        // TODO: handle datasync
+        #[cfg(target_os = "linux")]
+        {
+            // attributes are not allowed on if expressions
+            if datasync {
+                smol::unblock(move || unistd::fdatasync(fh.cast()))
+                    .await
+                    .context(format!(
+                        "fsync_helper() failed to flush the i-node of ino={}",
+                        ino
+                    ))?;
+            } else {
+                smol::unblock(move || unistd::fsync(fh.cast()))
+                    .await
+                    .context(format!(
+                        "fsync_helper() failed to flush the i-node of ino={}",
+                        ino
+                    ))?;
+            }
+        }
+        #[cfg(target_os = "macos")]
+        {
+            smol::unblock(|| unistd::fsync(fh.cast()))
+                .await
+                .context(format!(
+                    "fsync_helper() failed to flush the i-node of ino={}",
+                    ino,
+                ))?;
+        }
+        // reply.ok().await?;
+        debug!(
+            "fsync_helper() successfully sync the i-node of ino={}, fh={}, datasync={}",
+            ino, fh, datasync,
+        );
+        Ok(())
+    }
+}
+
+impl DefaultMetaData {
+    // FUSE operation helper functions
+
+    /// The pre-check before create node
+    #[allow(single_use_lifetimes)]
+    async fn create_node_pre_check<'a, 'b>(
+        &self,
+        parent: INum,
+        node_name: &OsStr,
+        cache: &'b mut RwLockWriteGuard<'a, BTreeMap<INum, <DefaultMetaData as MetaData>::N>>,
+    ) -> anyhow::Result<&'b mut <DefaultMetaData as MetaData>::N> {
+        let parent_node = cache.get_mut(&parent).unwrap_or_else(|| {
+            panic!(
+                "create_node_pre_check() found fs is inconsistent, \
+                    parent of ino={} should be in cache before create it new child",
+                parent,
+            );
+        });
+        if let Some(occupied) = parent_node.get_entry(node_name) {
+            debug!(
+                "create_node_pre_check() found the directory of ino={} and name={:?} \
+                    already exists a child with name={:?} and ino={}",
+                parent,
+                parent_node.get_name(),
+                node_name,
+                occupied.ino(),
+            );
+            return util::build_error_result_from_errno(
+                Errno::EEXIST,
+                format!(
+                    "create_node_pre_check() found the directory of ino={} and name={:?} \
+                        already exists a child with name={:?} and ino={}",
+                    parent,
+                    parent_node.get_name(),
+                    node_name,
+                    occupied.ino(),
+                ),
+            );
+        }
+        Ok(parent_node)
+    }
+
+    /// Helper function to delete or deferred delete node
+    async fn may_deferred_delete_node_helper(&mut self, ino: INum) -> anyhow::Result<()> {
+        let parent_ino: INum;
+        let node_name: OsString;
+        let mut deferred_deletion = false;
+        {
+            // pre-check whether deferred delete or not
+            let cache = self.cache.read().await;
+            let node = cache.get(&ino).unwrap_or_else(|| {
+                panic!(
+                    "may_deferred_delete_node_helper() failed to \
+                        find the i-node of ino={} to remove",
+                    ino,
+                );
+            });
+            parent_ino = node.get_parent_ino();
+            node_name = node.get_name().into();
+
+            debug_assert!(node.get_lookup_count() >= 0); // lookup count cannot be negative
+            if node.get_lookup_count() > 0 {
+                // TODO: support thread-safe to avoid race condition
+                deferred_deletion = true;
+            }
+        }
+        {
+            // remove entry from parent i-node
+            let mut cache = self.cache.write().await;
+            let parent_node = cache.get_mut(&parent_ino).unwrap_or_else(|| {
+                panic!(
+                    "may_deferred_delete_node_helper() failed to \
+                        find the parent of ino={} for i-node of ino={}",
+                    parent_ino, ino,
+                );
+            });
+            let node_name_clone = node_name.clone();
+            let deleted_entry =
+                parent_node
+                    .unlink_entry(node_name_clone)
+                    .await
+                    .context(format!(
+                        "may_deferred_delete_node_helper() failed to remove entry name={:?} \
+                            and ino={} from parent directory ino={}",
+                        node_name, ino, parent_ino,
+                    ))?;
+            debug_assert_eq!(&node_name, deleted_entry.entry_name());
+            debug_assert_eq!(deleted_entry.ino(), ino);
+        }
+
+        if deferred_deletion {
+            // deferred deletion
+            // TODO: support thread-safe
+            let cache = self.cache.read().await;
+            let node = cache.get(&ino).unwrap_or_else(|| {
+                panic!(
+                    "impossible case, may_deferred_delete_node_helper() \
+                        should already find the i-node of ino={} to remove",
+                    ino,
+                );
+            });
+            {
+                let mut trash = self.trash.write().await;
+                let insert_result = trash.insert(ino); // check thread-safe in case of deferred deletion race
+                debug_assert!(
+                    insert_result,
+                    "failed to insert i-node of ino={} into trash for deferred deletion",
+                    ino,
+                );
+            }
+            debug!(
+                "may_deferred_delete_node_helper() defered removed \
+                    the i-node name={:?} of ino={} under parent ino={}, \
+                    open count={}, lookup count={}",
+                node.get_name(),
+                ino,
+                parent_ino,
+                node.get_open_count(),
+                node.get_lookup_count(),
+            );
+        } else {
+            // immediate deletion
+            let mut cache = self.cache.write().await;
+            let inode = cache.remove(&ino).unwrap_or_else(|| {
+                panic!(
+                    "impossible case, may_deferred_delete_node_helper() \
+                    should remove the i-node of ino={} immediately",
+                    ino,
+                );
+            }); // TODO: support thread-safe
+            debug!(
+                "may_deferred_delete_node_helper() immediately removed \
+                    the i-node name={:?} of ino={} under parent ino={}, \
+                    open count={}, lookup count={}",
+                inode.get_name(),
+                ino,
+                parent_ino,
+                inode.get_open_count(),
+                inode.get_lookup_count(),
+            );
+        }
+        Ok(())
+    }
+
+    /// Lookup helper function to pre-check
+    async fn lookup_pre_check(&self, parent: INum, name: &OsStr) -> anyhow::Result<(INum, SFlag)> {
+        // lookup child ino and type first
+        let cache = self.cache.read().await;
+        let parent_node = cache.get(&parent).unwrap_or_else(|| {
+            panic!(
+                "lookup_helper() found fs is inconsistent, \
+                        the parent i-node of ino={} should be in cache",
+                parent,
+            );
+        });
+        if let Some(child_entry) = parent_node.get_entry(name) {
+            let ino = child_entry.ino();
+            let child_type = child_entry.entry_type();
+            Ok((ino, child_type))
+        } else {
+            debug!(
+                "lookup_helper() failed to find the file name={:?} \
+                    under parent directory of ino={} and name={:?}",
+                name,
+                parent,
+                parent_node.get_name(),
+            );
+            // lookup() didn't find anything, this is normal
+            util::build_error_result_from_errno(
+                Errno::ENOENT,
+                format!(
+                    "lookup_helper() failed to find the file name={:?} \
+                        under parent directory of ino={} and name={:?}",
+                    name,
+                    parent,
+                    parent_node.get_name(),
+                ),
+            )
+        }
+    }
+
+    /// Rename helper function to pre-check
+    async fn rename_pre_check(
+        &self,
+        old_parent: INum,
+        old_name: &OsStr,
+        new_parent: INum,
+        new_name: &OsStr,
+        no_replace: bool,
+    ) -> anyhow::Result<(RawFd, INum, RawFd, Option<INum>)> {
+        let cache = self.cache.read().await;
+        let old_parent_node = cache.get(&old_parent).unwrap_or_else(|| {
+            panic!(
+                "rename() found fs is inconsistent, \
+                    the parent i-node of ino={} should be in cache",
+                old_parent,
+            );
+        });
+        let old_parent_fd = old_parent_node.get_fd();
+        let old_entry_ino = match old_parent_node.get_entry(old_name) {
+            None => {
+                debug!(
+                    "rename() failed to find child entry of name={:?} under parent directory ino={} and name={:?}",
+                    old_name, old_parent, old_parent_node.get_name(),
+                );
+                return util::build_error_result_from_errno(
+                    Errno::ENOENT,
+                    format!(
+                        "rename_pre_check() failed to find child entry of name={:?} \
+                            under parent directory ino={} and name={:?}",
+                        old_name,
+                        old_parent,
+                        old_parent_node.get_name(),
+                    ),
+                );
+            }
+            Some(old_entry) => {
+                debug_assert_eq!(&old_name, &old_entry.entry_name());
+                if cache.get(&old_entry.ino()).is_none() {
+                    panic!(
+                        "rename() found fs is inconsistent, the i-node of ino={} and name={:?} \
+                            under parent directory of ino={} and name={:?} to rename should be in cache",
+                        old_entry.ino(), old_name, old_parent, old_parent_node.get_name(),
+                    );
+                    // return;
+                }
+                old_entry.ino()
+            }
+        };
+
+        let new_parent_node = cache.get(&new_parent).unwrap_or_else(|| {
+            panic!(
+                "rename() found fs is inconsistent, \
+                    the new parent i-node of ino={} should be in cache",
+                new_parent,
+            );
+        });
+        let new_parent_fd = new_parent_node.get_fd();
+        let new_entry_ino = if let Some(new_entry) = new_parent_node.get_entry(new_name) {
+            debug_assert_eq!(&new_name, &new_entry.entry_name());
+            let new_ino = new_entry.ino();
+            if cache.get(&new_ino).is_none() {
+                panic!(
+                    "rename() found fs is inconsistent, the i-node of ino={} and name={:?} \
+                        under parent directory of ino={} and name={:?} to replace should be in cache",
+                    new_ino, new_name, new_parent, new_parent_node.get_name(),
+                );
+            }
+            if no_replace {
+                debug!(
+                    "rename() found i-node of ino={} and name={:?} under new parent ino={} and name={:?}, \
+                        but RENAME_NOREPLACE is specified",
+                    new_ino, new_name, new_parent, new_parent_node.get_name(),
+                );
+                return util::build_error_result_from_errno(
+                    Errno::EEXIST, // RENAME_NOREPLACE
+                    format!(
+                        "rename() found i-node of ino={} and name={:?} under new parent ino={} and name={:?}, \
+                            but RENAME_NOREPLACE is specified",
+                        new_ino, new_name, new_parent, new_parent_node.get_name(),
+                    ),
+                );
+            }
+            debug!(
+                "rename() found the new parent directory of ino={} and name={:?} already has a child with name={:?}",
+                new_parent, new_parent_node.get_name(), new_name,
+            );
+            Some(new_ino)
+        } else {
+            None
+        };
+        Ok((old_parent_fd, old_entry_ino, new_parent_fd, new_entry_ino))
+    }
+
     /// Rename in cache helper
-    pub(crate) async fn rename_in_cache_helper(
+    async fn rename_in_cache_helper(
         &mut self,
         old_parent: INum,
         old_name: &OsStr,
@@ -830,208 +1012,4 @@ impl MetaData {
             new_parent_node.insert_entry_for_rename(entry_to_move)
         }
     }
-
-    /// Helper function of fsync
-    pub(crate) async fn fsync_helper(
-        ino: u64,
-        fh: u64,
-        datasync: bool,
-        // reply: ReplyEmpty,
-    ) -> anyhow::Result<()> {
-        // TODO: handle datasync
-        #[cfg(target_os = "linux")]
-        {
-            // attributes are not allowed on if expressions
-            if datasync {
-                smol::unblock(move || unistd::fdatasync(fh.cast()))
-                    .await
-                    .context(format!(
-                        "fsync_helper() failed to flush the i-node of ino={}",
-                        ino
-                    ))?;
-            } else {
-                smol::unblock(move || unistd::fsync(fh.cast()))
-                    .await
-                    .context(format!(
-                        "fsync_helper() failed to flush the i-node of ino={}",
-                        ino
-                    ))?;
-            }
-        }
-        #[cfg(target_os = "macos")]
-        {
-            smol::unblock(|| unistd::fsync(fh.cast()))
-                .await
-                .context(format!(
-                    "fsync_helper() failed to flush the i-node of ino={}",
-                    ino,
-                ))?;
-        }
-        // reply.ok().await?;
-        debug!(
-            "fsync_helper() successfully sync the i-node of ino={}, fh={}, datasync={}",
-            ino, fh, datasync,
-        );
-        Ok(())
-    }
-
-    /// Read helper
-    pub(crate) fn read_helper(
-        content: Vec<IoMemBlock>,
-        size: usize,
-    ) -> anyhow::Result<Vec<IoMemBlock>> {
-        if content.iter().filter(|c| !c.can_convert()).count() > 0 {
-            return util::build_error_result_from_errno(
-                Errno::EINVAL,
-                "The content is out of scope".to_string(),
-            );
-        }
-        let content_total_len: usize = content.iter().map(|s| s.len()).sum();
-        debug!("read {} data, expected size {}", content_total_len, size);
-        Ok(content)
-    }
-
-    /// Set attribute helper function
-    #[allow(clippy::too_many_lines)]
-    pub(crate) async fn setattr_helper(
-        fd: RawFd,
-        param: SetAttrParam,
-        mut attr: FileAttr,
-    ) -> anyhow::Result<(bool, FileAttr)> {
-        // TODO: change macOS times and flags
-        // #[cfg(target_os = "macos")]
-        // let crtime = param.crtime;
-        // #[cfg(target_os = "macos")]
-        // let chgtime = param.chgtime;
-        // #[cfg(target_os = "macos")]
-        // let bkuptime = param.bkuptime;
-        // #[cfg(target_os = "macos")]
-        // let flags = param.flags;
-        let st_now = SystemTime::now();
-        let mut attr_changed = false;
-        let mut mtime_ctime_changed = false;
-        if let Some(mode_bits) = param.mode {
-            let nix_mode = fs_util::parse_mode(mode_bits);
-            debug!(
-                "setattr_helper() successfully parsed mode={:?} from bits={:#o}",
-                nix_mode, mode_bits,
-            );
-            smol::unblock(move || stat::fchmod(fd, nix_mode))
-                .await
-                .context(format!(
-                    "setattr_helper() failed to chmod with mode={}",
-                    mode_bits,
-                ))?;
-            attr.perm = fs_util::parse_mode_bits(mode_bits);
-            debug!(
-                "setattr_helper() set permission={:#o}={} from input bits={:#o}={}",
-                attr.perm, attr.perm, mode_bits, mode_bits,
-            );
-            let kind = fs_util::parse_sflag(mode_bits);
-            debug_assert_eq!(kind, attr.kind);
-
-            // Change mode also need to change ctime
-            attr.ctime = st_now;
-            attr_changed = true;
-        }
-        if param.u_id.is_some() || param.g_id.is_some() {
-            let nix_user_id = param.u_id.map(unistd::Uid::from_raw);
-            let nix_group_id = param.g_id.map(unistd::Gid::from_raw);
-            smol::unblock(move || unistd::fchown(fd, nix_user_id, nix_group_id))
-                .await
-                .context(format!(
-                    "setattr_helper() failed to set uid={:?} and gid={:?}",
-                    nix_user_id, nix_group_id,
-                ))?;
-            if let Some(raw_uid) = param.u_id {
-                attr.uid = raw_uid;
-            }
-            if let Some(raw_gid) = param.g_id {
-                attr.gid = raw_gid;
-            }
-            // Change uid or gid also need to change ctime
-            attr.ctime = st_now;
-            attr_changed = true;
-        }
-        if let Some(file_size) = param.size {
-            smol::unblock(move || unistd::ftruncate(fd, file_size.cast()))
-                .await
-                .context(format!(
-                    "setattr_helper() failed to truncate file size to {}",
-                    file_size
-                ))?;
-            attr.size = file_size;
-            attr.mtime = st_now;
-            attr.ctime = st_now;
-            mtime_ctime_changed = true;
-            attr_changed = true;
-        }
-        if param.a_time.is_some() || param.m_time.is_some() {
-            if mtime_ctime_changed {
-                panic!("setattr_helper() cannot change atime and mtime explicitly in the mean while with truncate");
-            } else {
-                let nix_access_time = param.a_time.map_or(
-                    TimeSpec::from(libc::timespec {
-                        tv_sec: 0,
-                        tv_nsec: libc::UTIME_OMIT,
-                    }),
-                    |st_atime| {
-                        let (seconds, nanoseconds) = fs_util::time_from_system_time(&st_atime);
-                        TimeSpec::from(libc::timespec {
-                            tv_sec: seconds.cast(),
-                            tv_nsec: nanoseconds.cast(),
-                        })
-                    },
-                );
-                let nix_modify_time = param.a_time.map_or(
-                    TimeSpec::from(libc::timespec {
-                        tv_sec: 0,
-                        tv_nsec: libc::UTIME_OMIT,
-                    }),
-                    |st_mtime| {
-                        let (seconds, nanoseconds) = fs_util::time_from_system_time(&st_mtime);
-                        TimeSpec::from(libc::timespec {
-                            tv_sec: seconds.cast(),
-                            tv_nsec: nanoseconds.cast(),
-                        })
-                    },
-                );
-                smol::unblock(move || stat::futimens(fd, &nix_access_time, &nix_modify_time))
-                    .await
-                    .context(format!(
-                        "setattr_helper() failed to update atime={:?} or mtime={:?}",
-                        param.a_time, param.m_time
-                    ))?;
-                if let Some(st_atime) = param.a_time {
-                    attr.atime = st_atime;
-                    // Change atime do not need to change ctime
-                }
-                if let Some(st_mtime) = param.a_time {
-                    attr.mtime = st_mtime;
-                    // Change mtime also need to change ctime
-                    attr.ctime = st_now;
-                }
-                attr_changed = true;
-            }
-        }
-        // TODO: change lock owner
-        // #[cfg(feature = "abi-7-9")]
-        // let lock_owner = param.lock_owner;
-        #[cfg(feature = "abi-7-23")]
-        if let Some(c_time) = param.c_time {
-            attr.ctime = c_time;
-            // TODO: how to change ctime directly on ext4?
-        }
-        Ok((attr_changed, attr))
-    }
-
-    // /// Return ENOSYS for not implemented operations
-    // pub pub(crate) async fn not_implement_helper(
-    //     &mut self,
-    //     req: &Request<'_>,
-    //     fd: RawFd,
-    // ) -> nix::Result<usize> {
-    //     let reply = ReplyEmpty::new(req.unique(), fd);
-    //     reply.error_code(Errno::ENOSYS).await
-    // }
 }

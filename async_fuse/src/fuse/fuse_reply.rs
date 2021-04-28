@@ -475,6 +475,7 @@ pub struct ReplyStatFs {
 }
 
 /// POSIX statvfs parameters
+#[derive(Debug)]
 pub struct StatFsParam {
     /// The number of blocks in the filesystem
     pub blocks: u64,

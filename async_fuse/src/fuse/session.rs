@@ -792,10 +792,7 @@ async fn dispatch<'a>(
                 old_name: oldname.to_os_string(),
                 new_parent: arg.newdir,
                 new_name: newname.to_os_string(),
-                #[cfg(target_os = "linux")]
                 flags: arg.flags,
-                #[cfg(target_os = "macos")]
-                flags: arg.flags.cast(),
             };
             fs.rename(req, param, reply).await
         }

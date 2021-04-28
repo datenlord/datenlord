@@ -293,7 +293,8 @@ fn main() -> anyhow::Result<()> {
         let node_id = register_node_id(&etcd_delegate).await?;
         register_volume(&etcd_delegate, node_id, volume_info).await?;
         let mount_point = std::path::Path::new(&mount_point);
-        let fs = memfs::MemFs::new(mount_point, cache_capacity).await?;
+        let fs: memfs::MemFs<memfs::DefaultMetaData> =
+            memfs::MemFs::new(mount_point, cache_capacity).await?;
         let ss = Session::new(mount_point, fs).await?;
         ss.run().await?;
         Ok(())
