@@ -6,7 +6,6 @@ use std::time::Duration;
 
 use crate::fuse::{mount, session::Session};
 use crate::memfs;
-use crate::util;
 
 /// The default capacity in bytes for test, 1GB
 const CACHE_DEFAULT_CAPACITY: usize = 1024 * 1024 * 1024;
