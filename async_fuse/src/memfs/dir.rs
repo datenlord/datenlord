@@ -5,7 +5,6 @@ compile_error!("async-fuse does not support this target now");
 
 use crate::util::{clear_errno, cstr_to_bytes, errno, nix_to_io_error, with_c_str};
 
-use std::ffi::{OsStr, OsString};
 use std::io;
 use std::iter::FusedIterator;
 use std::os::unix::ffi::OsStrExt;
@@ -114,12 +113,12 @@ pub struct DirEntry {
     /// The `SFlag` type of the entry
     entry_type: SFlag,
     /// The entry name
-    name: OsString,
+    name: String,
 }
 
 impl DirEntry {
     /// Create `DirEntry`
-    pub const fn new(ino: ino_t, name: OsString, entry_type: SFlag) -> Self {
+    pub const fn new(ino: ino_t, name: String, entry_type: SFlag) -> Self {
         Self {
             ino,
             name,
@@ -132,8 +131,8 @@ impl DirEntry {
     }
 
     /// Returns the bare file name of this directory entry without any other leading path component.
-    pub fn entry_name(&self) -> &OsStr {
-        self.name.as_os_str()
+    pub fn entry_name(&self) -> &str {
+        self.name.as_str()
     }
 
     /// Returns the type of this directory entry, if known.
@@ -155,7 +154,7 @@ impl DirEntry {
             None => panic!("entry name has no nul byte: {:?}", name_bytes),
             Some(idx) => {
                 debug_assert!(idx < 256);
-                OsStr::from_bytes(unsafe { name_bytes.get_unchecked(..idx) })
+                String::from_utf8(unsafe { name_bytes.get_unchecked(..idx) }.to_vec()).unwrap()
             }
         };
 
@@ -172,7 +171,7 @@ impl DirEntry {
 
         Self {
             ino,
-            name: name.to_owned(),
+            name,
             entry_type,
         }
     }

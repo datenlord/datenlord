@@ -4,7 +4,6 @@ use super::dir::{Dir, DirEntry};
 use crate::fuse::protocol::{FuseAttr, INum};
 
 use std::collections::BTreeMap;
-use std::ffi::OsString;
 use std::os::unix::io::RawFd;
 use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -119,11 +118,11 @@ pub async fn open_dir(path: &Path) -> anyhow::Result<RawFd> {
 }
 
 /// Open directory relative to current working directory
-pub async fn open_dir_at(dfd: RawFd, child_name: OsString) -> anyhow::Result<RawFd> {
-    let sub_dir_name = child_name.clone();
+pub async fn open_dir_at(dfd: RawFd, child_name: &str) -> anyhow::Result<RawFd> {
+    let sub_dir_name = child_name.to_string();
     let oflags = get_dir_oflags();
     let dir_fd =
-        smol::unblock(move || fcntl::openat(dfd, sub_dir_name.as_os_str(), oflags, Mode::empty()))
+        smol::unblock(move || fcntl::openat(dfd, sub_dir_name.as_str(), oflags, Mode::empty()))
             .await
             .context(format!(
                 "open_dir_at() failed to open sub-directory={:?} under parent fd={}",
@@ -271,7 +270,7 @@ pub fn convert_to_fuse_attr(attr: FileAttr) -> FuseAttr {
 }
 
 /// Helper funtion to load directory data
-pub async fn load_dir_data(dirfd: RawFd) -> anyhow::Result<BTreeMap<OsString, DirEntry>> {
+pub async fn load_dir_data(dirfd: RawFd) -> anyhow::Result<BTreeMap<String, DirEntry>> {
     smol::unblock(move || {
         let dir = Dir::opendirat(dirfd, ".", OFlag::empty())
             .with_context(|| format!("failed to build Dir from fd={}", dirfd))?;

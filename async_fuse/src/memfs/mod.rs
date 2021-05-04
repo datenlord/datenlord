@@ -7,7 +7,7 @@ mod node;
 mod s3_wrapper;
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::ffi::{OsStr, OsString};
+use std::os::unix::ffi::OsStringExt;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -33,7 +33,6 @@ use dir::DirEntry;
 pub use metadata::DefaultMetaData;
 use metadata::MetaData;
 use node::Node;
-use std::os::unix::ffi::OsStringExt;
 
 /// The time-to-live seconds of FUSE attributes
 const MY_TTL_SEC: u64 = 3600; // TODO: should be a long value, say 1 hour
@@ -84,11 +83,11 @@ pub struct RenameParam {
     /// Old parent directory i-number
     pub old_parent: INum,
     /// Old name
-    pub old_name: OsString,
+    pub old_name: String,
     /// New parent directory i-number
     pub new_parent: INum,
     /// New name
-    pub new_name: OsString,
+    pub new_name: String,
     /// Rename flags
     pub flags: u32,
 }
@@ -116,7 +115,7 @@ impl<M: MetaData + Send + Sync + 'static> MemFs<M> {
         let root_path = mount_point
             .canonicalize()
             .with_context(|| format!("failed to canonicalize the mount path={:?}", mount_point))?;
-        let root_inode = Node::open_root_node(FUSE_ROOT_ID, OsString::from("/"), &root_path)
+        let root_inode = Node::open_root_node(FUSE_ROOT_ID, "/", &root_path)
             .await
             .context("failed to open FUSE root node")?;
         let mut cache = BTreeMap::new();
@@ -124,7 +123,7 @@ impl<M: MetaData + Send + Sync + 'static> MemFs<M> {
         let trash = BTreeSet::new(); // for deferred deletion nodes
 
         Ok(Self(Arc::new(Mutex::new(M::new(
-            root_path.into_os_string().into_string().unwrap(),
+            &root_path.into_os_string().into_string().unwrap(),
             RwLock::new(cache),
             RwLock::new(trash),
             Arc::new(GlobalCache::new_with_capacity(capacity)),
@@ -171,7 +170,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         &self,
         req: &Request<'_>,
         parent: INum,
-        name: &OsStr,
+        name: &str,
         reply: ReplyEntry,
     ) -> nix::Result<usize> {
         let mut this = self.0.lock().await;
@@ -418,7 +417,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         &self,
         req: &Request<'_>,
         parent: INum,
-        name: &OsStr,
+        name: &str,
         mode: u32,
         rdev: u32,
         reply: ReplyEntry,
@@ -458,7 +457,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         &self,
         req: &Request<'_>,
         parent: INum,
-        name: &OsStr,
+        name: &str,
         mode: u32,
         reply: ReplyEntry,
     ) -> nix::Result<usize> {
@@ -497,7 +496,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         &self,
         req: &Request<'_>,
         parent: INum,
-        name: &OsStr,
+        name: &str,
         reply: ReplyEmpty,
     ) -> nix::Result<usize> {
         let mut this = self.0.lock().await;
@@ -557,12 +556,11 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         &self,
         req: &Request<'_>,
         parent: INum,
-        name: &OsStr,
+        dir_name: &str,
         reply: ReplyEmpty,
     ) -> nix::Result<usize> {
         let mut this = self.0.lock().await;
 
-        let dir_name = OsString::from(name);
         debug!(
             "rmdir(parent={}, name={:?}, req={:?})",
             parent, dir_name, req,
@@ -572,7 +570,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
             .await
             .context(format!(
                 "rmdir() failed to remove sub-directory name={:?} under parent ino={}",
-                name, parent,
+                dir_name, parent,
             ));
         match rmdir_res {
             Ok(()) => reply.ok().await,
@@ -580,7 +578,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
                 debug!(
                     "rmdir() failed to remove sub-directory name={:?} under parent ino={}, \
                             the error is: {}",
-                    name,
+                    dir_name,
                     parent,
                     common::util::format_anyhow_error(&e),
                 );
@@ -961,7 +959,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
             ino, fh, offset, req,
         );
 
-        let mut readdir_helper = |data: &BTreeMap<OsString, DirEntry>| -> usize {
+        let mut readdir_helper = |data: &BTreeMap<String, DirEntry>| -> usize {
             let mut num_child_entries = 0;
             for (i, (child_name, child_entry)) in data.iter().enumerate().skip(offset.cast()) {
                 let child_ino = child_entry.ino();
@@ -1155,7 +1153,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         &self,
         req: &Request<'_>,
         parent: INum,
-        name: &OsStr,
+        name: &str,
         target_path: &Path,
         reply: ReplyEntry,
     ) -> nix::Result<usize> {
@@ -1167,7 +1165,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         );
         let symlink_res = this.create_node_helper(
             parent,
-            name.to_owned(),
+            name,
             0o777, // Symbolic links have no permissions
             SFlag::S_IFLNK,
             Some(target_path),
@@ -1213,7 +1211,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         &self,
         _req: &Request<'_>,
         _newparent: u64,
-        _newname: &OsStr,
+        _newname: &str,
         reply: ReplyEntry,
     ) -> nix::Result<usize> {
         reply.error_code(Errno::ENOSYS).await
@@ -1223,7 +1221,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
     async fn setxattr(
         &self,
         _req: &Request<'_>,
-        _name: &OsStr,
+        _name: &str,
         _value: &[u8],
         _flags: u32,
         _position: u32,
@@ -1239,7 +1237,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
     async fn getxattr(
         &self,
         _req: &Request<'_>,
-        _name: &OsStr,
+        _name: &str,
         _size: u32,
         reply: ReplyXAttr,
     ) -> nix::Result<usize> {
@@ -1263,7 +1261,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
     async fn removexattr(
         &self,
         _req: &Request<'_>,
-        _name: &OsStr,
+        _name: &str,
         reply: ReplyEmpty,
     ) -> nix::Result<usize> {
         reply.error_code(Errno::ENOSYS).await
@@ -1296,7 +1294,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         &self,
         _req: &Request<'_>,
         _parent: u64,
-        _name: &OsStr,
+        _name: &str,
         _mode: u32,
         _flags: u32,
         reply: ReplyCreate,
