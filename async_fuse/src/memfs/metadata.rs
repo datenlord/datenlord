@@ -1,5 +1,4 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::ffi::{OsStr, OsString};
 use std::os::unix::io::RawFd;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -35,7 +34,7 @@ pub trait MetaData {
     type N: Node + Send + Sync + 'static;
 
     fn new(
-        root_path: String,
+        root_path: &str,
         cache: RwLock<BTreeMap<INum, Self::N>>,
         trash: RwLock<BTreeSet<INum>>,
         data_cache: Arc<GlobalCache>,
@@ -45,7 +44,7 @@ pub trait MetaData {
     async fn create_node_helper(
         &mut self,
         parent: INum,
-        node_name: OsString,
+        node_name: &str,
         mode: u32,
         node_type: SFlag,
         target_path: Option<&Path>,
@@ -55,7 +54,7 @@ pub trait MetaData {
     async fn remove_node_helper(
         &mut self,
         parent: INum,
-        node_name: OsString,
+        node_name: &str,
         node_type: SFlag,
     ) -> anyhow::Result<()>;
 
@@ -63,7 +62,7 @@ pub trait MetaData {
     async fn lookup_helper(
         &mut self,
         parent: INum,
-        name: &OsStr,
+        name: &str,
     ) -> anyhow::Result<(Duration, FuseAttr, u64)>;
 
     /// Rename helper to exchange on disk
@@ -101,7 +100,7 @@ impl MetaData for DefaultMetaData {
     type N = DefaultNode;
 
     fn new(
-        root_path: String,
+        root_path: &str,
         cache: RwLock<BTreeMap<INum, Self::N>>,
         trash: RwLock<BTreeSet<INum>>,
         data_cache: Arc<GlobalCache>,
@@ -147,7 +146,7 @@ impl MetaData for DefaultMetaData {
     async fn create_node_helper(
         &mut self,
         parent: INum,
-        node_name: OsString,
+        node_name: &str,
         mode: u32,
         node_type: SFlag,
         target_path: Option<&Path>,
@@ -246,7 +245,7 @@ impl MetaData for DefaultMetaData {
     async fn remove_node_helper(
         &mut self,
         parent: INum,
-        node_name: OsString,
+        node_name: &str,
         node_type: SFlag,
     ) -> anyhow::Result<()> {
         let node_ino: INum;
@@ -348,9 +347,9 @@ impl MetaData for DefaultMetaData {
     async fn lookup_helper(
         &mut self,
         parent: INum,
-        name: &OsStr,
+        child_name: &str,
     ) -> anyhow::Result<(Duration, FuseAttr, u64)> {
-        let pre_check_res = self.lookup_pre_check(parent, name).await;
+        let pre_check_res = self.lookup_pre_check(parent, child_name).await;
         let (ino, child_type) = match pre_check_res {
             Ok((ino, child_type)) => (ino, child_type),
             Err(e) => {
@@ -362,7 +361,6 @@ impl MetaData for DefaultMetaData {
             }
         };
 
-        let child_name = OsString::from(name);
         let ttl = Duration::new(MY_TTL_SEC, 0);
         {
             // cache hit
@@ -406,7 +404,7 @@ impl MetaData for DefaultMetaData {
                     .context(format!(
                         "lookup_helper() failed to open sub-directory name={:?} \
                             under parent directory of ino={} and name={:?}",
-                        name, parent, parent_name,
+                        child_name, parent, parent_name,
                     ))?,
                 SFlag::S_IFREG => {
                     let oflags = OFlag::O_RDWR;
@@ -416,7 +414,7 @@ impl MetaData for DefaultMetaData {
                         .context(format!(
                             "lookup_helper() failed to open child file name={:?} with flags={:?} \
                                 under parent directory of ino={} and name={:?}",
-                            name, oflags, parent, parent_name,
+                            child_name, oflags, parent, parent_name,
                         ))?
                 }
                 SFlag::S_IFLNK => {
@@ -426,7 +424,7 @@ impl MetaData for DefaultMetaData {
                         .context(format!(
                             "lookup_helper() failed to read child symlink name={:?} \
                                 under parent directory of ino={} and name={:?}",
-                            name, parent, parent_name,
+                            child_name, parent, parent_name,
                         ))?
                 }
                 _ => panic!(
@@ -441,7 +439,7 @@ impl MetaData for DefaultMetaData {
             debug!(
                 "lookup_helper() successfully found the i-node of ino={} and name={:?} \
                 under parent of ino={} and name={:?}",
-                child_ino, name, parent, parent_name,
+                child_ino, child_name, parent, parent_name,
             );
             Ok((ttl, fuse_attr, MY_GENERATION))
         }
@@ -450,7 +448,7 @@ impl MetaData for DefaultMetaData {
     /// Rename helper to exchange on disk
     async fn rename_exchange_helper(&mut self, param: RenameParam) -> anyhow::Result<()> {
         let old_parent = param.old_parent;
-        let old_name = param.old_name;
+        let old_name = param.old_name.as_str();
         let new_parent = param.new_parent;
         let new_name = param.new_name;
         let flags = param.flags;
@@ -461,7 +459,7 @@ impl MetaData for DefaultMetaData {
         let no_replace = flags == 1; // RENAME_NOREPLACE
 
         let pre_check_res = self
-            .rename_pre_check(old_parent, &old_name, new_parent, &new_name, no_replace)
+            .rename_pre_check(old_parent, old_name, new_parent, &new_name, no_replace)
             .await;
         let (_, _, _, new_entry_ino) = match pre_check_res {
             Ok((old_parent_fd, old_entry_ino, new_parent_fd, new_entry_ino)) => {
@@ -478,7 +476,7 @@ impl MetaData for DefaultMetaData {
         let new_entry_ino = new_entry_ino.unwrap();
 
         let rename_in_cache_res = self
-            .rename_in_cache_helper(old_parent, &old_name, new_parent, &new_name)
+            .rename_in_cache_helper(old_parent, old_name, new_parent, &new_name)
             .await;
 
         if let Some(replaced_entry) = rename_in_cache_res {
@@ -487,8 +485,11 @@ impl MetaData for DefaultMetaData {
                 replaced_entry.ino(),
                 "rename_exchange_helper() replaced entry i-number not match"
             );
-            let exchange_entry =
-                DirEntry::new(new_entry_ino, old_name.clone(), replaced_entry.entry_type());
+            let exchange_entry = DirEntry::new(
+                new_entry_ino,
+                old_name.to_string(),
+                replaced_entry.entry_type(),
+            );
 
             // TODO: support thread-safe
             let mut cache = self.cache.write().await;
@@ -611,7 +612,7 @@ impl MetaData for DefaultMetaData {
             )
             });
             moved_node.set_parent_ino(new_parent);
-            moved_node.set_name(new_name.to_os_string());
+            moved_node.set_name(&new_name);
             let moved_attr = moved_node
                 .load_attribute()
                 .await
@@ -701,7 +702,7 @@ impl DefaultMetaData {
     async fn create_node_pre_check<'a, 'b>(
         &self,
         parent: INum,
-        node_name: &OsStr,
+        node_name: &str,
         cache: &'b mut RwLockWriteGuard<'a, BTreeMap<INum, <DefaultMetaData as MetaData>::N>>,
     ) -> anyhow::Result<&'b mut <DefaultMetaData as MetaData>::N> {
         let parent_node = cache.get_mut(&parent).unwrap_or_else(|| {
@@ -738,7 +739,7 @@ impl DefaultMetaData {
     /// Helper function to delete or deferred delete node
     async fn may_deferred_delete_node_helper(&mut self, ino: INum) -> anyhow::Result<()> {
         let parent_ino: INum;
-        let node_name: OsString;
+        let node_name: String;
         let mut deferred_deletion = false;
         {
             // pre-check whether deferred delete or not
@@ -751,7 +752,7 @@ impl DefaultMetaData {
                 );
             });
             parent_ino = node.get_parent_ino();
-            node_name = node.get_name().into();
+            node_name = node.get_name().to_string();
 
             debug_assert!(node.get_lookup_count() >= 0); // lookup count cannot be negative
             if node.get_lookup_count() > 0 {
@@ -769,17 +770,12 @@ impl DefaultMetaData {
                     parent_ino, ino,
                 );
             });
-            let node_name_clone = node_name.clone();
-            let deleted_entry =
-                parent_node
-                    .unlink_entry(node_name_clone)
-                    .await
-                    .context(format!(
-                        "may_deferred_delete_node_helper() failed to remove entry name={:?} \
+            let deleted_entry = parent_node.unlink_entry(&node_name).await.context(format!(
+                "may_deferred_delete_node_helper() failed to remove entry name={:?} \
                             and ino={} from parent directory ino={}",
-                        node_name, ino, parent_ino,
-                    ))?;
-            debug_assert_eq!(&node_name, deleted_entry.entry_name());
+                node_name, ino, parent_ino,
+            ))?;
+            debug_assert_eq!(node_name, deleted_entry.entry_name());
             debug_assert_eq!(deleted_entry.ino(), ino);
         }
 
@@ -838,7 +834,7 @@ impl DefaultMetaData {
     }
 
     /// Lookup helper function to pre-check
-    async fn lookup_pre_check(&self, parent: INum, name: &OsStr) -> anyhow::Result<(INum, SFlag)> {
+    async fn lookup_pre_check(&self, parent: INum, name: &str) -> anyhow::Result<(INum, SFlag)> {
         // lookup child ino and type first
         let cache = self.cache.read().await;
         let parent_node = cache.get(&parent).unwrap_or_else(|| {
@@ -878,9 +874,9 @@ impl DefaultMetaData {
     async fn rename_pre_check(
         &self,
         old_parent: INum,
-        old_name: &OsStr,
+        old_name: &str,
         new_parent: INum,
-        new_name: &OsStr,
+        new_name: &str,
         no_replace: bool,
     ) -> anyhow::Result<(RawFd, INum, RawFd, Option<INum>)> {
         let cache = self.cache.read().await;
@@ -971,9 +967,9 @@ impl DefaultMetaData {
     async fn rename_in_cache_helper(
         &mut self,
         old_parent: INum,
-        old_name: &OsStr,
+        old_name: &str,
         new_parent: INum,
-        new_name: &OsStr,
+        new_name: &str,
     ) -> Option<DirEntry> {
         let entry_to_move = {
             // TODO: support thread-safe
@@ -994,7 +990,7 @@ impl DefaultMetaData {
                 ),
                 Some(old_entry) => DirEntry::new(
                     old_entry.ino(),
-                    new_name.to_os_string(),
+                    new_name.to_string(),
                     old_entry.entry_type(),
                 ),
             }

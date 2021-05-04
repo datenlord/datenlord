@@ -205,6 +205,7 @@ impl<'b> Deserializer<'b> {
         unsafe { Ok(self.pop_bytes_unchecked(strlen)) }
     }
 
+    #[allow(dead_code)]
     /// Fetch some nul-terminated bytes and return an `OsStr` without the nul byte.
     pub fn fetch_os_str(&mut self) -> Result<&'b OsStr, DeserializeError> {
         use std::os::unix::ffi::OsStrExt;
@@ -217,6 +218,17 @@ impl<'b> Deserializer<'b> {
         };
 
         Ok(OsStrExt::from_bytes(bytes_without_nul))
+    }
+
+    pub fn fetch_str(&mut self) -> Result<&'b str, DeserializeError> {
+        let bytes_with_nul = self.fetch_c_str()?;
+
+        let bytes_without_nul: &[u8] = unsafe {
+            let len = bytes_with_nul.len().wrapping_sub(1);
+            bytes_with_nul.get_unchecked(..len)
+        };
+
+        Ok(std::str::from_utf8(bytes_without_nul).unwrap())
     }
 
     /// Returns `TooMuchData` if the bytes is not completely consumed

@@ -9,7 +9,6 @@ use super::protocol::INum;
 
 use crate::memfs::{FileLockParam, RenameParam, SetAttrParam};
 
-use std::ffi::OsStr;
 use std::path::Path;
 
 use async_trait::async_trait;
@@ -27,7 +26,7 @@ pub trait FileSystem {
         &self,
         req: &Request<'_>,
         parent: INum,
-        name: &OsStr,
+        name: &str,
         reply: ReplyEntry,
     ) -> nix::Result<usize>;
 
@@ -48,7 +47,7 @@ pub trait FileSystem {
         &self,
         req: &Request<'_>,
         parent: INum,
-        name: &OsStr,
+        name: &str,
         mode: u32,
         rdev: u32,
         reply: ReplyEntry,
@@ -58,7 +57,7 @@ pub trait FileSystem {
         &self,
         req: &Request<'_>,
         parent: INum,
-        name: &OsStr,
+        name: &str,
         mode: u32,
         reply: ReplyEntry,
     ) -> nix::Result<usize>;
@@ -67,7 +66,7 @@ pub trait FileSystem {
         &self,
         req: &Request<'_>,
         parent: INum,
-        name: &OsStr,
+        name: &str,
         reply: ReplyEmpty,
     ) -> nix::Result<usize>;
 
@@ -75,7 +74,7 @@ pub trait FileSystem {
         &self,
         req: &Request<'_>,
         parent: INum,
-        name: &OsStr,
+        name: &str,
         reply: ReplyEmpty,
     ) -> nix::Result<usize>;
 
@@ -83,7 +82,7 @@ pub trait FileSystem {
         &self,
         req: &Request<'_>,
         parent: INum,
-        name: &OsStr,
+        name: &str,
         target_path: &Path,
         reply: ReplyEntry,
     ) -> nix::Result<usize>;
@@ -99,7 +98,7 @@ pub trait FileSystem {
         &self,
         _req: &Request<'_>,
         _newparent: u64,
-        _newname: &OsStr,
+        _newname: &str,
         reply: ReplyEntry,
     ) -> nix::Result<usize>;
 
@@ -181,7 +180,7 @@ pub trait FileSystem {
     async fn setxattr(
         &self,
         _req: &Request<'_>,
-        _name: &OsStr,
+        _name: &str,
         _value: &[u8],
         _flags: u32,
         _position: u32,
@@ -191,7 +190,7 @@ pub trait FileSystem {
     async fn getxattr(
         &self,
         _req: &Request<'_>,
-        _name: &OsStr,
+        _name: &str,
         _size: u32,
         reply: ReplyXAttr,
     ) -> nix::Result<usize>;
@@ -206,7 +205,7 @@ pub trait FileSystem {
     async fn removexattr(
         &self,
         _req: &Request<'_>,
-        _name: &OsStr,
+        _name: &str,
         reply: ReplyEmpty,
     ) -> nix::Result<usize>;
 
@@ -217,7 +216,7 @@ pub trait FileSystem {
         &self,
         _req: &Request<'_>,
         _parent: u64,
-        _name: &OsStr,
+        _name: &str,
         _mode: u32,
         _flags: u32,
         reply: ReplyCreate,

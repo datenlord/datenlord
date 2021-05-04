@@ -1,7 +1,6 @@
 //! The implementation fo FUSE request
 
 use log::warn;
-use std::ffi::OsStr;
 use std::fmt;
 use utilities::Cast;
 
@@ -23,7 +22,7 @@ pub enum Operation<'a> {
     /// FUSE_LOOKUP = 1
     Lookup {
         /// The directory name to look up
-        name: &'a OsStr,
+        name: &'a str,
     },
     /// FUSE_FORGET = 2
     Forget {
@@ -42,49 +41,49 @@ pub enum Operation<'a> {
     /// FUSE_SYMLINK = 6
     SymLink {
         /// The link name to create
-        name: &'a OsStr,
+        name: &'a str,
         /// The contents of the symbolic link
-        link: &'a OsStr,
+        link: &'a str,
     },
     /// FUSE_MKNOD = 8
     MkNod {
         /// The FUSE mknod request
         arg: &'a FuseMkNodIn,
         /// The file name to create
-        name: &'a OsStr,
+        name: &'a str,
     },
     /// FUSE_MKDIR = 9
     MkDir {
         /// The FUSE mkdir request input
         arg: &'a FuseMkDirIn,
         /// The directory name to create
-        name: &'a OsStr,
+        name: &'a str,
     },
     /// FUSE_UNLINK = 10
     Unlink {
         /// The file name to remove
-        name: &'a OsStr,
+        name: &'a str,
     },
     /// FUSE_RMDIR = 11
     RmDir {
         /// The directory name to remove
-        name: &'a OsStr,
+        name: &'a str,
     },
     /// FUSE_RENAME = 12
     Rename {
         /// The FUSE rename request
         arg: &'a FuseRenameIn,
         /// The old name
-        oldname: &'a OsStr,
+        oldname: &'a str,
         /// The new name
-        newname: &'a OsStr,
+        newname: &'a str,
     },
     /// FUSE_LINK = 13
     Link {
         /// The FUSE link request
         arg: &'a FuseLinkIn,
         /// The new name
-        name: &'a OsStr,
+        name: &'a str,
     },
     /// FUSE_OPEN = 14
     Open {
@@ -120,7 +119,7 @@ pub enum Operation<'a> {
         /// The FUSE set extended attribute request
         arg: &'a FuseSetXAttrIn,
         /// The extended attribute name
-        name: &'a OsStr,
+        name: &'a str,
         /// The extended attribute value
         value: &'a [u8],
     },
@@ -129,7 +128,7 @@ pub enum Operation<'a> {
         /// The FUSE get extended attribute request
         arg: &'a FuseGetXAttrIn,
         /// The extended attribute name
-        name: &'a OsStr,
+        name: &'a str,
     },
     /// FUSE_LISTXATTR = 23
     ListXAttr {
@@ -139,7 +138,7 @@ pub enum Operation<'a> {
     /// FUSE_REMOVEXATTR = 24
     RemoveXAttr {
         /// The name of the extended attribute to remove
-        name: &'a OsStr,
+        name: &'a str,
     },
     /// FUSE_FLUSH = 25
     Flush {
@@ -196,7 +195,7 @@ pub enum Operation<'a> {
         /// The FUSE create request
         arg: &'a FuseCreateIn,
         /// The file name to create
-        name: &'a OsStr,
+        name: &'a str,
     },
     /// FUSE_INTERRUPT = 36
     Interrupt {
@@ -256,9 +255,9 @@ pub enum Operation<'a> {
         /// The FUSE rename2 request
         arg: &'a FuseRename2In,
         /// The old file name
-        oldname: &'a OsStr,
+        oldname: &'a str,
         /// The new file name
-        newname: &'a OsStr,
+        newname: &'a str,
     },
     /// FUSE_LSEEK = 46,
     // #[cfg(feature = "abi-7-24")]
@@ -276,7 +275,7 @@ pub enum Operation<'a> {
     #[cfg(target_os = "macos")]
     SetVolName {
         /// Volume name to set
-        name: &'a OsStr,
+        name: &'a str,
     },
     /// FUSE_GETXTIMES = 62
     #[cfg(target_os = "macos")]
@@ -287,9 +286,9 @@ pub enum Operation<'a> {
         /// The FUSE exchange request
         arg: &'a FuseExchangeIn,
         /// The old file name
-        oldname: &'a OsStr,
+        oldname: &'a str,
         /// The new file name
-        newname: &'a OsStr,
+        newname: &'a str,
     },
 
     /// CUSE_INIT = 4096
@@ -379,7 +378,7 @@ impl<'a> Operation<'a> {
 
         Ok(match opcode {
             FuseOpCode::FUSE_LOOKUP => Operation::Lookup {
-                name: data.fetch_os_str()?,
+                name: data.fetch_str()?,
             },
             FuseOpCode::FUSE_FORGET => Operation::Forget {
                 arg: data.fetch_ref()?,
@@ -390,31 +389,31 @@ impl<'a> Operation<'a> {
             },
             FuseOpCode::FUSE_READLINK => Operation::ReadLink,
             FuseOpCode::FUSE_SYMLINK => Operation::SymLink {
-                name: data.fetch_os_str()?,
-                link: data.fetch_os_str()?,
+                name: data.fetch_str()?,
+                link: data.fetch_str()?,
             },
             FuseOpCode::FUSE_MKNOD => Operation::MkNod {
                 arg: data.fetch_ref()?,
-                name: data.fetch_os_str()?,
+                name: data.fetch_str()?,
             },
             FuseOpCode::FUSE_MKDIR => Operation::MkDir {
                 arg: data.fetch_ref()?,
-                name: data.fetch_os_str()?,
+                name: data.fetch_str()?,
             },
             FuseOpCode::FUSE_UNLINK => Operation::Unlink {
-                name: data.fetch_os_str()?,
+                name: data.fetch_str()?,
             },
             FuseOpCode::FUSE_RMDIR => Operation::RmDir {
-                name: data.fetch_os_str()?,
+                name: data.fetch_str()?,
             },
             FuseOpCode::FUSE_RENAME => Operation::Rename {
                 arg: data.fetch_ref()?,
-                oldname: data.fetch_os_str()?,
-                newname: data.fetch_os_str()?,
+                oldname: data.fetch_str()?,
+                newname: data.fetch_str()?,
             },
             FuseOpCode::FUSE_LINK => Operation::Link {
                 arg: data.fetch_ref()?,
-                name: data.fetch_os_str()?,
+                name: data.fetch_str()?,
             },
             FuseOpCode::FUSE_OPEN => Operation::Open {
                 arg: data.fetch_ref()?,
@@ -435,18 +434,18 @@ impl<'a> Operation<'a> {
             },
             FuseOpCode::FUSE_SETXATTR => Operation::SetXAttr {
                 arg: data.fetch_ref()?,
-                name: data.fetch_os_str()?,
+                name: data.fetch_str()?,
                 value: data.fetch_all_bytes(),
             },
             FuseOpCode::FUSE_GETXATTR => Operation::GetXAttr {
                 arg: data.fetch_ref()?,
-                name: data.fetch_os_str()?,
+                name: data.fetch_str()?,
             },
             FuseOpCode::FUSE_LISTXATTR => Operation::ListXAttr {
                 arg: data.fetch_ref()?,
             },
             FuseOpCode::FUSE_REMOVEXATTR => Operation::RemoveXAttr {
-                name: data.fetch_os_str()?,
+                name: data.fetch_str()?,
             },
             FuseOpCode::FUSE_FLUSH => Operation::Flush {
                 arg: data.fetch_ref()?,
@@ -480,7 +479,7 @@ impl<'a> Operation<'a> {
             },
             FuseOpCode::FUSE_CREATE => Operation::Create {
                 arg: data.fetch_ref()?,
-                name: data.fetch_os_str()?,
+                name: data.fetch_str()?,
             },
             FuseOpCode::FUSE_INTERRUPT => Operation::Interrupt {
                 arg: data.fetch_ref()?,
@@ -518,8 +517,8 @@ impl<'a> Operation<'a> {
             // #[cfg(feature = "abi-7-23")]
             FuseOpCode::FUSE_RENAME2 => Operation::Rename2 {
                 arg: data.fetch_ref()?,
-                oldname: data.fetch_os_str()?,
-                newname: data.fetch_os_str()?,
+                oldname: data.fetch_str()?,
+                newname: data.fetch_str()?,
             },
             // #[cfg(feature = "abi-7-24")]
             FuseOpCode::FUSE_LSEEK => Operation::LSeek {
@@ -532,15 +531,15 @@ impl<'a> Operation<'a> {
 
             #[cfg(target_os = "macos")]
             FuseOpCode::FUSE_SETVOLNAME => Operation::SetVolName {
-                name: data.fetch_os_str()?,
+                name: data.fetch_str()?,
             },
             #[cfg(target_os = "macos")]
             FuseOpCode::FUSE_GETXTIMES => Operation::GetXTimes,
             #[cfg(target_os = "macos")]
             FuseOpCode::FUSE_EXCHANGE => Operation::Exchange {
                 arg: data.fetch_ref()?,
-                oldname: data.fetch_os_str()?,
-                newname: data.fetch_os_str()?,
+                oldname: data.fetch_str()?,
+                newname: data.fetch_str()?,
             },
 
             #[cfg(feature = "abi-7-11")]

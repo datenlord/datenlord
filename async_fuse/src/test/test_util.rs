@@ -28,7 +28,8 @@ pub fn setup(mount_dir: &Path) -> anyhow::Result<JoinHandle<()>> {
 
     let fs_task = smol::spawn(async move {
         async fn run_fs(mount_point: &Path) -> anyhow::Result<()> {
-            let fs = memfs::MemFs::new(mount_point, CACHE_DEFAULT_CAPACITY).await?;
+            let fs: memfs::MemFs<memfs::DefaultMetaData> =
+                memfs::MemFs::new(mount_point, CACHE_DEFAULT_CAPACITY).await?;
             let ss = Session::new(mount_point, fs).await?;
             ss.run().await?;
             Ok(())
