@@ -11,6 +11,7 @@ use super::error::{Context, DatenLordResult};
 use super::util;
 
 /// The client to communicate with etcd
+#[derive(Clone)]
 pub struct EtcdDelegate {
     /// The inner etcd client
     etcd_rs_client: etcd_client::Client,

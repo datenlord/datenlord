@@ -125,10 +125,6 @@ impl MetaData {
                 node,
             };
             match md.run_as {
-                RunAsRole::Both => {
-                    md.register_to_etcd(CONTROLLER_PREFIX).await?;
-                    md.register_to_etcd(NODE_PREFIX).await?;
-                }
                 RunAsRole::Controller => md.register_to_etcd(CONTROLLER_PREFIX).await?,
                 RunAsRole::Node => md.register_to_etcd(NODE_PREFIX).await?,
                 RunAsRole::SchedulerExtender => {

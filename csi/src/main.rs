@@ -383,7 +383,7 @@ fn parse_args() -> CliArgs {
                 .takes_value(true)
                 .help(
                     "Set the runtime service, \
-                        set as controller, node or both, \
+                        set as controller, node or scheduler-extender, \
                         default as node",
                 ),
         )
@@ -453,12 +453,11 @@ fn get_args(matches: &ArgMatches) -> CliArgs {
     };
     let run_as = match matches.value_of(RUN_AS_ARG_NAME) {
         Some(r) => match r {
-            "both" => RunAsRole::Both,
             "controller" => RunAsRole::Controller,
             "node" => RunAsRole::Node,
             "scheduler-extender" => RunAsRole::SchedulerExtender,
             _ => panic!(
-                "invalid {} argument {}, must be one of both, controller, node, scheduler-extender",
+                "invalid {} argument {}, must be one of controller, node, scheduler-extender",
                 RUN_AS_ARG_NAME, r,
             ),
         },
@@ -547,19 +546,6 @@ fn main() -> DatenLordResult<()> {
             let worker_server = build_grpc_worker_server(Arc::<MetaData>::clone(&md))?;
             let node_server = build_grpc_node_server(&args.end_point, &args.driver_name, md)?;
             run_grpc_servers(&mut [node_server, worker_server], async_server);
-        }
-        RunAsRole::Both => {
-            let controller_server = build_grpc_controller_server(
-                &args.end_point,
-                &args.driver_name,
-                Arc::<MetaData>::clone(&md),
-            )?;
-            let worker_server = build_grpc_worker_server(Arc::<MetaData>::clone(&md))?;
-            let node_server = build_grpc_node_server(&args.end_point, &args.driver_name, md)?;
-            run_grpc_servers(
-                &mut [controller_server, node_server, worker_server],
-                async_server,
-            );
         }
         RunAsRole::SchedulerExtender => {
             let scheduler_extender = SchdulerExtender::new(
@@ -672,7 +658,6 @@ mod test {
         let node_id = DEFAULT_NODE_NAME;
         let ip_address = DEFAULT_NODE_IP;
         let data_dir = util::DATA_DIR;
-        let run_as = RunAsRole::Both;
         let ephemeral = false;
         let node = DatenLordNode::new(
             node_id.to_owned(),
@@ -681,7 +666,21 @@ mod test {
             util::MAX_VOLUME_STORAGE_CAPACITY,
             util::MAX_VOLUMES_PER_NODE,
         );
-        MetaData::new(data_dir.to_owned(), ephemeral, run_as, etcd_delegate, node)
+        // Register Node metadata to etcd, but return Controller metadata for test
+        let _ = MetaData::new(
+            data_dir.to_owned(),
+            ephemeral,
+            RunAsRole::Node,
+            etcd_delegate.clone(),
+            node.clone(),
+        )?;
+        MetaData::new(
+            data_dir.to_owned(),
+            ephemeral,
+            RunAsRole::Controller,
+            etcd_delegate,
+            node,
+        )
     }
 
     fn test_meta_data() -> DatenLordResult<()> {
@@ -795,7 +794,6 @@ mod test {
         let ip_address = DEFAULT_NODE_IP.to_owned();
         let driver_name = util::CSI_PLUGIN_NAME.to_owned();
         let data_dir = util::DATA_DIR.to_owned();
-        let run_as = RunAsRole::Both;
         let etcd_address_vec = get_etcd_address_vec();
         let etcd_delegate = EtcdDelegate::new(etcd_address_vec)?;
 
@@ -807,35 +805,47 @@ mod test {
                 "failed to clear test data, the error is: {}",
                 clear_res.unwrap_err(),
             );
-            let meta_data = match build_meta_data(
+            let controller_meta_data = match build_meta_data(
                 worker_port,
-                node_id,
+                node_id.clone(),
                 ip_address,
-                data_dir,
-                run_as,
-                etcd_delegate,
+                data_dir.clone(),
+                RunAsRole::Controller,
+                etcd_delegate.clone(),
             ) {
                 Ok(md) => md,
                 Err(e) => panic!("failed to build meta data, the error is : {}", e,),
             };
-            let md = Arc::new(meta_data);
+            let controller_md = Arc::new(controller_meta_data);
             let controller_server = match build_grpc_controller_server(
                 &controller_end_point,
                 &driver_name,
-                Arc::<MetaData>::clone(&md),
+                Arc::<MetaData>::clone(&controller_md),
             ) {
                 Ok(server) => server,
                 Err(e) => panic!("failed to build CSI server, the error is : {}", e,),
             };
+            let node_meta_data = match build_meta_data(
+                worker_port,
+                node_id.clone(),
+                ip_address,
+                data_dir.clone(),
+                RunAsRole::Node,
+                etcd_delegate.clone(),
+            ) {
+                Ok(md) => md,
+                Err(e) => panic!("failed to build meta data, the error is : {}", e,),
+            };
+            let node_worker_md = Arc::new(node_meta_data);
             let node_server = match build_grpc_node_server(
                 &node_end_point,
                 &driver_name,
-                Arc::<MetaData>::clone(&md),
+                Arc::<MetaData>::clone(&node_worker_md),
             ) {
                 Ok(server) => server,
                 Err(e) => panic!("failed to build Node server, the error is : {}", e,),
             };
-            let worker_server = match build_grpc_worker_server(md) {
+            let worker_server = match build_grpc_worker_server(node_worker_md) {
                 Ok(server) => server,
                 Err(e) => panic!("failed to build Worker server, the error is : {}", e,),
             };
