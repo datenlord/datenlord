@@ -58,8 +58,6 @@ pub const BIND_MOUNT_HELPER_CMD_ENV_KEY: &str = "BIND_MOUNTER";
 /// The runtime role of CSI plugin
 #[derive(Clone, Copy, Debug)]
 pub enum RunAsRole {
-    /// Run both controller and node service
-    Both,
     /// Run controller service only
     Controller,
     /// Run node service only
