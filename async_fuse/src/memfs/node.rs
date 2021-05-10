@@ -3,6 +3,7 @@
 use super::cache::{GlobalCache, IoMemBlock};
 use super::dir::DirEntry;
 use super::fs_util::{self, FileAttr};
+use super::metadata::DefaultMetaData;
 use super::SetAttrParam;
 use crate::fuse::fuse_reply::{AsIoVec, StatFsParam};
 use crate::fuse::protocol::INum;
@@ -41,12 +42,12 @@ pub trait Node: Sized {
     fn dec_open_count(&self) -> i64;
     fn get_lookup_count(&self) -> i64;
     fn dec_lookup_count_by(&self, nlookup: u64) -> i64;
-    async fn load_attribute(&self) -> anyhow::Result<FileAttr>;
-    async fn flush(&self, ino: INum, fh: u64);
+    async fn load_attribute(&mut self) -> anyhow::Result<FileAttr>;
+    async fn flush(&mut self, ino: INum, fh: u64);
     async fn dup_fd(&self, oflags: OFlag) -> anyhow::Result<RawFd>;
     fn is_node_data_empty(&self) -> bool;
     fn need_load_dir_data(&self) -> bool;
-    fn need_load_file_data(&self, offset: usize, len: usize) -> bool;
+    async fn need_load_file_data(&self, offset: usize, len: usize) -> bool;
     fn get_entry(&self, name: &str) -> Option<&DirEntry>;
     async fn create_child_symlink(
         &mut self,
@@ -76,7 +77,7 @@ pub trait Node: Sized {
     fn read_dir(&self, func: &mut dyn FnMut(&BTreeMap<String, DirEntry>) -> usize) -> usize;
     fn get_symlink_target(&self) -> &Path;
     async fn statefs(&self) -> anyhow::Result<StatFsParam>;
-    fn get_file_data(&self, offset: usize, len: usize) -> Vec<IoMemBlock>;
+    async fn get_file_data(&self, offset: usize, len: usize) -> Vec<IoMemBlock>;
     async fn write_file(
         &mut self,
         fh: u64,
@@ -85,8 +86,7 @@ pub trait Node: Sized {
         oflags: OFlag,
         write_to_disk: bool,
     ) -> anyhow::Result<usize>;
-    async fn open_root_node(root_ino: INum, name: &str, path: &Path) -> anyhow::Result<Self>;
-    async fn close(&self, ino: INum, fh: u64, flush: bool);
+    async fn close(&mut self, ino: INum, fh: u64, flush: bool);
     async fn closedir(&self, ino: INum, fh: u64);
     async fn setattr_precheck(&self, param: SetAttrParam) -> anyhow::Result<(bool, FileAttr)>;
 }
@@ -110,7 +110,7 @@ pub struct DefaultNode {
     parent: u64,
     /// DefaultNode name
     name: String,
-    /// Full path
+    /// Full abstract path
     full_path: String,
     /// DefaultNode attribute
     attr: FileAttr,
@@ -122,6 +122,8 @@ pub struct DefaultNode {
     open_count: AtomicI64,
     /// DefaultNode lookup counter
     lookup_count: AtomicI64,
+    /// Shared metadata
+    meta: Arc<DefaultMetaData>,
 }
 
 impl Drop for DefaultNode {
@@ -142,15 +144,16 @@ impl DefaultNode {
     fn new(
         parent: u64,
         name: &str,
-        full_path: &str,
+        full_path: String,
         attr: FileAttr,
         data: DefaultNodeData,
         fd: RawFd,
+        meta: Arc<DefaultMetaData>,
     ) -> Self {
         Self {
             parent,
-            name: name.to_owned(),
-            full_path: full_path.to_owned(),
+            name: name.to_string(),
+            full_path,
             attr,
             data,
             fd,
@@ -158,6 +161,7 @@ impl DefaultNode {
             open_count: AtomicI64::new(1),
             // open count set to 1 by creation
             lookup_count: AtomicI64::new(1),
+            meta,
         }
     }
     /// Get full path
@@ -337,10 +341,11 @@ impl DefaultNode {
         let child_node = Self::new(
             self.get_ino(),
             child_dir_name,
-            &full_path,
+            full_path,
             child_attr,
             DefaultNodeData::Directory(BTreeMap::new()),
             child_raw_fd,
+            Arc::clone(&self.meta),
         );
 
         // if !create_dir {
@@ -405,10 +410,11 @@ impl DefaultNode {
         Ok(Self::new(
             self.get_ino(),
             child_file_name,
-            &full_path,
+            full_path,
             child_attr,
             DefaultNodeData::RegFile(global_cache),
             child_fd,
+            Arc::clone(&self.meta),
         ))
     }
 
@@ -492,17 +498,47 @@ impl DefaultNode {
         Ok(Self::new(
             self.get_ino(),
             child_symlink_name,
-            &full_path,
+            full_path,
             child_attr,
             // DefaultNodeData::SymLink(Box::new(SymLinkData::new(child_fd, target_path).await)),
             DefaultNodeData::SymLink(target_path),
             child_fd,
+            Arc::clone(&self.meta),
         ))
     }
 
     /// Increase node open count
     fn inc_open_count(&self) -> i64 {
         self.open_count.fetch_add(1, atomic::Ordering::Relaxed)
+    }
+
+    /// Open root node
+    pub(crate) async fn open_root_node(
+        root_ino: INum,
+        name: &str,
+        path: &str,
+        meta: Arc<DefaultMetaData>,
+    ) -> anyhow::Result<Self> {
+        let dir_fd = fs_util::open_dir(&Path::new(path)).await?;
+        let mut attr = fs_util::load_attr(dir_fd).await?;
+        attr.ino = root_ino; // replace root ino with 1
+
+        let root_node = Self::new(
+            root_ino,
+            name,
+            "/".to_owned(),
+            attr,
+            DefaultNodeData::Directory(BTreeMap::new()),
+            dir_fd,
+            meta,
+        );
+        // // load root directory data on open
+        // root_node
+        //     .load_data()
+        //     .await
+        //     .context("open_root_node() failed to load root directory entry data")?;
+
+        Ok(root_node)
     }
 }
 
@@ -602,7 +638,7 @@ impl Node for DefaultNode {
     }
 
     /// Load attribute
-    async fn load_attribute(&self) -> anyhow::Result<FileAttr> {
+    async fn load_attribute(&mut self) -> anyhow::Result<FileAttr> {
         let attr = fs_util::load_attr(self.fd).await.context(format!(
             "load_attribute() failed to get the attribute of the node ino={}",
             self.get_ino(),
@@ -615,7 +651,7 @@ impl Node for DefaultNode {
         Ok(attr)
     }
 
-    async fn flush(&self, ino: INum, fh: u64) {
+    async fn flush(&mut self, ino: INum, fh: u64) {
         let new_fd = smol::unblock(move || unistd::dup(fh.cast()))
             .await
             .context(format!(
@@ -695,18 +731,18 @@ impl Node for DefaultNode {
     }
 
     /// Check whether to load file content data or not
-    fn need_load_file_data(&self, offset: usize, len: usize) -> bool {
+    async fn need_load_file_data(&self, offset: usize, len: usize) -> bool {
         debug_assert_eq!(
             self.attr.kind,
             SFlag::S_IFREG,
             "fobidden to check non-file node need load data or not",
         );
 
-        if offset > self.attr.size.cast() {
+        if offset >= self.attr.size.cast() {
             return false;
         }
 
-        match self.data {
+        let need_load = match self.data {
             DefaultNodeData::RegFile(ref cache) => {
                 let file_cache = cache.get_file_cache(self.full_path.as_bytes(), offset, len);
                 let cache_miss = file_cache.is_empty()
@@ -721,7 +757,9 @@ impl Node for DefaultNode {
             DefaultNodeData::Directory(..) | DefaultNodeData::SymLink(..) => {
                 panic!("need_load_file_data should handle regular file")
             }
-        }
+        };
+
+        need_load
     }
 
     /// Get a directory entry by name
@@ -857,6 +895,7 @@ impl Node for DefaultNode {
                     aligned_offset,
                     read_size,
                     &file_data_vec,
+                    false,
                 ) {
                     panic!("writing data error while loading data: {}", e);
                 }
@@ -1000,7 +1039,7 @@ impl Node for DefaultNode {
     }
 
     /// Get file data
-    fn get_file_data(&self, offset: usize, len: usize) -> Vec<IoMemBlock> {
+    async fn get_file_data(&self, offset: usize, len: usize) -> Vec<IoMemBlock> {
         match self.data {
             DefaultNodeData::Directory(..) | DefaultNodeData::SymLink(..) => {
                 panic!("forbidden to load FileData from non-file node")
@@ -1023,7 +1062,7 @@ impl Node for DefaultNode {
         let this: &Self = self;
 
         let ino = this.get_ino();
-        if this.need_load_file_data(offset.cast(), data.len()) {
+        if this.need_load_file_data(offset.cast(), data.len()).await {
             let load_res = self.load_data(offset.cast(), data.len()).await;
             if let Err(e) = load_res {
                 debug!(
@@ -1048,6 +1087,7 @@ impl Node for DefaultNode {
             offset.cast(),
             data.len(),
             data.as_slice(),
+            true,
         ) {
             panic!("writing cache error while writing data: {}", e);
         }
@@ -1078,30 +1118,7 @@ impl Node for DefaultNode {
         Ok(written_size)
     }
 
-    /// Open root node
-    async fn open_root_node(root_ino: INum, name: &str, path: &Path) -> anyhow::Result<Self> {
-        let dir_fd = fs_util::open_dir(path).await?;
-        let mut attr = fs_util::load_attr(dir_fd).await?;
-        attr.ino = root_ino; // replace root ino with 1
-
-        let root_node = Self::new(
-            root_ino,
-            name,
-            "/",
-            attr,
-            DefaultNodeData::Directory(BTreeMap::new()),
-            dir_fd,
-        );
-        // // load root directory data on open
-        // root_node
-        //     .load_data()
-        //     .await
-        //     .context("open_root_node() failed to load root directory entry data")?;
-
-        Ok(root_node)
-    }
-
-    async fn close(&self, ino: INum, fh: u64, flush: bool) {
+    async fn close(&mut self, ino: INum, fh: u64, flush: bool) {
         let fd = fh.cast();
         if flush {
             // TODO: double check the meaning of the flush flag
@@ -1284,7 +1301,7 @@ impl Node for DefaultNode {
 }
 
 /// Rename all the files
-pub async fn rename_fullpath_recursive(
+pub(crate) async fn rename_fullpath_recursive(
     ino: INum,
     parent: INum,
     cache: &RwLock<BTreeMap<INum, DefaultNode>>,
