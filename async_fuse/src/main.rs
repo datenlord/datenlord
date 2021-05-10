@@ -251,7 +251,7 @@ fn main() -> anyhow::Result<()> {
                 ),
         )
         .get_matches();
-    let mount_point = match matches.value_of(MOUNT_POINT_ARG_NAME) {
+    let mount_point_str = match matches.value_of(MOUNT_POINT_ARG_NAME) {
         Some(mp) => mp,
         None => panic!("No mount point input"),
     };
@@ -275,7 +275,7 @@ fn main() -> anyhow::Result<()> {
         None => panic!("No volume information input"),
     };
     let etcd_delegate = EtcdDelegate::new(etcd_address_vec)?;
-    debug!("FUSE mount point: {}", mount_point);
+    debug!("FUSE mount point: {}", mount_point_str);
 
     let cache_capacity = match matches.value_of(CACHE_CAPACITY_ARG_NAME) {
         Some(cc) => cc.parse::<usize>().unwrap_or_else(|_| {
@@ -292,9 +292,9 @@ fn main() -> anyhow::Result<()> {
     smol::block_on(async move {
         let node_id = register_node_id(&etcd_delegate).await?;
         register_volume(&etcd_delegate, node_id, volume_info).await?;
-        let mount_point = std::path::Path::new(&mount_point);
+        let mount_point = std::path::Path::new(&mount_point_str);
         let fs: memfs::MemFs<memfs::DefaultMetaData> =
-            memfs::MemFs::new(mount_point, cache_capacity).await?;
+            memfs::MemFs::new(mount_point_str, cache_capacity).await?;
         let ss = Session::new(mount_point, fs).await?;
         ss.run().await?;
         Ok(())

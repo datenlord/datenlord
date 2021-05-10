@@ -1,117 +1,89 @@
 use super::cache::GlobalCache;
 use super::dir::DirEntry;
 use super::fs_util;
-use super::node::{self, DefaultNode, Node};
+use super::metadata::MetaData;
+use super::node::Node;
+use super::s3_node::{self, S3Node};
+use super::s3_wrapper::S3BackEndImpl;
 use super::RenameParam;
 use crate::fuse::protocol::{FuseAttr, INum, FUSE_ROOT_ID};
 use crate::util;
 use anyhow::Context;
 use async_trait::async_trait;
+use itertools::Itertools;
 use log::debug;
 use nix::errno::Errno;
 use nix::fcntl::OFlag;
 use nix::sys::stat::SFlag;
-use nix::unistd;
 use smol::lock::{RwLock, RwLockWriteGuard};
 use std::collections::{BTreeMap, BTreeSet};
 use std::os::unix::io::RawFd;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::path::Path;
+use std::sync::{atomic::AtomicU32, Arc};
 use std::time::Duration;
-use utilities::Cast;
 
 /// The time-to-live seconds of FUSE attributes
 const MY_TTL_SEC: u64 = 3600; // TODO: should be a long value, say 1 hour
 /// The generation ID of FUSE attributes
 const MY_GENERATION: u64 = 1; // TODO: find a proper way to set generation
-
-#[async_trait]
-pub trait MetaData {
-    type N: Node + Send + Sync + 'static;
-
-    async fn new(root_path: &str, capacity: usize) -> Arc<Self>;
-
-    /// Helper function to create node
-    async fn create_node_helper(
-        &self,
-        parent: INum,
-        node_name: &str,
-        mode: u32,
-        node_type: SFlag,
-        target_path: Option<&Path>,
-    ) -> anyhow::Result<(Duration, FuseAttr, u64)>;
-
-    /// Helper function to remove node
-    async fn remove_node_helper(
-        &self,
-        parent: INum,
-        node_name: &str,
-        node_type: SFlag,
-    ) -> anyhow::Result<()>;
-
-    /// Helper function to lookup
-    async fn lookup_helper(
-        &self,
-        parent: INum,
-        name: &str,
-    ) -> anyhow::Result<(Duration, FuseAttr, u64)>;
-
-    /// Rename helper to exchange on disk
-    async fn rename_exchange_helper(&self, param: RenameParam) -> anyhow::Result<()>;
-
-    /// Rename helper to move on disk, it may replace destination entry
-    async fn rename_may_replace_helper(&self, param: RenameParam) -> anyhow::Result<()>;
-
-    /// Helper function of fsync
-    async fn fsync_helper(&self, ino: u64, fh: u64, datasync: bool) -> anyhow::Result<()>;
-
-    // TODO: Should hide this implementation detail
-    /// Get metadata cache
-    fn cache(&self) -> &RwLock<BTreeMap<INum, Self::N>>;
-
-    /// Delete cache in trash if necessary
-    async fn delete_trash(&self, ino: &INum) -> bool;
-}
+/// S3 information string delimiter
+const S3_INFO_DELIMITER: char = ';';
 
 /// File system in-memory meta-data
 #[derive(Debug)]
-pub struct DefaultMetaData {
-    /// The root path and the mount point of the FUSE filesystem
-    root_path: PathBuf,
+pub struct S3MetaData {
+    /// S3 backend
+    s3_backend: Arc<S3BackEndImpl>,
     /// The cache to hold opened directories and files
-    pub(crate) cache: RwLock<BTreeMap<INum, DefaultNode>>,
+    pub(crate) cache: RwLock<BTreeMap<INum, S3Node>>,
     /// The trash to hold deferred deleted directories and files
     trash: RwLock<BTreeSet<INum>>,
     /// Global data cache
     data_cache: Arc<GlobalCache>,
+    /// Current available node number, it'll increase after using
+    pub(crate) cur_inum: AtomicU32,
+    /// Current available fd, it'll increase after using
+    pub(crate) cur_fd: AtomicU32,
+}
+
+fn parse_s3_info(info: &str) -> (&str, &str, &str, &str) {
+    info.split(S3_INFO_DELIMITER)
+        .next_tuple()
+        .unwrap_or_else(|| panic!("parse s3 information failed. s3_info: {}", info))
 }
 
 #[async_trait]
-impl MetaData for DefaultMetaData {
-    type N = DefaultNode;
+impl MetaData for S3MetaData {
+    type N = S3Node;
 
-    async fn new(root_path: &str, capacity: usize) -> Arc<Self> {
-        let root_path = Path::new(root_path)
-            .canonicalize()
-            .with_context(|| format!("failed to canonicalize the mount path={:?}", root_path))
-            .unwrap_or_else(|e| panic!("{}", e));
-
-        let root_path = root_path.as_os_str().to_str().unwrap();
+    async fn new(s3_info: &str, capacity: usize) -> Arc<Self> {
+        let (bucket_name, endpoint, access_key, secret_key) = parse_s3_info(s3_info);
+        let s3_backend = Arc::new(
+            match S3BackEndImpl::new(bucket_name, endpoint, access_key, secret_key).await {
+                Ok(s) => s,
+                Err(e) => panic!("{:?}", e),
+            },
+        );
 
         let meta = Arc::new(Self {
-            root_path: root_path.into(),
+            s3_backend: Arc::clone(&s3_backend),
             cache: RwLock::new(BTreeMap::new()),
             trash: RwLock::new(BTreeSet::new()),
-            data_cache: Arc::new(GlobalCache::new_with_capacity(capacity)),
+            data_cache: Arc::new(GlobalCache::new_with_bz_and_capacity(
+                10 * 1024 * 1024,
+                capacity,
+            )),
+            cur_inum: AtomicU32::new(2),
+            cur_fd: AtomicU32::new(4),
         });
 
-        let root_inode =
-            DefaultNode::open_root_node(FUSE_ROOT_ID, "/", root_path, Arc::clone(&meta))
-                .await
-                .context("failed to open FUSE root node")
-                .unwrap_or_else(|e| {
-                    panic!("{}", e);
-                });
+        let root_inode = S3Node::open_root_node(FUSE_ROOT_ID, "/", s3_backend, Arc::clone(&meta))
+            .await
+            .context("failed to open FUSE root node")
+            .unwrap_or_else(|e| {
+                panic!("{}", e);
+            });
+
         meta.cache.write().await.insert(FUSE_ROOT_ID, root_inode);
 
         meta
@@ -319,6 +291,12 @@ impl MetaData for DefaultMetaData {
                             node_name, node_ino, parent
                         )
                     });
+
+                    if let SFlag::S_IFREG = node_type {
+                        self.data_cache
+                            .remove_file_cache(child_inode.full_path().as_bytes());
+                    }
+
                     debug_assert_eq!(node_ino, child_inode.get_ino());
                     debug_assert_eq!(node_name, child_inode.get_name());
                     debug_assert_eq!(parent, child_inode.get_parent_ino());
@@ -495,7 +473,6 @@ impl MetaData for DefaultMetaData {
                 replaced_entry.entry_type(),
             );
 
-            // TODO: support thread-safe
             let mut cache = self.cache.write().await;
             let old_parent_node = cache.get_mut(&old_parent).unwrap_or_else(|| {
                 panic!(
@@ -566,7 +543,7 @@ impl MetaData for DefaultMetaData {
         let pre_check_res = self
             .rename_pre_check(old_parent, &old_name, new_parent, &new_name, no_replace)
             .await;
-        let (old_parent_fd, old_entry_ino, new_parent_fd, new_entry_ino) = match pre_check_res {
+        let (_, old_entry_ino, _, new_entry_ino) = match pre_check_res {
             Ok((old_parent_fd, old_entry_ino, new_parent_fd, new_entry_ino)) => {
                 (old_parent_fd, old_entry_ino, new_parent_fd, new_entry_ino)
             }
@@ -589,23 +566,6 @@ impl MetaData for DefaultMetaData {
                     new_ino,
                 ))?;
         }
-        let old_name_clone = old_name.clone();
-        let new_name_clone = new_name.clone();
-        // Rename on disk
-        smol::unblock(move || {
-            nix::fcntl::renameat(
-                Some(old_parent_fd),
-                Path::new(&old_name_clone),
-                Some(new_parent_fd),
-                Path::new(&new_name_clone),
-            )
-        })
-        .await
-        .context(format!(
-            "rename_may_replace_helper() failed to move the from i-node name={:?} under \
-                from parent ino={} to the to i-node name={:?} under new parent ino={}",
-            old_name, old_parent, new_name, new_parent,
-        ))?;
 
         {
             let mut cache = self.cache.write().await;
@@ -617,22 +577,6 @@ impl MetaData for DefaultMetaData {
             });
             moved_node.set_parent_ino(new_parent);
             moved_node.set_name(&new_name);
-            let moved_attr = moved_node
-                .load_attribute()
-                .await
-                .context(format!(
-                    "rename_may_replace_helper() failed to \
-                    load attribute of old entry i-node of ino={}",
-                    old_entry_ino,
-                ))
-                .unwrap_or_else(|e| {
-                    panic!(
-                        "rename() failed, the error is: {}",
-                        common::util::format_anyhow_error(&e)
-                    )
-                });
-            debug_assert_eq!(moved_attr.ino, moved_node.get_ino());
-            debug_assert_eq!(moved_attr.ino, old_entry_ino);
             debug!(
                 "rename_may_replace_helper() successfully moved the from i-node \
                 of ino={} and name={:?} under from parent ino={} to \
@@ -657,48 +601,25 @@ impl MetaData for DefaultMetaData {
         &self,
         ino: u64,
         fh: u64,
-        datasync: bool,
+        _datasync: bool,
         // reply: ReplyEmpty,
     ) -> anyhow::Result<()> {
-        // TODO: handle datasync
-        #[cfg(target_os = "linux")]
-        {
-            // attributes are not allowed on if expressions
-            if datasync {
-                smol::unblock(move || unistd::fdatasync(fh.cast()))
-                    .await
-                    .context(format!(
-                        "fsync_helper() failed to flush the i-node of ino={}",
-                        ino
-                    ))?;
-            } else {
-                smol::unblock(move || unistd::fsync(fh.cast()))
-                    .await
-                    .context(format!(
-                        "fsync_helper() failed to flush the i-node of ino={}",
-                        ino
-                    ))?;
-            }
-        }
-        #[cfg(target_os = "macos")]
-        {
-            smol::unblock(|| unistd::fsync(fh.cast()))
-                .await
-                .context(format!(
-                    "fsync_helper() failed to flush the i-node of ino={}",
-                    ino,
-                ))?;
-        }
-        // reply.ok().await?;
-        debug!(
-            "fsync_helper() successfully sync the i-node of ino={}, fh={}, datasync={}",
-            ino, fh, datasync,
-        );
+        let mut cache = self.cache.write().await;
+        let inode = cache.get_mut(&ino).unwrap_or_else(|| {
+            panic!(
+                "release() found fs is inconsistent, \
+                    the i-node of ino={} should be in cache",
+                ino,
+            );
+        });
+
+        inode.flush(ino, fh).await;
+
         Ok(())
     }
 }
 
-impl DefaultMetaData {
+impl S3MetaData {
     // FUSE operation helper functions
 
     /// The pre-check before create node
@@ -707,8 +628,8 @@ impl DefaultMetaData {
         &self,
         parent: INum,
         node_name: &str,
-        cache: &'b mut RwLockWriteGuard<'a, BTreeMap<INum, <DefaultMetaData as MetaData>::N>>,
-    ) -> anyhow::Result<&'b mut <DefaultMetaData as MetaData>::N> {
+        cache: &'b mut RwLockWriteGuard<'a, BTreeMap<INum, <S3MetaData as MetaData>::N>>,
+    ) -> anyhow::Result<&'b mut <S3MetaData as MetaData>::N> {
         let parent_node = cache.get_mut(&parent).unwrap_or_else(|| {
             panic!(
                 "create_node_pre_check() found fs is inconsistent, \
@@ -999,9 +920,10 @@ impl DefaultMetaData {
                 ),
             }
         };
-        node::rename_fullpath_recursive(entry_to_move.ino(), new_parent, &self.cache).await;
+
+        s3_node::rename_fullpath_recursive(entry_to_move.ino(), new_parent, &self.cache).await;
+
         {
-            // TODO: support thread-safe
             let mut cache = self.cache.write().await;
             let new_parent_node = cache.get_mut(&new_parent).unwrap_or_else(|| {
                 panic!(

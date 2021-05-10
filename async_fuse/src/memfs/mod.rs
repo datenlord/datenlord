@@ -4,9 +4,11 @@ mod dir;
 mod fs_util;
 mod metadata;
 mod node;
+mod s3_metadata;
+mod s3_node;
 mod s3_wrapper;
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::os::unix::ffi::OsStringExt;
 use std::path::Path;
 use std::sync::Arc;
@@ -17,7 +19,6 @@ use async_trait::async_trait;
 use log::{debug, warn};
 use nix::errno::Errno;
 use nix::sys::stat::SFlag;
-use smol::lock::{Mutex, RwLock};
 use utilities::{Cast, OverflowArithmetic};
 
 use crate::fuse::file_system::FileSystem;
@@ -28,17 +29,18 @@ use crate::fuse::fuse_reply::{
 };
 use crate::fuse::fuse_request::Request;
 use crate::fuse::protocol::{INum, FUSE_ROOT_ID};
-use cache::{GlobalCache, IoMemBlock};
+use cache::IoMemBlock;
 use dir::DirEntry;
 pub use metadata::DefaultMetaData;
 use metadata::MetaData;
 use node::Node;
+pub use s3_metadata::S3MetaData;
 
 /// The time-to-live seconds of FUSE attributes
 const MY_TTL_SEC: u64 = 3600; // TODO: should be a long value, say 1 hour
 
 /// In-memory file system
-pub struct MemFs<M: MetaData + Send + Sync + 'static>(Arc<Mutex<M>>);
+pub struct MemFs<M: MetaData + Send + Sync + 'static>(Arc<M>);
 
 /// Set attribute parameters
 pub struct SetAttrParam {
@@ -111,23 +113,8 @@ pub struct FileLockParam {
 
 impl<M: MetaData + Send + Sync + 'static> MemFs<M> {
     /// Create `FileSystem`
-    pub async fn new(mount_point: &Path, capacity: usize) -> anyhow::Result<Self> {
-        let root_path = mount_point
-            .canonicalize()
-            .with_context(|| format!("failed to canonicalize the mount path={:?}", mount_point))?;
-        let root_inode = Node::open_root_node(FUSE_ROOT_ID, "/", &root_path)
-            .await
-            .context("failed to open FUSE root node")?;
-        let mut cache = BTreeMap::new();
-        cache.insert(FUSE_ROOT_ID, root_inode);
-        let trash = BTreeSet::new(); // for deferred deletion nodes
-
-        Ok(Self(Arc::new(Mutex::new(M::new(
-            &root_path.into_os_string().into_string().unwrap(),
-            RwLock::new(cache),
-            RwLock::new(trash),
-            Arc::new(GlobalCache::new_with_capacity(capacity)),
-        )))))
+    pub async fn new(mount_point: &str, capacity: usize) -> anyhow::Result<Self> {
+        Ok(Self(M::new(mount_point, capacity).await))
     }
 
     /// Read content check
@@ -151,8 +138,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
     /// Initialize filesystem.
     /// Called before any other filesystem method.
     async fn init(&self, req: &Request<'_>) -> nix::Result<()> {
-        let this = self.0.lock().await;
-        let cache = this.cache().read().await;
+        let cache = self.0.cache().read().await;
         debug!("init(req={:?}), cache size={}", req, cache.len(),);
         Ok(())
     }
@@ -160,8 +146,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
     /// Clean up filesystem.
     /// Called on filesystem exit.
     async fn destroy(&self, req: &Request<'_>) {
-        let this = self.0.lock().await;
-        let cache = this.cache().read().await;
+        let cache = self.0.cache().read().await;
         debug!("destroy(req={:?}), cache size={}", req, cache.len(),);
     }
 
@@ -173,10 +158,8 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         name: &str,
         reply: ReplyEntry,
     ) -> nix::Result<usize> {
-        let mut this = self.0.lock().await;
-
         debug!("lookup(parent={}, name={:?}, req={:?})", parent, name, req,);
-        let lookup_res = this.lookup_helper(parent, name).await;
+        let lookup_res = self.0.lookup_helper(parent, name).await;
         match lookup_res {
             Ok((ttl, fuse_attr, generation)) => {
                 debug!(
@@ -201,12 +184,10 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
 
     /// Get file attributes.
     async fn getattr(&self, req: &Request<'_>, reply: ReplyAttr) -> nix::Result<usize> {
-        let this = self.0.lock().await;
-
         let ino = req.nodeid();
         debug!("getattr(ino={}, req={:?})", ino, req);
 
-        let cache = this.cache().read().await;
+        let cache = self.0.cache().read().await;
         let node = cache.get(&ino).unwrap_or_else(|| {
             panic!(
                 "getattr() found fs is inconsistent, \
@@ -234,18 +215,16 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
     /// Open a file.
     /// Open flags (with the exception of `O_CREAT`, `O_EXCL`, `O_NOCTTY` and `O_TRUNC`) are
     /// available in flags. Filesystem may store an arbitrary file handle (pointer, index,
-    /// etc) in fh, and use this in other all other file operations (read, write, flush,
+    /// etc) in fh, and use self in other all other file operations (read, write, flush,
     /// release, fsync). Filesystem may also implement stateless file I/O and not store
     /// anything in fh. There are also some flags (`direct_io`, `keep_cache`) which the
     /// filesystem may set, to change the way the file is opened. See `fuse_file_info`
     /// structure in `fuse_common.h` for more details.
     async fn open(&self, req: &Request<'_>, flags: u32, reply: ReplyOpen) -> nix::Result<usize> {
-        let this = self.0.lock().await;
-
         let ino = req.nodeid();
         debug!("open(ino={}, flags={}, req={:?})", ino, flags, req);
 
-        let cache = this.cache().read().await;
+        let cache = self.0.cache().read().await;
         let node = cache.get(&ino).unwrap_or_else(|| {
             panic!(
                 "open() found fs is inconsistent, the i-node of ino={} should be in cache",
@@ -288,19 +267,17 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
 
     /// Forget about an inode.
     /// The nlookup parameter indicates the number of lookups previously performed on
-    /// this inode. If the filesystem implements inode lifetimes, it is recommended that
+    /// self inode. If the filesystem implements inode lifetimes, it is recommended that
     /// inodes acquire a single reference on each lookup, and lose nlookup references on
     /// each forget. The filesystem may ignore forget calls, if the inodes don't need to
     /// have a limited lifetime. On unmount it is not guaranteed, that all referenced
     /// inodes will receive a forget message.
     async fn forget(&self, req: &Request<'_>, nlookup: u64) {
-        let this = self.0.lock().await;
-
         let ino = req.nodeid();
         debug!("forget(ino={}, nlookup={}, req={:?})", ino, nlookup, req,);
         let current_count: i64;
         {
-            let cache = this.cache().read().await;
+            let cache = self.0.cache().read().await;
             let node = cache.get(&ino).unwrap_or_else(|| {
                 panic!(
                     "forget() found fs is inconsistent, \
@@ -325,8 +302,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         }
         {
             if current_count == 0 {
-                // TODO: support thread-safe
-                let _ = this.delete_trash(&ino);
+                let _ = self.0.delete_trash(&ino);
             }
         }
     }
@@ -338,7 +314,6 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         param: SetAttrParam,
         reply: ReplyAttr,
     ) -> nix::Result<usize> {
-        let this = self.0.lock().await;
         let ino = req.nodeid();
         let valid = param.valid;
         let fh = param.fh;
@@ -368,9 +343,8 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         );
         if 0 == valid {
             warn!("setattr() enountered valid=0, the req={:?}", req);
-        }
-
-        let mut cache = this.cache().write().await;
+        };
+        let mut cache = self.0.cache().write().await;
         let inode = cache.get_mut(&ino).unwrap_or_else(|| {
             panic!(
                 "setattr() found fs is inconsistent, \
@@ -422,14 +396,12 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         rdev: u32,
         reply: ReplyEntry,
     ) -> nix::Result<usize> {
-        let mut this = self.0.lock().await;
-
         debug!(
             "mknod(parent={}, name={:?}, mode={}, rdev={}, req={:?})",
             parent, name, mode, rdev, req,
         );
-
-        let mknod_res = this
+        let mknod_res = self
+            .0
             .create_node_helper(parent, name.into(), mode, SFlag::S_IFREG, None)
             .await
             .context(format!(
@@ -461,14 +433,12 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         mode: u32,
         reply: ReplyEntry,
     ) -> nix::Result<usize> {
-        let mut this = self.0.lock().await;
-
         debug!(
             "mkdir(parent={}, name={:?}, mode={}, req={:?})",
             parent, name, mode, req,
         );
-
-        let mkdir_res = this
+        let mkdir_res = self
+            .0
             .create_node_helper(parent, name.into(), mode, SFlag::S_IFDIR, None)
             .await
             .context(format!(
@@ -499,11 +469,9 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         name: &str,
         reply: ReplyEmpty,
     ) -> nix::Result<usize> {
-        let mut this = self.0.lock().await;
-
         debug!("unlink(parent={}, name={:?}, req={:?}", parent, name, req,);
         let entry_type = {
-            let cache = this.cache().read().await;
+            let cache = self.0.cache().read().await;
             let parent_node = cache.get(&parent).unwrap_or_else(|| {
                 panic!(
                     "unlink() found fs is inconsistent, \
@@ -529,7 +497,8 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
             entry_type
         };
 
-        let unlink_res = this
+        let unlink_res = self
+            .0
             .remove_node_helper(parent, name.into(), entry_type)
             .await
             .context(format!(
@@ -559,13 +528,12 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         dir_name: &str,
         reply: ReplyEmpty,
     ) -> nix::Result<usize> {
-        let mut this = self.0.lock().await;
-
         debug!(
             "rmdir(parent={}, name={:?}, req={:?})",
             parent, dir_name, req,
         );
-        let rmdir_res = this
+        let rmdir_res = self
+            .0
             .remove_node_helper(parent, dir_name, SFlag::S_IFDIR)
             .await
             .context(format!(
@@ -607,14 +575,12 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         param: RenameParam,
         reply: ReplyEmpty,
     ) -> nix::Result<usize> {
-        let mut this = self.0.lock().await;
-
         let exchange = param.flags == 2; // RENAME_EXCHANGE
         let rename_res = if exchange {
-            this.rename_exchange_helper(param).await
+            self.0.rename_exchange_helper(param).await
         } else {
             // Rename replace
-            this.rename_may_replace_helper(param).await
+            self.0.rename_may_replace_helper(param).await
         };
 
         match rename_res {
@@ -632,8 +598,8 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
     /// Read data.
     /// Read should send exactly the number of bytes requested except on EOF or error,
     /// otherwise the rest of the data will be substituted with zeroes. An exception to
-    /// this is when the file has been opened in `direct_io` mode, in which case the
-    /// return value of the read system call will reflect the return value of this
+    /// self is when the file has been opened in `direct_io` mode, in which case the
+    /// return value of the read system call will reflect the return value of self
     /// operation. fh will contain the value set by the open method, or will be undefined
     /// if the open method didn't set any value.
     async fn read(
@@ -644,7 +610,6 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         size: u32,
         reply: ReplyData,
     ) -> nix::Result<usize> {
-        let this = self.0.lock().await;
         let ino = req.nodeid();
         debug!(
             "read(ino={}, fh={}, offset={}, size={}, req={:?})",
@@ -656,7 +621,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
             offset
         );
 
-        let mut cache = this.cache().write().await;
+        let mut cache = self.0.cache().write().await;
         let inode = cache.get_mut(&ino).unwrap_or_else(|| {
             panic!(
                 "read() found fs is inconsistent, \
@@ -674,7 +639,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
 
         // let node_type = node.get_type();
         // let file_data = if SFlag::S_IFREG == node_type {
-        if inode.need_load_file_data(offset.cast(), size.cast()) {
+        if inode.need_load_file_data(offset.cast(), size.cast()).await {
             let load_res = inode.load_data(offset.cast(), size.cast()).await;
             if let Err(e) = load_res {
                 debug!(
@@ -686,7 +651,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
                 return reply.error(e).await;
             }
         }
-        let file_data = inode.get_file_data(offset.cast(), size.cast());
+        let file_data = inode.get_file_data(offset.cast(), size.cast()).await;
         debug!("file_data is {:?}", file_data);
         match Self::read_helper(file_data, size.cast()) {
             Ok(content) => {
@@ -712,9 +677,9 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
 
     /// Write data.
     /// Write should return exactly the number of bytes requested except on error. An
-    /// exception to this is when the file has been opened in `direct_io` mode, in
+    /// exception to self is when the file has been opened in `direct_io` mode, in
     /// which case the return value of the write system call will reflect the return
-    /// value of this operation. fh will contain the value set by the open method, or
+    /// value of self operation. fh will contain the value set by the open method, or
     /// will be undefined if the open method did not set any value.
     async fn write(
         &self,
@@ -725,8 +690,6 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         flags: u32,
         reply: ReplyWrite,
     ) -> nix::Result<usize> {
-        let this = self.0.lock().await;
-
         let ino = req.nodeid();
         debug!(
             "write(ino={}, fh={}, offset={}, data-size={}, flags={})",
@@ -738,8 +701,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
             flags,
             // req.request,
         );
-
-        let mut cache = this.cache().write().await;
+        let mut cache = self.0.cache().write().await;
         let inode = cache.get_mut(&ino).unwrap_or_else(|| {
             panic!(
                 "write() found fs is inconsistent, \
@@ -796,20 +758,18 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         lock_owner: u64,
         reply: ReplyEmpty,
     ) -> nix::Result<usize> {
-        let this = self.0.lock().await;
         let ino = req.nodeid();
         debug!(
             "flush(ino={}, fh={}, lock_owner={}, req={:?})",
             ino, fh, lock_owner, req,
         );
-
         // This is called from every close on an open file, so call the
         // close on the underlying filesystem.	But since flush may be
-        // called multiple times for an open file, this must not really
+        // called multiple times for an open file, self must not really
         // close the file. This is important if used on a network
         // filesystem like NFS which flush the data/metadata on close()
-        let cache = this.cache().read().await;
-        let inode = cache.get(&ino).unwrap_or_else(|| {
+        let mut cache = self.0.cache().write().await;
+        let inode = cache.get_mut(&ino).unwrap_or_else(|| {
             panic!(
                 "release() found fs is inconsistent, \
                     the i-node of ino={} should be in cache",
@@ -837,16 +797,14 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         flush: bool,
         reply: ReplyEmpty,
     ) -> nix::Result<usize> {
-        let this = self.0.lock().await;
-
         let ino = req.nodeid();
         debug!(
             "release(ino={}, fh={}, flags={}, lock_owner={}, flush={}, req={:?})",
             ino, fh, flags, lock_owner, flush, req,
         );
         // TODO: handle lock_owner
-        let cache = this.cache().read().await;
-        let inode = cache.get(&ino).unwrap_or_else(|| {
+        let mut cache = self.0.cache().write().await;
+        let inode = cache.get_mut(&ino).unwrap_or_else(|| {
             panic!(
                 "release() found fs is inconsistent, \
                     the i-node of ino={} should be in cache",
@@ -874,12 +832,12 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         reply: ReplyEmpty,
     ) -> nix::Result<usize> {
         let ino = req.nodeid();
-        let this = self.0.lock().await;
+
         debug!(
             "fsync(ino={}, fh={}, datasync={}, req={:?})",
             ino, fh, datasync, req,
         );
-        match this.fsync_helper(ino, fh, datasync).await {
+        match self.0.fsync_helper(ino, fh, datasync).await {
             Ok(()) => reply.ok().await,
             Err(e) => {
                 debug!(
@@ -893,18 +851,15 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
 
     /// Open a directory.
     /// Filesystem may store an arbitrary file handle (pointer, index, etc) in fh, and
-    /// use this in other all other directory stream operations (readdir, releasedir,
+    /// use self in other all other directory stream operations (readdir, releasedir,
     /// fsyncdir). Filesystem may also implement stateless directory I/O and not store
     /// anything in fh, though that makes it impossible to implement standard conforming
     /// directory stream operations in case the contents of the directory can change
     /// between opendir and releasedir.
     async fn opendir(&self, req: &Request<'_>, flags: u32, reply: ReplyOpen) -> nix::Result<usize> {
-        let this = self.0.lock().await;
-
         let ino = req.nodeid();
         debug!("opendir(ino={}, flags={}, req={:?})", ino, flags, req,);
-
-        let cache = this.cache().read().await;
+        let cache = self.0.cache().read().await;
         let inode = cache.get(&ino).unwrap_or_else(|| {
             panic!(
                 "opendir() found fs is inconsistent, \
@@ -951,8 +906,6 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         offset: i64,
         mut reply: ReplyDirectory,
     ) -> nix::Result<usize> {
-        let this = self.0.lock().await;
-
         let ino = req.nodeid();
         debug!(
             "readdir(ino={}, fh={}, offset={}, req={:?})",
@@ -982,8 +935,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
             }
             num_child_entries
         };
-
-        let mut cache = this.cache().write().await;
+        let mut cache = self.0.cache().write().await;
         let inode = cache.get_mut(&ino).unwrap_or_else(|| {
             panic!(
                 "readdir() found fs is inconsistent, \
@@ -1026,15 +978,13 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         flags: u32,
         reply: ReplyEmpty,
     ) -> nix::Result<usize> {
-        let this = self.0.lock().await;
-
         let ino = req.nodeid();
         debug!(
             "releasedir(ino={}, fh={}, flags={}, req={:?})",
             ino, fh, flags, req,
         );
         // TODO: handle flags
-        let cache = this.cache().read().await;
+        let cache = self.0.cache().read().await;
         let inode = cache.get(&ino).unwrap_or_else(|| {
             panic!(
                 "releasedir() found fs is inconsistent, \
@@ -1057,14 +1007,13 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         datasync: bool,
         reply: ReplyEmpty,
     ) -> nix::Result<usize> {
-        let this = self.0.lock().await;
         let ino = req.nodeid();
         debug!(
             "fsyncdir(ino={}, fh={}, datasync={}, req={:?})",
             ino, fh, datasync, req,
         );
         // Self::fsync_helper(ino, fh, datasync, reply).await
-        match this.fsync_helper(ino, fh, datasync).await {
+        match self.0.fsync_helper(ino, fh, datasync).await {
             Ok(()) => reply.ok().await,
             Err(e) => {
                 debug!(
@@ -1079,16 +1028,13 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
     /// Get file system statistics.
     /// The `f_favail`, `f_fsid` and `f_flag` fields are ignored
     async fn statfs(&self, req: &Request<'_>, reply: ReplyStatFs) -> nix::Result<usize> {
-        let this = self.0.lock().await;
-
         let ino = if req.nodeid() == 0 {
             FUSE_ROOT_ID
         } else {
             req.nodeid()
         };
         debug!("statfs(ino={}, req={:?})", ino, req);
-
-        let cache = this.cache().read().await;
+        let cache = self.0.cache().read().await;
         let inode = cache.get(&ino).unwrap_or_else(|| {
             panic!(
                 "statfs() found fs is inconsistent, \
@@ -1124,11 +1070,9 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
 
     /// Read symbolic link.
     async fn readlink(&self, req: &Request<'_>, reply: ReplyData) -> nix::Result<usize> {
-        let this = self.0.lock().await;
-
         let ino = req.nodeid();
         debug!("readlink(ino={}, req={:?})", ino, req,);
-        let cache = this.cache().read().await;
+        let cache = self.0.cache().read().await;
         let symlink_node = cache.get(&ino).unwrap_or_else(|| {
             panic!(
                 "readlink() found fs is inconsistent, \
@@ -1157,13 +1101,11 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         target_path: &Path,
         reply: ReplyEntry,
     ) -> nix::Result<usize> {
-        let mut this = self.0.lock().await;
-
         debug!(
             "symlink(parent={}, name={:?}, target_path={:?}, req={:?})",
             parent, name, target_path, req
         );
-        let symlink_res = this.create_node_helper(
+        let symlink_res = self.0.create_node_helper(
             parent,
             name,
             0o777, // Symbolic links have no permissions
@@ -1195,9 +1137,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
 
     /// Interrupt another FUSE request
     async fn interrupt(&self, req: &Request<'_>, unique: u64) {
-        let this = self.0.lock().await;
-
-        let cache = this.cache().read().await;
+        let cache = self.0.cache().read().await;
         debug!("interrupt(req={:?}), cache size={}", req, cache.len(),);
         // TODO: handle FUSE_INTERRUPT
         warn!(
@@ -1269,7 +1209,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
 
     /// Check file access permissions.
     /// This will be called for the `access()` system call. If the `default_permissions`
-    /// mount option is given, this method is not called. This method is not called
+    /// mount option is given, self method is not called. This method is not called
     /// under Linux kernel versions 2.4.x
     async fn access(
         &self,
@@ -1284,10 +1224,10 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
     /// If the file does not exist, first create it with the specified mode, and then
     /// open it. Open flags (with the exception of `O_NOCTTY`) are available in flags.
     /// Filesystem may store an arbitrary file handle (pointer, index, etc) in fh,
-    /// and use this in other all other file operations (read, write, flush, release,
+    /// and use self in other all other file operations (read, write, flush, release,
     /// fsync). There are also some flags (`direct_io`, `keep_cache`) which the
     /// filesystem may set, to change the way the file is opened. See `fuse_file_info`
-    /// structure in `fuse_common.h` for more details. If this method is not
+    /// structure in `fuse_common.h` for more details. If self method is not
     /// implemented or under Linux kernel versions earlier than 2.6.15, the mknod()
     /// and open() methods will be called instead.
     async fn create(
@@ -1314,9 +1254,9 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
 
     /// Acquire, modify or release a POSIX file lock.
     /// For POSIX threads (NPTL) there's a 1-1 relation between pid and owner, but
-    /// otherwise this is not always the case.  For checking lock ownership,
+    /// otherwise self is not always the case.  For checking lock ownership,
     /// `fi->owner` must be used. The `l_pid` field in `struct flock` should only be
-    /// used to fill in this field in `getlk()`. Note: if the locking methods are not
+    /// used to fill in self field in `getlk()`. Note: if the locking methods are not
     /// implemented, the kernel will still allow file locking to work locally.
     /// Hence these are only interesting for network filesystems and similar.
     async fn setlk(

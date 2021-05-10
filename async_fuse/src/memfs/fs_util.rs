@@ -47,6 +47,49 @@ pub struct FileAttr {
     pub flags: u32,
 }
 
+impl FileAttr {
+    pub(crate) fn now() -> Self {
+        let now = SystemTime::now();
+        FileAttr {
+            ino: 0,
+            size: 4096,
+            blocks: 8,
+            atime: now,
+            mtime: now,
+            ctime: now,
+            crtime: now,
+            kind: SFlag::S_IFREG,
+            perm: 0775,
+            nlink: 0,
+            uid: 0,
+            gid: 0,
+            rdev: 0,
+            flags: 0,
+        }
+    }
+}
+
+impl Default for FileAttr {
+    fn default() -> Self {
+        FileAttr {
+            ino: 0,
+            size: 4096,
+            blocks: 8,
+            atime: SystemTime::UNIX_EPOCH,
+            mtime: SystemTime::UNIX_EPOCH,
+            ctime: SystemTime::UNIX_EPOCH,
+            crtime: SystemTime::UNIX_EPOCH,
+            kind: SFlag::S_IFREG,
+            perm: 0775,
+            nlink: 0,
+            uid: 0,
+            gid: 0,
+            rdev: 0,
+            flags: 0,
+        }
+    }
+}
+
 /// Parse `OFlag`
 pub fn parse_oflag(flags: u32) -> OFlag {
     debug_assert!(
