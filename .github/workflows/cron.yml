@@ -13,17 +13,26 @@ env:
   CONTROLLER_CONTAINER_NAME: datenlord-controller-plugin
   DATENLORD_CSI_IMAGE: datenlord/csiplugin:e2e_test
   DATENLORD_IMAGE: datenlord/datenlord:e2e_test
+  DATENLORD_LOGGING: scripts/datenlord-logging.yaml
+  DATENLORD_LOGGING_NAMESPACE: datenlord-logging
+  DATENLORD_MONITORING: scripts/datenlord-monitor.yaml
+  DATENLORD_MONITORING_NAMESPACE: datenlord-monitoring
   DATENLORD_NAMESPACE: csi-datenlord
   E2E_TEST_CONFIG: scripts/datenlord-e2e-test.yaml
+  ELASTICSEARCH_LABEL: elasticsearch
   FUSE_CONTAINER_NAME: datenlord-fuse
   FUSE_MOUNT_PATH: /var/opt/datenlord-data
+  GRAFANA_LABEL: grafana
+  GRAFANA_PORT: 3000
   K8S_CONFIG: k8s.e2e.config
   K8S_VERSION: v1.21.1
+  KIBANA_LABEL: kibana
   KIND_NODE_VERSION: kindest/node:v1.21.1@sha256:fae9a58f17f18f06aeac9772ca8b5ac680ebbed985e266f711d936e91d113bad
   KIND_VERSION: v0.11.0
+  # MINIKUBE_VERSION: v1.13.0
   NODE_APP_LABEL: csi-nodeplugin-datenlord
   NODE_CONTAINER_NAME: datenlord-node-plugin
-  MINIKUBE_VERSION: v1.13.0
+  PROMETHEUS_LABEL: prometheus-server
 
 jobs:
   #minikube-csi-e2e:
@@ -204,6 +213,19 @@ jobs:
           rm -rf $HOME/.ssh/
           ssh-keygen -N '' -f ~/.ssh/id_rsa
           /bin/bash /tmp/setup.sh
+      - name: Datenlord Monitoring Test
+        run: |
+          sudo chmod 755 scripts/datenlord-monitor-deploy.sh
+          cat scripts/alertmanager_test_alert.yaml >> scripts/alertmanager_alerts.yaml
+          sh scripts/datenlord-monitor-deploy.sh deploy
+          NODE_IP=`kubectl get nodes -A -o wide | awk 'FNR == 2 {print $6}'`
+          FOUND_PATH=`curl --silent $NODE_IP:30000 | grep Found`
+          test -n "$FOUND_PATH" || (echo "FAILED TO FIND PROMETHEUS SERVICE" && /bin/false)
+      - name: Datenlord Alerting Test
+        run: |
+          NODE_IP=`kubectl get nodes -A -o wide | awk 'FNR == 2 {print $6}'`
+          ALERTS=`curl --silent $NODE_IP:31000/api/v2/alerts | grep 'High Memory Usage'`
+          test -n "$ALERTS" || (echo "FAILED TO FIND ALERTS" && /bin/false)
       - name: Docker build fuse and csi
         run: |
           docker build . --build-arg RUST_IMAGE_VERSION=$RUST_VERSION --file ./Dockerfile --target fuse --tag $DATENLORD_IMAGE
