@@ -13,17 +13,25 @@ env:
   CONTROLLER_CONTAINER_NAME: datenlord-controller-plugin
   DATENLORD_CSI_IMAGE: datenlord/csiplugin:e2e_test
   DATENLORD_IMAGE: datenlord/datenlord:e2e_test
+  DATENLORD_LOGGING: scripts/datenlord-logging.yaml
+  DATENLORD_LOGGING_NAMESPACE: datenlord-logging
+  DATENLORD_MONITORING: scripts/datenlord-monitor.yaml
+  DATENLORD_MONITORING_NAMESPACE: datenlord-monitoring
   DATENLORD_NAMESPACE: csi-datenlord
   E2E_TEST_CONFIG: scripts/datenlord-e2e-test.yaml
+  ELASTICSEARCH_LABEL: elasticsearch
   FUSE_CONTAINER_NAME: datenlord-fuse
   FUSE_MOUNT_PATH: /var/opt/datenlord-data
+  GRAFANA_LABEL: grafana
   K8S_CONFIG: k8s.e2e.config
   K8S_VERSION: v1.21.1
+  KIBANA_LABEL: kibana
   KIND_NODE_VERSION: kindest/node:v1.21.1@sha256:fae9a58f17f18f06aeac9772ca8b5ac680ebbed985e266f711d936e91d113bad
   KIND_VERSION: v0.11.0
+  # MINIKUBE_VERSION: v1.13.0
   NODE_APP_LABEL: csi-nodeplugin-datenlord
   NODE_CONTAINER_NAME: datenlord-node-plugin
-  MINIKUBE_VERSION: v1.13.0
+  PROMETHEUS_LABEL: prometheus-server
 
 jobs:
   #minikube-csi-e2e:
@@ -244,6 +252,16 @@ jobs:
           sleep 60
           kubectl get pods -A -o wide
           # sudo netstat -lntp && ls -lsh
+      - name: Datenlord Monitoring Test
+        run: |
+          kubectl apply -f $DATENLORD_MONITORING
+          kubectl apply -f $DATENLORD_LOGGING
+          kubectl wait --for=condition=Ready pod -l app=$PROMETHEUS_LABEL -n $DATENLORD_MONITORING_NAMESPACE --timeout=60s
+          kubectl wait --for=condition=Ready pod -l app=$GRAFANA_LABEL -n $DATENLORD_MONITORING_NAMESPACE --timeout=60s
+          kubectl wait --for=condition=Ready pod -l app=$KIBANA_LABEL -n $DATENLORD_LOGGING_NAMESPACE --timeout=120s
+          kubectl wait --for=condition=Ready pod -l app=$ELASTICSEARCH_LABEL -n $DATENLORD_LOGGING_NAMESPACE --timeout=120s
+          FOUND_PATH=`curl --silent prometheus-service.datenlord-monitoring.svc:8080 | grep Found | awk '{print $1}'`
+          test -n #FOUND_PATH || (echo "FAILED TO FIND PROMETHEUS SERVICE" && /bin/false)
       - name: CSI E2E Test
         run: |
           wget --quiet https://dl.k8s.io/$K8S_VERSION/kubernetes-test-linux-amd64.tar.gz
