@@ -106,6 +106,18 @@ It may need to install snapshot CRD and controller on K8S, if used K8S CSI snaps
 * `kubectl apply -f https://raw.githubusercontent.com/kubernetes-csi/external-snapshotter/master/deploy/kubernetes/snapshot-controller/rbac-snapshot-controller.yaml`
 * `kubectl apply -f https://raw.githubusercontent.com/kubernetes-csi/external-snapshotter/master/deploy/kubernetes/snapshot-controller/setup-snapshot-controller.yaml`
 
+## Monitoring
+
+Datenlord monitoring guideline is in [datenlord monitoring](docs/datenlord_monitoring.md). We provide both `YAML` and `Helm` method to deploy the monitoring system.
+
+To use `YAML` method, just run
+```
+sh ./scripts/datenlord-monitor-deploy.sh
+```
+To use `Helm` method, run
+```
+sh ./scripts/datenlord-monitor-deploy.sh helm
+```
 
 ## How to Contribute
 

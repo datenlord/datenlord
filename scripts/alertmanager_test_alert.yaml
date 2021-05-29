@@ -1,0 +1,9 @@
+    - name: alertmanager_demo
+      rules:
+      - alert: InstanceDown
+        expr: sum(container_memory_usage_bytes) > 1
+        for: 10s
+        labels:
+          severity: email
+        annotations:
+          summary: "High Memory Usage"
