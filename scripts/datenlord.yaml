@@ -207,6 +207,7 @@ spec:
           args:
             - "--mountpoint=$(FUSE_MOUNT_DIR)"
             - "--volume_info=$(FUSE_VOLUME_INFO)"
+            - "--etcd=$(ETCD_ENDPOINT)"
           lifecycle:
             #postStart:
             #  exec:
