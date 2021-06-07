@@ -1,8 +1,8 @@
 #!/bin/sh
 
-#set -xv # enable debug
-#set -e # exit on error
-#set -u # unset var as error
+set -xv # enable debug
+set -e # exit on error
+set -u # unset var as error
 
 ARGS=$@
 while [ $# -gt 0 ]; do

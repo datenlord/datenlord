@@ -55,6 +55,8 @@ Currently DatenLord has been built as Docker images and can be deployed via K8S.
 
 To deploy DatenLord via K8S, just simply run:
 * `sed -e 's/e2e_test/latest/g' scripts/datenlord.yaml > datenlord-deploy.yaml`
+* `kubectl apply -f scripts/datenlord-etcd.yaml`
+* `kubectl wait --for=condition=Ready pod -l app=csi-etcd -n csi-datenlord --timeout=60s`
 * `kubectl apply -f datenlord-deploy.yaml`
 
 To use DatenLord, just define PVC using DatenLord Storage Class, and then deploy a Pod using this PVC:
