@@ -2,7 +2,7 @@
 
 use grpcio::{ChannelBuilder, Environment};
 use log::{debug, error, info, warn};
-use rand::Rng;
+use rand::{seq::IteratorRandom, Rng};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::convert::From;
@@ -14,9 +14,10 @@ use std::sync::Arc;
 use utilities::Cast;
 
 use super::csi::{
-    CreateVolumeRequest, ListSnapshotsResponse_Entry, ListVolumesResponse_Entry,
-    VolumeCapability_AccessMode_Mode, VolumeContentSource, VolumeContentSource_SnapshotSource,
-    VolumeContentSource_VolumeSource, VolumeContentSource_oneof_type,
+    CreateVolumeRequest, ListSnapshotsResponse_Entry, ListVolumesResponse_Entry, Topology,
+    TopologyRequirement, VolumeCapability_AccessMode_Mode, VolumeContentSource,
+    VolumeContentSource_SnapshotSource, VolumeContentSource_VolumeSource,
+    VolumeContentSource_oneof_type,
 };
 use super::datenlord_worker_grpc::WorkerClient;
 use super::util::{self, BindMountMode, RunAsRole};
@@ -191,60 +192,85 @@ impl MetaData {
             .clone())
     }
 
+    /// Select a random node from topology
+    fn get_random_node_from_topology(topology: &[Topology]) -> Option<String> {
+        let mut rng = rand::thread_rng();
+        topology.iter().choose(&mut rng).and_then(|t| {
+            t.get_segments()
+                .values()
+                .choose(&mut rng)
+                .map(std::borrow::ToOwned::to_owned)
+        })
+    }
+
+    /// Validate if a node exists in topology
+    fn validate_node_in_topology(node_id: &str, topology: &[Topology]) -> bool {
+        topology
+            .iter()
+            .any(|t| t.get_segments().iter().any(|(_, v)| v == node_id))
+    }
+
+    /// Validate if a node exists in accessibility requirements
+    fn validate_node_in_accessibility_requirements(
+        node_id: &str,
+        access_req: &TopologyRequirement,
+    ) -> bool {
+        let match_requisite = Self::validate_node_in_topology(node_id, access_req.get_requisite());
+        let match_preferred = Self::validate_node_in_topology(node_id, access_req.get_preferred());
+        match_requisite || match_preferred
+    }
+
     /// Select a node to create volume or snapshot
     pub async fn select_node(&self, req: &CreateVolumeRequest) -> DatenLordResult<DatenLordNode> {
-        let node_id = if req.has_volume_content_source() {
+        if req.has_volume_content_source() {
             let volume_src = req.get_volume_content_source();
-            if volume_src.has_snapshot() {
+            let node_id = if volume_src.has_snapshot() {
                 let snapshot_id = &volume_src.get_snapshot().snapshot_id;
                 self.get_snapshot_by_id(snapshot_id)
                     .await
-                    .map(|snapshot| Some(snapshot.node_id))?
+                    .map(|snapshot| snapshot.node_id)?
             } else if volume_src.has_volume() {
                 let volume_id = &volume_src.get_volume().volume_id;
                 self.get_volume_by_id(volume_id)
                     .await
-                    .map(|volume| Some(volume.node_id))?
+                    .map(|volume| volume.node_id)?
             } else {
-                None
+                panic!("failed to find snapshot and volume from content source");
+            };
+            debug!("select node ID={} from volume content source", node_id);
+            if req.has_accessibility_requirements()
+                && !Self::validate_node_in_accessibility_requirements(
+                    &node_id,
+                    req.get_accessibility_requirements(),
+                )
+            {
+                panic!(
+                    "select node ID={} is not in requisite topology and preferred topology",
+                    node_id,
+                );
+            } else {
+                self.get_node_by_id(&node_id)
+                    .await
+                    .or_else(|_| panic!("failed to get node ID={} from etcd", node_id))
             }
+        } else if req.has_accessibility_requirements() {
+            let node_id = Self::get_random_node_from_topology(
+                req.get_accessibility_requirements().get_requisite(),
+            )
+            .or_else(|| {
+                Self::get_random_node_from_topology(
+                    req.get_accessibility_requirements().get_preferred(),
+                )
+            })
+            .unwrap_or_else(|| panic!("failed to get node id from accessibility requirements"));
+
+            debug!("select node ID={} from accessibility requirements", node_id);
+            self.get_node_by_id(&node_id)
+                .await
+                .or_else(|_| panic!("failed to get node ID={} from etcd", node_id))
         } else {
-            None
-        };
-        match node_id {
-            None => {
-                debug!("request doesn't have node id, select random node");
-                self.select_random_node().await
-            }
-            Some(node_id) => {
-                debug!("select node ID={} from request", node_id);
-                if req.has_accessibility_requirements() {
-                    let match_requisite = req
-                        .get_accessibility_requirements()
-                        .get_requisite()
-                        .iter()
-                        .any(|t| t.get_segments().iter().any(|(_k, v)| v == &node_id));
-                    let match_preferred = req
-                        .get_accessibility_requirements()
-                        .get_preferred()
-                        .iter()
-                        .any(|t| t.get_segments().iter().any(|(_k, v)| v == &node_id));
-                    if match_requisite || match_preferred {
-                        self.get_node_by_id(&node_id)
-                            .await
-                            .or_else(|_| panic!("failed to get node ID={}", node_id))
-                    } else {
-                        panic!(
-                            "select node ID={} is not in request required topology and preferred topology",
-                            node_id,
-                        );
-                    }
-                } else {
-                    self.get_node_by_id(&node_id)
-                        .await
-                        .or_else(|_| panic!("failed to get node ID={}", node_id))
-                }
-            }
+            debug!("request doesn't have volume content source and accessibility requirements, select random node");
+            self.select_random_node().await
         }
     }
 
