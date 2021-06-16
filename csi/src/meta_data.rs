@@ -193,14 +193,12 @@ impl MetaData {
     }
 
     /// Select a random node from topology
-    fn get_random_node_from_topology(topology: &[Topology]) -> Option<String> {
+    fn get_random_node_from_topology(topology: &[Topology]) -> Option<&String> {
         let mut rng = rand::thread_rng();
-        topology.iter().choose(&mut rng).and_then(|t| {
-            t.get_segments()
-                .values()
-                .choose(&mut rng)
-                .map(std::borrow::ToOwned::to_owned)
-        })
+        topology
+            .iter()
+            .choose(&mut rng)
+            .and_then(|t| t.get_segments().get(util::TOPOLOGY_KEY_NODE))
     }
 
     /// Validate if a node exists in topology
@@ -254,18 +252,47 @@ impl MetaData {
                     .or_else(|_| panic!("failed to get node ID={} from etcd", node_id))
             }
         } else if req.has_accessibility_requirements() {
-            let node_id = Self::get_random_node_from_topology(
-                req.get_accessibility_requirements().get_requisite(),
-            )
-            .or_else(|| {
-                Self::get_random_node_from_topology(
-                    req.get_accessibility_requirements().get_preferred(),
-                )
-            })
-            .unwrap_or_else(|| panic!("failed to get node id from accessibility requirements"));
+            let preferred_topology = req.get_accessibility_requirements().get_preferred();
+            let requisite_topology = req.get_accessibility_requirements().get_requisite();
 
-            debug!("select node ID={} from accessibility requirements", node_id);
-            self.get_node_by_id(&node_id)
+            let node_id = if requisite_topology.is_empty() && preferred_topology.is_empty() {
+                panic!("request has accessibility requirements but both requisite and preferred topology are empty");
+            } else if preferred_topology.is_empty() {
+                Self::get_random_node_from_topology(requisite_topology).unwrap_or_else(|| {
+                    panic!("failed to get node id from accessibility requirements")
+                })
+            } else {
+                // Get first preferred topology
+                let node_id = preferred_topology
+                    .get(0)
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "failed to get the first topology from preferred topology, list={:?}",
+                            preferred_topology,
+                        )
+                    })
+                    .get_segments()
+                    .get(util::TOPOLOGY_KEY_NODE)
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "failed to get the key {} from topology segments",
+                            util::TOPOLOGY_KEY_NODE,
+                        )
+                    });
+                if !requisite_topology.is_empty()
+                    && !Self::validate_node_in_topology(node_id, requisite_topology)
+                {
+                    panic!("node ID={} doesn't exist in requisite topology", node_id);
+                } else {
+                    node_id
+                }
+            };
+
+            debug!(
+                "select node ID={} from accessibility requirements",
+                &node_id
+            );
+            self.get_node_by_id(node_id)
                 .await
                 .or_else(|_| panic!("failed to get node ID={} from etcd", node_id))
         } else {
