@@ -1,0 +1,104 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: csi-datenlord
+  labels:
+    name: csi-datenlord
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: csi-etcd-svc
+  namespace: csi-datenlord
+spec:
+  selector:
+    app: csi-etcd
+  ports:
+    - protocol: TCP
+      port: 2379
+      targetPort: 2379
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: csi-etcd
+  namespace: csi-datenlord
+spec:
+  clusterIP: None
+  ports:
+    - port: 2379
+      name: client
+    - port: 2380
+      name: peer
+  selector:
+    app: csi-etcd
+
+---
+kind: StatefulSet
+apiVersion: apps/v1
+metadata:
+  name: csi-etcd
+  namespace: csi-datenlord
+spec:
+  selector:
+    matchLabels:
+      app: csi-etcd
+  serviceName: "csi-etcd"
+  replicas: 3
+  template:
+    metadata:
+      labels:
+        app: csi-etcd
+    spec:
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchExpressions:
+              - key: app
+                operator: In
+                values:
+                - csi-etcd
+            topologyKey: topology.kubernetes.io/hostname
+      containers:
+        - name: etcd
+          image: gcr.io/etcd-development/etcd:v3.4.13
+          imagePullPolicy: "IfNotPresent"
+          ports:
+          - containerPort: 2379
+            name: client
+          - containerPort: 2380
+            name: peer
+          command:
+            - "/usr/local/bin/etcd"
+          args:
+            - "--name=$(NODE_ID)"
+            - "--initial-advertise-peer-urls=http://$(NODE_ID).csi-etcd:2380"
+            - "--listen-peer-urls=http://0.0.0.0:2380"
+            - "--advertise-client-urls=http://$(NODE_ID).csi-etcd:2379"
+            - "--listen-client-urls=http://0.0.0.0:2379"
+            - "--initial-cluster=$(PEER)"
+            - "--listen-metrics-urls=http://0.0.0.0:2381"
+            - "--data-dir=/var/lib/etcd/default.etcd"
+          env:
+            - name: NODE_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: PEER
+              value: "csi-etcd-0=http://csi-etcd-0.csi-etcd:2380,csi-etcd-1=http://csi-etcd-1.csi-etcd:2380,csi-etcd-2=http://csi-etcd-2.csi-etcd:2380"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 2381
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          volumeMounts:
+            - name: etcd-data-dir
+              mountPath: /var/lib/etcd
+      volumes:
+        - name: etcd-data-dir
+          hostPath:
+            path: /var/lib/etcd
+            type: DirectoryOrCreate
