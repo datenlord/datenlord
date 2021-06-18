@@ -8,6 +8,8 @@ use lockfree_cuckoohash::{pin, LockFreeCuckooHash as HashMap};
 use log::debug;
 use nix::sys::uio::IoVec;
 // TODO: use smol RwLock
+use super::dist::{etcd, request::Index};
+use common::etcd_delegate::EtcdDelegate;
 use parking_lot::{Mutex, RwLock};
 use priority_queue::PriorityQueue;
 use std::ffi::OsStr;
@@ -47,6 +49,10 @@ pub struct GlobalCache {
     block_size: usize,
     /// Count of block size in a bucket
     bucket_size_in_block: usize,
+    /// Etcd client, only distributed fs need this
+    etcd_client: Option<Arc<EtcdDelegate>>,
+    /// Node Id, only distributed fs need this
+    node_id: Option<u64>,
 }
 
 impl Debug for GlobalCache {
@@ -70,6 +76,8 @@ impl GlobalCache {
             capacity: GLOBAL_CACHE_DEFAULT_CAPACITY,
             block_size: MEMORY_BLOCK_SIZE_IN_BYTE,
             bucket_size_in_block: MEMORY_BUCKET_VEC_SIZE,
+            etcd_client: None,
+            node_id: None,
         }
     }
 
@@ -83,11 +91,13 @@ impl GlobalCache {
             capacity,
             block_size: MEMORY_BLOCK_SIZE_IN_BYTE,
             bucket_size_in_block: MEMORY_BUCKET_VEC_SIZE,
+            etcd_client: None,
+            node_id: None,
         }
     }
 
     #[allow(dead_code)]
-    /// Constructor
+    /// Constructor with capacity and block_size
     pub(crate) fn new_with_bz_and_capacity(block_size: usize, capacity: usize) -> Self {
         Self {
             inner: HashMap::new(),
@@ -96,6 +106,29 @@ impl GlobalCache {
             capacity,
             block_size,
             bucket_size_in_block: MEMORY_BUCKET_VEC_SIZE,
+            etcd_client: None,
+            node_id: None,
+        }
+    }
+
+    #[allow(dead_code)]
+    /// Constructor with capacity and block_size
+    /// TODO: refactor with builder
+    pub(crate) fn new_dist_with_bz_and_capacity(
+        block_size: usize,
+        capacity: usize,
+        etcd_client: Arc<EtcdDelegate>,
+        node_id: u64,
+    ) -> Self {
+        Self {
+            inner: HashMap::new(),
+            queue: Mutex::new(PriorityQueue::new()),
+            size: AtomicUsize::new(0),
+            capacity,
+            block_size,
+            bucket_size_in_block: MEMORY_BUCKET_VEC_SIZE,
+            etcd_client: Some(etcd_client),
+            node_id: Some(node_id),
         }
     }
 
@@ -235,6 +268,182 @@ impl GlobalCache {
         result
     }
 
+    pub(crate) fn invlidate(&self, file_name: &[u8], index: Vec<Index>) {
+        let guard = pin();
+        let file_cache = if let Some(cache) = self.inner.get(file_name, &guard) {
+            cache
+        } else {
+            debug!(
+                "cache for {:?} is empty, don't need to invalidate",
+                OsStr::from_bytes(file_name)
+            );
+            return;
+        };
+
+        let bucket_size = self.bucket_size_in_block;
+
+        let dealloc_fn = |global_index: usize| {
+            let hash_index = global_index.overflow_div(bucket_size);
+            let bucket = file_cache.get(&hash_index, &guard);
+            if let None = bucket {
+                return;
+            }
+
+            let mut bucket = bucket.unwrap().write();
+
+            let block = bucket
+                .get_mut(global_index.overflow_rem(bucket_size))
+                .unwrap_or_else(|| {
+                    panic!(
+                        "error when getting range of {} in the cache bucket",
+                        global_index.overflow_rem(bucket_size)
+                    )
+                });
+
+            if block.is_some() {
+                block.take();
+            }
+        };
+
+        for i in index {
+            match i {
+                Index::Point(p) => dealloc_fn(p),
+                Index::Range(s, e) => {
+                    for i in s..=e {
+                        dealloc_fn(i);
+                    }
+                }
+            }
+        }
+    }
+
+    pub(crate) fn check_available(
+        &self,
+        file_name: &[u8],
+        index: Vec<Index>,
+    ) -> (Vec<Index>, bool) {
+        let guard = pin();
+        let file_cache = if let Some(cache) = self.inner.get(file_name, &guard) {
+            cache
+        } else {
+            debug!(
+                "cache for {:?} is empty, don't need to invalidate",
+                OsStr::from_bytes(file_name)
+            );
+            return (vec![], false);
+        };
+
+        let bucket_size = self.bucket_size_in_block;
+
+        let check_fn = |global_index: usize| -> Option<usize> {
+            let hash_index = global_index.overflow_div(bucket_size);
+            let bucket = file_cache.get(&hash_index, &guard);
+            if let None = bucket {
+                return None;
+            }
+
+            if let Some(_) = bucket
+                .unwrap()
+                .write()
+                .get(global_index.overflow_rem(bucket_size))
+                .unwrap_or_else(|| {
+                    panic!(
+                        "error when getting range of {} in the cache bucket",
+                        global_index.overflow_rem(bucket_size)
+                    )
+                })
+            {
+                return Some(global_index);
+            }
+
+            return None;
+        };
+
+        let mut result = Vec::new();
+
+        let mut all_hit = true;
+
+        for i in index {
+            match i {
+                Index::Point(p) => {
+                    if let Some(index) = check_fn(p) {
+                        result.push(Index::Point(index))
+                    } else {
+                        all_hit = false;
+                    }
+                }
+                Index::Range(s, e) => {
+                    for i in s..=e {
+                        if let Some(index) = check_fn(i) {
+                            result.push(Index::Point(index));
+                        } else {
+                            all_hit = false;
+                        }
+                    }
+                }
+            }
+        }
+
+        (result, all_hit)
+    }
+
+    pub(crate) fn read(&self, file_name: &[u8], index: Vec<Index>) -> Vec<IoMemBlock> {
+        let guard = pin();
+        let file_cache = if let Some(cache) = self.inner.get(file_name, &guard) {
+            cache
+        } else {
+            debug!(
+                "cache for {:?} is empty, don't need to invalidate",
+                OsStr::from_bytes(file_name)
+            );
+            return vec![];
+        };
+
+        let bucket_size = self.bucket_size_in_block;
+        let block_size = self.block_size;
+
+        let read_fn = |global_index: usize| -> IoMemBlock {
+            let hash_index = global_index.overflow_div(bucket_size);
+            let bucket = file_cache.get(&hash_index, &guard);
+            if let None = bucket {
+                return IoMemBlock::new(None, 0, 0);
+            }
+
+            if let Some(block) = bucket
+                .unwrap()
+                .write()
+                .get(global_index.overflow_rem(bucket_size))
+                .unwrap_or_else(|| {
+                    panic!(
+                        "error when getting range of {} in the cache bucket",
+                        global_index.overflow_rem(bucket_size)
+                    )
+                })
+            {
+                return IoMemBlock::new(Some(block.clone()), 0, block_size);
+            }
+
+            return IoMemBlock::new(None, 0, 0);
+        };
+
+        let mut result = Vec::new();
+
+        for i in index {
+            match i {
+                Index::Point(p) => {
+                    result.push(read_fn(p));
+                }
+                Index::Range(s, e) => {
+                    for i in s..=e {
+                        result.push(read_fn(i));
+                    }
+                }
+            }
+        }
+
+        result
+    }
+
     /// Update the Cache.
     ///
     /// 1. `offset` be `MemoryBlock` aligned.
@@ -258,12 +467,27 @@ impl GlobalCache {
             );
             // Here maybe a racing case where two thread are updating the cache
             self.inner.insert(file_name.to_vec(), HashMap::new());
-            self.inner.get(file_name, &guard).unwrap_or_else(|| {
+            let file_cache = self.inner.get(file_name, &guard).unwrap_or_else(|| {
                 panic!(
                     "Just insert a file cache ({:?}) into global cache mapping, but cannot get it.",
                     OsStr::from_bytes(file_name)
                 )
-            })
+            });
+
+            if let Some(ref etcd) = self.etcd_client {
+                if let Some(id) = self.node_id {
+                    smol::block_on(async {
+                        if let Err(e) = etcd::add_node_to_file_list(etcd, id, file_name).await {
+                            panic!(
+                                "Cannot add node {} to file {:?} node list, error: {}",
+                                id, file_name, e
+                            );
+                        }
+                    });
+                }
+            }
+
+            file_cache
         };
 
         if len == 0 {
@@ -422,6 +646,18 @@ impl GlobalCache {
     }
 
     pub(crate) fn remove_file_cache(&self, file_name: &[u8]) -> bool {
+        if let Some(ref etcd) = self.etcd_client {
+            if let Some(id) = self.node_id {
+                smol::block_on(async {
+                    if let Err(e) = etcd::remove_node_from_file_list(etcd, id, file_name).await {
+                        panic!(
+                            "Cannot remove node {} to file {:?} node list, error: {}",
+                            id, file_name, e
+                        );
+                    }
+                });
+            }
+        }
         self.inner.remove(file_name)
     }
 

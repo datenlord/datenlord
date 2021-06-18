@@ -142,7 +142,7 @@ impl MetaData {
         let key = format!("{}/{}", prefix, self.get_node_id());
         debug!("register node ID={} to etcd", key);
         self.etcd_delegate
-            .write_or_update_kv(&key, &self.node)
+            .write_or_update_kv(key, &self.node)
             .await
             .with_context(|| {
                 format!(
@@ -337,7 +337,7 @@ impl MetaData {
     pub async fn get_node_by_id(&self, node_id: &str) -> DatenLordResult<DatenLordNode> {
         let get_res = self
             .etcd_delegate
-            .get_at_most_one_value(&format!("{}/{}", NODE_PREFIX, node_id))
+            .get_at_most_one_value(format!("{}/{}", NODE_PREFIX, node_id))
             .await;
         match get_res {
             Ok(val) => val.ok_or(NodeNotFound {
@@ -355,7 +355,7 @@ impl MetaData {
     pub async fn get_snapshot_by_id(&self, snap_id: &str) -> DatenLordResult<DatenLordSnapshot> {
         let get_res = self
             .etcd_delegate
-            .get_at_most_one_value(&format!("{}/{}", SNAPSHOT_ID_PREFIX, snap_id))
+            .get_at_most_one_value(format!("{}/{}", SNAPSHOT_ID_PREFIX, snap_id))
             .await;
         match get_res {
             Ok(val) => val.ok_or(SnapshotNotFound {
@@ -377,7 +377,7 @@ impl MetaData {
         let snap_name_key = format!("{}/{}", SNAPSHOT_NAME_PREFIX, snap_name);
         let snap_id: String = match self
             .etcd_delegate
-            .get_at_most_one_value(&snap_name_key)
+            .get_at_most_one_value(snap_name_key)
             .await
         {
             Ok(val) => {
@@ -413,7 +413,7 @@ impl MetaData {
         let src_vol_id_key = format!("{}/{}", SNAPSHOT_SOURCE_ID_PREFIX, src_volume_id);
         let snap_id: String = match self
             .etcd_delegate
-            .get_at_most_one_value(&src_vol_id_key)
+            .get_at_most_one_value(src_vol_id_key)
             .await
         {
             Ok(val) => {
@@ -602,7 +602,7 @@ impl MetaData {
     pub async fn get_volume_by_id(&self, vol_id: &str) -> DatenLordResult<DatenLordVolume> {
         match self
             .etcd_delegate
-            .get_at_most_one_value(&format!("{}/{}", VOLUME_ID_PREFIX, vol_id))
+            .get_at_most_one_value(format!("{}/{}", VOLUME_ID_PREFIX, vol_id))
             .await
         {
             Ok(val) => val.ok_or(VolumeNotFound {
@@ -624,7 +624,7 @@ impl MetaData {
         let vol_name_key = format!("{}/{}", VOLUME_NAME_PREFIX, vol_name);
         let vol_id: String = match self
             .etcd_delegate
-            .get_at_most_one_value(&vol_name_key)
+            .get_at_most_one_value(vol_name_key)
             .await
         {
             Ok(val) => {
@@ -1099,7 +1099,7 @@ impl MetaData {
         );
         let get_opt: Option<String> = self
             .etcd_delegate
-            .get_at_most_one_value(&volume_mount_path_key)
+            .get_at_most_one_value(volume_mount_path_key)
             .await?;
         match get_opt {
             Some(pre_mount_paths) => Ok((&pre_mount_paths)

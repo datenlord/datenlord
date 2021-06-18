@@ -1,5 +1,6 @@
 use super::cache::GlobalCache;
 use super::dir::DirEntry;
+use super::dist::server::CacheServer;
 use super::fs_util;
 use super::metadata::MetaData;
 use super::node::Node;
@@ -10,6 +11,7 @@ use crate::fuse::protocol::{FuseAttr, INum, FUSE_ROOT_ID};
 use crate::util;
 use anyhow::Context;
 use async_trait::async_trait;
+use common::etcd_delegate::EtcdDelegate;
 use itertools::Itertools;
 use log::debug;
 use nix::errno::Errno;
@@ -34,6 +36,8 @@ const S3_INFO_DELIMITER: char = ';';
 pub struct S3MetaData {
     /// S3 backend
     s3_backend: Arc<S3BackEndImpl>,
+    /// Etcd client
+    pub(crate) etcd_client: Arc<EtcdDelegate>,
     /// The cache to hold opened directories and files
     pub(crate) cache: RwLock<BTreeMap<INum, S3Node>>,
     /// The trash to hold deferred deleted directories and files
@@ -44,6 +48,12 @@ pub struct S3MetaData {
     pub(crate) cur_inum: AtomicU32,
     /// Current available fd, it'll increase after using
     pub(crate) cur_fd: AtomicU32,
+    /// Current service id
+    pub(crate) node_id: u64,
+    /// Volume Info
+    pub(crate) volume_info: String,
+    /// Full path and node mapping
+    pub(crate) path2inum: RwLock<BTreeMap<String, INum>>,
 }
 
 fn parse_s3_info(info: &str) -> (&str, &str, &str, &str) {
@@ -56,7 +66,15 @@ fn parse_s3_info(info: &str) -> (&str, &str, &str, &str) {
 impl MetaData for S3MetaData {
     type N = S3Node;
 
-    async fn new(s3_info: &str, capacity: usize) -> Arc<Self> {
+    async fn new(
+        s3_info: &str,
+        capacity: usize,
+        ip: &str,
+        port: &str,
+        etcd_client: EtcdDelegate,
+        node_id: u64,
+        volume_info: &str,
+    ) -> (Arc<Self>, Option<CacheServer>) {
         let (bucket_name, endpoint, access_key, secret_key) = parse_s3_info(s3_info);
         let s3_backend = Arc::new(
             match S3BackEndImpl::new(bucket_name, endpoint, access_key, secret_key).await {
@@ -65,17 +83,27 @@ impl MetaData for S3MetaData {
             },
         );
 
+        let etcd_arc = Arc::new(etcd_client);
+        let data_cache = Arc::new(GlobalCache::new_dist_with_bz_and_capacity(
+            10 * 1024 * 1024,
+            capacity,
+            etcd_arc.clone(),
+            node_id,
+        ));
         let meta = Arc::new(Self {
             s3_backend: Arc::clone(&s3_backend),
             cache: RwLock::new(BTreeMap::new()),
+            etcd_client: etcd_arc,
             trash: RwLock::new(BTreeSet::new()),
-            data_cache: Arc::new(GlobalCache::new_with_bz_and_capacity(
-                10 * 1024 * 1024,
-                capacity,
-            )),
+            data_cache: data_cache.clone(),
             cur_inum: AtomicU32::new(2),
             cur_fd: AtomicU32::new(4),
+            node_id,
+            volume_info: volume_info.to_owned(),
+            path2inum: RwLock::new(BTreeMap::new()),
         });
+
+        let server = CacheServer::new(ip.to_owned(), port.to_owned(), data_cache, meta.clone());
 
         let root_inode = S3Node::open_root_node(FUSE_ROOT_ID, "/", s3_backend, Arc::clone(&meta))
             .await
@@ -84,9 +112,11 @@ impl MetaData for S3MetaData {
                 panic!("{}", e);
             });
 
+        let full_path = root_inode.full_path().to_owned();
         meta.cache.write().await.insert(FUSE_ROOT_ID, root_inode);
+        meta.path2inum.write().await.insert(full_path, FUSE_ROOT_ID);
 
-        meta
+        (meta, Some(server))
     }
 
     /// Get metadata cache
@@ -205,7 +235,13 @@ impl MetaData for S3MetaData {
         };
         new_ino = new_node.get_ino();
         let new_node_attr = new_node.get_attr();
+        let new_node_full_path = new_node.full_path().to_owned();
         cache.insert(new_ino, new_node);
+
+        self.path2inum
+            .write()
+            .await
+            .insert(new_node_full_path, new_ino);
 
         let ttl = Duration::new(MY_TTL_SEC, 0);
         let fuse_attr = fs_util::convert_to_fuse_attr(new_node_attr);
@@ -379,7 +415,7 @@ impl MetaData for S3MetaData {
                 );
             });
             let parent_name = parent_node.get_name().to_owned();
-            let child_node = match child_type {
+            let mut child_node = match child_type {
                 SFlag::S_IFDIR => parent_node
                     .open_child_dir(child_name)
                     .await
@@ -414,9 +450,15 @@ impl MetaData for S3MetaData {
                     child_type,
                 ),
             };
-            let child_ino = child_node.get_ino();
+
+            child_node.set_ino(ino);
+            let child_ino = ino;
             let attr = child_node.lookup_attr();
+            let full_path = child_node.full_path().to_owned();
             cache.insert(child_ino, child_node);
+
+            self.path2inum.write().await.insert(full_path, child_ino);
+
             let fuse_attr = fs_util::convert_to_fuse_attr(attr);
             debug!(
                 "lookup_helper() successfully found the i-node of ino={} and name={:?} \
@@ -480,7 +522,9 @@ impl MetaData for S3MetaData {
                     old_parent,
                 )
             });
-            let insert_res = old_parent_node.insert_entry_for_rename(exchange_entry);
+            let insert_res = old_parent_node
+                .insert_entry_for_rename(exchange_entry)
+                .await;
             debug_assert!(
                 insert_res.is_none(),
                 "impossible case when rename, the from i-node of name={:?} should have been \
@@ -905,7 +949,7 @@ impl S3MetaData {
                     old_parent,
                 )
             });
-            match old_parent_node.remove_entry_for_rename(old_name) {
+            match old_parent_node.remove_entry_for_rename(old_name).await {
                 None => panic!(
                     "impossible case when rename, the from entry of name={:?} \
                         should be under from directory ino={} and name={:?}",
@@ -931,7 +975,7 @@ impl S3MetaData {
                     new_parent
                 )
             });
-            new_parent_node.insert_entry_for_rename(entry_to_move)
+            new_parent_node.insert_entry_for_rename(entry_to_move).await
         }
     }
 }
