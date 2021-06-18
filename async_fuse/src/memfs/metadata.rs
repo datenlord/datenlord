@@ -1,5 +1,6 @@
 use super::cache::GlobalCache;
 use super::dir::DirEntry;
+use super::dist::server::CacheServer;
 use super::fs_util;
 use super::node::{self, DefaultNode, Node};
 use super::RenameParam;
@@ -7,6 +8,7 @@ use crate::fuse::protocol::{FuseAttr, INum, FUSE_ROOT_ID};
 use crate::util;
 use anyhow::Context;
 use async_trait::async_trait;
+use common::etcd_delegate::EtcdDelegate;
 use log::debug;
 use nix::errno::Errno;
 use nix::fcntl::OFlag;
@@ -29,7 +31,15 @@ const MY_GENERATION: u64 = 1; // TODO: find a proper way to set generation
 pub trait MetaData {
     type N: Node + Send + Sync + 'static;
 
-    async fn new(root_path: &str, capacity: usize) -> Arc<Self>;
+    async fn new(
+        root_path: &str,
+        capacity: usize,
+        ip: &str,
+        port: &str,
+        etcd_client: EtcdDelegate,
+        node_id: u64,
+        volume_info: &str,
+    ) -> (Arc<Self>, Option<CacheServer>);
 
     /// Helper function to create node
     async fn create_node_helper(
@@ -90,7 +100,15 @@ pub struct DefaultMetaData {
 impl MetaData for DefaultMetaData {
     type N = DefaultNode;
 
-    async fn new(root_path: &str, capacity: usize) -> Arc<Self> {
+    async fn new(
+        root_path: &str,
+        capacity: usize,
+        _: &str,
+        _: &str,
+        _: EtcdDelegate,
+        _: u64,
+        _: &str,
+    ) -> (Arc<Self>, Option<CacheServer>) {
         let root_path = Path::new(root_path)
             .canonicalize()
             .with_context(|| format!("failed to canonicalize the mount path={:?}", root_path))
@@ -114,7 +132,7 @@ impl MetaData for DefaultMetaData {
                 });
         meta.cache.write().await.insert(FUSE_ROOT_ID, root_inode);
 
-        meta
+        (meta, None)
     }
 
     /// Get metadata cache
@@ -503,7 +521,9 @@ impl MetaData for DefaultMetaData {
                     old_parent,
                 )
             });
-            let insert_res = old_parent_node.insert_entry_for_rename(exchange_entry);
+            let insert_res = old_parent_node
+                .insert_entry_for_rename(exchange_entry)
+                .await;
             debug_assert!(
                 insert_res.is_none(),
                 "impossible case when rename, the from i-node of name={:?} should have been \
@@ -984,7 +1004,7 @@ impl DefaultMetaData {
                     old_parent,
                 )
             });
-            match old_parent_node.remove_entry_for_rename(old_name) {
+            match old_parent_node.remove_entry_for_rename(old_name).await {
                 None => panic!(
                     "impossible case when rename, the from entry of name={:?} \
                         should be under from directory ino={} and name={:?}",
@@ -1009,7 +1029,7 @@ impl DefaultMetaData {
                     new_parent
                 )
             });
-            new_parent_node.insert_entry_for_rename(entry_to_move)
+            new_parent_node.insert_entry_for_rename(entry_to_move).await
         }
     }
 }

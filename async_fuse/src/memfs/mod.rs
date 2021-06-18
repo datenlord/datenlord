@@ -1,6 +1,7 @@
 //! The implementation of user space file system
 mod cache;
 mod dir;
+pub mod dist;
 mod fs_util;
 mod metadata;
 mod node;
@@ -30,7 +31,9 @@ use crate::fuse::fuse_reply::{
 use crate::fuse::fuse_request::Request;
 use crate::fuse::protocol::{INum, FUSE_ROOT_ID};
 use cache::IoMemBlock;
+use common::etcd_delegate::EtcdDelegate;
 use dir::DirEntry;
+use dist::server::CacheServer;
 pub use metadata::DefaultMetaData;
 use metadata::MetaData;
 use node::Node;
@@ -40,7 +43,11 @@ pub use s3_metadata::S3MetaData;
 const MY_TTL_SEC: u64 = 3600; // TODO: should be a long value, say 1 hour
 
 /// In-memory file system
-pub struct MemFs<M: MetaData + Send + Sync + 'static>(Arc<M>);
+pub struct MemFs<M: MetaData + Send + Sync + 'static> {
+    metadata: Arc<M>,
+    #[allow(dead_code)]
+    server: Option<CacheServer>,
+}
 
 /// Set attribute parameters
 pub struct SetAttrParam {
@@ -113,8 +120,26 @@ pub struct FileLockParam {
 
 impl<M: MetaData + Send + Sync + 'static> MemFs<M> {
     /// Create `FileSystem`
-    pub async fn new(mount_point: &str, capacity: usize) -> anyhow::Result<Self> {
-        Ok(Self(M::new(mount_point, capacity).await))
+    pub async fn new(
+        mount_point: &str,
+        capacity: usize,
+        ip: &str,
+        port: &str,
+        etcd_client: EtcdDelegate,
+        node_id: u64,
+        volume_info: &str,
+    ) -> anyhow::Result<Self> {
+        let (metadata, server) = M::new(
+            mount_point,
+            capacity,
+            ip,
+            port,
+            etcd_client,
+            node_id,
+            volume_info,
+        )
+        .await;
+        Ok(Self { metadata, server })
     }
 
     /// Read content check
@@ -138,7 +163,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
     /// Initialize filesystem.
     /// Called before any other filesystem method.
     async fn init(&self, req: &Request<'_>) -> nix::Result<()> {
-        let cache = self.0.cache().read().await;
+        let cache = self.metadata.cache().read().await;
         debug!("init(req={:?}), cache size={}", req, cache.len(),);
         Ok(())
     }
@@ -146,7 +171,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
     /// Clean up filesystem.
     /// Called on filesystem exit.
     async fn destroy(&self, req: &Request<'_>) {
-        let cache = self.0.cache().read().await;
+        let cache = self.metadata.cache().read().await;
         debug!("destroy(req={:?}), cache size={}", req, cache.len(),);
     }
 
@@ -159,7 +184,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         reply: ReplyEntry,
     ) -> nix::Result<usize> {
         debug!("lookup(parent={}, name={:?}, req={:?})", parent, name, req,);
-        let lookup_res = self.0.lookup_helper(parent, name).await;
+        let lookup_res = self.metadata.lookup_helper(parent, name).await;
         match lookup_res {
             Ok((ttl, fuse_attr, generation)) => {
                 debug!(
@@ -187,7 +212,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         let ino = req.nodeid();
         debug!("getattr(ino={}, req={:?})", ino, req);
 
-        let cache = self.0.cache().read().await;
+        let cache = self.metadata.cache().read().await;
         let node = cache.get(&ino).unwrap_or_else(|| {
             panic!(
                 "getattr() found fs is inconsistent, \
@@ -224,7 +249,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         let ino = req.nodeid();
         debug!("open(ino={}, flags={}, req={:?})", ino, flags, req);
 
-        let cache = self.0.cache().read().await;
+        let cache = self.metadata.cache().read().await;
         let node = cache.get(&ino).unwrap_or_else(|| {
             panic!(
                 "open() found fs is inconsistent, the i-node of ino={} should be in cache",
@@ -277,7 +302,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         debug!("forget(ino={}, nlookup={}, req={:?})", ino, nlookup, req,);
         let current_count: i64;
         {
-            let cache = self.0.cache().read().await;
+            let cache = self.metadata.cache().read().await;
             let node = cache.get(&ino).unwrap_or_else(|| {
                 panic!(
                     "forget() found fs is inconsistent, \
@@ -302,7 +327,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         }
         {
             if current_count == 0 {
-                let _ = self.0.delete_trash(&ino);
+                let _ = self.metadata.delete_trash(&ino);
             }
         }
     }
@@ -344,7 +369,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         if 0 == valid {
             warn!("setattr() enountered valid=0, the req={:?}", req);
         };
-        let mut cache = self.0.cache().write().await;
+        let mut cache = self.metadata.cache().write().await;
         let inode = cache.get_mut(&ino).unwrap_or_else(|| {
             panic!(
                 "setattr() found fs is inconsistent, \
@@ -358,7 +383,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         match set_res {
             Ok((attr_changed, file_attr)) => {
                 if attr_changed {
-                    inode.set_attr(file_attr);
+                    inode.set_attr(file_attr).await;
                     debug!(
                         "setattr() successfully set the attribute of ino={} and name={:?}, the set attr={:?}",
                         ino, inode.get_name(), file_attr,
@@ -401,7 +426,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
             parent, name, mode, rdev, req,
         );
         let mknod_res = self
-            .0
+            .metadata
             .create_node_helper(parent, name.into(), mode, SFlag::S_IFREG, None)
             .await
             .context(format!(
@@ -438,7 +463,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
             parent, name, mode, req,
         );
         let mkdir_res = self
-            .0
+            .metadata
             .create_node_helper(parent, name.into(), mode, SFlag::S_IFDIR, None)
             .await
             .context(format!(
@@ -471,7 +496,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
     ) -> nix::Result<usize> {
         debug!("unlink(parent={}, name={:?}, req={:?}", parent, name, req,);
         let entry_type = {
-            let cache = self.0.cache().read().await;
+            let cache = self.metadata.cache().read().await;
             let parent_node = cache.get(&parent).unwrap_or_else(|| {
                 panic!(
                     "unlink() found fs is inconsistent, \
@@ -498,7 +523,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         };
 
         let unlink_res = self
-            .0
+            .metadata
             .remove_node_helper(parent, name.into(), entry_type)
             .await
             .context(format!(
@@ -533,7 +558,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
             parent, dir_name, req,
         );
         let rmdir_res = self
-            .0
+            .metadata
             .remove_node_helper(parent, dir_name, SFlag::S_IFDIR)
             .await
             .context(format!(
@@ -577,10 +602,10 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
     ) -> nix::Result<usize> {
         let exchange = param.flags == 2; // RENAME_EXCHANGE
         let rename_res = if exchange {
-            self.0.rename_exchange_helper(param).await
+            self.metadata.rename_exchange_helper(param).await
         } else {
             // Rename replace
-            self.0.rename_may_replace_helper(param).await
+            self.metadata.rename_may_replace_helper(param).await
         };
 
         match rename_res {
@@ -621,7 +646,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
             offset
         );
 
-        let mut cache = self.0.cache().write().await;
+        let mut cache = self.metadata.cache().write().await;
         let inode = cache.get_mut(&ino).unwrap_or_else(|| {
             panic!(
                 "read() found fs is inconsistent, \
@@ -701,7 +726,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
             flags,
             // req.request,
         );
-        let mut cache = self.0.cache().write().await;
+        let mut cache = self.metadata.cache().write().await;
         let inode = cache.get_mut(&ino).unwrap_or_else(|| {
             panic!(
                 "write() found fs is inconsistent, \
@@ -768,7 +793,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         // called multiple times for an open file, self must not really
         // close the file. This is important if used on a network
         // filesystem like NFS which flush the data/metadata on close()
-        let mut cache = self.0.cache().write().await;
+        let mut cache = self.metadata.cache().write().await;
         let inode = cache.get_mut(&ino).unwrap_or_else(|| {
             panic!(
                 "release() found fs is inconsistent, \
@@ -803,7 +828,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
             ino, fh, flags, lock_owner, flush, req,
         );
         // TODO: handle lock_owner
-        let mut cache = self.0.cache().write().await;
+        let mut cache = self.metadata.cache().write().await;
         let inode = cache.get_mut(&ino).unwrap_or_else(|| {
             panic!(
                 "release() found fs is inconsistent, \
@@ -837,7 +862,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
             "fsync(ino={}, fh={}, datasync={}, req={:?})",
             ino, fh, datasync, req,
         );
-        match self.0.fsync_helper(ino, fh, datasync).await {
+        match self.metadata.fsync_helper(ino, fh, datasync).await {
             Ok(()) => reply.ok().await,
             Err(e) => {
                 debug!(
@@ -859,7 +884,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
     async fn opendir(&self, req: &Request<'_>, flags: u32, reply: ReplyOpen) -> nix::Result<usize> {
         let ino = req.nodeid();
         debug!("opendir(ino={}, flags={}, req={:?})", ino, flags, req,);
-        let cache = self.0.cache().read().await;
+        let cache = self.metadata.cache().read().await;
         let inode = cache.get(&ino).unwrap_or_else(|| {
             panic!(
                 "opendir() found fs is inconsistent, \
@@ -935,7 +960,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
             }
             num_child_entries
         };
-        let mut cache = self.0.cache().write().await;
+        let mut cache = self.metadata.cache().write().await;
         let inode = cache.get_mut(&ino).unwrap_or_else(|| {
             panic!(
                 "readdir() found fs is inconsistent, \
@@ -984,7 +1009,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
             ino, fh, flags, req,
         );
         // TODO: handle flags
-        let cache = self.0.cache().read().await;
+        let cache = self.metadata.cache().read().await;
         let inode = cache.get(&ino).unwrap_or_else(|| {
             panic!(
                 "releasedir() found fs is inconsistent, \
@@ -1013,7 +1038,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
             ino, fh, datasync, req,
         );
         // Self::fsync_helper(ino, fh, datasync, reply).await
-        match self.0.fsync_helper(ino, fh, datasync).await {
+        match self.metadata.fsync_helper(ino, fh, datasync).await {
             Ok(()) => reply.ok().await,
             Err(e) => {
                 debug!(
@@ -1034,7 +1059,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
             req.nodeid()
         };
         debug!("statfs(ino={}, req={:?})", ino, req);
-        let cache = self.0.cache().read().await;
+        let cache = self.metadata.cache().read().await;
         let inode = cache.get(&ino).unwrap_or_else(|| {
             panic!(
                 "statfs() found fs is inconsistent, \
@@ -1072,7 +1097,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
     async fn readlink(&self, req: &Request<'_>, reply: ReplyData) -> nix::Result<usize> {
         let ino = req.nodeid();
         debug!("readlink(ino={}, req={:?})", ino, req,);
-        let cache = self.0.cache().read().await;
+        let cache = self.metadata.cache().read().await;
         let symlink_node = cache.get(&ino).unwrap_or_else(|| {
             panic!(
                 "readlink() found fs is inconsistent, \
@@ -1105,7 +1130,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
             "symlink(parent={}, name={:?}, target_path={:?}, req={:?})",
             parent, name, target_path, req
         );
-        let symlink_res = self.0.create_node_helper(
+        let symlink_res = self.metadata.create_node_helper(
             parent,
             name,
             0o777, // Symbolic links have no permissions
@@ -1137,7 +1162,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
 
     /// Interrupt another FUSE request
     async fn interrupt(&self, req: &Request<'_>, unique: u64) {
-        let cache = self.0.cache().read().await;
+        let cache = self.metadata.cache().read().await;
         debug!("interrupt(req={:?}), cache size={}", req, cache.len(),);
         // TODO: handle FUSE_INTERRUPT
         warn!(
