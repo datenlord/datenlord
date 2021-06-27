@@ -413,7 +413,7 @@ spec:
     matchLabels:
       app: csi-etcd
   serviceName: "csi-etcd"
-  replicas: 3
+  replicas: 1
   template:
     metadata:
       labels:
@@ -436,7 +436,7 @@ spec:
             - "--listen-peer-urls=http://0.0.0.0:2380"
             - "--advertise-client-urls=http://$(NODE_ID).csi-etcd:2379"
             - "--listen-client-urls=http://0.0.0.0:2379"
-            - "--initial-cluster=$(PEER)"
+           #- "--initial-cluster=$(PEER)"
             - "--listen-metrics-urls=http://0.0.0.0:2381"
             - "--data-dir=/var/lib/etcd/default.etcd"
           env:
