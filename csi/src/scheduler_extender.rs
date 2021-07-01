@@ -13,6 +13,7 @@ use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tiny_http::{Method, Request, Response, Server, StatusCode};
+use utilities::OverflowArithmetic;
 
 /// Node List
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -121,57 +122,88 @@ impl SchdulerExtender {
         info!("Pod name is {:?}", pod.metadata.name);
 
         if let Some(volumes) = pod.spec.and_then(|pod_spec| pod_spec.volumes) {
-            let mut node_set = HashSet::new();
-            volumes.iter().for_each(|vol| {
-                let vol_res =
-                    smol::block_on(async { self.meta_data.get_volume_by_name(&vol.name).await });
-                if let Ok(vol) = vol_res {
-                    node_set.insert(vol.node_id);
-                }
-            });
-            if node_set.len() > 1 {
-                return ExtenderFilterResult {
-                    Nodes: args.Nodes.map(|node_list| NodeList {
-                        metadata: node_list.metadata,
-                        items: vec![],
-                    }),
-                    NodeNames: args.NodeNames.and(Some(vec![])),
-                    FailedNodes: HashMap::new(),
-                    Error: "pod contains volumes that exist on different nodes, failed to schedule"
-                        .to_string(),
-                };
-            } else {
-                for node in &node_set {
+            let all_nodes_res = smol::block_on(async { self.meta_data.get_nodes().await });
+            match all_nodes_res {
+                Ok(all_nodes) => {
+                    let mut nodes_map = HashMap::new();
+                    for node in all_nodes {
+                        nodes_map.insert(node, 1_usize);
+                    }
+                    volumes.iter().for_each(|vol| {
+                        let vol_res = smol::block_on(async {
+                            self.meta_data.get_volume_by_name(&vol.name).await
+                        });
+                        if let Ok(vol) = vol_res {
+                            vol.accessible_nodes.iter().for_each(|node| {
+                                if let Some(count) = nodes_map.get_mut(node) {
+                                    (*count).overflow_add(1);
+                                }
+                            });
+                        }
+                    });
+                    let accessible_nodes: HashSet<_> = nodes_map
+                        .iter()
+                        .filter_map(|(k, v)| if v == &volumes.len() { Some(k) } else { None })
+                        .collect();
+
                     if let Some(ref node_list) = args.Nodes {
-                        let node_opt = node_list
+                        let candidate_nodes: Vec<_> = node_list
                             .items
                             .iter()
-                            .find(|&n| n.metadata.name.as_ref().map_or(false, |name| name == node));
-                        if let Some(node) = node_opt {
-                            return ExtenderFilterResult {
-                                Nodes: Some(NodeList {
-                                    metadata: node_list.metadata.to_owned(),
-                                    items: vec![node.to_owned()],
-                                }),
-                                NodeNames: None,
-                                FailedNodes: HashMap::new(),
-                                Error: "".to_string(),
-                            };
-                        }
+                            .filter_map(|n| {
+                                n.metadata.name.as_ref().and_then(|name| {
+                                    if accessible_nodes.contains(&name) {
+                                        Some(n.to_owned())
+                                    } else {
+                                        None
+                                    }
+                                })
+                            })
+                            .collect();
+                        return ExtenderFilterResult {
+                            Nodes: Some(NodeList {
+                                metadata: node_list.metadata.to_owned(),
+                                items: candidate_nodes,
+                            }),
+                            NodeNames: None,
+                            FailedNodes: HashMap::new(),
+                            Error: "".to_string(),
+                        };
                     } else if let Some(ref nodes) = args.NodeNames {
-                        let node_opt = nodes.iter().find(|&n| node == n);
-                        if let Some(node) = node_opt {
-                            return ExtenderFilterResult {
-                                Nodes: None,
-                                NodeNames: Some(vec![node.to_owned()]),
-                                FailedNodes: HashMap::new(),
-                                Error: "".to_string(),
-                            };
-                        }
+                        let candidate_nodes: Vec<_> = nodes
+                            .iter()
+                            .filter_map(|n| {
+                                if accessible_nodes.contains(n) {
+                                    Some(n.to_owned())
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect();
+                        return ExtenderFilterResult {
+                            Nodes: None,
+                            NodeNames: Some(candidate_nodes),
+                            FailedNodes: HashMap::new(),
+                            Error: "".to_string(),
+                        };
                     } else {
                     }
                 }
-            }
+                Err(e) => {
+                    return ExtenderFilterResult {
+                        Nodes: args.Nodes.map(|node_list| NodeList {
+                            metadata: node_list.metadata,
+                            items: vec![],
+                        }),
+                        NodeNames: args.NodeNames.and(Some(vec![])),
+                        FailedNodes: HashMap::new(),
+                        Error: format!(
+                            "faile to get all nodes from etcd, failed to schedule, the error is {}",
+                            e
+                        ),
+                    };
+                }
+            };
         }
 
         ExtenderFilterResult {
