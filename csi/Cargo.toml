@@ -41,7 +41,7 @@ common = {path = "../common"}
 protoc-grpcio = "3.0.0"
 
 [dev-dependencies]
-mock-etcd = { git = "https://github.com/datenlord/mock-etcd", rev = "75f09e2" }
+mock-etcd = { git = "https://github.com/datenlord/etcd-client", rev = "673eb5a" }
 
 [[bin]]
 path = "src/bin/bind_mounter.rs"
