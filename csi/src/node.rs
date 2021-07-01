@@ -105,7 +105,10 @@ impl NodeImplInner {
     /// Delete ephemeral volume
     /// `tolerant_error` means whether to ignore umount error or not
     async fn delete_ephemeral_volume(&self, volume: &DatenLordVolume, tolerant_error: bool) {
-        let delete_ephemeral_res = self.meta_data.delete_volume_meta_data(&volume.vol_id).await;
+        let delete_ephemeral_res = self
+            .meta_data
+            .delete_volume_meta_data(&volume.vol_id, self.meta_data.get_node_id())
+            .await;
         if let Err(e) = delete_ephemeral_res {
             if tolerant_error {
                 error!(
@@ -284,6 +287,26 @@ impl Node for NodeImpl {
                     return Err(e);
                 };
             }
+
+            let mut volume = self_inner.meta_data.get_volume_by_id(vol_id).await?;
+            let node_id = self_inner.meta_data.get_node_id();
+            if !volume.check_exist_in_accessible_nodes(node_id) {
+                return Err(ArgumentInvalid {
+                    context: vec![format!(
+                        "volume ID={} is not accessible on node ID={}",
+                        vol_id, node_id
+                    )],
+                });
+            }
+            if !volume.check_exist_on_node_id(node_id) {
+                volume.node_ids.push(node_id.to_owned());
+                self_inner
+                    .meta_data
+                    .update_volume_meta_data(vol_id, &volume)
+                    .await?;
+                volume.create_vol_dir()?;
+            }
+
             let target_dir = req.get_target_path();
             match req.get_volume_capability().access_type {
                 None => {

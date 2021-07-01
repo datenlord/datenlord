@@ -126,18 +126,23 @@ pub fn copy_directory_recursively(
 pub fn build_create_volume_response(
     req: &CreateVolumeRequest,
     vol_id: &str,
-    node_id: &str,
+    mut nodes: Vec<String>,
 ) -> CreateVolumeResponse {
-    let mut topology = Topology::new();
-    topology
-        .mut_segments()
-        .insert(TOPOLOGY_KEY_NODE.to_owned(), node_id.to_owned());
     let mut v = Volume::new();
+    let mut topologys: Vec<Topology> = Vec::with_capacity(nodes.len());
+    topologys
+        .iter_mut()
+        .zip(nodes.iter_mut())
+        .for_each(|(topology, node)| {
+            (*topology)
+                .mut_segments()
+                .insert(TOPOLOGY_KEY_NODE.to_owned(), node.to_owned());
+        });
     v.set_volume_id(vol_id.to_owned());
     v.set_capacity_bytes(req.get_capacity_range().get_required_bytes());
     v.set_volume_context(req.get_parameters().clone());
     v.set_content_source(req.get_volume_content_source().clone());
-    v.set_accessible_topology(RepeatedField::from_vec(vec![topology]));
+    v.set_accessible_topology(RepeatedField::from_vec(topologys));
     let mut r = CreateVolumeResponse::new();
     r.set_volume(v);
     r

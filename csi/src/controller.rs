@@ -182,7 +182,7 @@ impl ControllerImplInner {
         }
         // Return existing volume
         // TODO: make sure that volume still exists?
-        let resp = util::build_create_volume_response(req, &ex_vol.vol_id, &ex_vol.node_id);
+        let resp = util::build_create_volume_response(req, &ex_vol.vol_id, ex_vol.accessible_nodes);
         Ok(resp)
     }
 
@@ -402,27 +402,30 @@ impl Controller for ControllerImpl {
             // Do not return gRPC error when delete failed for idempotency
             match self_inner.meta_data.get_volume_by_id(vol_id).await {
                 Ok(vol) => {
-                    let node = self_inner.meta_data.get_node_by_id(&vol.node_id).await?;
-                    let client = MetaData::build_worker_client(&node);
-                    let worker_delete_res = client
-                        .worker_delete_volume_async(&req)?
-                        .await
-                        .with_context(|| {
-                            format!(
-                                "failed to delete volume ID={} on node ID={}",
-                                vol_id, vol.node_id,
-                            )
-                        });
-                    match worker_delete_res {
-                        Ok(_) => info!("successfully deleted volume ID={}", vol_id),
-                        Err(e) => {
-                            // Return error here?
-                            // Should we return this error, old logic will ignore this
-                            warn!(
-                                "failed to delete volume ID={} on node ID={}, the error is: {}",
-                                vol_id, vol.node_id, e,
-                            );
-                            return Err(e);
+                    // TODO don't fail on first error.
+                    for node_id in vol.node_ids {
+                        let node = self_inner.meta_data.get_node_by_id(&node_id).await?;
+                        let client = MetaData::build_worker_client(&node);
+                        let worker_delete_res = client
+                            .worker_delete_volume_async(&req)?
+                            .await
+                            .with_context(|| {
+                                format!(
+                                    "failed to delete volume ID={} on node ID={}",
+                                    vol_id, node_id,
+                                )
+                            });
+                        match worker_delete_res {
+                            Ok(_) => info!("successfully deleted volume ID={}", vol_id),
+                            Err(e) => {
+                                // Return error here?
+                                // Should we return this error, old logic will ignore this
+                                warn!(
+                                    "failed to delete volume ID={} on node ID={}, the error is: {}",
+                                    vol_id, node_id, e,
+                                );
+                                return Err(e);
+                            }
                         }
                     }
                 }
@@ -660,7 +663,8 @@ impl Controller for ControllerImpl {
             }
 
             let src_vol = self_inner.meta_data.get_volume_by_id(src_vol_id).await?;
-            match self_inner.meta_data.get_node_by_id(&src_vol.node_id).await {
+            let primary_node_id = src_vol.get_primary_node_id();
+            match self_inner.meta_data.get_node_by_id(primary_node_id).await {
                 Ok(node) => {
                     let client = MetaData::build_worker_client(&node);
                     client
@@ -669,12 +673,12 @@ impl Controller for ControllerImpl {
                         .with_context(|| {
                             format!(
                                 "failed to create snapshot name={} on node ID={}",
-                                snap_name, src_vol.node_id,
+                                snap_name, primary_node_id,
                             )
                         })
                 }
                 Err(e) => {
-                    warn!("failed to find node ID={} from etcd", src_vol.node_id);
+                    warn!("failed to find node ID={} from etcd", primary_node_id);
                     Err(e)
                 }
             }
