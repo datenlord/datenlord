@@ -776,7 +776,9 @@ mod test {
                 del_snap_res.snap_id, snap_id,
                 "deleted snapshot ID not match"
             );
-            let del_vol_res = meta_data.delete_volume_meta_data(vol_id).await?;
+            let del_vol_res = meta_data
+                .delete_volume_meta_data(vol_id, meta_data.get_node_id())
+                .await?;
             assert_eq!(del_vol_res.vol_id, vol_id, "deleted volume ID not match");
             Ok(())
         })

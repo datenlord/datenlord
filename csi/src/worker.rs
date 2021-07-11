@@ -8,6 +8,7 @@ use uuid::Uuid;
 use super::csi::{
     CreateSnapshotRequest, CreateSnapshotResponse, CreateVolumeRequest, CreateVolumeResponse,
     DeleteSnapshotRequest, DeleteSnapshotResponse, DeleteVolumeRequest, DeleteVolumeResponse,
+    Topology,
 };
 use super::datenlord_worker_grpc::Worker;
 use super::meta_data::{DatenLordVolume, MetaData, VolumeSource};
@@ -89,6 +90,24 @@ impl Worker for WorkerImpl {
         req: CreateVolumeRequest,
         sink: UnarySink<CreateVolumeResponse>,
     ) {
+        /// Get node list from topologies
+        fn get_nodes_from_topologies(topologies: &[Topology]) -> Vec<String> {
+            topologies
+                .iter()
+                .map(|topology| {
+                    topology
+                        .get_segments()
+                        .get(util::TOPOLOGY_KEY_NODE)
+                        .unwrap_or_else(|| {
+                            panic!(
+                                "failed to get the key {} from topology segments",
+                                util::TOPOLOGY_KEY_NODE,
+                            )
+                        })
+                        .to_owned()
+                })
+                .collect()
+        }
         debug!("worker create_volume request: {:?}", req);
         let self_inner = Arc::<WorkerImplInner>::clone(&self.inner);
 
@@ -97,11 +116,25 @@ impl Worker for WorkerImpl {
             let vol_id_str = vol_id.to_string();
             let vol_name = req.get_name();
             let vol_size = req.get_capacity_range().get_required_bytes();
+            let nodes = if req.has_accessibility_requirements() {
+                let preferred_topology = req.get_accessibility_requirements().get_preferred();
+                let requisite_topology = req.get_accessibility_requirements().get_requisite();
+                if requisite_topology.is_empty() && preferred_topology.is_empty() {
+                    panic!("request has accessibility requirements but both requisite and preferred topology are empty");
+                } else if requisite_topology.is_empty() {
+                    get_nodes_from_topologies(preferred_topology)
+                } else {
+                    get_nodes_from_topologies(requisite_topology)
+                }
+            } else {
+                self_inner.meta_data.get_nodes().await?
+            };
 
             let volume = DatenLordVolume::build_from_create_volume_req(
                 &req,
                 &vol_id_str,
                 self_inner.meta_data.get_node_id(),
+                nodes.clone(),
                 &self_inner.meta_data.get_volume_path(&vol_id_str),
             )
             .with_context(|| {
@@ -136,11 +169,7 @@ impl Worker for WorkerImpl {
                 self_inner.meta_data.get_node_id(),
             );
 
-            let r = util::build_create_volume_response(
-                &req,
-                &vol_id.to_string(),
-                self_inner.meta_data.get_node_id(),
-            );
+            let r = util::build_create_volume_response(&req, &vol_id.to_string(), nodes);
             Ok(r)
         };
         util::spawn_grpc_task(sink, task);
@@ -159,7 +188,7 @@ impl Worker for WorkerImpl {
             let vol_id = req.get_volume_id();
             let delete_res = self_inner
                 .meta_data
-                .delete_volume_meta_data(vol_id)
+                .delete_volume_meta_data(vol_id, self_inner.meta_data.get_node_id())
                 .await
                 .with_context(|| {
                     format!(
