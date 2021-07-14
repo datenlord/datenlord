@@ -5,7 +5,7 @@ use super::fs_util;
 use super::metadata::MetaData;
 use super::node::Node;
 use super::s3_node::{self, S3Node};
-use super::s3_wrapper::S3BackEndImpl;
+use super::s3_wrapper::S3BackEnd;
 use super::RenameParam;
 use crate::fuse::protocol::{FuseAttr, INum, FUSE_ROOT_ID};
 use crate::util;
@@ -21,6 +21,7 @@ use smol::lock::{RwLock, RwLockWriteGuard};
 use std::collections::{BTreeMap, BTreeSet};
 use std::os::unix::io::RawFd;
 use std::path::Path;
+use std::sync::atomic::Ordering;
 use std::sync::{atomic::AtomicU32, Arc};
 use std::time::Duration;
 
@@ -33,13 +34,13 @@ const S3_INFO_DELIMITER: char = ';';
 
 /// File system in-memory meta-data
 #[derive(Debug)]
-pub struct S3MetaData {
+pub struct S3MetaData<S: S3BackEnd + Send + Sync + 'static> {
     /// S3 backend
-    s3_backend: Arc<S3BackEndImpl>,
+    s3_backend: Arc<S>,
     /// Etcd client
     pub(crate) etcd_client: Arc<EtcdDelegate>,
     /// The cache to hold opened directories and files
-    pub(crate) cache: RwLock<BTreeMap<INum, S3Node>>,
+    pub(crate) cache: RwLock<BTreeMap<INum, S3Node<S>>>,
     /// The trash to hold deferred deleted directories and files
     trash: RwLock<BTreeSet<INum>>,
     /// Global data cache
@@ -63,8 +64,8 @@ fn parse_s3_info(info: &str) -> (&str, &str, &str, &str) {
 }
 
 #[async_trait]
-impl MetaData for S3MetaData {
-    type N = S3Node;
+impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
+    type N = S3Node<S>;
 
     async fn new(
         s3_info: &str,
@@ -77,7 +78,7 @@ impl MetaData for S3MetaData {
     ) -> (Arc<Self>, Option<CacheServer>) {
         let (bucket_name, endpoint, access_key, secret_key) = parse_s3_info(s3_info);
         let s3_backend = Arc::new(
-            match S3BackEndImpl::new(bucket_name, endpoint, access_key, secret_key).await {
+            match S::new(bucket_name, endpoint, access_key, secret_key).await {
                 Ok(s) => s,
                 Err(e) => panic!("{:?}", e),
             },
@@ -663,8 +664,10 @@ impl MetaData for S3MetaData {
     }
 }
 
-impl S3MetaData {
-    // FUSE operation helper functions
+impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
+    pub(crate) fn cur_inum(&self) -> u32 {
+        self.cur_inum.load(Ordering::Relaxed)
+    }
 
     /// The pre-check before create node
     #[allow(single_use_lifetimes)]
@@ -672,8 +675,8 @@ impl S3MetaData {
         &self,
         parent: INum,
         node_name: &str,
-        cache: &'b mut RwLockWriteGuard<'a, BTreeMap<INum, <S3MetaData as MetaData>::N>>,
-    ) -> anyhow::Result<&'b mut <S3MetaData as MetaData>::N> {
+        cache: &'b mut RwLockWriteGuard<'a, BTreeMap<INum, <S3MetaData<S> as MetaData>::N>>,
+    ) -> anyhow::Result<&'b mut <S3MetaData<S> as MetaData>::N> {
         let parent_node = cache.get_mut(&parent).unwrap_or_else(|| {
             panic!(
                 "create_node_pre_check() found fs is inconsistent, \

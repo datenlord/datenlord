@@ -6,23 +6,27 @@ use super::dist::client as dist_client;
 use super::fs_util::{self, FileAttr};
 use super::node::Node;
 use super::s3_metadata::S3MetaData;
-use super::s3_wrapper::{S3BackEnd, S3BackEndImpl};
+use super::s3_wrapper::S3BackEnd;
 use super::SetAttrParam;
 use crate::fuse::fuse_reply::{AsIoVec, StatFsParam};
 use crate::fuse::protocol::INum;
 use async_trait::async_trait;
-use log::debug;
+use log::{debug, warn};
 use nix::fcntl::OFlag;
 use nix::sys::stat::Mode;
 use nix::sys::stat::SFlag;
 use smol::lock::RwLock;
 use std::collections::BTreeMap;
 use std::collections::VecDeque;
-use std::os::unix::io::RawFd;
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{self, AtomicI64};
-use std::sync::Arc;
 use std::time::SystemTime;
+use std::{
+    os::unix::io::RawFd,
+    path::{Path, PathBuf},
+    sync::{
+        atomic::{self, AtomicI64},
+        Arc,
+    },
+};
 use utilities::{Cast, OverflowArithmetic};
 
 /// Block size constant
@@ -42,9 +46,9 @@ pub enum S3NodeData {
 
 /// A file node or a directory node
 #[derive(Debug)]
-pub struct S3Node {
+pub struct S3Node<S: S3BackEnd + Sync + Send + 'static> {
     /// S3 Backend
-    s3_backend: Arc<S3BackEndImpl>,
+    s3_backend: Arc<S>,
     /// Parent node i-number
     parent: u64,
     /// DefaultNode name
@@ -60,10 +64,10 @@ pub struct S3Node {
     /// DefaultNode lookup counter
     lookup_count: AtomicI64,
     /// Shared metadata
-    meta: Arc<S3MetaData>,
+    meta: Arc<S3MetaData<S>>,
 }
 
-impl S3Node {
+impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
     /// Create `DefaultNode`
     fn new(
         parent: u64,
@@ -71,8 +75,8 @@ impl S3Node {
         full_path: String,
         attr: FileAttr,
         data: S3NodeData,
-        s3_backend: Arc<S3BackEndImpl>,
-        meta: Arc<S3MetaData>,
+        s3_backend: Arc<S>,
+        meta: Arc<S3MetaData<S>>,
     ) -> Self {
         Self {
             s3_backend,
@@ -115,11 +119,31 @@ impl S3Node {
         old_attr
     }
 
-    fn new_inode_num(&self) -> u64 {
-        self.meta
-            .cur_inum
-            .fetch_add(1, atomic::Ordering::SeqCst)
-            .cast()
+    async fn new_inode_num(&self) -> u64 {
+        let default = self.meta.cur_inum();
+        let cur_inum = dist_client::get_ino_num(
+            self.meta.etcd_client.clone(),
+            self.meta.node_id,
+            &self.meta.volume_info,
+            default,
+        )
+        .await
+        .unwrap_or_else(|e| {
+            warn!("Load inode num from other node error: {}", e);
+            default
+        });
+
+        if cur_inum > default {
+            self.meta
+                .cur_inum
+                .store(cur_inum.overflow_add(1), atomic::Ordering::Relaxed);
+            cur_inum.cast()
+        } else {
+            self.meta
+                .cur_inum
+                .fetch_add(1, atomic::Ordering::SeqCst)
+                .cast()
+        }
     }
 
     /// Get fullpath of this node
@@ -228,7 +252,7 @@ impl S3Node {
         // get new directory attribute
         let child_attr = if create_dir {
             FileAttr {
-                ino: self.new_inode_num(),
+                ino: self.new_inode_num().await,
                 kind: SFlag::S_IFDIR,
                 perm: fs_util::parse_mode_bits(mode.bits()),
                 ..FileAttr::now()
@@ -249,7 +273,7 @@ impl S3Node {
                         .await
                         .unwrap();
                     FileAttr {
-                        ino: self.new_inode_num(),
+                        ino: self.new_inode_num().await,
                         kind: SFlag::S_IFDIR,
                         atime: last_modified,
                         mtime: last_modified,
@@ -325,7 +349,7 @@ impl S3Node {
         // get new file attribute
         let child_attr = if create_file {
             FileAttr {
-                ino: self.new_inode_num(),
+                ino: self.new_inode_num().await,
                 kind: SFlag::S_IFREG,
                 perm: fs_util::parse_mode_bits(mode.bits()),
                 size: 0,
@@ -349,7 +373,7 @@ impl S3Node {
                         .await
                         .unwrap();
                     FileAttr {
-                        ino: self.new_inode_num(),
+                        ino: self.new_inode_num().await,
                         kind: SFlag::S_IFREG,
                         size: content_len.cast(),
                         blocks: ((content_len + BLOCK_SIZE - 1) / BLOCK_SIZE).cast(),
@@ -424,7 +448,7 @@ impl S3Node {
         // get symbol file attribute
         let child_attr = if let Some(ref target_path) = target_path_opt {
             FileAttr {
-                ino: self.new_inode_num(),
+                ino: self.new_inode_num().await,
                 kind: SFlag::S_IFLNK,
                 size: target_path.to_str().unwrap().len().cast(),
                 blocks: 0,
@@ -438,7 +462,7 @@ impl S3Node {
                 .await
                 .unwrap();
             FileAttr {
-                ino: self.new_inode_num(),
+                ino: self.new_inode_num().await,
                 kind: SFlag::S_IFLNK,
                 size: len.cast(),
                 blocks: 0,
@@ -498,8 +522,8 @@ impl S3Node {
     pub(crate) async fn open_root_node(
         root_ino: INum,
         name: &str,
-        s3_backend: Arc<S3BackEndImpl>,
-        meta: Arc<S3MetaData>,
+        s3_backend: Arc<S>,
+        meta: Arc<S3MetaData<S>>,
     ) -> anyhow::Result<Self> {
         let now = SystemTime::now();
         let attr = FileAttr {
@@ -560,10 +584,10 @@ impl S3Node {
 }
 
 /// Rename all the files
-pub(crate) async fn rename_fullpath_recursive(
+pub(crate) async fn rename_fullpath_recursive<S: S3BackEnd + Send + Sync + 'static>(
     ino: INum,
     parent: INum,
-    cache: &RwLock<BTreeMap<INum, S3Node>>,
+    cache: &RwLock<BTreeMap<INum, S3Node<S>>>,
 ) {
     let mut node_pool: VecDeque<(INum, INum)> = VecDeque::new();
     node_pool.push_back((ino, parent));
@@ -625,7 +649,7 @@ pub(crate) async fn rename_fullpath_recursive(
 }
 
 #[async_trait]
-impl Node for S3Node {
+impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
     /// Get node i-number
     #[inline]
     fn get_ino(&self) -> INum {

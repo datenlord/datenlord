@@ -7,7 +7,7 @@ mod metadata;
 mod node;
 mod s3_metadata;
 mod s3_node;
-mod s3_wrapper;
+pub mod s3_wrapper;
 
 use std::collections::BTreeMap;
 use std::os::unix::ffi::OsStringExt;

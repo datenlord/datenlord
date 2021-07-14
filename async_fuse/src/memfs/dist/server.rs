@@ -7,11 +7,12 @@ use super::request::{self, DistRequest, OpArgs, RemoveDirEntryArgs, UpdateDirArg
 use super::response;
 use super::tcp;
 use super::types::{self, SerialFileAttr};
+use crate::memfs::s3_wrapper::S3BackEnd;
+use log::debug;
 use std::fmt::{self, Debug};
 use std::net::{TcpListener, TcpStream};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
-use log::debug;
 
 pub struct CacheServer {
     ip: String,
@@ -54,11 +55,11 @@ impl Drop for CacheServer {
 }
 
 impl CacheServer {
-    pub(crate) fn new(
+    pub(crate) fn new<S: S3BackEnd + Send + Sync + 'static>(
         ip: String,
         port: String,
         cache: Arc<GlobalCache>,
-        meta: Arc<S3MetaData>,
+        meta: Arc<S3MetaData<S>>,
     ) -> Self {
         let ip_copy = ip.clone();
         let port_copy = port.clone();
@@ -103,10 +104,10 @@ impl CacheServer {
     }
 }
 
-async fn dispatch(
+async fn dispatch<S: S3BackEnd + Send + Sync + 'static>(
     stream: &mut TcpStream,
     cache: Arc<GlobalCache>,
-    meta: Arc<S3MetaData>,
+    meta: Arc<S3MetaData<S>>,
 ) -> anyhow::Result<bool> {
     let mut buf = Vec::new();
     if let Err(e) = tcp::read_message(stream, &mut buf) {
@@ -157,6 +158,10 @@ async fn dispatch(
             push_attr(stream, meta, &path, &attr).await?;
             return Ok(true);
         }
+        DistRequest::GetInodeNum => {
+            get_inode_num(stream, meta).await?;
+            return Ok(true);
+        }
     }
 }
 
@@ -194,7 +199,11 @@ fn read(stream: &mut TcpStream, cache: Arc<GlobalCache>, args: OpArgs) -> anyhow
     Ok(())
 }
 
-async fn load_dir(stream: &mut TcpStream, meta: Arc<S3MetaData>, path: &str) -> anyhow::Result<()> {
+async fn load_dir<S: S3BackEnd + Send + Sync + 'static>(
+    stream: &mut TcpStream,
+    meta: Arc<S3MetaData<S>>,
+    path: &str,
+) -> anyhow::Result<()> {
     let path2inum = meta.path2inum.read().await;
 
     match path2inum.get(path) {
@@ -210,9 +219,9 @@ async fn load_dir(stream: &mut TcpStream, meta: Arc<S3MetaData>, path: &str) -> 
     Ok(())
 }
 
-async fn update_dir(
+async fn update_dir<S: S3BackEnd + Send + Sync + 'static>(
     stream: &mut TcpStream,
-    meta: Arc<S3MetaData>,
+    meta: Arc<S3MetaData<S>>,
     args: UpdateDirArgs,
 ) -> anyhow::Result<()> {
     let path2inum = meta.path2inum.read().await;
@@ -227,9 +236,9 @@ async fn update_dir(
     Ok(())
 }
 
-async fn remove_dir_entry(
+async fn remove_dir_entry<S: S3BackEnd + Send + Sync + 'static>(
     stream: &mut TcpStream,
-    meta: Arc<S3MetaData>,
+    meta: Arc<S3MetaData<S>>,
     args: RemoveDirEntryArgs,
 ) -> anyhow::Result<()> {
     let path2inum = meta.path2inum.read().await;
@@ -242,7 +251,11 @@ async fn remove_dir_entry(
     Ok(())
 }
 
-async fn get_attr(stream: &mut TcpStream, meta: Arc<S3MetaData>, path: &str) -> anyhow::Result<()> {
+async fn get_attr<S: S3BackEnd + Send + Sync + 'static>(
+    stream: &mut TcpStream,
+    meta: Arc<S3MetaData<S>>,
+    path: &str,
+) -> anyhow::Result<()> {
     let path2inum = meta.path2inum.read().await;
     if let Some(inum) = path2inum.get(path) {
         let mut cache = meta.cache.write().await;
@@ -252,19 +265,27 @@ async fn get_attr(stream: &mut TcpStream, meta: Arc<S3MetaData>, path: &str) -> 
             tcp::write_message(stream, &response::get_attr(&attr))?;
             return Ok(());
         } else {
-            debug!("inum {} is not find in meta.cache, inode collection {:?}.", inum, cache.keys());
+            debug!(
+                "inum {} is not find in meta.cache, inode collection {:?}.",
+                inum,
+                cache.keys()
+            );
         }
     } else {
-        debug!("path {} is not find in path2inum, path2inum keys {:?}.", path, path2inum.keys());
+        debug!(
+            "path {} is not find in path2inum, path2inum keys {:?}.",
+            path,
+            path2inum.keys()
+        );
     }
 
     tcp::write_message(stream, &response::get_attr_none())?;
     Ok(())
 }
 
-async fn push_attr(
+async fn push_attr<S: S3BackEnd + Send + Sync + 'static>(
     stream: &mut TcpStream,
-    meta: Arc<S3MetaData>,
+    meta: Arc<S3MetaData<S>>,
     path: &str,
     attr: &SerialFileAttr,
 ) -> anyhow::Result<()> {
@@ -281,5 +302,14 @@ async fn push_attr(
     }
 
     tcp::write_message(stream, &response::push_attr())?;
+    Ok(())
+}
+
+async fn get_inode_num<S: S3BackEnd + Send + Sync + 'static>(
+    stream: &mut TcpStream,
+    meta: Arc<S3MetaData<S>>,
+) -> anyhow::Result<()> {
+    let inum = meta.cur_inum();
+    tcp::write_u32(stream, inum)?;
     Ok(())
 }

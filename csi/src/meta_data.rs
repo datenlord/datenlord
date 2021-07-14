@@ -622,11 +622,7 @@ impl MetaData {
     /// Get volume by name
     pub async fn get_volume_by_name(&self, vol_name: &str) -> DatenLordResult<DatenLordVolume> {
         let vol_name_key = format!("{}/{}", VOLUME_NAME_PREFIX, vol_name);
-        let vol_id: String = match self
-            .etcd_delegate
-            .get_at_most_one_value(vol_name_key)
-            .await
-        {
+        let vol_id: String = match self.etcd_delegate.get_at_most_one_value(vol_name_key).await {
             Ok(val) => {
                 if let Some(v) = val {
                     v

@@ -40,3 +40,17 @@ pub(crate) fn write_message_vector(
 
     Ok(len.cast())
 }
+
+pub(crate) fn write_u32(stream: &mut TcpStream, num: u32) -> anyhow::Result<()> {
+    let num_buf = num.to_be_bytes();
+    stream.write_all(&num_buf)?;
+
+    Ok(())
+}
+
+pub(crate) fn read_u32(stream: &mut TcpStream) -> anyhow::Result<u32> {
+    let mut local_buf: [u8; 4] = [0; 4];
+    stream.read_exact(&mut local_buf)?;
+
+    Ok(u32::from_be_bytes(local_buf))
+}
