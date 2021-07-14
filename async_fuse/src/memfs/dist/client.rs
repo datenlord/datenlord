@@ -6,10 +6,10 @@ use super::response;
 use super::tcp;
 use super::types;
 use common::etcd_delegate::EtcdDelegate;
+use log::debug;
 use std::collections::BTreeMap;
 use std::net::TcpStream;
 use std::sync::Arc;
-use log::debug;
 
 pub(crate) async fn send_to_others<F, T>(
     etcd_client: Arc<EtcdDelegate>,
@@ -240,4 +240,34 @@ pub(crate) async fn read_data(
     }
 
     Ok(None)
+}
+
+pub(crate) async fn get_ino_num(
+    etcd_client: Arc<EtcdDelegate>,
+    node_id: u64,
+    volume_info: &str,
+    default: u32,
+) -> anyhow::Result<u32> {
+    debug!("get_ino_num");
+    let get_inum = request::get_ino_num();
+    let mut cur = default;
+    if let Ok(nodes) = etcd::get_volume_nodes(etcd_client.clone(), node_id, volume_info).await {
+        for other_id in nodes {
+            if let Ok(ref ip_and_port) =
+                etcd::get_node_ip_and_port(etcd_client.clone(), other_id).await
+            {
+                let mut stream = TcpStream::connect(ip_and_port)
+                    .unwrap_or_else(|e| panic!("fail connect to {}, error: {}", ip_and_port, e));
+
+                tcp::write_message(&mut stream, &get_inum)?;
+                let inum = tcp::read_u32(&mut stream)?;
+
+                if inum > cur {
+                    cur = inum;
+                }
+            }
+        }
+    }
+
+    Ok(cur)
 }

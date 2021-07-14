@@ -31,6 +31,14 @@ pub type S3Result<T> = Result<T, S3Error>;
 
 #[async_trait]
 pub trait S3BackEnd {
+    async fn new(
+        bucket_name: &str,
+        endpoint: &str,
+        access_key: &str,
+        secret_key: &str,
+    ) -> S3Result<Self>
+    where
+        Self: Sized;
     async fn get_data(&self, file: &str) -> S3Result<Vec<u8>>;
     async fn get_partial_data(&self, file: &str, offset: usize, len: usize) -> S3Result<Vec<u8>>;
     async fn put_data(&self, file: &str, data: &[u8], offset: usize, len: usize) -> S3Result<()>;
@@ -49,9 +57,21 @@ pub struct S3BackEndImpl {
     bucket: Bucket,
 }
 
-impl S3BackEndImpl {
+macro_rules! resultify_anyhow {
+    ($e: expr) => {
+        match $e {
+            Ok(data) => Ok(data),
+            Err(ref anyhow_error) => {
+                Err(S3Error::S3InternalError(format_anyhow_error(anyhow_error)))
+            }
+        }
+    };
+}
+
+#[async_trait]
+impl S3BackEnd for S3BackEndImpl {
     #[allow(dead_code)]
-    pub async fn new(
+    async fn new(
         bucket_name: &str,
         endpoint: &str,
         access_key: &str,
@@ -79,21 +99,7 @@ impl S3BackEndImpl {
             bucket: bucket.bucket,
         })
     }
-}
 
-macro_rules! resultify_anyhow {
-    ($e: expr) => {
-        match $e {
-            Ok(data) => Ok(data),
-            Err(ref anyhow_error) => {
-                Err(S3Error::S3InternalError(format_anyhow_error(anyhow_error)))
-            }
-        }
-    };
-}
-
-#[async_trait]
-impl S3BackEnd for S3BackEndImpl {
     async fn get_data(&self, file: &str) -> S3Result<Vec<u8>> {
         resultify_anyhow!(self.bucket.get_object(file.to_string()).await).map(|(data, _)| data)
     }
@@ -274,6 +280,58 @@ pub fn format_anyhow_error(error: &anyhow::Error) -> String {
     let mut err_msg = err_msg_vec.as_slice().join(", caused by: ");
     err_msg.push_str(&format!(", root cause: {}", error.root_cause()));
     err_msg
+}
+
+pub struct DoNothingImpl {}
+
+#[async_trait]
+impl S3BackEnd for DoNothingImpl {
+    #[allow(dead_code)]
+    async fn new(_: &str, _: &str, _: &str, _: &str) -> S3Result<Self> {
+        Ok(Self {})
+    }
+
+    async fn get_data(&self, _: &str) -> S3Result<Vec<u8>> {
+        Ok(vec![])
+    }
+
+    async fn get_partial_data(&self, _: &str, _: usize, _: usize) -> S3Result<Vec<u8>> {
+        Ok(vec![])
+    }
+
+    async fn put_data(&self, _: &str, _: &[u8], _: usize, _: usize) -> S3Result<()> {
+        Ok(())
+    }
+    async fn get_len(&self, _: &str) -> S3Result<usize> {
+        Ok(0)
+    }
+    async fn list_file(&self, _: &str) -> S3Result<Vec<String>> {
+        Ok(vec![])
+    }
+
+    async fn create_dir(&self, _: &str) -> S3Result<()> {
+        Ok(())
+    }
+
+    async fn get_last_modified(&self, _: &str) -> S3Result<SystemTime> {
+        Ok(SystemTime::now())
+    }
+
+    async fn get_meta(&self, _: &str) -> S3Result<(usize, SystemTime)> {
+        Ok((0, SystemTime::now()))
+    }
+
+    async fn delete_data(&self, _: &str) -> S3Result<()> {
+        Ok(())
+    }
+
+    async fn put_data_vec(&self, _: &str, _: Vec<IoMemBlock>) -> S3Result<()> {
+        Ok(())
+    }
+
+    async fn rename(&self, _: &str, _: &str) -> S3Result<()> {
+        Ok(())
+    }
 }
 
 #[cfg(test)]

@@ -16,6 +16,7 @@ pub(crate) enum DistRequest {
     LoadDir(String),
     UpdateDir(UpdateDirArgs),
     RemoveDirEntry(RemoveDirEntryArgs),
+    GetInodeNum,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -139,6 +140,15 @@ pub(crate) fn push_file_attr(path: &str, attr: SerialFileAttr) -> Vec<u8> {
     bincode::serialize(&DistRequest::PushFileAttr((path.to_owned(), attr))).unwrap_or_else(|e| {
         panic!(
             "fail to serialize `PushFileAttr` distributed meta operation, {}",
+            e
+        )
+    })
+}
+
+pub(crate) fn get_ino_num() -> Vec<u8> {
+    bincode::serialize(&DistRequest::GetInodeNum).unwrap_or_else(|e| {
+        panic!(
+            "fail to serialize `GetInodeNum` distributed meta operation, {}",
             e
         )
     })

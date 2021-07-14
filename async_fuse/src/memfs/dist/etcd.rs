@@ -1,9 +1,9 @@
 use common::error::Context;
 use common::etcd_delegate::EtcdDelegate;
+use log::debug;
 use std::collections::HashSet;
 use std::env;
 use std::sync::Arc;
-use log::debug;
 
 /// Ip address environment var name
 const ENV_IP_ADDRESS: &str = "pod_ip_address";
@@ -116,14 +116,14 @@ pub(crate) async fn get_node_ip_and_port(
         Some(ip_and_port) => {
             debug!("node {} ip and port is {}", node_id, ip_and_port);
             Ok(ip_and_port)
-        },
-        None =>  {
+        }
+        None => {
             debug!("node {} missing ip and port information", node_id);
             Err(anyhow::Error::msg(format!(
-                        "Ip and port is not registered for Node {}",
-                        node_id_string
-                        )))
-        },
+                "Ip and port is not registered for Node {}",
+                node_id_string
+            )))
+        }
     }
 }
 
@@ -163,7 +163,7 @@ pub(crate) async fn register_volume(
             let mut hash = HashSet::new();
             hash.insert(node_id);
             hash
-        },
+        }
     };
 
     let volume_node_list_bin = bincode::serialize(&new_volume_node_list).unwrap_or_else(|e| {
@@ -224,7 +224,7 @@ pub(crate) async fn get_volume_nodes(
         None => {
             debug!("node set is empty");
             HashSet::new()
-        },
+        }
     };
 
     Ok(new_volume_node_list)
