@@ -11,6 +11,7 @@ use super::error::{Context, DatenLordResult};
 use super::util;
 
 /// The client to communicate with etcd
+#[allow(missing_debug_implementations)] // etcd_client::Client doesn't impl Debug
 #[derive(Clone)]
 pub struct EtcdDelegate {
     /// The inner etcd client
@@ -19,6 +20,7 @@ pub struct EtcdDelegate {
 
 impl EtcdDelegate {
     /// Build etcd client
+    #[inline]
     pub fn new(etcd_address_vec: Vec<String>) -> DatenLordResult<Self> {
         let etcd_rs_client = smol::block_on(Compat::new(async move {
             etcd_client::Client::connect(etcd_client::ClientConfig {
@@ -40,6 +42,7 @@ impl EtcdDelegate {
     }
 
     /// Lock a name with time out
+    #[inline]
     pub async fn lock(&self, name: &[u8], timeout: u64) -> DatenLordResult<Vec<u8>> {
         let lease_id = self
             .etcd_rs_client
@@ -73,10 +76,12 @@ impl EtcdDelegate {
     }
 
     /// Unlock with the key, which comes from the lock operation
-    pub async fn unlock<T: Into<Vec<u8>> + Clone>(&self, key: T) -> DatenLordResult<()> {
+    #[inline]
+    pub async fn unlock<T: Into<Vec<u8>> + Clone + Send>(&self, key: T) -> DatenLordResult<()> {
+        let key_clone = key.clone();
         self.etcd_rs_client
             .lock()
-            .unlock(etcd_client::EtcdUnlockRequest::new(key.clone()))
+            .unlock(etcd_client::EtcdUnlockRequest::new(key_clone))
             .await
             .with_context(|| {
                 format!(
@@ -160,6 +165,7 @@ impl EtcdDelegate {
     }
 
     /// Get key-value list from etcd
+    #[inline]
     pub async fn get_list<T: DeserializeOwned>(&self, prefix: &str) -> DatenLordResult<Vec<T>> {
         let req = etcd_client::EtcdRangeRequest::new(etcd_client::KeyRange::prefix(prefix));
         let mut resp = self.etcd_rs_client.kv().range(req).await.with_context(|| {
@@ -174,6 +180,7 @@ impl EtcdDelegate {
     }
 
     /// Get zero or one key-value pair from etcd
+    #[inline]
     pub async fn get_at_most_one_value<T: DeserializeOwned>(
         &self,
         key: &str,
@@ -183,6 +190,7 @@ impl EtcdDelegate {
     }
 
     /// Update a existing key value pair to etcd
+    #[inline]
     pub async fn update_existing_kv<
         T: DeserializeOwned + Serialize + Clone + Debug + Send + Sync,
     >(
@@ -199,6 +207,7 @@ impl EtcdDelegate {
     }
 
     /// Write a new key value pair to etcd
+    #[inline]
     pub async fn write_new_kv<T: DeserializeOwned + Serialize + Clone + Debug + Send + Sync>(
         &self,
         key: &str,
@@ -217,6 +226,7 @@ impl EtcdDelegate {
     }
 
     /// Write key value pair to etcd, if key exists, update it
+    #[inline]
     pub async fn write_or_update_kv<
         T: DeserializeOwned + Serialize + Clone + Debug + Send + Sync,
     >(
@@ -235,6 +245,7 @@ impl EtcdDelegate {
     }
 
     /// Delete an existing key value pair from etcd
+    #[inline]
     pub async fn delete_exact_one_value<T: DeserializeOwned + Clone + Debug + Send + Sync>(
         &self,
         key: &str,
@@ -257,6 +268,7 @@ impl EtcdDelegate {
 
     /// Delete all key value pairs from etcd
     #[allow(dead_code)]
+    #[inline]
     pub async fn delete_all(&self) -> DatenLordResult<()> {
         let mut req = etcd_client::EtcdDeleteRequest::new(etcd_client::KeyRange::all());
         req.set_prev_kv(false);

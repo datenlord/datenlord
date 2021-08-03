@@ -38,6 +38,7 @@
     clippy::multiple_crate_versions, // multi-version dependency crates is not able to fix
     clippy::panic, // allow debug_assert, panic in production code
     // clippy::panic_in_result_fn,
+    clippy::unknown_clippy_lints,  // allow rustc and clippy verison mismatch
 )]
 
 use log::debug;
