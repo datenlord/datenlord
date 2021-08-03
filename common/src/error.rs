@@ -211,6 +211,7 @@ impl<T, E> Context<T, E> for Result<T, E>
 where
     E: std::error::Error + Into<DatenLordError>,
 {
+    #[inline]
     fn add_context<C>(self, ctx: C) -> DatenLordResult<T>
     where
         C: Into<String>,
@@ -218,6 +219,7 @@ where
         self.map_err(|e| e.into().add_context(ctx))
     }
 
+    #[inline]
     fn with_context<C, F>(self, f: F) -> DatenLordResult<T>
     where
         C: Into<String>,
@@ -229,6 +231,7 @@ where
 
 impl DatenLordError {
     /// Add context for `DatenLordError`
+    #[inline]
     pub fn add_context<C>(mut self, ctx: C) -> Self
     where
         C: Into<String>,
@@ -271,6 +274,7 @@ impl DatenLordError {
         self
     }
     /// Add context for `DatenLordError` lazily
+    #[inline]
     pub fn with_context<C, F>(self, f: F) -> Self
     where
         C: Into<String>,
@@ -283,6 +287,7 @@ impl DatenLordError {
 macro_rules! implement_from {
     ($source: path, $target: ident) => {
         impl From<$source> for DatenLordError {
+            #[inline]
             fn from(error: $source) -> Self {
                 Self::$target {
                     source: error,
@@ -303,6 +308,7 @@ implement_from!(grpcio::Error, GrpcioErr);
 implement_from!(serde_json::Error, SerdeJsonErr);
 
 impl From<DatenLordError> for RpcStatusCode {
+    #[inline]
     fn from(error: DatenLordError) -> Self {
         match error {
             DatenLordError::IoErr { .. }
