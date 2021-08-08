@@ -15,6 +15,7 @@ categories = ["filesystem"]
 [dependencies]
 aligned-utils = "1.0.0"
 anyhow = "1.0.31"
+async-compat = "0.2.1"
 async-trait = "0.1.48"
 better-as = "0.2.0"
 clap = "2.33.3"
@@ -25,6 +26,8 @@ crossbeam-utils = "0.8.1"
 env_logger = "0.8.1"
 event-listener = "2.5.1"
 futures = "0.3.5"
+hyper = { version = "^0.14", features = ["server", "http1", "tcp"] }
+lazy_static = "^1.4"
 libc = "0.2.79"
 lockfree-cuckoohash = {git = "https://github.com/datenlord/lockfree-cuckoohash", rev = "e5849f18"}
 log = "0.4.6"
@@ -34,6 +37,7 @@ once_cell = "1.7.2"
 parking_lot = "0.11.1"
 pin-project-lite ="0.2.0"
 priority-queue = "1.1.0"
+prometheus = "0.12.0"
 ring-io = { git = "https://github.com/datenlord/ring-io", rev = "2f0506c" }
 smol = { version = "1.2.5" }
 thiserror = "1.0.22"

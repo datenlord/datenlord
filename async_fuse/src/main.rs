@@ -45,11 +45,21 @@ use log::debug;
 
 mod fuse;
 mod memfs;
+/// Datenlord metrics
+pub mod metrics;
 pub mod proactor;
 pub mod util;
+use async_compat::Compat;
 use common::error::Context;
 use common::etcd_delegate::EtcdDelegate;
 use fuse::session::Session;
+use hyper::{
+    header::CONTENT_TYPE,
+    service::{make_service_fn, service_fn},
+    Body, Request, Response, Server,
+};
+use metrics::CACHE_HITS;
+use prometheus::{Encoder, TextEncoder};
 use std::env;
 
 /// Ip address environment var name
@@ -193,6 +203,26 @@ async fn register_volume(
     Ok(())
 }
 
+/// Serve promethues requests, return metrics response
+async fn serve_req(_req: Request<Body>) -> Result<Response<Body>, hyper::Error> {
+    CACHE_HITS.inc();
+    let encoder = TextEncoder::new();
+
+    let metric_families = prometheus::gather();
+    let mut buffer = vec![];
+    encoder
+        .encode(&metric_families, &mut buffer)
+        .unwrap_or_else(|_| panic!("Fail to encode metrics"));
+
+    let response = Response::builder()
+        .status(200)
+        .header(CONTENT_TYPE, encoder.format_type())
+        .body(Body::from(buffer))
+        .unwrap_or_else(|_| panic!("Fail to build promethues response"));
+    Ok(response)
+}
+
+#[allow(clippy::too_many_lines)] //allow this for argument parser function as there is no other logic in this function
 fn main() -> anyhow::Result<()> {
     env_logger::init();
 
@@ -276,13 +306,22 @@ fn main() -> anyhow::Result<()> {
 
     let cache_capacity = match matches.value_of(CACHE_CAPACITY_ARG_NAME) {
         Some(cc) => cc.parse::<usize>().unwrap_or_else(|_| {
-            panic!(format!(
-                "cannot parse cache capacity in usize, the input is: {}",
-                cc
-            ))
+            panic!("cannot parse cache capacity in usize, the input is: {}", cc)
         }),
         None => CACHE_DEFAULT_CAPACITY,
     };
+
+    smol::spawn(Compat::new(async move {
+        let addr = ([0, 0, 0, 0], 9897).into();
+        debug!("Listening oN!!!!!!!!!!: {}", addr);
+        let serve_future = Server::bind(&addr).serve(make_service_fn(|_| async {
+            Ok::<_, hyper::Error>(service_fn(serve_req))
+        }));
+        if let Err(err) = serve_future.await {
+            debug!("Metric server error: {}", err);
+        }
+    }))
+    .detach();
 
     smol::block_on(async move {
         let node_id = register_node_id(&etcd_delegate).await?;
@@ -291,6 +330,7 @@ fn main() -> anyhow::Result<()> {
         let fs = memfs::MemFs::new(mount_point, cache_capacity).await?;
         let ss = Session::new(mount_point, fs).await?;
         ss.run().await?;
+
         Ok(())
     })
 }

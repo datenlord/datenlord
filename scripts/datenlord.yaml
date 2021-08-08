@@ -202,7 +202,9 @@ spec:
           securityContext:
             privileged: true
             allowPrivilegeEscalation: true
-          image: datenlord/datenlord:e2e_test
+          image: 34342/datenlord:e2e_test
+          ports:
+            - containerPort: 9897
           imagePullPolicy: "IfNotPresent"
           args:
             - "--mountpoint=$(FUSE_MOUNT_DIR)"
@@ -371,6 +373,24 @@ spec:
         #  hostPath:
         #    path: /var/lib/kubelet/plugins
         #    type: Directory
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: datenlord-metric-exporter-service
+  namespace: csi-datenlord
+  annotations:
+      prometheus.io/scrape: 'true'
+      prometheus.io/port:   '9897'
+spec:
+  selector: 
+    app: csi-nodeplugin-datenlord
+  type: NodePort  
+  ports:
+    - port: 8088
+      targetPort: 9897
+      nodePort: 30001
 
 ---
 apiVersion: v1
