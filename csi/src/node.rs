@@ -241,6 +241,7 @@ impl Node for NodeImpl {
         util::spawn_grpc_task(sink, task);
     }
 
+    #[allow(clippy::too_many_lines)]
     fn node_publish_volume(
         &mut self,
         _ctx: RpcContext,
@@ -252,7 +253,6 @@ impl Node for NodeImpl {
 
         let task = async move {
             NodeImplInner::node_publish_volume_pre_check(&req)?;
-
             let read_only = req.get_readonly();
             let volume_context = req.get_volume_context();
             let device_id = match volume_context.get("deviceID") {
@@ -304,7 +304,17 @@ impl Node for NodeImpl {
                     .meta_data
                     .update_volume_meta_data(vol_id, &volume)
                     .await?;
-                volume.create_vol_dir()?;
+                if !volume.vol_path.exists() {
+                    panic!(
+                        "volume path {:?} doesn't exist on node ID={}",
+                        volume.vol_path, node_id
+                    );
+                }
+                // TODO: (walkaround) need to list dir before access dir.
+                let files = std::fs::read_dir(volume.vol_path)?
+                    .map(|res| res.map(|e| e.path()))
+                    .collect::<Result<Vec<_>, std::io::Error>>()?;
+                debug!("current files under volume: {:?}", files);
             }
 
             let target_dir = req.get_target_path();
@@ -352,7 +362,6 @@ impl Node for NodeImpl {
                     }
                 }
             }
-
             let r = NodePublishVolumeResponse::new();
             Ok(r)
         };
