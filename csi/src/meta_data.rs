@@ -787,15 +787,17 @@ impl MetaData {
 
         // Volume ephemeral field cannot be changed
         let node_vol_key = format!("{}/{}/{}", NODE_VOLUME_PREFIX, self.get_node_id(), vol_id);
-        let node_vol_pre_value = self
-            .etcd_delegate
-            .update_existing_kv(&node_vol_key, &volume.ephemeral)
+        //let node_vol_pre_value = self
+        self.etcd_delegate
+            .write_or_update_kv(node_vol_key.clone(), &volume.ephemeral)
             .await?;
+        /*
         debug_assert_eq!(
             node_vol_pre_value, vol_id_pre_value.ephemeral,
             "replaced volume key={} value not match",
             node_vol_key,
         );
+        */
 
         Ok(vol_id_pre_value)
     }
@@ -832,6 +834,7 @@ impl MetaData {
 
     /// Delete node id from the volume meta data.
     /// If the node id is the last one then delete the whole meta data.
+    /// Delete voume meta data from etcd
     pub async fn delete_volume_meta_data(
         &self,
         vol_id: &str,
@@ -845,39 +848,35 @@ impl MetaData {
             .lock(etcd_vol_lock.as_bytes(), 10)
             .await
             .with_context(|| format!("failed to lock {}", etcd_vol_lock))?;
-        let mut volume = self.get_volume_by_id(vol_id).await?;
-        if !volume.check_exist_on_node_id(node_id) {
+        let volume = self.get_volume_by_id(vol_id).await?;
+        if volume.get_primary_node_id() != node_id {
             panic!(
-                "node ID={} is not in volume node IDs={:?}",
-                node_id, volume.node_ids
+                "Should only delete volume on primary node ID={}
+                request node ID={}",
+                volume.get_primary_node_id(),
+                node_id
             );
         }
 
-        let pre_volume = if volume.node_ids.len() == 1 {
-            // TODO: use etcd transancation?
-            let vol_id_key = format!("{}/{}", VOLUME_ID_PREFIX, vol_id);
-            let vol_id_pre_value: DatenLordVolume = self
-                .etcd_delegate
-                .delete_exact_one_value(&vol_id_key)
-                .await?;
+        // TODO: use etcd transancation?
+        let vol_id_key = format!("{}/{}", VOLUME_ID_PREFIX, vol_id);
+        let vol_id_pre_value: DatenLordVolume = self
+            .etcd_delegate
+            .delete_exact_one_value(&vol_id_key)
+            .await?;
 
-            let vol_name_key = format!("{}/{}", VOLUME_NAME_PREFIX, vol_id_pre_value.vol_name);
-            let _vol_name_pre_value: String = self
-                .etcd_delegate
-                .delete_exact_one_value(&vol_name_key)
-                .await?;
+        let vol_name_key = format!("{}/{}", VOLUME_NAME_PREFIX, vol_id_pre_value.vol_name);
+        let vol_name_pre_value: String = self
+            .etcd_delegate
+            .delete_exact_one_value(&vol_name_key)
+            .await?;
 
-            let node_vol_key = format!("{}/{}/{}", NODE_VOLUME_PREFIX, node_id, vol_id);
-            let _node_vol_pre_value: bool = self
-                .etcd_delegate
-                .delete_exact_one_value(&node_vol_key)
-                .await?;
+        let node_vol_key = format!("{}/{}/{}", NODE_VOLUME_PREFIX, node_id, vol_id);
+        let _node_vol_pre_value: bool = self
+            .etcd_delegate
+            .delete_exact_one_value(&node_vol_key)
+            .await?;
 
-            vol_id_pre_value
-        } else {
-            volume.node_ids.retain(|node| node != node_id);
-            self.update_volume_meta_data(vol_id, &volume).await?
-        };
         self.etcd_delegate
             .unlock(lock_key)
             .await
@@ -915,9 +914,9 @@ impl MetaData {
         }
         debug!(
             "deleted volume ID={} name={} at node ID={}",
-            vol_id, pre_volume.vol_name, node_id,
+            vol_id, vol_name_pre_value, node_id,
         );
-        Ok(pre_volume)
+        Ok(vol_id_pre_value)
     }
 
     /// Decompress snapshot of volume to destination

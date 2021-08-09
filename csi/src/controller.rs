@@ -402,30 +402,28 @@ impl Controller for ControllerImpl {
             // Do not return gRPC error when delete failed for idempotency
             match self_inner.meta_data.get_volume_by_id(vol_id).await {
                 Ok(vol) => {
-                    // TODO don't fail on first error.
-                    for node_id in vol.node_ids {
-                        let node = self_inner.meta_data.get_node_by_id(&node_id).await?;
-                        let client = MetaData::build_worker_client(&node);
-                        let worker_delete_res = client
-                            .worker_delete_volume_async(&req)?
-                            .await
-                            .with_context(|| {
-                                format!(
-                                    "failed to delete volume ID={} on node ID={}",
-                                    vol_id, node_id,
-                                )
-                            });
-                        match worker_delete_res {
-                            Ok(_) => info!("successfully deleted volume ID={}", vol_id),
-                            Err(e) => {
-                                // Return error here?
-                                // Should we return this error, old logic will ignore this
-                                warn!(
-                                    "failed to delete volume ID={} on node ID={}, the error is: {}",
-                                    vol_id, node_id, e,
-                                );
-                                return Err(e);
-                            }
+                    let primary_node_id = vol.get_primary_node_id();
+                    let node = self_inner.meta_data.get_node_by_id(primary_node_id).await?;
+                    let client = MetaData::build_worker_client(&node);
+                    let worker_delete_res = client
+                        .worker_delete_volume_async(&req)?
+                        .await
+                        .with_context(|| {
+                            format!(
+                                "failed to delete volume ID={} on node ID={}",
+                                vol_id, primary_node_id,
+                            )
+                        });
+                    match worker_delete_res {
+                        Ok(_) => info!("successfully deleted volume ID={}", vol_id),
+                        Err(e) => {
+                            // Return error here?
+                            // Should we return this error, old logic will ignore this
+                            warn!(
+                                "failed to delete volume ID={} on node ID={}, the error is: {}",
+                                vol_id, primary_node_id, e,
+                            );
+                            return Err(e);
                         }
                     }
                 }

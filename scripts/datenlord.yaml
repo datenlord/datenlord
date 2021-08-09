@@ -211,6 +211,8 @@ spec:
             - "--volume_info=$(FUSE_VOLUME_INFO)"
             - "--etcd=$(ETCD_ENDPOINT)"
             - "--capacity=$(CACHE_CAPACITY)"
+            - "--port=8800"
+            - "--volume_type=none"
           lifecycle:
             #postStart:
             #  exec:
@@ -224,16 +226,20 @@ spec:
             - name: ETCD_ENDPOINT
               value: csi-etcd-svc:2379
             - name: FUSE_VOLUME_INFO
-              value: https://mybucket
+              value: fuse-test-bucket\;http://127.0.0.1:9000\;test\;test1234
               # The capacity for the cache in memfs, 1GB
             - name: CACHE_CAPACITY
               value: "1073741824"
+            - name: SMOL_THREADS
+              value: "10"
             - name: RUST_LOG
               value: debug
             - name: RUST_BACKTRACE
               value: full
             - name: pod_ip_address
-              value: "127.0.0.1"
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
           volumeMounts:
             - name: datenlord-data-dir
               # This mount path must be the same inside and outside container
