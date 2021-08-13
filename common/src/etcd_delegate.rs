@@ -19,7 +19,7 @@ pub struct EtcdDelegate {
     end_point: Vec<String>,
 }
 
-impl fmt::Debug for EtcdDelegate {
+impl Debug for EtcdDelegate {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("EtcdDelegate")
             .field("endpoint", &self.end_point)
