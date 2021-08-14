@@ -37,6 +37,7 @@
     clippy::module_name_repetitions, // repeation of module name in a struct name is not big deal
     clippy::multiple_crate_versions, // multi-version dependency crates is not able to fix
     clippy::panic, // allow debug_assert, panic in production code
+    clippy::unknown_clippy_lints,  // allow rustc and clippy verison mismatch
 )]
 
 // Ignore format and lint to generated code
