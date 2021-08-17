@@ -739,7 +739,11 @@ impl MemBlockBucket {
     /// Insert one `MemBlock` into the `index` position of the bucket
     #[allow(dead_code)]
     pub(crate) fn insert(&mut self, index: usize, mem: MemBlock) {
-        self.inner.write().insert(index, Some(mem));
+        if let Some(memblock) = self.inner.write().get_mut(index) {
+            *memblock = Some(mem);
+        } else {
+            panic!("index={} is out of bound of MemBlockBucket", index);
+        }
     }
 }
 
