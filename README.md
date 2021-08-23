@@ -143,13 +143,13 @@ The CSI E2E test setup is a bit complex, its action script [cron.yml](.github/wo
 ### Sub-Projects
 
 DatenLord has several related sub-projects, mostly working in progress, listed alphabetically:
-* [async-fuse](../async-fuse) Native async Rust library for FUSE;
-* [async-rdma](../async-rdma) Async and safe Rust library for RDMA;
-* [etcd-client](../etcd-client) Async etcd client SDK in Rust;
-* [lockfree-cuckoohash](../lockfree-cuckoohash) Lock-free hashmap in Rust;
-* [LordOS](../LordOS) Pure containerized Linux distribution;
-* [ring-io](../ring-io) Async and safe Rust library for io_uring;
-* [s3-server](../s3-server) S3 server in Rust.
+* [async-fuse](./async_fuse) Native async Rust library for FUSE;
+* [async-rdma](https://github.com/datenlord/async-rdma) Async and safe Rust library for RDMA;
+* [etcd-client](https://github.com/datenlord/etcd-client) Async etcd client SDK in Rust;
+* [lockfree-cuckoohash](https://github.com/datenlord/lockfree-cuckoohash) Lock-free hashmap in Rust;
+* [LordOS](https://github.com/datenlord/LordOS) Pure containerized Linux distribution;
+* [ring-io](https://github.com/datenlord/ring-io) Async and safe Rust library for io_uring;
+* [s3-server](https://github.com/datenlord/s3-server) S3 server in Rust.
 
 ## Road Map
 - [ ] 0.1 Refactor async fuse lib to provide clear async APIs, which is used by the datenlord filesystem.
