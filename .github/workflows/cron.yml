@@ -223,6 +223,7 @@ jobs:
           test -n "$FOUND_PATH" || (echo "FAILED TO FIND PROMETHEUS SERVICE" && /bin/false)
       - name: Datenlord Alerting Test
         run: |
+          sleep 60
           NODE_IP=`kubectl get nodes -A -o wide | awk 'FNR == 2 {print $6}'`
           ALERTS=`curl --silent $NODE_IP:31000/api/v2/alerts | grep 'High Memory Usage'`
           test -n "$ALERTS" || (echo "FAILED TO FIND ALERTS" && /bin/false)

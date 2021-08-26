@@ -5,6 +5,7 @@ use super::dir::DirEntry;
 use super::fs_util::{self, FileAttr};
 use crate::fuse::fuse_reply::AsIoVec;
 use crate::fuse::protocol::INum;
+use crate::metrics;
 use crate::util;
 use anyhow::Context;
 use log::debug;
@@ -473,8 +474,14 @@ impl Node {
         match self.data {
             NodeData::RegFile(ref cache) => {
                 let file_cache = cache.get_file_cache(self.full_path.as_bytes(), offset, len);
-                file_cache.is_empty()
-                    || file_cache.iter().filter(|b| !(*b).can_convert()).count() != 0
+                let cache_miss = file_cache.is_empty()
+                    || file_cache.iter().filter(|b| !(*b).can_convert()).count() != 0;
+                if cache_miss {
+                    metrics::CACHE_MISSES.inc();
+                } else {
+                    metrics::CACHE_HITS.inc();
+                }
+                cache_miss
             }
             NodeData::Directory(..) | NodeData::SymLink(..) => {
                 panic!("need_load_file_data should handle regular file")

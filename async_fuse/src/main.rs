@@ -45,11 +45,14 @@ use log::debug;
 
 mod fuse;
 mod memfs;
+/// Datenlord metrics
+pub mod metrics;
 pub mod proactor;
 pub mod util;
 use common::error::Context;
 use common::etcd_delegate::EtcdDelegate;
 use fuse::session::Session;
+use metrics::start_metrics_server;
 use std::env;
 
 /// Ip address environment var name
@@ -283,6 +286,8 @@ fn main() -> anyhow::Result<()> {
         }),
         None => CACHE_DEFAULT_CAPACITY,
     };
+
+    start_metrics_server();
 
     smol::block_on(async move {
         let node_id = register_node_id(&etcd_delegate).await?;
