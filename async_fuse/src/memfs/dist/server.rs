@@ -10,6 +10,7 @@ use super::types::{self, SerialFileAttr};
 use crate::memfs::s3_wrapper::S3BackEnd;
 use log::debug;
 use std::fmt::{self, Debug};
+use std::net::IpAddr;
 use std::net::{TcpListener, TcpStream};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
@@ -63,6 +64,9 @@ impl CacheServer {
     ) -> Self {
         let ip_copy = ip.clone();
         let port_copy = port.clone();
+        let ip_addr: IpAddr = ip
+            .parse()
+            .unwrap_or_else(|e| panic!("Failed to parse ip {}, error is {}", ip, e));
 
         let th = thread::spawn(move || {
             let listener =
@@ -72,28 +76,49 @@ impl CacheServer {
                         ip_copy, port_copy, e
                     )
                 });
-            for stream in listener.incoming() {
-                let stream = stream.unwrap_or_else(|e| {
-                    panic!("Fail to create incoming tcp stream, error is {}", e)
-                });
-                let cache_clone = cache.clone();
-                let meta_clone = meta.clone();
-
-                smol::spawn(async move {
-                    let mut local_stream = stream;
-                    match dispatch(&mut local_stream, cache_clone, meta_clone).await {
-                        Ok(is_continue) => {
-                            if !is_continue {
-                                return;
+            loop {
+                match listener.accept() {
+                    Ok((stream, addr)) => {
+                        // Receive connection from local means to turnoff server.
+                        if addr.ip() == ip_addr {
+                            let mut buf = Vec::new();
+                            let mut local_stream = stream;
+                            if let Err(e) = tcp::read_message(&mut local_stream, &mut buf) {
+                                panic!(
+                                    "fail to read distributed cache request from tcp stream, {}",
+                                    e
+                                );
                             }
-                        }
-                        Err(e) => panic!("process cache request error: {}", e),
-                    }
-                })
-                .detach();
-            }
 
-            return true;
+                            let request = request::deserialize_cache(buf.as_slice());
+                            if let DistRequest::TurnOff = request {
+                                turnoff(&mut local_stream).unwrap_or_else(|e| {
+                                    panic!("failed to send turnoff reply, error is {}", e)
+                                });
+                                return true;
+                            } else {
+                                panic!(
+                                    "should only receive turnoff request from local, request is {:?}",
+                                    request
+                                );
+                            }
+                        } else {
+                            let cache_clone = cache.clone();
+                            let meta_clone = meta.clone();
+
+                            smol::spawn(async move {
+                                let mut local_stream = stream;
+                                match dispatch(&mut local_stream, cache_clone, meta_clone).await {
+                                    Ok(_) => {}
+                                    Err(e) => panic!("process cache request error: {}", e),
+                                }
+                            })
+                            .detach();
+                        }
+                    }
+                    Err(e) => panic!("Fail to create incoming tcp stream, error is {}", e),
+                }
+            }
         });
 
         Self {
