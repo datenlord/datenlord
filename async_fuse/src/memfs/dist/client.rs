@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 pub(crate) async fn send_to_others<F, T>(
     etcd_client: Arc<EtcdDelegate>,
-    node_id: u64,
+    node_id: &str,
     volume_info: &str,
     data: &[u8],
     filter: F,
@@ -26,7 +26,7 @@ where
     if let Ok(nodes) = etcd::get_volume_nodes(etcd_client.clone(), node_id, volume_info).await {
         for other_id in nodes {
             if let Ok(ref ip_and_port) =
-                etcd::get_node_ip_and_port(etcd_client.clone(), other_id).await
+                etcd::get_node_ip_and_port(etcd_client.clone(), &other_id).await
             {
                 let mut one_result = Vec::new();
                 let mut stream = TcpStream::connect(ip_and_port)
@@ -49,7 +49,7 @@ where
 
 pub(crate) async fn load_dir(
     etcd_client: Arc<EtcdDelegate>,
-    node_id: u64,
+    node_id: &str,
     volume_info: &str,
     path: &str,
 ) -> anyhow::Result<Option<BTreeMap<String, DirEntry>>> {
@@ -77,7 +77,7 @@ pub(crate) async fn load_dir(
 
 pub(crate) async fn update_dir(
     etcd_client: Arc<EtcdDelegate>,
-    node_id: u64,
+    node_id: &str,
     volume_info: &str,
     parent: &str,
     child: &str,
@@ -100,7 +100,7 @@ pub(crate) async fn update_dir(
 
 pub(crate) async fn remove_dir_entry(
     etcd_client: Arc<EtcdDelegate>,
-    node_id: u64,
+    node_id: &str,
     volume_info: &str,
     parent: &str,
     child: &str,
@@ -122,7 +122,7 @@ pub(crate) async fn remove_dir_entry(
 
 pub(crate) async fn get_attr(
     etcd_client: Arc<EtcdDelegate>,
-    node_id: u64,
+    node_id: &str,
     volume_info: &str,
     path: &str,
 ) -> anyhow::Result<Option<FileAttr>> {
@@ -149,7 +149,7 @@ pub(crate) async fn get_attr(
 
 pub(crate) async fn push_attr(
     etcd_client: Arc<EtcdDelegate>,
-    node_id: u64,
+    node_id: &str,
     volume_info: &str,
     path: &str,
     attr: &FileAttr,
@@ -172,7 +172,7 @@ pub(crate) async fn push_attr(
 /// end is included
 pub(crate) async fn invalidate(
     etcd_client: Arc<EtcdDelegate>,
-    node_id: u64,
+    node_id: &str,
     volume_info: &str,
     path: &str,
     start: usize,
@@ -198,7 +198,7 @@ pub(crate) async fn invalidate(
 /// end is included
 pub(crate) async fn read_data(
     etcd_client: Arc<EtcdDelegate>,
-    node_id: u64,
+    node_id: &str,
     volume_info: &str,
     path: &str,
     start: usize,
@@ -210,7 +210,7 @@ pub(crate) async fn read_data(
     if let Ok(nodes) = etcd::get_volume_nodes(etcd_client.clone(), node_id, volume_info).await {
         for other_id in nodes {
             if let Ok(ref ip_and_port) =
-                etcd::get_node_ip_and_port(etcd_client.clone(), other_id).await
+                etcd::get_node_ip_and_port(etcd_client.clone(), &other_id).await
             {
                 {
                     let mut result = Vec::new();
@@ -244,7 +244,7 @@ pub(crate) async fn read_data(
 
 pub(crate) async fn get_ino_num(
     etcd_client: Arc<EtcdDelegate>,
-    node_id: u64,
+    node_id: &str,
     volume_info: &str,
     default: u32,
 ) -> anyhow::Result<u32> {
@@ -254,7 +254,7 @@ pub(crate) async fn get_ino_num(
     if let Ok(nodes) = etcd::get_volume_nodes(etcd_client.clone(), node_id, volume_info).await {
         for other_id in nodes {
             if let Ok(ref ip_and_port) =
-                etcd::get_node_ip_and_port(etcd_client.clone(), other_id).await
+                etcd::get_node_ip_and_port(etcd_client.clone(), &other_id).await
             {
                 let mut stream = TcpStream::connect(ip_and_port)
                     .unwrap_or_else(|e| panic!("fail connect to {}, error: {}", ip_and_port, e));

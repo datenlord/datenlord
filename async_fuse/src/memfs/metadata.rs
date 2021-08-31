@@ -37,7 +37,7 @@ pub trait MetaData {
         ip: &str,
         port: &str,
         etcd_client: EtcdDelegate,
-        node_id: u64,
+        node_id: &str,
         volume_info: &str,
     ) -> (Arc<Self>, Option<CacheServer>);
 
@@ -106,7 +106,7 @@ impl MetaData for DefaultMetaData {
         _: &str,
         _: &str,
         _: EtcdDelegate,
-        _: u64,
+        _: &str,
         _: &str,
     ) -> (Arc<Self>, Option<CacheServer>) {
         let root_path = Path::new(root_path)

@@ -50,7 +50,7 @@ pub struct S3MetaData<S: S3BackEnd + Send + Sync + 'static> {
     /// Current available fd, it'll increase after using
     pub(crate) cur_fd: AtomicU32,
     /// Current service id
-    pub(crate) node_id: u64,
+    pub(crate) node_id: String,
     /// Volume Info
     pub(crate) volume_info: String,
     /// Full path and node mapping
@@ -73,7 +73,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         ip: &str,
         port: &str,
         etcd_client: EtcdDelegate,
-        node_id: u64,
+        node_id: &str,
         volume_info: &str,
     ) -> (Arc<Self>, Option<CacheServer>) {
         let (bucket_name, endpoint, access_key, secret_key) = parse_s3_info(s3_info);
@@ -99,7 +99,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
             data_cache: data_cache.clone(),
             cur_inum: AtomicU32::new(2),
             cur_fd: AtomicU32::new(4),
-            node_id,
+            node_id: node_id.to_owned(),
             volume_info: volume_info.to_owned(),
             path2inum: RwLock::new(BTreeMap::new()),
         });
