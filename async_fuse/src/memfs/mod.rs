@@ -126,7 +126,7 @@ impl<M: MetaData + Send + Sync + 'static> MemFs<M> {
         ip: &str,
         port: &str,
         etcd_client: EtcdDelegate,
-        node_id: u64,
+        node_id: &str,
         volume_info: &str,
     ) -> anyhow::Result<Self> {
         let (metadata, server) = M::new(

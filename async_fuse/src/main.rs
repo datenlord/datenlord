@@ -47,6 +47,7 @@ mod memfs;
 pub mod metrics;
 pub mod proactor;
 pub mod util;
+
 use common::etcd_delegate::EtcdDelegate;
 use fuse::session::Session;
 use metrics::start_metrics_server;
@@ -54,6 +55,7 @@ use std::env;
 use log::debug;
 use memfs::dist;
 use memfs::s3_wrapper::{DoNothingImpl, S3BackEndImpl};
+use std::net::IpAddr;
 
 /// Service port number
 const PORT_NUM_ARG_NAME: &str = "port";
@@ -63,6 +65,10 @@ const MOUNT_POINT_ARG_NAME: &str = "mountpoint";
 const CACHE_CAPACITY_ARG_NAME: &str = "capacity";
 /// Argument name of ETCD addresses
 const ETCD_ADDRESS_ARG_NAME: &str = "etcd";
+/// Argument name of Node ID
+const NODE_ID_ARG_NAME: &str = "nodeid";
+/// Argument name of Node IP
+const NODE_IP_ARG_NAME: &str = "nodeip";
 /// Argument name of Volume information
 const VOLUME_INFO_ARG_NAME: &str = "volume_info";
 /// Argument name of Volume type
@@ -122,6 +128,25 @@ fn main() -> anyhow::Result<()> {
                 ),
         )
         .arg(
+            clap::Arg::with_name(NODE_ID_ARG_NAME)
+                .long(NODE_ID_ARG_NAME)
+                .value_name("NODE ID")
+                .takes_value(true)
+                .required(true)
+                .help(
+                    "Set the name of the node, \
+                        should be a real host name, \
+                        required argument, no default value",
+                ),
+        )
+        .arg(
+            clap::Arg::with_name(NODE_IP_ARG_NAME)
+                .long(NODE_IP_ARG_NAME)
+                .value_name("NODE IP")
+                .takes_value(true)
+                .help("Set the ip of the node"),
+        )
+        .arg(
             clap::Arg::with_name(VOLUME_INFO_ARG_NAME)
                 .short("v")
                 .long(VOLUME_INFO_ARG_NAME)
@@ -174,6 +199,16 @@ fn main() -> anyhow::Result<()> {
         None => panic!("etcd addresses must be set, no default value"),
     };
 
+    let node_id = match matches.value_of(NODE_ID_ARG_NAME) {
+        Some(n) => n.to_owned(),
+        None => panic!("No input node ID"),
+    };
+    let ip_address: IpAddr = match matches.value_of(NODE_IP_ARG_NAME) {
+        Some(n) => n.parse().unwrap_or_else(|_| panic!("Invalid IP address")),
+        None => panic!("No input node ip"),
+    };
+    let node_ip = ip_address.to_string();
+
     let volume_info = match matches.value_of(VOLUME_INFO_ARG_NAME) {
         Some(vi) => vi,
         None => panic!("No volume information input"),
@@ -212,18 +247,18 @@ fn main() -> anyhow::Result<()> {
     start_metrics_server();
 
     smol::block_on(async move {
-        let (node_id, ip) = dist::etcd::register_node_id(&etcd_delegate, port).await?;
-        dist::etcd::register_volume(&etcd_delegate, node_id, volume_info).await?;
+        dist::etcd::register_node_id(&etcd_delegate, &node_id, &node_ip.to_string(), port).await?;
+        dist::etcd::register_volume(&etcd_delegate, &node_id, volume_info).await?;
         let mount_point = std::path::Path::new(&mount_point_str);
         match volume_type {
             VolumeType::Local => {
                 let fs: memfs::MemFs<memfs::DefaultMetaData> = memfs::MemFs::new(
                     mount_point_str,
                     cache_capacity,
-                    &ip,
+                    &node_ip,
                     port,
                     etcd_delegate,
-                    node_id,
+                    &node_id,
                     volume_info,
                 )
                 .await?;
@@ -234,10 +269,10 @@ fn main() -> anyhow::Result<()> {
                 let fs: memfs::MemFs<memfs::S3MetaData<S3BackEndImpl>> = memfs::MemFs::new(
                     volume_info,
                     cache_capacity,
-                    &ip,
+                    &node_ip,
                     port,
                     etcd_delegate,
-                    node_id,
+                    &node_id,
                     volume_info,
                 )
                 .await?;
@@ -248,10 +283,10 @@ fn main() -> anyhow::Result<()> {
                 let fs: memfs::MemFs<memfs::S3MetaData<DoNothingImpl>> = memfs::MemFs::new(
                     volume_info,
                     cache_capacity,
-                    &ip,
+                    &node_ip,
                     port,
                     etcd_delegate,
-                    node_id,
+                    &node_id,
                     volume_info,
                 )
                 .await?;

@@ -210,6 +210,8 @@ spec:
             - "--mountpoint=$(FUSE_MOUNT_DIR)"
             - "--volume_info=$(FUSE_VOLUME_INFO)"
             - "--etcd=$(ETCD_ENDPOINT)"
+            - "--nodeid=$(NODE_ID)"
+            - "--nodeip=$(NODE_IP)"
             - "--capacity=$(CACHE_CAPACITY)"
             - "--port=8800"
             - "--volume_type=none"
@@ -236,7 +238,11 @@ spec:
               value: debug
             - name: RUST_BACKTRACE
               value: full
-            - name: pod_ip_address
+            - name: NODE_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: NODE_IP
               valueFrom:
                 fieldRef:
                   fieldPath: status.podIP

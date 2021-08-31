@@ -52,7 +52,7 @@ pub struct GlobalCache {
     /// Etcd client, only distributed fs need this
     etcd_client: Option<Arc<EtcdDelegate>>,
     /// Node Id, only distributed fs need this
-    node_id: Option<u64>,
+    node_id: Option<String>,
 }
 
 impl Debug for GlobalCache {
@@ -118,7 +118,7 @@ impl GlobalCache {
         block_size: usize,
         capacity: usize,
         etcd_client: Arc<EtcdDelegate>,
-        node_id: u64,
+        node_id: &str,
     ) -> Self {
         Self {
             inner: HashMap::new(),
@@ -128,7 +128,7 @@ impl GlobalCache {
             block_size,
             bucket_size_in_block: MEMORY_BUCKET_VEC_SIZE,
             etcd_client: Some(etcd_client),
-            node_id: Some(node_id),
+            node_id: Some(node_id.to_owned()),
         }
     }
 
@@ -475,9 +475,9 @@ impl GlobalCache {
             });
 
             if let Some(ref etcd) = self.etcd_client {
-                if let Some(id) = self.node_id {
+                if let Some(ref id) = self.node_id {
                     smol::block_on(async {
-                        if let Err(e) = etcd::add_node_to_file_list(etcd, id, file_name).await {
+                        if let Err(e) = etcd::add_node_to_file_list(etcd, &id, file_name).await {
                             panic!(
                                 "Cannot add node {} to file {:?} node list, error: {}",
                                 id, file_name, e
@@ -647,9 +647,9 @@ impl GlobalCache {
 
     pub(crate) fn remove_file_cache(&self, file_name: &[u8]) -> bool {
         if let Some(ref etcd) = self.etcd_client {
-            if let Some(id) = self.node_id {
+            if let Some(ref id) = self.node_id {
                 smol::block_on(async {
-                    if let Err(e) = etcd::remove_node_from_file_list(etcd, id, file_name).await {
+                    if let Err(e) = etcd::remove_node_from_file_list(etcd, &id, file_name).await {
                         panic!(
                             "Cannot remove node {} to file {:?} node list, error: {}",
                             id, file_name, e

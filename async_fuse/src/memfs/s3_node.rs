@@ -105,7 +105,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
         if broadcast {
             if let Err(e) = dist_client::push_attr(
                 self.meta.etcd_client.clone(),
-                self.meta.node_id,
+                &self.meta.node_id,
                 &self.meta.volume_info,
                 &self.full_path,
                 &new_attr,
@@ -123,7 +123,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
         let default = self.meta.cur_inum();
         let cur_inum = dist_client::get_ino_num(
             self.meta.etcd_client.clone(),
-            self.meta.node_id,
+            &self.meta.node_id,
             &self.meta.volume_info,
             default,
         )
@@ -260,7 +260,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
         } else {
             match dist_client::get_attr(
                 self.meta.etcd_client.clone(),
-                self.meta.node_id,
+                &self.meta.node_id,
                 &self.meta.volume_info,
                 &absolute_path,
             )
@@ -293,7 +293,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
             let entry = DirEntry::new(child_attr.ino, child_dir_name.to_string(), SFlag::S_IFDIR);
             dist_client::update_dir(
                 self.meta.etcd_client.clone(),
-                self.meta.node_id,
+                &self.meta.node_id,
                 &self.meta.volume_info,
                 &self.full_path,
                 child_dir_name,
@@ -360,7 +360,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
             let absolute_path = self.absolute_path_with_child(child_file_name).await;
             match dist_client::get_attr(
                 self.meta.etcd_client.clone(),
-                self.meta.node_id,
+                &self.meta.node_id,
                 &self.meta.volume_info,
                 &absolute_path,
             )
@@ -393,7 +393,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
             let entry = DirEntry::new(child_attr.ino, child_file_name.to_string(), SFlag::S_IFREG);
             dist_client::update_dir(
                 self.meta.etcd_client.clone(),
-                self.meta.node_id,
+                &self.meta.node_id,
                 &self.meta.volume_info,
                 &self.full_path,
                 child_file_name,
@@ -484,7 +484,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
             );
             dist_client::update_dir(
                 self.meta.etcd_client.clone(),
-                self.meta.node_id,
+                &self.meta.node_id,
                 &self.meta.volume_info,
                 &self.full_path,
                 child_symlink_name,
@@ -915,7 +915,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
                 // TODO: really read dir from S3
                 let entries = match dist_client::load_dir(
                     self.meta.etcd_client.clone(),
-                    self.meta.node_id,
+                    &self.meta.node_id,
                     &self.meta.volume_info,
                     &self.full_path,
                 )
@@ -939,7 +939,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
 
                 let file_data_vec = match dist_client::read_data(
                     self.meta.etcd_client.clone(),
-                    self.meta.node_id,
+                    &self.meta.node_id,
                     &self.meta.volume_info,
                     &self.full_path,
                     aligned_offset
@@ -994,7 +994,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
     async fn insert_entry_for_rename(&mut self, child_entry: DirEntry) -> Option<DirEntry> {
         dist_client::update_dir(
             self.meta.etcd_client.clone(),
-            self.meta.node_id,
+            &self.meta.node_id,
             &self.meta.volume_info,
             &self.full_path,
             child_entry.entry_name(),
@@ -1025,7 +1025,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
     async fn remove_entry_for_rename(&mut self, child_name: &str) -> Option<DirEntry> {
         dist_client::remove_dir_entry(
             self.meta.etcd_client.clone(),
-            self.meta.node_id,
+            &self.meta.node_id,
             &self.meta.volume_info,
             &self.full_path,
             child_name,
@@ -1050,7 +1050,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
     async fn unlink_entry(&mut self, child_name: &str) -> anyhow::Result<DirEntry> {
         dist_client::remove_dir_entry(
             self.meta.etcd_client.clone(),
-            self.meta.node_id,
+            &self.meta.node_id,
             &self.meta.volume_info,
             &self.full_path,
             child_name,
@@ -1179,7 +1179,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
 
         if let Err(e) = dist_client::push_attr(
             self.meta.etcd_client.clone(),
-            self.meta.node_id,
+            &self.meta.node_id,
             &self.meta.volume_info,
             &self.full_path,
             &self.get_attr(),
@@ -1191,7 +1191,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
 
         if let Err(e) = dist_client::invalidate(
             self.meta.etcd_client.clone(),
-            self.meta.node_id,
+            &self.meta.node_id,
             &self.meta.volume_info,
             &self.full_path,
             offset.overflow_div(cache.get_align().cast()).cast(),
