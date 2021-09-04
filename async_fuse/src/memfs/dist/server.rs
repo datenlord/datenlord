@@ -196,7 +196,7 @@ fn turnoff(stream: &mut TcpStream) -> anyhow::Result<()> {
 }
 
 fn invalidate(stream: &mut TcpStream, cache: Arc<GlobalCache>, args: OpArgs) -> anyhow::Result<()> {
-    cache.invlidate(args.file_name.as_slice(), args.index);
+    cache.invalidate(args.file_name.as_slice(), args.index);
     tcp::write_message(stream, response::invalidate().as_slice())?;
     Ok(())
 }

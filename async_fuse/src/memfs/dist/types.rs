@@ -59,12 +59,11 @@ pub(crate) fn dir_entry_to_serial(entry: &DirEntry) -> SerialDirEntry {
     SerialDirEntry {
         ino: entry.ino(),
         entry_type: {
-            if entry.entry_type().contains(SFlag::S_IFDIR) {
-                SerialSFlag::Dir
-            } else if entry.entry_type().contains(SFlag::S_IFREG) {
-                SerialSFlag::Reg
-            } else {
-                SerialSFlag::Lnk
+            match entry.entry_type() {
+                SFlag::S_IFDIR => SerialSFlag::Dir,
+                SFlag::S_IFREG => SerialSFlag::Reg,
+                SFlag::S_IFLNK => SerialSFlag::Lnk,
+                _ => panic!("unsupported entry type {:?}", entry.entry_type()),
             }
         },
         name: entry.entry_name().to_owned(),
