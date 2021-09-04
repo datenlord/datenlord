@@ -268,7 +268,7 @@ impl GlobalCache {
         result
     }
 
-    pub(crate) fn invlidate(&self, file_name: &[u8], index: Vec<Index>) {
+    pub(crate) fn invalidate(&self, file_name: &[u8], index: Vec<Index>) {
         let guard = pin();
         let file_cache = if let Some(cache) = self.inner.get(file_name, &guard) {
             cache
