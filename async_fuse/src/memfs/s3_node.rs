@@ -51,24 +51,24 @@ pub struct S3Node<S: S3BackEnd + Sync + Send + 'static> {
     s3_backend: Arc<S>,
     /// Parent node i-number
     parent: u64,
-    /// DefaultNode name
+    /// S3Node name
     name: String,
     /// Full path
     full_path: String,
-    /// DefaultNode attribute
+    /// S3Node attribute
     attr: FileAttr,
-    /// DefaultNode data
+    /// S3Node data
     data: S3NodeData,
-    /// DefaultNode open counter
+    /// S3Node open counter
     open_count: AtomicI64,
-    /// DefaultNode lookup counter
+    /// S3Node lookup counter
     lookup_count: AtomicI64,
     /// Shared metadata
     meta: Arc<S3MetaData<S>>,
 }
 
 impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
-    /// Create `DefaultNode`
+    /// Create `S3Node`
     fn new(
         parent: u64,
         name: &str,
@@ -94,7 +94,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
     }
 
     /// Set node attribute
-    pub(crate) async fn _set_attr(&mut self, new_attr: FileAttr, broadcast: bool) -> FileAttr {
+    pub(crate) async fn _set_attr(&mut self, new_attr: FileAttr, _broadcast: bool) -> FileAttr {
         let old_attr = self.get_attr();
         match self.data {
             S3NodeData::Directory(..) => debug_assert_eq!(new_attr.kind, SFlag::S_IFDIR),
@@ -102,6 +102,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
             S3NodeData::SymLink(..) => debug_assert_eq!(new_attr.kind, SFlag::S_IFLNK),
         }
 
+        /*
         if broadcast {
             if let Err(e) = dist_client::push_attr(
                 self.meta.etcd_client.clone(),
@@ -115,6 +116,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
                 panic!("failed to push attribute to others, error: {}", e);
             }
         }
+        */
         self.attr = new_attr;
         old_attr
     }
@@ -159,12 +161,24 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
         self.meta.cur_fd.fetch_add(1, atomic::Ordering::SeqCst)
     }
 
-    async fn absolute_path_with_child(&self, child: &str) -> String {
+    fn absolute_path_with_child(&self, child: &str) -> String {
         format!("{}{}", self.full_path, child)
     }
 
-    async fn absolute_dir_with_child(&self, child: &str) -> String {
+    fn absolute_dir_with_child(&self, child: &str) -> String {
         format!("{}{}/", self.full_path, child)
+    }
+
+    /// Get absolute path of child
+    pub(crate) fn absolute_path_of_child(&self, child: &str, child_type: SFlag) -> String {
+        match child_type {
+            SFlag::S_IFDIR => self.absolute_dir_with_child(child),
+            SFlag::S_IFREG | SFlag::S_IFLNK => self.absolute_path_with_child(child),
+            _ => panic!(
+                "absolute_path_of_child() found unsupported file type {:?}",
+                child_type
+            ),
+        }
     }
 
     /// Update mtime and ctime to now
@@ -230,6 +244,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
         }
     }
 
+    /*
     /// Helper function to create or open sub-directory in a directory
     async fn open_child_dir_helper(
         &mut self,
@@ -237,7 +252,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
         mode: Mode,
         create_dir: bool,
     ) -> anyhow::Result<Self> {
-        let absolute_path = self.absolute_dir_with_child(child_dir_name).await;
+        let absolute_path = self.absolute_dir_with_child(child_dir_name);
         if create_dir {
             let dir_data = self.get_dir_data();
             // TODO return error
@@ -291,6 +306,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
         if create_dir {
             // insert new entry to parent directory
             let entry = DirEntry::new(child_attr.ino, child_dir_name.to_string(), SFlag::S_IFDIR);
+            /*
             dist_client::update_dir(
                 self.meta.etcd_client.clone(),
                 &self.meta.node_id,
@@ -300,6 +316,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
                 &entry,
             )
             .await?;
+            */
 
             let dir_data = self.get_dir_data_mut();
             let previous_value = dir_data.insert(child_dir_name.to_string(), entry);
@@ -321,7 +338,9 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
 
         Ok(child_node)
     }
+    */
 
+    /*
     /// Helper function to open or create file in a directory
     async fn open_child_file_helper(
         &mut self,
@@ -331,7 +350,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
         create_file: bool,
         global_cache: Arc<GlobalCache>,
     ) -> anyhow::Result<Self> {
-        let absolute_path = self.absolute_path_with_child(child_file_name).await;
+        let absolute_path = self.absolute_path_with_child(child_file_name);
         if create_file {
             let dir_data = self.get_dir_data();
             debug_assert!(
@@ -357,7 +376,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
                 ..FileAttr::now()
             }
         } else {
-            let absolute_path = self.absolute_path_with_child(child_file_name).await;
+            let absolute_path = self.absolute_path_with_child(child_file_name);
             match dist_client::get_attr(
                 self.meta.etcd_client.clone(),
                 &self.meta.node_id,
@@ -391,6 +410,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
 
         if create_file {
             let entry = DirEntry::new(child_attr.ino, child_file_name.to_string(), SFlag::S_IFREG);
+            /*
             dist_client::update_dir(
                 self.meta.etcd_client.clone(),
                 &self.meta.node_id,
@@ -400,6 +420,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
                 &entry,
             )
             .await?;
+            */
 
             let dir_data = self.get_dir_data_mut();
             // insert new entry to parent directory
@@ -418,14 +439,16 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
             Arc::clone(&self.meta),
         ))
     }
+    */
 
+    /*
     /// Helper function to create or read symlink itself in a directory
     async fn create_or_load_child_symlink_helper(
         &mut self,
         child_symlink_name: &str,
         target_path_opt: Option<PathBuf>, // If not None, create symlink
     ) -> anyhow::Result<Self> {
-        let absolute_path = self.absolute_path_with_child(child_symlink_name).await;
+        let absolute_path = self.absolute_path_with_child(child_symlink_name);
         if let Some(ref target_path) = target_path_opt {
             let dir_data = self.get_dir_data();
             debug_assert!(
@@ -482,6 +505,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
                 child_symlink_name.to_string(),
                 SFlag::S_IFLNK,
             );
+            /*
             dist_client::update_dir(
                 self.meta.etcd_client.clone(),
                 &self.meta.node_id,
@@ -491,6 +515,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
                 &entry,
             )
             .await?;
+            */
             let dir_data = self.get_dir_data_mut();
             let previous_value = dir_data.insert(child_symlink_name.to_string(), entry);
             debug_assert!(previous_value.is_none()); // double check creation race
@@ -511,6 +536,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
             Arc::clone(&self.meta),
         ))
     }
+    */
 
     /// Increase node open count
     fn inc_open_count(&self) -> i64 {
@@ -827,61 +853,263 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
         child_symlink_name: &str,
         target_path: PathBuf,
     ) -> anyhow::Result<Self> {
-        let create_res = self
-            .create_or_load_child_symlink_helper(child_symlink_name, Some(target_path))
+        let absolute_path = self.absolute_path_with_child(child_symlink_name);
+        let dir_data = self.get_dir_data();
+        debug_assert!(
+            !dir_data.contains_key(child_symlink_name),
+            "create_child_symlink() cannot create duplicated symlink name={:?}",
+            child_symlink_name,
+        );
+        let target_str = target_path.to_str().unwrap();
+        let _ = self
+            .s3_backend
+            .put_data(
+                absolute_path.as_str(),
+                target_str.as_bytes(),
+                0,
+                target_str.len(),
+            )
             .await;
-        if create_res.is_ok() {
-            self.update_mtime_ctime_to_now().await;
-        }
-        create_res
+
+        // get symbol file attribute
+        let child_attr = FileAttr {
+            ino: self.new_inode_num().await,
+            kind: SFlag::S_IFLNK,
+            size: target_path.to_str().unwrap().len().cast(),
+            blocks: 0,
+            perm: 0777,
+            ..FileAttr::now()
+        };
+
+        let target_path = {
+            // insert new entry to parent directory
+            let entry = DirEntry::new(
+                child_attr.ino,
+                child_symlink_name.to_string(),
+                SFlag::S_IFLNK,
+            );
+            /*
+            dist_client::update_dir(
+                self.meta.etcd_client.clone(),
+                &self.meta.node_id,
+                &self.meta.volume_info,
+                &self.full_path,
+                child_symlink_name,
+                &entry,
+            )
+            .await?;
+            */
+            let dir_data = self.get_dir_data_mut();
+            let previous_value = dir_data.insert(child_symlink_name.to_string(), entry);
+            debug_assert!(previous_value.is_none()); // double check creation race
+            target_path
+        };
+
+        self.update_mtime_ctime_to_now().await;
+        Ok(Self::new(
+            self.get_ino(),
+            child_symlink_name,
+            format!("{}{}", self.full_path, child_symlink_name),
+            child_attr,
+            S3NodeData::SymLink(target_path),
+            Arc::clone(&self.s3_backend),
+            Arc::clone(&self.meta),
+        ))
     }
 
     /// Read symlink itself in a directory, not follow symlink
-    async fn load_child_symlink(&mut self, child_symlink_name: &str) -> anyhow::Result<Self> {
-        self.create_or_load_child_symlink_helper(child_symlink_name, None)
-            .await
+    async fn load_child_symlink(
+        &self,
+        child_symlink_name: &str,
+        remote: Option<FileAttr>,
+    ) -> anyhow::Result<Self> {
+        let absolute_path = self.absolute_path_with_child(child_symlink_name);
+
+        let child_attr = match remote {
+            None => {
+                let (len, last_modified) = self
+                    .s3_backend
+                    .get_meta(absolute_path.as_str())
+                    .await
+                    .unwrap();
+                // get symbol file attribute
+                FileAttr {
+                    ino: self.new_inode_num().await,
+                    kind: SFlag::S_IFLNK,
+                    size: len.cast(),
+                    blocks: 0,
+                    perm: 0777,
+                    atime: last_modified,
+                    mtime: last_modified,
+                    ctime: last_modified,
+                    crtime: last_modified,
+                    ..FileAttr::default()
+                }
+            }
+            Some(attr) => attr,
+        };
+        debug_assert_eq!(SFlag::S_IFLNK, child_attr.kind);
+
+        let target_path = PathBuf::from(
+            String::from_utf8(self.s3_backend.get_data(&absolute_path).await.unwrap()).unwrap(),
+        );
+
+        Ok(Self::new(
+            self.get_ino(),
+            child_symlink_name,
+            format!("{}{}", self.full_path, child_symlink_name),
+            child_attr,
+            S3NodeData::SymLink(target_path),
+            Arc::clone(&self.s3_backend),
+            Arc::clone(&self.meta),
+        ))
     }
 
     /// Open sub-directory in a directory
-    async fn open_child_dir(&mut self, child_dir_name: &str) -> anyhow::Result<Self> {
-        self.open_child_dir_helper(
+    async fn open_child_dir(
+        &self,
+        child_dir_name: &str,
+        remote: Option<FileAttr>,
+    ) -> anyhow::Result<Self> {
+        let absolute_path = self.absolute_dir_with_child(child_dir_name);
+
+        // get new directory attribute
+        let child_attr = match remote {
+            None => {
+                let last_modified = self
+                    .s3_backend
+                    .get_last_modified(absolute_path.as_str())
+                    .await
+                    .unwrap();
+                FileAttr {
+                    ino: self.new_inode_num().await,
+                    kind: SFlag::S_IFDIR,
+                    atime: last_modified,
+                    mtime: last_modified,
+                    ctime: last_modified,
+                    crtime: last_modified,
+                    ..FileAttr::default()
+                }
+            }
+            Some(attr) => attr,
+        };
+
+        debug_assert_eq!(SFlag::S_IFDIR, child_attr.kind);
+
+        // lookup count and open count are increased to 1 by creation
+        let full_path = format!("{}{}/", self.full_path, child_dir_name);
+
+        let child_node = Self::new(
+            self.get_ino(),
             child_dir_name,
-            Mode::empty(),
-            false, // create_dir
-        )
-        .await
+            full_path,
+            child_attr,
+            S3NodeData::Directory(BTreeMap::new()),
+            Arc::clone(&self.s3_backend),
+            Arc::clone(&self.meta),
+        );
+
+        Ok(child_node)
     }
 
     /// Create sub-directory in a directory
     async fn create_child_dir(&mut self, child_dir_name: &str, mode: Mode) -> anyhow::Result<Self> {
-        let create_res = self
-            .open_child_dir_helper(
-                child_dir_name,
-                mode,
-                true, // create_dir
-            )
-            .await;
-        if create_res.is_ok() {
-            self.update_mtime_ctime_to_now().await;
-        }
-        create_res
+        let absolute_path = self.absolute_dir_with_child(child_dir_name);
+        let dir_data = self.get_dir_data();
+        // TODO return error
+        debug_assert!(
+            !dir_data.contains_key(child_dir_name),
+            "create_child_dir() cannot create duplicated directory name={:?}",
+            child_dir_name
+        );
+        let _ = self.s3_backend.create_dir(absolute_path.as_str()).await;
+
+        // get new directory attribute
+        let child_attr = FileAttr {
+            ino: self.new_inode_num().await,
+            kind: SFlag::S_IFDIR,
+            perm: fs_util::parse_mode_bits(mode.bits()),
+            ..FileAttr::now()
+        };
+        debug_assert_eq!(SFlag::S_IFDIR, child_attr.kind);
+
+        // insert new entry to parent directory
+        let entry = DirEntry::new(child_attr.ino, child_dir_name.to_string(), SFlag::S_IFDIR);
+        /*
+        dist_client::update_dir(
+            self.meta.etcd_client.clone(),
+            &self.meta.node_id,
+            &self.meta.volume_info,
+            &self.full_path,
+            child_dir_name,
+            &entry,
+        )
+        .await?;
+        */
+
+        let dir_data = self.get_dir_data_mut();
+        let previous_value = dir_data.insert(child_dir_name.to_string(), entry);
+        debug_assert!(previous_value.is_none()); // double check creation race
+
+        // lookup count and open count are increased to 1 by creation
+        let full_path = format!("{}{}/", self.full_path, child_dir_name);
+
+        let child_node = Self::new(
+            self.get_ino(),
+            child_dir_name,
+            full_path,
+            child_attr,
+            S3NodeData::Directory(BTreeMap::new()),
+            Arc::clone(&self.s3_backend),
+            Arc::clone(&self.meta),
+        );
+
+        self.update_mtime_ctime_to_now().await;
+        Ok(child_node)
     }
 
     /// Open file in a directory
     async fn open_child_file(
-        &mut self,
+        &self,
         child_file_name: &str,
-        oflags: OFlag,
+        remote: Option<FileAttr>,
+        _oflags: OFlag,
         global_cache: Arc<GlobalCache>,
     ) -> anyhow::Result<Self> {
-        self.open_child_file_helper(
+        // get new file attribute
+        let absolute_path = self.absolute_path_with_child(child_file_name);
+        let child_attr = match remote {
+            None => {
+                let (content_len, last_modified) = self
+                    .s3_backend
+                    .get_meta(absolute_path.as_str())
+                    .await
+                    .unwrap();
+                FileAttr {
+                    ino: self.new_inode_num().await,
+                    kind: SFlag::S_IFREG,
+                    size: content_len.cast(),
+                    blocks: ((content_len + BLOCK_SIZE - 1) / BLOCK_SIZE).cast(),
+                    atime: last_modified,
+                    mtime: last_modified,
+                    ctime: last_modified,
+                    crtime: last_modified,
+                    ..FileAttr::default()
+                }
+            }
+            Some(attr) => attr,
+        };
+        debug_assert_eq!(SFlag::S_IFREG, child_attr.kind);
+
+        Ok(Self::new(
+            self.get_ino(),
             child_file_name,
-            oflags,
-            Mode::empty(),
-            false, // create
-            global_cache,
-        )
-        .await
+            format!("{}{}", self.full_path, child_file_name),
+            child_attr,
+            S3NodeData::RegFile(global_cache),
+            Arc::clone(&self.s3_backend),
+            Arc::clone(&self.meta),
+        ))
     }
 
     /// Create file in a directory
@@ -892,19 +1120,59 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
         mode: Mode,
         global_cache: Arc<GlobalCache>,
     ) -> anyhow::Result<Self> {
-        let create_res = self
-            .open_child_file_helper(
-                child_file_name,
-                oflags,
-                mode,
-                true, // create
-                global_cache,
-            )
+        let absolute_path = self.absolute_path_with_child(child_file_name);
+        let dir_data = self.get_dir_data();
+        debug_assert!(
+            !dir_data.contains_key(child_file_name),
+            "open_child_file_helper() cannot create duplicated file name={:?}",
+            child_file_name
+        );
+        debug_assert!(oflags.contains(OFlag::O_CREAT));
+        let _ = self
+            .s3_backend
+            .put_data(absolute_path.as_str(), "".as_bytes(), 0, 0)
             .await;
-        if create_res.is_ok() {
-            self.update_mtime_ctime_to_now().await;
-        }
-        create_res
+
+        // get new file attribute
+        let child_attr = FileAttr {
+            ino: self.new_inode_num().await,
+            kind: SFlag::S_IFREG,
+            perm: fs_util::parse_mode_bits(mode.bits()),
+            size: 0,
+            blocks: 0,
+            ..FileAttr::now()
+        };
+        debug_assert_eq!(SFlag::S_IFREG, child_attr.kind);
+
+        let entry = DirEntry::new(child_attr.ino, child_file_name.to_string(), SFlag::S_IFREG);
+        /*
+        dist_client::update_dir(
+            self.meta.etcd_client.clone(),
+            &self.meta.node_id,
+            &self.meta.volume_info,
+            &self.full_path,
+            child_file_name,
+            &entry,
+        )
+        .await?;
+        */
+
+        let dir_data = self.get_dir_data_mut();
+        // insert new entry to parent directory
+        // TODO: support thread-safe
+        let previous_value = dir_data.insert(child_file_name.to_string(), entry);
+        debug_assert!(previous_value.is_none()); // double check creation race
+
+        self.update_mtime_ctime_to_now().await;
+        Ok(Self::new(
+            self.get_ino(),
+            child_file_name,
+            format!("{}{}", self.full_path, child_file_name),
+            child_attr,
+            S3NodeData::RegFile(global_cache),
+            Arc::clone(&self.s3_backend),
+            Arc::clone(&self.meta),
+        ))
     }
 
     /// Load data from directory, file or symlink target.
@@ -1073,7 +1341,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
             SFlag::S_IFDIR | SFlag::S_IFREG | SFlag::S_IFLNK => {
                 let _ = self
                     .s3_backend
-                    .delete_data(&self.absolute_path_with_child(child_name).await)
+                    .delete_data(&self.absolute_path_with_child(child_name))
                     .await;
             }
             _ => panic!(

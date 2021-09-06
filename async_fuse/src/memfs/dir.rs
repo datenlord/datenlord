@@ -106,7 +106,7 @@ impl IntoIterator for Dir {
 }
 
 /// Directory entry
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct DirEntry {
     /// The i-number of the entry
     ino: ino_t,
