@@ -1,7 +1,8 @@
 use super::cache::GlobalCache;
 use super::dir::DirEntry;
+use super::dist::client as dist_client;
 use super::dist::server::CacheServer;
-use super::fs_util;
+use super::fs_util::{self, FileAttr};
 use super::metadata::MetaData;
 use super::node::Node;
 use super::s3_node::{self, S3Node};
@@ -159,24 +160,25 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         target_path: Option<&Path>,
     ) -> anyhow::Result<(Duration, FuseAttr, u64)> {
         // pre-check
-        let mut cache = self.cache.write().await;
-        let parent_node = self
-            .create_node_pre_check(parent, &node_name, &mut cache)
-            .await
-            .context("create_node_helper() failed to pre check")?;
-        let parent_name = parent_node.get_name().to_owned();
-        // all checks are passed, ready to create new node
-        let m_flags = fs_util::parse_mode(mode);
-        let new_ino: u64;
-        let node_name_clone = node_name.clone();
-        let new_node = match node_type {
-            SFlag::S_IFDIR => {
-                debug!(
+        let (parent_full_path, child_entry, parent_attr, fuse_attr) = {
+            let mut cache = self.cache.write().await;
+            let parent_node = self
+                .create_node_pre_check(parent, &node_name, &mut cache)
+                .await
+                .context("create_node_helper() failed to pre check")?;
+            let parent_name = parent_node.get_name().to_owned();
+            // all checks are passed, ready to create new node
+            let m_flags = fs_util::parse_mode(mode);
+            let new_ino: u64;
+            let node_name_clone = node_name.clone();
+            let new_node = match node_type {
+                SFlag::S_IFDIR => {
+                    debug!(
                     "create_node_helper() about to create a sub-directory with name={:?} and mode={:?} \
                         under parent directory of ino={} and name={:?}",
                     node_name, m_flags, parent, parent_name,
                 );
-                parent_node
+                    parent_node
                     .create_child_dir(node_name.clone(), m_flags)
                     .await
                     .context(format!(
@@ -184,32 +186,37 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
                             under parent directory of ino={} and name={:?}",
                         node_name, m_flags, parent, parent_name,
                     ))?
-            }
-            SFlag::S_IFREG => {
-                let o_flags = OFlag::O_CREAT | OFlag::O_EXCL | OFlag::O_RDWR;
-                debug!(
-                    "helper_create_node() about to \
+                }
+                SFlag::S_IFREG => {
+                    let o_flags = OFlag::O_CREAT | OFlag::O_EXCL | OFlag::O_RDWR;
+                    debug!(
+                        "helper_create_node() about to \
                         create a file with name={:?}, oflags={:?}, mode={:?} \
                         under parent directory of ino={} and name={:?}",
-                    node_name, o_flags, m_flags, parent, parent_name,
-                );
-                parent_node
-                    .create_child_file(node_name.clone(), o_flags, m_flags, self.data_cache.clone())
-                    .await
-                    .context(format!(
+                        node_name, o_flags, m_flags, parent, parent_name,
+                    );
+                    parent_node
+                        .create_child_file(
+                            node_name.clone(),
+                            o_flags,
+                            m_flags,
+                            self.data_cache.clone(),
+                        )
+                        .await
+                        .context(format!(
                         "create_node_helper() failed to create file with name={:?} and mode={:?} \
                             under parent directory of ino={} and name={:?}",
                         node_name, m_flags, parent, parent_name,
                     ))?
-            }
-            SFlag::S_IFLNK => {
-                debug!(
-                    "create_node_helper() about to \
+                }
+                SFlag::S_IFLNK => {
+                    debug!(
+                        "create_node_helper() about to \
                         create a symlink with name={:?} to target path={:?} \
                         under parent directory of ino={} and name={:?}",
-                    node_name, target_path, parent, parent_name
-                );
-                parent_node
+                        node_name, target_path, parent, parent_name
+                    );
+                    parent_node
                     .create_child_symlink(
                         node_name.clone(),
                         target_path.unwrap_or_else(|| panic!(
@@ -225,32 +232,57 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
                             under parent directory of ino={} and name={:?}",
                         node_name, target_path, parent, parent_name,
                     ))?
-            }
-            _ => {
-                panic!(
+                }
+                _ => {
+                    panic!(
                     "create_node_helper() found unsupported i-node type={:?} with name={:?} to create \
                         under parent directory of ino={} and name={:?}",
                         node_type, node_name, parent, parent_name,
                 );
-            }
-        };
-        new_ino = new_node.get_ino();
-        let new_node_attr = new_node.get_attr();
-        let new_node_full_path = new_node.full_path().to_owned();
-        cache.insert(new_ino, new_node);
+                }
+            };
+            new_ino = new_node.get_ino();
+            let new_node_attr = new_node.get_attr();
+            let new_node_full_path = new_node.full_path().to_owned();
+            cache.insert(new_ino, new_node);
 
-        self.path2inum
-            .write()
-            .await
-            .insert(new_node_full_path, new_ino);
-
-        let ttl = Duration::new(MY_TTL_SEC, 0);
-        let fuse_attr = fs_util::convert_to_fuse_attr(new_node_attr);
-        debug!(
-            "create_node_helper() successfully created the new child name={:?} \
+            self.path2inum
+                .write()
+                .await
+                .insert(new_node_full_path, new_ino);
+            let fuse_attr = fs_util::convert_to_fuse_attr(new_node_attr);
+            debug!(
+                "create_node_helper() successfully created the new child name={:?} \
                 of ino={} and type={:?} under parent ino={} and name={:?}",
-            node_name_clone, new_ino, node_type, parent, parent_name,
-        );
+                node_name_clone, new_ino, node_type, parent, parent_name,
+            );
+            let pnode = cache.get(&parent).unwrap_or_else(|| {
+                panic!(
+                    "failed to get parent inode {:?}, parent name {:?}",
+                    parent, parent_name
+                )
+            });
+            (
+                pnode.full_path().to_owned(),
+                pnode
+                    .get_dir_data()
+                    .get(node_name)
+                    .cloned()
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "failed to get child {:?} from parent {:?}",
+                            node_name, parent_name,
+                        )
+                    }),
+                pnode.get_attr(),
+                fuse_attr,
+            )
+        };
+
+        self.sync_attr(&parent_full_path, parent_attr).await;
+        self.sync_dir(&parent_full_path, node_name, child_entry)
+            .await;
+        let ttl = Duration::new(MY_TTL_SEC, 0);
         Ok((ttl, fuse_attr, MY_GENERATION))
     }
 
@@ -403,60 +435,82 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         {
             // cache miss
             debug!(
-                "lookup_helper() cache missed when searching parent ino={}
+                "lookup_helper() cache missed when searching parent ino={} \
                     and i-node of ino={} and name={:?}",
                 parent, ino, child_name,
             );
-            let mut cache = self.cache.write().await;
-            let parent_node = cache.get_mut(&parent).unwrap_or_else(|| {
-                panic!(
-                    "lookup_helper() found fs is inconsistent, \
+            let child_path = {
+                let cache = self.cache.read().await;
+                let parent_node = cache.get(&parent).unwrap_or_else(|| {
+                    panic!(
+                        "lookup_helper() found fs is inconsistent, \
                         parent i-node of ino={} should be in cache",
-                    parent,
-                );
-            });
-            let parent_name = parent_node.get_name().to_owned();
-            let mut child_node = match child_type {
-                SFlag::S_IFDIR => parent_node
-                    .open_child_dir(child_name)
-                    .await
-                    .context(format!(
-                        "lookup_helper() failed to open sub-directory name={:?} \
-                            under parent directory of ino={} and name={:?}",
-                        child_name, parent, parent_name,
-                    ))?,
-                SFlag::S_IFREG => {
-                    let oflags = OFlag::O_RDWR;
-                    parent_node
-                        .open_child_file(child_name, oflags, self.data_cache.clone())
+                        parent,
+                    );
+                });
+                parent_node.absolute_path_of_child(child_name, child_type)
+            };
+            let remote_attr = self.get_attr(&child_path).await;
+
+            let (mut child_node, parent_name) = {
+                let cache = self.cache.read().await;
+                let parent_node = cache.get(&parent).unwrap_or_else(|| {
+                    panic!(
+                        "lookup_helper() found fs is inconsistent, \
+                        parent i-node of ino={} should be in cache",
+                        parent,
+                    );
+                });
+                let parent_name = parent_node.get_name().to_owned();
+                let child_node = match child_type {
+                    SFlag::S_IFDIR => parent_node
+                        .open_child_dir(child_name, remote_attr)
                         .await
                         .context(format!(
+                            "lookup_helper() failed to open sub-directory name={:?} \
+                            under parent directory of ino={} and name={:?}",
+                            child_name, parent, parent_name,
+                        ))?,
+                    SFlag::S_IFREG => {
+                        let oflags = OFlag::O_RDWR;
+                        parent_node
+                            .open_child_file(
+                                child_name,
+                                remote_attr,
+                                oflags,
+                                self.data_cache.clone(),
+                            )
+                            .await
+                            .context(format!(
                             "lookup_helper() failed to open child file name={:?} with flags={:?} \
                                 under parent directory of ino={} and name={:?}",
                             child_name, oflags, parent, parent_name,
                         ))?
-                }
-                SFlag::S_IFLNK => {
-                    parent_node
-                        .load_child_symlink(child_name)
+                    }
+                    SFlag::S_IFLNK => parent_node
+                        .load_child_symlink(child_name, remote_attr)
                         .await
                         .context(format!(
                             "lookup_helper() failed to read child symlink name={:?} \
                                 under parent directory of ino={} and name={:?}",
                             child_name, parent, parent_name,
-                        ))?
-                }
-                _ => panic!(
-                    "lookup_helper() found unsupported file type={:?}",
-                    child_type,
-                ),
+                        ))?,
+                    _ => panic!(
+                        "lookup_helper() found unsupported file type={:?}",
+                        child_type,
+                    ),
+                };
+                (child_node, parent_name)
             };
 
             child_node.set_ino(ino);
             let child_ino = ino;
             let attr = child_node.lookup_attr();
             let full_path = child_node.full_path().to_owned();
-            cache.insert(child_ino, child_node);
+            {
+                let mut cache = self.cache.write().await;
+                cache.insert(child_ino, child_node);
+            }
 
             self.path2inum.write().await.insert(full_path, child_ino);
 
@@ -979,6 +1033,52 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
                 )
             });
             new_parent_node.insert_entry_for_rename(entry_to_move).await
+        }
+    }
+
+    /// Sync attr to other nodes
+    async fn sync_attr(&self, node: &str, attr: FileAttr) {
+        if let Err(e) = dist_client::push_attr(
+            self.etcd_client.clone(),
+            &self.node_id,
+            &self.volume_info,
+            node,
+            &attr,
+        )
+        .await
+        {
+            panic!("failed to sync attribute to others, error: {}", e);
+        }
+    }
+
+    /// Sync dir to other nodes
+    async fn sync_dir(&self, parent: &str, child_name: &str, child_entry: DirEntry) {
+        if let Err(e) = dist_client::update_dir(
+            self.etcd_client.clone(),
+            &self.node_id,
+            &self.volume_info,
+            parent,
+            child_name,
+            &child_entry,
+        )
+        .await
+        {
+            panic!("failed to sync dir to others, error: {}", e);
+        }
+    }
+
+    /// Get attr from other nodes
+    async fn get_attr(&self, path: &str) -> Option<FileAttr> {
+        match dist_client::get_attr(
+            self.etcd_client.clone(),
+            &self.node_id,
+            &self.volume_info,
+            path,
+        )
+        .await
+        {
+            Err(e) => panic!("failed to sync attribute to others, error: {}", e),
+            Ok(res) => res,
         }
     }
 }

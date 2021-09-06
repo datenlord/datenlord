@@ -55,12 +55,21 @@ pub trait Node: Sized {
         child_symlink_name: &str,
         target_path: PathBuf,
     ) -> anyhow::Result<Self>;
-    async fn load_child_symlink(&mut self, child_symlink_name: &str) -> anyhow::Result<Self>;
-    async fn open_child_dir(&mut self, child_dir_name: &str) -> anyhow::Result<Self>;
+    async fn load_child_symlink(
+        &self,
+        child_symlink_name: &str,
+        remote: Option<FileAttr>,
+    ) -> anyhow::Result<Self>;
+    async fn open_child_dir(
+        &self,
+        child_dir_name: &str,
+        remote: Option<FileAttr>,
+    ) -> anyhow::Result<Self>;
     async fn create_child_dir(&mut self, child_dir_name: &str, mode: Mode) -> anyhow::Result<Self>;
     async fn open_child_file(
-        &mut self,
+        &self,
         child_file_name: &str,
+        remote: Option<FileAttr>,
         oflags: OFlag,
         global_cache: Arc<GlobalCache>,
     ) -> anyhow::Result<Self>;
@@ -283,6 +292,7 @@ impl DefaultNode {
         open_res
     }
 
+    /*
     /// Helper function to create or open sub-directory in a directory
     async fn open_child_dir_helper(
         &mut self,
@@ -358,7 +368,9 @@ impl DefaultNode {
         // }
         Ok(child_node)
     }
+    */
 
+    /*
     /// Helper function to open or create file in a directory
     async fn open_child_file_helper(
         &mut self,
@@ -418,8 +430,10 @@ impl DefaultNode {
             Arc::clone(&self.meta),
         ))
     }
+    */
 
     /// Helper function to create or read symlink itself in a directory
+    #[cfg(target_os = "macos")]
     async fn create_or_load_child_symlink_helper(
         &mut self,
         child_symlink_name: &str,
@@ -779,61 +793,271 @@ impl Node for DefaultNode {
         child_symlink_name: &str,
         target_path: PathBuf,
     ) -> anyhow::Result<Self> {
-        let create_res = self
-            .create_or_load_child_symlink_helper(child_symlink_name, Some(target_path))
-            .await;
-        if create_res.is_ok() {
-            self.update_mtime_ctime_to_now().await;
-        }
-        create_res
+        let ino = self.get_ino();
+        let fd = self.fd;
+        let dir_data = self.get_dir_data_mut();
+        debug_assert!(
+            !dir_data.contains_key(child_symlink_name),
+            "create_child_symlink() cannot create duplicated symlink name={:?}",
+            child_symlink_name,
+        );
+        let child_symlink_name_string = child_symlink_name.to_string();
+        let target_path_clone = target_path.clone();
+        smol::unblock(move || {
+            unistd::symlinkat(
+                &target_path_clone,
+                Some(fd),
+                child_symlink_name_string.as_str(),
+            )
+        })
+        .await
+        .context(format!(
+            "create_child_symlink() failed to create symlink \
+                    name={:?} to target path={:?} under parent ino={}",
+            child_symlink_name, target_path, ino,
+        ))?;
+
+        let child_fd = Self::get_child_symlink_fd(fd, child_symlink_name)
+            .await
+            .context(format!(
+                "create_child_symlink() failed to open symlink itself with name={:?} \
+                under parent ino={}",
+                child_symlink_name, ino,
+            ))?;
+        let child_attr = fs_util::load_attr(child_fd)
+            // let child_attr = util::load_symlink_attr(fd, child_symlink_name.clone())
+            .await
+            .context(format!(
+                "create_child_symlink() failed to get the attribute of the new symlink={:?}",
+                child_symlink_name,
+            ))?;
+        debug_assert_eq!(SFlag::S_IFLNK, child_attr.kind);
+
+        let target_path = {
+            // insert new entry to parent directory
+            // TODO: support thread-safe
+            let previous_value = dir_data.insert(
+                child_symlink_name.to_string(),
+                DirEntry::new(
+                    child_attr.ino,
+                    child_symlink_name.to_string(),
+                    SFlag::S_IFLNK,
+                ),
+            );
+            debug_assert!(previous_value.is_none()); // double check creation race
+            target_path
+        };
+        let mut full_path = self.full_path().to_owned();
+        full_path.push_str(child_symlink_name);
+
+        self.update_mtime_ctime_to_now().await;
+        Ok(Self::new(
+            self.get_ino(),
+            child_symlink_name,
+            full_path,
+            child_attr,
+            // DefaultNodeData::SymLink(Box::new(SymLinkData::new(child_fd, target_path).await)),
+            DefaultNodeData::SymLink(target_path),
+            child_fd,
+            Arc::clone(&self.meta),
+        ))
     }
 
     /// Read symlink itself in a directory, not follow symlink
-    async fn load_child_symlink(&mut self, child_symlink_name: &str) -> anyhow::Result<Self> {
-        self.create_or_load_child_symlink_helper(child_symlink_name, None)
+    async fn load_child_symlink(
+        &self,
+        child_symlink_name: &str,
+        _remote: Option<FileAttr>,
+    ) -> anyhow::Result<Self> {
+        let ino = self.get_ino();
+        let fd = self.fd;
+
+        let child_fd = Self::get_child_symlink_fd(fd, child_symlink_name)
             .await
+            .context(format!(
+                "load_child_symlink() failed to open symlink itself with name={:?} \
+                under parent ino={}",
+                child_symlink_name, ino,
+            ))?;
+        let child_attr = fs_util::load_attr(child_fd)
+            // let child_attr = util::load_symlink_attr(fd, child_symlink_name.clone())
+            .await
+            .context(format!(
+                "load_child_symlink() failed to get the attribute of the new symlink={:?}",
+                child_symlink_name,
+            ))?;
+        debug_assert_eq!(SFlag::S_IFLNK, child_attr.kind);
+
+        let target_path = {
+            let child_symlink_name_string = child_symlink_name.to_string();
+            let target_path_osstr =
+                smol::unblock(move || fcntl::readlinkat(fd, child_symlink_name_string.as_str()))
+                    .await
+                    .context(format!(
+                        "load_child_symlink() failed to open \
+                            the new directory name={:?} under parent ino={}",
+                        child_symlink_name, ino,
+                    ))?;
+            Path::new(&target_path_osstr).to_owned()
+        };
+
+        let mut full_path = self.full_path().to_owned();
+        full_path.push_str(child_symlink_name);
+
+        Ok(Self::new(
+            self.get_ino(),
+            child_symlink_name,
+            full_path,
+            child_attr,
+            // DefaultNodeData::SymLink(Box::new(SymLinkData::new(child_fd, target_path).await)),
+            DefaultNodeData::SymLink(target_path),
+            child_fd,
+            Arc::clone(&self.meta),
+        ))
     }
 
     /// Open sub-directory in a directory
-    async fn open_child_dir(&mut self, child_dir_name: &str) -> anyhow::Result<Self> {
-        self.open_child_dir_helper(
+    async fn open_child_dir(
+        &self,
+        child_dir_name: &str,
+        _remote: Option<FileAttr>,
+    ) -> anyhow::Result<Self> {
+        let ino = self.get_ino();
+        let fd = self.fd;
+
+        let child_raw_fd = fs_util::open_dir_at(fd, child_dir_name)
+            .await
+            .context(format!(
+                "open_child_dir() failed to open the new directory name={:?} \
+                    under parent ino={}",
+                child_dir_name, ino,
+            ))?;
+
+        // get new directory attribute
+        let child_attr = fs_util::load_attr(child_raw_fd).await.context(format!(
+            "open_child_dir() failed to get the attribute of the new child directory={:?}",
             child_dir_name,
-            Mode::empty(),
-            false, // create_dir
-        )
-        .await
+        ))?;
+        debug_assert_eq!(SFlag::S_IFDIR, child_attr.kind);
+
+        let mut full_path = self.full_path().to_owned();
+        full_path.push_str(child_dir_name);
+        full_path.push('/');
+
+        // lookup count and open count are increased to 1 by creation
+        let child_node = Self::new(
+            self.get_ino(),
+            child_dir_name,
+            full_path,
+            child_attr,
+            DefaultNodeData::Directory(BTreeMap::new()),
+            child_raw_fd,
+            Arc::clone(&self.meta),
+        );
+
+        Ok(child_node)
     }
 
     /// Create sub-directory in a directory
     async fn create_child_dir(&mut self, child_dir_name: &str, mode: Mode) -> anyhow::Result<Self> {
-        let create_res = self
-            .open_child_dir_helper(
-                child_dir_name,
-                mode,
-                true, // create_dir
-            )
-            .await;
-        if create_res.is_ok() {
-            self.update_mtime_ctime_to_now().await;
-        }
-        create_res
+        let ino = self.get_ino();
+        let fd = self.fd;
+        let dir_data = self.get_dir_data_mut();
+        debug_assert!(
+            !dir_data.contains_key(child_dir_name),
+            "open_child_dir_helper() cannot create duplicated directory name={:?}",
+            child_dir_name
+        );
+        let child_dir_name_string = child_dir_name.to_string();
+        smol::unblock(move || stat::mkdirat(fd, child_dir_name_string.as_str(), mode))
+            .await
+            .context(format!(
+                "open_child_dir_helper() failed to create directory \
+                        name={:?} under parent ino={}",
+                child_dir_name, ino,
+            ))?;
+
+        let child_raw_fd = fs_util::open_dir_at(fd, child_dir_name)
+            .await
+            .context(format!(
+                "open_child_dir_helper() failed to open the new directory name={:?} \
+                    under parent ino={}",
+                child_dir_name, ino,
+            ))?;
+
+        // get new directory attribute
+        let child_attr = fs_util::load_attr(child_raw_fd).await.context(format!(
+            "open_child_dir_helper() failed to get the attribute of the new child directory={:?}",
+            child_dir_name,
+        ))?;
+        debug_assert_eq!(SFlag::S_IFDIR, child_attr.kind);
+
+        // insert new entry to parent directory
+        // TODO: support thread-safe
+        let previous_value = dir_data.insert(
+            child_dir_name.to_string(),
+            DirEntry::new(child_attr.ino, child_dir_name.to_string(), SFlag::S_IFDIR),
+        );
+        debug_assert!(previous_value.is_none()); // double check creation race
+
+        let mut full_path = self.full_path().to_owned();
+        full_path.push_str(child_dir_name);
+        full_path.push('/');
+
+        // lookup count and open count are increased to 1 by creation
+        let child_node = Self::new(
+            self.get_ino(),
+            child_dir_name,
+            full_path,
+            child_attr,
+            DefaultNodeData::Directory(BTreeMap::new()),
+            child_raw_fd,
+            Arc::clone(&self.meta),
+        );
+
+        self.update_mtime_ctime_to_now().await;
+        Ok(child_node)
     }
 
     /// Open file in a directory
     async fn open_child_file(
-        &mut self,
+        &self,
         child_file_name: &str,
+        _remote: Option<FileAttr>,
         oflags: OFlag,
         global_cache: Arc<GlobalCache>,
     ) -> anyhow::Result<Self> {
-        self.open_child_file_helper(
+        let ino = self.get_ino();
+        let fd = self.fd;
+        let child_file_name_string = child_file_name.to_string();
+        let mode = Mode::empty();
+        let child_fd =
+            smol::unblock(move || fcntl::openat(fd, child_file_name_string.as_str(), oflags, mode))
+                .await
+                .context(format!(
+                    "open_child_file() failed to open a file name={:?} \
+                under parent ino={} with oflags={:?} and mode={:?}",
+                    child_file_name, ino, oflags, mode,
+                ))?;
+
+        // get new file attribute
+        let child_attr = fs_util::load_attr(child_fd)
+            .await
+            .context("open_child_file() failed to get the attribute of the new child")?;
+        debug_assert_eq!(SFlag::S_IFREG, child_attr.kind);
+
+        let mut full_path = self.full_path().to_owned();
+        full_path.push_str(child_file_name);
+
+        Ok(Self::new(
+            self.get_ino(),
             child_file_name,
-            oflags,
-            Mode::empty(),
-            false, // create
-            global_cache,
-        )
-        .await
+            full_path,
+            child_attr,
+            DefaultNodeData::RegFile(global_cache),
+            child_fd,
+            Arc::clone(&self.meta),
+        ))
     }
 
     /// Create file in a directory
@@ -844,19 +1068,52 @@ impl Node for DefaultNode {
         mode: Mode,
         global_cache: Arc<GlobalCache>,
     ) -> anyhow::Result<Self> {
-        let create_res = self
-            .open_child_file_helper(
-                child_file_name,
-                oflags,
-                mode,
-                true, // create
-                global_cache,
-            )
-            .await;
-        if create_res.is_ok() {
-            self.update_mtime_ctime_to_now().await;
-        }
-        create_res
+        let ino = self.get_ino();
+        let fd = self.fd;
+        let dir_data = self.get_dir_data_mut();
+        debug_assert!(
+            !dir_data.contains_key(child_file_name),
+            "create_child_file() cannot create duplicated file name={:?}",
+            child_file_name
+        );
+        debug_assert!(oflags.contains(OFlag::O_CREAT));
+        let child_file_name_string = child_file_name.to_string();
+        let child_fd =
+            smol::unblock(move || fcntl::openat(fd, child_file_name_string.as_str(), oflags, mode))
+                .await
+                .context(format!(
+                    "create_child_file() failed to open a file name={:?} \
+                under parent ino={} with oflags={:?} and mode={:?}",
+                    child_file_name, ino, oflags, mode,
+                ))?;
+
+        // get new file attribute
+        let child_attr = fs_util::load_attr(child_fd)
+            .await
+            .context("create_child_file() failed to get the attribute of the new child")?;
+        debug_assert_eq!(SFlag::S_IFREG, child_attr.kind);
+
+        // insert new entry to parent directory
+        // TODO: support thread-safe
+        let previous_value = dir_data.insert(
+            child_file_name.to_string(),
+            DirEntry::new(child_attr.ino, child_file_name.to_string(), SFlag::S_IFREG),
+        );
+        debug_assert!(previous_value.is_none()); // double check creation race
+
+        let mut full_path = self.full_path().to_owned();
+        full_path.push_str(child_file_name);
+
+        self.update_mtime_ctime_to_now().await;
+        Ok(Self::new(
+            self.get_ino(),
+            child_file_name,
+            full_path,
+            child_attr,
+            DefaultNodeData::RegFile(global_cache),
+            child_fd,
+            Arc::clone(&self.meta),
+        ))
     }
 
     /// Load data from directory, file or symlink target.

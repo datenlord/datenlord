@@ -420,18 +420,20 @@ impl MetaData for DefaultMetaData {
             });
             let parent_name = parent_node.get_name().to_owned();
             let child_node = match child_type {
-                SFlag::S_IFDIR => parent_node
-                    .open_child_dir(child_name)
-                    .await
-                    .context(format!(
-                        "lookup_helper() failed to open sub-directory name={:?} \
+                SFlag::S_IFDIR => {
+                    parent_node
+                        .open_child_dir(child_name, None)
+                        .await
+                        .context(format!(
+                            "lookup_helper() failed to open sub-directory name={:?} \
                             under parent directory of ino={} and name={:?}",
-                        child_name, parent, parent_name,
-                    ))?,
+                            child_name, parent, parent_name,
+                        ))?
+                }
                 SFlag::S_IFREG => {
                     let oflags = OFlag::O_RDWR;
                     parent_node
-                        .open_child_file(child_name, oflags, self.data_cache.clone())
+                        .open_child_file(child_name, None, oflags, self.data_cache.clone())
                         .await
                         .context(format!(
                             "lookup_helper() failed to open child file name={:?} with flags={:?} \
@@ -439,16 +441,14 @@ impl MetaData for DefaultMetaData {
                             child_name, oflags, parent, parent_name,
                         ))?
                 }
-                SFlag::S_IFLNK => {
-                    parent_node
-                        .load_child_symlink(child_name)
-                        .await
-                        .context(format!(
-                            "lookup_helper() failed to read child symlink name={:?} \
+                SFlag::S_IFLNK => parent_node
+                    .load_child_symlink(child_name, None)
+                    .await
+                    .context(format!(
+                        "lookup_helper() failed to read child symlink name={:?} \
                                 under parent directory of ino={} and name={:?}",
-                            child_name, parent, parent_name,
-                        ))?
-                }
+                        child_name, parent, parent_name,
+                    ))?,
                 _ => panic!(
                     "lookup_helper() found unsupported file type={:?}",
                     child_type,

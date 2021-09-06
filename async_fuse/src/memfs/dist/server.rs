@@ -283,8 +283,8 @@ async fn get_attr<S: S3BackEnd + Send + Sync + 'static>(
 ) -> anyhow::Result<()> {
     let path2inum = meta.path2inum.read().await;
     if let Some(inum) = path2inum.get(path) {
-        let mut cache = meta.cache.write().await;
-        if let Some(node) = cache.get_mut(inum) {
+        let cache = meta.cache.read().await;
+        if let Some(node) = cache.get(inum) {
             let attr = node.get_attr();
             debug!("Success get attr for path {} .", path);
             tcp::write_message(stream, &response::get_attr(&attr))?;
