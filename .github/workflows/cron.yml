@@ -15,6 +15,7 @@ env:
   DATENLORD_IMAGE: datenlord/datenlord:e2e_test
   DATENLORD_LOGGING: scripts/datenlord-logging.yaml
   DATENLORD_LOGGING_NAMESPACE: datenlord-logging
+  DATENLORD_METRICS_TEST: scripts/datenlord-metrics-test.yaml
   DATENLORD_MONITORING: scripts/datenlord-monitor.yaml
   DATENLORD_MONITORING_NAMESPACE: datenlord-monitoring
   DATENLORD_NAMESPACE: csi-datenlord
@@ -31,7 +32,7 @@ env:
   KIND_VERSION: v0.11.0
   # MINIKUBE_VERSION: v1.13.0
   NODE_APP_LABEL: csi-nodeplugin-datenlord
-  NODE_CONTAINER_NAME: datenlord-node-plugin
+  NODE_CONTAINER_NAME: datenlord
   PROMETHEUS_LABEL: prometheus-server
 
 jobs:
@@ -213,20 +214,9 @@ jobs:
           rm -rf $HOME/.ssh/
           ssh-keygen -N '' -f ~/.ssh/id_rsa
           /bin/bash /tmp/setup.sh
-      - name: Datenlord Monitoring Test
+      - name: Datenlord Monitoring and Alerting Test
         run: |
-          sudo chmod 755 scripts/datenlord-monitor-deploy.sh
-          cat scripts/alertmanager_test_alert.yaml >> scripts/alertmanager_alerts.yaml
-          sh scripts/datenlord-monitor-deploy.sh deploy
-          NODE_IP=`kubectl get nodes -A -o wide | awk 'FNR == 2 {print $6}'`
-          FOUND_PATH=`curl --silent $NODE_IP:30000 | grep Found`
-          test -n "$FOUND_PATH" || (echo "FAILED TO FIND PROMETHEUS SERVICE" && /bin/false)
-      - name: Datenlord Alerting Test
-        run: |
-          sleep 60
-          NODE_IP=`kubectl get nodes -A -o wide | awk 'FNR == 2 {print $6}'`
-          ALERTS=`curl --silent $NODE_IP:31000/api/v2/alerts | grep 'High Memory Usage'`
-          test -n "$ALERTS" || (echo "FAILED TO FIND ALERTS" && /bin/false)
+          sh scripts/datenlord_monitor_test.sh
       - name: Docker build fuse and csi
         run: |
           docker build . --build-arg RUST_IMAGE_VERSION=$RUST_VERSION --file ./Dockerfile --target datenlord --tag $DATENLORD_IMAGE
@@ -265,6 +255,9 @@ jobs:
           sleep 60
           kubectl get pods -A -o wide
           # sudo netstat -lntp && ls -lsh
+      - name: Datenlord metric and logging test
+        run: |
+          sh scripts/datenlord_metrics_logging_test.sh
       - name: CSI E2E Test
         run: |
           wget --quiet https://dl.k8s.io/$K8S_VERSION/kubernetes-test-linux-amd64.tar.gz

@@ -113,10 +113,12 @@ metadata:
   labels:
     app: elasticsearch
 spec:
+  type: NodePort
   ports:
   - port: 9200
     protocol: TCP
     targetPort: db
+    nodePort: 31001
   selector:
     app: elasticsearch
 
