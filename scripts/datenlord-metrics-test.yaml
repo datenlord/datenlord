@@ -1,0 +1,32 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: pvc-datenlord-test
+spec:
+  accessModes:
+    - ReadWriteOnce
+  volumeMode: Filesystem
+  resources:
+    requests:
+      storage: 100Mi
+  storageClassName: csi-datenlord-sc
+
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: metrics-datenlord-test
+spec:
+    containers:
+    - name: nginx
+      image: nginx
+      ports:
+        - containerPort: 80
+          name: "http-server"
+      volumeMounts:
+        - mountPath: "/usr/share/nginx/html"
+          name: task-pv-storage
+    volumes:
+    - name: task-pv-storage
+      persistentVolumeClaim:
+        claimName: pvc-datenlord-test
