@@ -93,6 +93,41 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
         }
     }
 
+    /// Create child `S3Node` of parent node without open
+    pub fn new_child_node_of_parent(
+        parent: &Self,
+        child_name: &str,
+        child_attr: FileAttr,
+        target_path: Option<PathBuf>,
+    ) -> Self {
+        let data = match child_attr.kind {
+            SFlag::S_IFDIR => S3NodeData::Directory(BTreeMap::new()),
+            SFlag::S_IFREG => S3NodeData::RegFile(parent.meta.data_cache.clone()),
+            SFlag::S_IFLNK => {
+                if let Some(path) = target_path {
+                    S3NodeData::SymLink(path)
+                } else {
+                    panic!("type is S_IFLNK, but target_path is None");
+                }
+            }
+            _ => panic!("unsupported type {:?}", child_attr.kind),
+        };
+        let full_path = parent.absolute_path_of_child(child_name, child_attr.kind);
+        Self {
+            s3_backend: Arc::clone(&parent.s3_backend),
+            parent: parent.get_ino(),
+            full_path,
+            name: child_name.to_string(),
+            attr: child_attr,
+            data,
+            // lookup count set to 0 for sync
+            open_count: AtomicI64::new(0),
+            // open count set to 0 for sync
+            lookup_count: AtomicI64::new(0),
+            meta: Arc::clone(&parent.meta),
+        }
+    }
+
     /// Set node attribute
     pub(crate) async fn _set_attr(&mut self, new_attr: FileAttr, _broadcast: bool) -> FileAttr {
         let old_attr = self.get_attr();
@@ -1260,6 +1295,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
 
     /// Insert directory entry for rename()
     async fn insert_entry_for_rename(&mut self, child_entry: DirEntry) -> Option<DirEntry> {
+        /*
         dist_client::update_dir(
             self.meta.etcd_client.clone(),
             &self.meta.node_id,
@@ -1275,6 +1311,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
                 e
             )
         });
+        */
 
         let dir_data = self.get_dir_data_mut();
         let previous_entry = dir_data.insert(child_entry.entry_name().into(), child_entry);
@@ -1291,6 +1328,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
 
     /// Remove directory entry from cache only for rename()
     async fn remove_entry_for_rename(&mut self, child_name: &str) -> Option<DirEntry> {
+        /*
         dist_client::remove_dir_entry(
             self.meta.etcd_client.clone(),
             &self.meta.node_id,
@@ -1305,6 +1343,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
                 e
             )
         });
+        */
 
         let dir_data = self.get_dir_data_mut();
         let remove_res = dir_data.remove(child_name);
@@ -1316,6 +1355,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
 
     /// Unlink directory entry from both cache and disk
     async fn unlink_entry(&mut self, child_name: &str) -> anyhow::Result<DirEntry> {
+        /*
         dist_client::remove_dir_entry(
             self.meta.etcd_client.clone(),
             &self.meta.node_id,
@@ -1325,6 +1365,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
         )
         .await
         .unwrap_or_else(|e| panic!("unlink_entry update remote dir failed, error: {}", e));
+        */
 
         let dir_data = self.get_dir_data_mut();
         let removed_entry = dir_data.remove(child_name).unwrap_or_else(|| {

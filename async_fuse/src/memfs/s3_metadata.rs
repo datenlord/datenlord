@@ -45,7 +45,7 @@ pub struct S3MetaData<S: S3BackEnd + Send + Sync + 'static> {
     /// The trash to hold deferred deleted directories and files
     trash: RwLock<BTreeSet<INum>>,
     /// Global data cache
-    data_cache: Arc<GlobalCache>,
+    pub(crate) data_cache: Arc<GlobalCache>,
     /// Current available node number, it'll increase after using
     pub(crate) cur_inum: AtomicU32,
     /// Current available fd, it'll increase after using
@@ -160,7 +160,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         target_path: Option<&Path>,
     ) -> anyhow::Result<(Duration, FuseAttr, u64)> {
         // pre-check
-        let (parent_full_path, child_entry, parent_attr, fuse_attr) = {
+        let (parent_full_path, child_attr, parent_attr, fuse_attr) = {
             let mut cache = self.cache.write().await;
             let parent_node = self
                 .create_node_pre_check(parent, &node_name, &mut cache)
@@ -264,23 +264,14 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
             });
             (
                 pnode.full_path().to_owned(),
-                pnode
-                    .get_dir_data()
-                    .get(node_name)
-                    .cloned()
-                    .unwrap_or_else(|| {
-                        panic!(
-                            "failed to get child {:?} from parent {:?}",
-                            node_name, parent_name,
-                        )
-                    }),
+                new_node_attr,
                 pnode.get_attr(),
                 fuse_attr,
             )
         };
 
-        self.sync_attr(&parent_full_path, parent_attr).await;
-        self.sync_dir(&parent_full_path, node_name, child_entry)
+        self.sync_attr_remote(&parent_full_path, parent_attr).await;
+        self.sync_dir_remote(&parent_full_path, node_name, &child_attr, target_path)
             .await;
         let ttl = Duration::new(MY_TTL_SEC, 0);
         Ok((ttl, fuse_attr, MY_GENERATION))
@@ -293,105 +284,14 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         node_name: &str,
         node_type: SFlag,
     ) -> anyhow::Result<()> {
-        let node_ino: INum;
-        {
-            // pre-checks
-            let cache = self.cache.read().await;
-            let parent_node = cache.get(&parent).unwrap_or_else(|| {
-                panic!(
-                    "remove_node_helper() found fs is inconsistent, \
-                        parent of ino={} should be in cache before remove its child",
-                    parent,
-                );
-            });
-            match parent_node.get_entry(&node_name) {
-                None => {
-                    debug!(
-                        "remove_node_helper() failed to find i-node name={:?} \
-                            under parent of ino={}",
-                        node_name, parent,
-                    );
-                    return util::build_error_result_from_errno(
-                        Errno::ENOENT,
-                        format!(
-                            "remove_node_helper() failed to find i-node name={:?} \
-                                under parent of ino={}",
-                            node_name, parent,
-                        ),
-                    );
-                }
-                Some(child_entry) => {
-                    node_ino = child_entry.ino();
-                    if let SFlag::S_IFDIR = node_type {
-                        // check the directory to delete is empty
-                        let dir_node = cache.get(&node_ino).unwrap_or_else(|| {
-                            panic!(
-                                "remove_node_helper() found fs is inconsistent, \
-                                    directory name={:?} of ino={} \
-                                    found under the parent of ino={}, \
-                                    but no i-node found for this directory",
-                                node_name, node_ino, parent,
-                            );
-                        });
-                        if !dir_node.is_node_data_empty() {
-                            debug!(
-                                "remove_node_helper() cannot remove \
-                                    the non-empty directory name={:?} of ino={} \
-                                    under the parent directory of ino={}",
-                                node_name, node_ino, parent,
-                            );
-                            return util::build_error_result_from_errno(
-                                Errno::ENOTEMPTY,
-                                format!(
-                                    "remove_node_helper() cannot remove \
-                                        the non-empty directory name={:?} of ino={} \
-                                        under the parent directory of ino={}",
-                                    node_name, node_ino, parent,
-                                ),
-                            );
-                        }
-                    }
-
-                    let child_inode = cache.get(&node_ino).unwrap_or_else(|| {
-                        panic!(
-                            "remove_node_helper() found fs is inconsistent, \
-                                i-node name={:?} of ino={} found under the parent of ino={}, \
-                                but no i-node found for this node",
-                            node_name, node_ino, parent
-                        )
-                    });
-
-                    if let SFlag::S_IFREG = node_type {
-                        self.data_cache
-                            .remove_file_cache(child_inode.full_path().as_bytes());
-                    }
-
-                    debug_assert_eq!(node_ino, child_inode.get_ino());
-                    debug_assert_eq!(node_name, child_inode.get_name());
-                    debug_assert_eq!(parent, child_inode.get_parent_ino());
-                    debug_assert_eq!(node_type, child_inode.get_type());
-                    debug_assert_eq!(node_type, child_inode.get_attr().kind);
-                }
-            }
-        }
-        {
-            // all checks passed, ready to remove,
-            // when deferred deletion, remove entry from directory first
-            self.may_deferred_delete_node_helper(node_ino)
-                .await
-                .context(format!(
-                    "remove_node_helper() failed to maybe deferred delete child i-node of ino={}, \
-                        name={:?} and type={:?} under parent ino={}",
-                    node_ino, node_name, node_type, parent,
-                ))?;
-            // reply.ok().await?;
-            debug!(
-                "remove_node_helper() successfully removed child i-node of ino={}, \
-                    name={:?} and type={:?} under parent ino={}",
-                node_ino, node_name, node_type, parent,
-            );
-            Ok(())
-        }
+        debug!(
+            "remove_node_helper() about to remove parent ino={:?}, \
+            child_name={:?}, child_type={:?}",
+            parent, node_name, node_type
+        );
+        self.remove_node_local(parent, node_name, node_type).await?;
+        self.remove_remote(parent, node_name, node_type).await;
+        Ok(())
     }
 
     /// Helper function to lookup
@@ -450,7 +350,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
                 });
                 parent_node.absolute_path_of_child(child_name, child_type)
             };
-            let remote_attr = self.get_attr(&child_path).await;
+            let remote_attr = self.get_attr_remote(&child_path).await;
 
             let (mut child_node, parent_name) = {
                 let cache = self.cache.read().await;
@@ -503,6 +403,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
                 (child_node, parent_name)
             };
 
+            debug_assert_eq!(ino, child_node.get_ino());
             child_node.set_ino(ino);
             let child_ino = ino;
             let attr = child_node.lookup_attr();
@@ -526,172 +427,15 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
 
     /// Rename helper to exchange on disk
     async fn rename_exchange_helper(&self, param: RenameParam) -> anyhow::Result<()> {
-        let old_parent = param.old_parent;
-        let old_name = param.old_name.as_str();
-        let new_parent = param.new_parent;
-        let new_name = param.new_name;
-        let flags = param.flags;
-        debug!(
-            "rename(old parent={}, old name={:?}, new parent={}, new name={:?})",
-            old_parent, old_name, new_parent, new_name,
-        );
-        let no_replace = flags == 1; // RENAME_NOREPLACE
-
-        let pre_check_res = self
-            .rename_pre_check(old_parent, old_name, new_parent, &new_name, no_replace)
-            .await;
-        let (_, _, _, new_entry_ino) = match pre_check_res {
-            Ok((old_parent_fd, old_entry_ino, new_parent_fd, new_entry_ino)) => {
-                (old_parent_fd, old_entry_ino, new_parent_fd, new_entry_ino)
-            }
-            Err(e) => {
-                debug!(
-                    "rename() pre-check failed, the error is: {}",
-                    common::util::format_anyhow_error(&e)
-                );
-                return Err(e);
-            }
-        };
-        let new_entry_ino = new_entry_ino.unwrap();
-
-        let rename_in_cache_res = self
-            .rename_in_cache_helper(old_parent, old_name, new_parent, &new_name)
-            .await;
-
-        if let Some(replaced_entry) = rename_in_cache_res {
-            debug_assert_eq!(
-                new_entry_ino,
-                replaced_entry.ino(),
-                "rename_exchange_helper() replaced entry i-number not match"
-            );
-            let exchange_entry = DirEntry::new(
-                new_entry_ino,
-                old_name.to_string(),
-                replaced_entry.entry_type(),
-            );
-
-            let mut cache = self.cache.write().await;
-            let old_parent_node = cache.get_mut(&old_parent).unwrap_or_else(|| {
-                panic!(
-                    "impossible case when rename, the from parent i-node of ino={} should be in cache",
-                    old_parent,
-                )
-            });
-            let insert_res = old_parent_node
-                .insert_entry_for_rename(exchange_entry)
-                .await;
-            debug_assert!(
-                insert_res.is_none(),
-                "impossible case when rename, the from i-node of name={:?} should have been \
-                    moved out of from parent directory ino={} and name={:?}",
-                old_name,
-                old_parent,
-                old_parent_node.get_name(),
-            );
-            // TODO: finish rename exchange when libc::rename2 is available
-            // call rename2 here to exchange two nodes
-            let exchanged_node = cache.get_mut(&new_entry_ino).unwrap_or_else(|| {
-                panic!(
-                    "impossible case when rename, the new entry i-node of ino={} should be in cache",
-                    new_entry_ino,
-                )
-            });
-            exchanged_node.set_parent_ino(old_parent);
-            exchanged_node.set_name(old_name.clone());
-            let exchanged_attr = exchanged_node
-                .load_attribute()
-                .await
-                .context(format!(
-                    "rename_exchange_helper() failed to load attribute of \
-                        to i-node of ino={} and name={:?} under parent directory",
-                    new_entry_ino, new_name,
-                ))
-                .unwrap_or_else(|e| {
-                    panic!(
-                        "rename_exchange_helper() failed to load attributed of to i-node of ino={} and name={:?}, \
-                            the error is: {}",
-                        exchanged_node.get_ino(), exchanged_node.get_name(),
-                        common::util::format_anyhow_error(&e),
-                    )
-                });
-            debug_assert_eq!(exchanged_attr.ino, exchanged_node.get_ino());
-            debug_assert_eq!(exchanged_attr.ino, new_entry_ino);
-            panic!("rename2 system call has not been supported in libc to exchange two nodes yet!");
-        } else {
-            panic!(
-                "impossible case, the child i-node of name={:?} to be exchanged \
-                    should be under to parent directory ino={}",
-                new_name, new_parent,
-            );
-        }
+        self.rename_exchange_local(&param).await?;
+        self.rename_remote(param).await;
+        Ok(())
     }
 
     /// Rename helper to move on disk, it may replace destination entry
     async fn rename_may_replace_helper(&self, param: RenameParam) -> anyhow::Result<()> {
-        let old_parent = param.old_parent;
-        let old_name = param.old_name;
-        let new_parent = param.new_parent;
-        let new_name = param.new_name;
-        let flags = param.flags;
-        debug!(
-            "rename(old parent={}, old name={:?}, new parent={}, new name={:?})",
-            old_parent, old_name, new_parent, new_name,
-        );
-        let no_replace = flags == 1; // RENAME_NOREPLACE
-
-        let pre_check_res = self
-            .rename_pre_check(old_parent, &old_name, new_parent, &new_name, no_replace)
-            .await;
-        let (_, old_entry_ino, _, new_entry_ino) = match pre_check_res {
-            Ok((old_parent_fd, old_entry_ino, new_parent_fd, new_entry_ino)) => {
-                (old_parent_fd, old_entry_ino, new_parent_fd, new_entry_ino)
-            }
-            Err(e) => {
-                debug!(
-                    "rename() pre-check failed, the error is: {}",
-                    common::util::format_anyhow_error(&e)
-                );
-                return Err(e);
-            }
-        };
-
-        // Just replace new entry, may deferred delete
-        if let Some(new_ino) = new_entry_ino {
-            self.may_deferred_delete_node_helper(new_ino)
-                .await
-                .context(format!(
-                    "rename_may_replace_helper() failed to \
-                        maybe deferred delete the replaced i-node ino={}",
-                    new_ino,
-                ))?;
-        }
-
-        {
-            let mut cache = self.cache.write().await;
-            let moved_node = cache.get_mut(&old_entry_ino).unwrap_or_else(|| {
-                panic!(
-                "impossible case when rename, the from entry i-node of ino={} should be in cache",
-                old_entry_ino,
-            )
-            });
-            moved_node.set_parent_ino(new_parent);
-            moved_node.set_name(&new_name);
-            debug!(
-                "rename_may_replace_helper() successfully moved the from i-node \
-                of ino={} and name={:?} under from parent ino={} to \
-                the to i-node of ino={} and name={:?} under to parent ino={}",
-                old_entry_ino, old_name, old_parent, old_entry_ino, new_name, new_parent,
-            );
-        }
-
-        let rename_replace_res = self
-            .rename_in_cache_helper(old_parent, &old_name, new_parent, &new_name)
-            .await;
-        debug_assert!(
-            rename_replace_res.is_none(),
-            "may_deferred_delete_node_helper() should already have \
-                deleted the target i-node to be replaced",
-        );
+        self.rename_may_replace_local(&param).await?;
+        self.rename_remote(param).await;
         Ok(())
     }
 
@@ -801,6 +545,11 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
                             and ino={} from parent directory ino={}",
                 node_name, ino, parent_ino,
             ))?;
+            debug!(
+                "may_deferred_delete_node_helper() successfully remove entry name={:?} \
+                    ino={} from parent directory ino={}",
+                node_name, ino, parent_ino
+            );
             debug_assert_eq!(node_name, deleted_entry.entry_name());
             debug_assert_eq!(deleted_entry.ino(), ino);
         }
@@ -1036,8 +785,301 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
         }
     }
 
+    /// Rename exchange on local node
+    async fn rename_exchange_local(&self, param: &RenameParam) -> anyhow::Result<()> {
+        let old_parent = param.old_parent;
+        let old_name = param.old_name.as_str();
+        let new_parent = param.new_parent;
+        let new_name = &param.new_name;
+        let flags = param.flags;
+        debug!(
+            "rename(old parent={}, old name={:?}, new parent={}, new name={:?})",
+            old_parent, old_name, new_parent, new_name,
+        );
+        let no_replace = flags == 1; // RENAME_NOREPLACE
+
+        let pre_check_res = self
+            .rename_pre_check(old_parent, old_name, new_parent, &new_name, no_replace)
+            .await;
+        let (_, _, _, new_entry_ino) = match pre_check_res {
+            Ok((old_parent_fd, old_entry_ino, new_parent_fd, new_entry_ino)) => {
+                (old_parent_fd, old_entry_ino, new_parent_fd, new_entry_ino)
+            }
+            Err(e) => {
+                debug!(
+                    "rename() pre-check failed, the error is: {}",
+                    common::util::format_anyhow_error(&e)
+                );
+                return Err(e);
+            }
+        };
+        let new_entry_ino = new_entry_ino.unwrap();
+
+        let rename_in_cache_res = self
+            .rename_in_cache_helper(old_parent, old_name, new_parent, &new_name)
+            .await;
+
+        if let Some(replaced_entry) = rename_in_cache_res {
+            debug_assert_eq!(
+                new_entry_ino,
+                replaced_entry.ino(),
+                "rename_exchange_helper() replaced entry i-number not match"
+            );
+            let exchange_entry = DirEntry::new(
+                new_entry_ino,
+                old_name.to_string(),
+                replaced_entry.entry_type(),
+            );
+
+            let mut cache = self.cache.write().await;
+            let old_parent_node = cache.get_mut(&old_parent).unwrap_or_else(|| {
+                panic!(
+                    "impossible case when rename, the from parent i-node of ino={} should be in cache",
+                    old_parent,
+                )
+            });
+            let insert_res = old_parent_node
+                .insert_entry_for_rename(exchange_entry)
+                .await;
+            debug_assert!(
+                insert_res.is_none(),
+                "impossible case when rename, the from i-node of name={:?} should have been \
+                    moved out of from parent directory ino={} and name={:?}",
+                old_name,
+                old_parent,
+                old_parent_node.get_name(),
+            );
+            // TODO: finish rename exchange when libc::rename2 is available
+            // call rename2 here to exchange two nodes
+            let exchanged_node = cache.get_mut(&new_entry_ino).unwrap_or_else(|| {
+                panic!(
+                    "impossible case when rename, the new entry i-node of ino={} should be in cache",
+                    new_entry_ino,
+                )
+            });
+            exchanged_node.set_parent_ino(old_parent);
+            exchanged_node.set_name(old_name.clone());
+            let exchanged_attr = exchanged_node
+                .load_attribute()
+                .await
+                .context(format!(
+                    "rename_exchange_helper() failed to load attribute of \
+                        to i-node of ino={} and name={:?} under parent directory",
+                    new_entry_ino, new_name,
+                ))
+                .unwrap_or_else(|e| {
+                    panic!(
+                        "rename_exchange_helper() failed to load attributed of to i-node of ino={} and name={:?}, \
+                            the error is: {}",
+                        exchanged_node.get_ino(), exchanged_node.get_name(),
+                        common::util::format_anyhow_error(&e),
+                    )
+                });
+            debug_assert_eq!(exchanged_attr.ino, exchanged_node.get_ino());
+            debug_assert_eq!(exchanged_attr.ino, new_entry_ino);
+            panic!("rename2 system call has not been supported in libc to exchange two nodes yet!");
+        } else {
+            panic!(
+                "impossible case, the child i-node of name={:?} to be exchanged \
+                    should be under to parent directory ino={}",
+                new_name, new_parent,
+            );
+        }
+    }
+
+    /// Rename to move on disk locally, it may replace destination entry
+    async fn rename_may_replace_local(&self, param: &RenameParam) -> anyhow::Result<()> {
+        let old_parent = param.old_parent;
+        let old_name = &param.old_name;
+        let new_parent = param.new_parent;
+        let new_name = &param.new_name;
+        let flags = param.flags;
+        debug!(
+            "rename(old parent={}, old name={:?}, new parent={}, new name={:?})",
+            old_parent, old_name, new_parent, new_name,
+        );
+        let no_replace = flags == 1; // RENAME_NOREPLACE
+
+        let pre_check_res = self
+            .rename_pre_check(old_parent, &old_name, new_parent, &new_name, no_replace)
+            .await;
+        let (_, old_entry_ino, _, new_entry_ino) = match pre_check_res {
+            Ok((old_parent_fd, old_entry_ino, new_parent_fd, new_entry_ino)) => {
+                (old_parent_fd, old_entry_ino, new_parent_fd, new_entry_ino)
+            }
+            Err(e) => {
+                debug!(
+                    "rename() pre-check failed, the error is: {}",
+                    common::util::format_anyhow_error(&e)
+                );
+                return Err(e);
+            }
+        };
+
+        // Just replace new entry, may deferred delete
+        if let Some(new_ino) = new_entry_ino {
+            self.may_deferred_delete_node_helper(new_ino)
+                .await
+                .context(format!(
+                    "rename_may_replace_local() failed to \
+                        maybe deferred delete the replaced i-node ino={}",
+                    new_ino,
+                ))?;
+        }
+
+        {
+            let mut cache = self.cache.write().await;
+            let moved_node = cache.get_mut(&old_entry_ino).unwrap_or_else(|| {
+                panic!(
+                "impossible case when rename, the from entry i-node of ino={} should be in cache",
+                old_entry_ino,
+            )
+            });
+            moved_node.set_parent_ino(new_parent);
+            moved_node.set_name(&new_name);
+            debug!(
+                "rename_may_replace_local() successfully moved the from i-node \
+                of ino={} and name={:?} under from parent ino={} to \
+                the to i-node of ino={} and name={:?} under to parent ino={}",
+                old_entry_ino, old_name, old_parent, old_entry_ino, new_name, new_parent,
+            );
+        }
+
+        let rename_replace_res = self
+            .rename_in_cache_helper(old_parent, &old_name, new_parent, &new_name)
+            .await;
+        debug_assert!(
+            rename_replace_res.is_none(),
+            "rename_may_replace_local() should already have \
+                deleted the target i-node to be replaced",
+        );
+        Ok(())
+    }
+
+    /// Helper function to rename file locally
+    pub(crate) async fn rename_local(&self, param: &RenameParam) {
+        if param.flags == 2 {
+            let _ = self.rename_exchange_local(param).await;
+        } else {
+            let _ = self.rename_may_replace_local(param).await;
+        }
+    }
+
+    /// Helper function to remove node locally
+    pub(crate) async fn remove_node_local(
+        &self,
+        parent: INum,
+        node_name: &str,
+        node_type: SFlag,
+    ) -> anyhow::Result<()> {
+        debug!(
+            "remove_node_local() about to remove parent ino={:?}, \
+            child_name={:?}, child_type={:?}",
+            parent, node_name, node_type
+        );
+        let node_ino: INum;
+        {
+            // pre-checks
+            let cache = self.cache.read().await;
+            let parent_node = cache.get(&parent).unwrap_or_else(|| {
+                panic!(
+                    "remove_node_local() found fs is inconsistent, \
+                        parent of ino={} should be in cache before remove its child",
+                    parent,
+                );
+            });
+            match parent_node.get_entry(&node_name) {
+                None => {
+                    debug!(
+                        "remove_node_local() failed to find i-node name={:?} \
+                            under parent of ino={}",
+                        node_name, parent,
+                    );
+                    return util::build_error_result_from_errno(
+                        Errno::ENOENT,
+                        format!(
+                            "remove_node_local() failed to find i-node name={:?} \
+                                under parent of ino={}",
+                            node_name, parent,
+                        ),
+                    );
+                }
+                Some(child_entry) => {
+                    node_ino = child_entry.ino();
+                    if let SFlag::S_IFDIR = node_type {
+                        // check the directory to delete is empty
+                        let dir_node = cache.get(&node_ino).unwrap_or_else(|| {
+                            panic!(
+                                "remove_node_local() found fs is inconsistent, \
+                                    directory name={:?} of ino={} \
+                                    found under the parent of ino={}, \
+                                    but no i-node found for this directory",
+                                node_name, node_ino, parent,
+                            );
+                        });
+                        if !dir_node.is_node_data_empty() {
+                            debug!(
+                                "remove_node_local() cannot remove \
+                                    the non-empty directory name={:?} of ino={} \
+                                    under the parent directory of ino={}",
+                                node_name, node_ino, parent,
+                            );
+                            return util::build_error_result_from_errno(
+                                Errno::ENOTEMPTY,
+                                format!(
+                                    "remove_node_local() cannot remove \
+                                        the non-empty directory name={:?} of ino={} \
+                                        under the parent directory of ino={}",
+                                    node_name, node_ino, parent,
+                                ),
+                            );
+                        }
+                    }
+
+                    let child_node = cache.get(&node_ino).unwrap_or_else(|| {
+                        panic!(
+                            "remove_node_local() found fs is inconsistent, \
+                                i-node name={:?} of ino={} found under the parent of ino={}, \
+                                but no i-node found for this node",
+                            node_name, node_ino, parent
+                        )
+                    });
+
+                    if let SFlag::S_IFREG = node_type {
+                        self.data_cache
+                            .remove_file_cache(child_node.full_path().as_bytes());
+                    }
+
+                    debug_assert_eq!(node_ino, child_node.get_ino());
+                    debug_assert_eq!(node_name, child_node.get_name());
+                    debug_assert_eq!(parent, child_node.get_parent_ino());
+                    debug_assert_eq!(node_type, child_node.get_type());
+                    debug_assert_eq!(node_type, child_node.get_attr().kind);
+                }
+            }
+        }
+        {
+            // all checks passed, ready to remove,
+            // when deferred deletion, remove entry from directory first
+            self.may_deferred_delete_node_helper(node_ino)
+                .await
+                .context(format!(
+                    "remove_node_local() failed to maybe deferred delete child i-node of ino={}, \
+                        name={:?} and type={:?} under parent ino={}",
+                    node_ino, node_name, node_type, parent,
+                ))?;
+            // reply.ok().await?;
+            debug!(
+                "remove_node_local() successfully removed child i-node of ino={}, \
+                    name={:?} and type={:?} under parent ino={}",
+                node_ino, node_name, node_type, parent,
+            );
+        }
+        Ok(())
+    }
+
     /// Sync attr to other nodes
-    async fn sync_attr(&self, node: &str, attr: FileAttr) {
+    async fn sync_attr_remote(&self, node: &str, attr: FileAttr) {
         if let Err(e) = dist_client::push_attr(
             self.etcd_client.clone(),
             &self.node_id,
@@ -1052,14 +1094,21 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
     }
 
     /// Sync dir to other nodes
-    async fn sync_dir(&self, parent: &str, child_name: &str, child_entry: DirEntry) {
+    async fn sync_dir_remote(
+        &self,
+        parent: &str,
+        child_name: &str,
+        child_attr: &FileAttr,
+        target_path: Option<&Path>,
+    ) {
         if let Err(e) = dist_client::update_dir(
             self.etcd_client.clone(),
             &self.node_id,
             &self.volume_info,
             parent,
             child_name,
-            &child_entry,
+            child_attr,
+            target_path,
         )
         .await
         {
@@ -1068,7 +1117,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
     }
 
     /// Get attr from other nodes
-    async fn get_attr(&self, path: &str) -> Option<FileAttr> {
+    async fn get_attr_remote(&self, path: &str) -> Option<FileAttr> {
         match dist_client::get_attr(
             self.etcd_client.clone(),
             &self.node_id,
@@ -1079,6 +1128,36 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
         {
             Err(e) => panic!("failed to sync attribute to others, error: {}", e),
             Ok(res) => res,
+        }
+    }
+
+    /// Sync rename request to other nodes
+    async fn rename_remote(&self, args: RenameParam) {
+        if let Err(e) = dist_client::rename(
+            self.etcd_client.clone(),
+            &self.node_id,
+            &self.volume_info,
+            args,
+        )
+        .await
+        {
+            panic!("failed to sync rename request to others, error: {}", e);
+        }
+    }
+
+    /// Sync remove request to other nodes
+    async fn remove_remote(&self, parent: INum, child_name: &str, child_type: SFlag) {
+        if let Err(e) = dist_client::remove(
+            self.etcd_client.clone(),
+            &self.node_id,
+            &self.volume_info,
+            parent,
+            child_name,
+            child_type,
+        )
+        .await
+        {
+            panic!("failed to sync rename request to others, error: {}", e);
         }
     }
 }
