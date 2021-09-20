@@ -1,13 +1,16 @@
 //! This is the server for the cache, which is used to accpet the request
 
 use super::super::cache::GlobalCache;
+use super::super::dir::DirEntry;
 use super::super::node::Node;
 use super::super::s3_metadata::S3MetaData;
-use super::request::{self, DistRequest, OpArgs, RemoveDirEntryArgs, UpdateDirArgs};
+use super::super::s3_node::S3Node;
+use super::request::{self, DistRequest, OpArgs, RemoveArgs, RemoveDirEntryArgs, UpdateDirArgs};
 use super::response;
 use super::tcp;
 use super::types::{self, SerialFileAttr};
 use crate::memfs::s3_wrapper::S3BackEnd;
+use crate::memfs::RenameParam;
 use log::debug;
 use std::fmt::{self, Debug};
 use std::net::IpAddr;
@@ -183,6 +186,14 @@ async fn dispatch<S: S3BackEnd + Send + Sync + 'static>(
             push_attr(stream, meta, &path, &attr).await?;
             return Ok(true);
         }
+        DistRequest::Rename(args) => {
+            rename(stream, meta, args).await?;
+            return Ok(true);
+        }
+        DistRequest::Remove(args) => {
+            remove(stream, meta, args).await?;
+            return Ok(true);
+        }
         DistRequest::GetInodeNum => {
             get_inode_num(stream, meta).await?;
             return Ok(true);
@@ -249,12 +260,29 @@ async fn update_dir<S: S3BackEnd + Send + Sync + 'static>(
     meta: Arc<S3MetaData<S>>,
     args: UpdateDirArgs,
 ) -> anyhow::Result<()> {
-    let path2inum = meta.path2inum.read().await;
+    debug!("receive update_dir request {:?}", args);
+    let mut path2inum = meta.path2inum.write().await;
     if let Some(parent_inum) = path2inum.get(&args.parent_path) {
-        if let Some(parent_node) = meta.cache.write().await.get_mut(parent_inum) {
+        let mut cache = meta.cache.write().await;
+        if let Some(parent_node) = cache.get_mut(parent_inum) {
+            let child_attr = args.child_attr;
+            let child_node = S3Node::new_child_node_of_parent(
+                &parent_node,
+                &args.child_name,
+                types::serial_to_file_attr(&child_attr),
+                args.target_path,
+            );
+
+            let child_ino = child_node.get_ino();
+            let child_type = child_node.get_type();
+            let entry = DirEntry::new(child_ino, args.child_name.clone(), child_type);
+            // Add to parent node
             parent_node
                 .get_dir_data_mut()
-                .insert(args.child_name, types::serial_to_dir_entry(&args.entry));
+                .insert(args.child_name.clone(), entry);
+            // Add child to cache
+            path2inum.insert(child_node.full_path().to_owned(), child_ino);
+            cache.insert(child_ino, child_node);
         }
     }
     tcp::write_message(stream, &response::update_dir())?;
@@ -327,6 +355,33 @@ async fn push_attr<S: S3BackEnd + Send + Sync + 'static>(
     }
 
     tcp::write_message(stream, &response::push_attr())?;
+    Ok(())
+}
+
+async fn rename<S: S3BackEnd + Send + Sync + 'static>(
+    stream: &mut TcpStream,
+    meta: Arc<S3MetaData<S>>,
+    args: RenameParam,
+) -> anyhow::Result<()> {
+    meta.rename_local(&args).await;
+    tcp::write_message(stream, &response::rename())?;
+    Ok(())
+}
+
+async fn remove<S: S3BackEnd + Send + Sync + 'static>(
+    stream: &mut TcpStream,
+    meta: Arc<S3MetaData<S>>,
+    args: RemoveArgs,
+) -> anyhow::Result<()> {
+    debug!("receive remove request {:?}", args);
+    let _ = meta
+        .remove_node_local(
+            args.parent,
+            &args.child_name,
+            types::serial_to_entry_type(&args.child_type),
+        )
+        .await;
+    tcp::write_message(stream, &response::remove())?;
     Ok(())
 }
 

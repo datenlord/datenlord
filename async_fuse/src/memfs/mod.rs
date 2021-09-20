@@ -38,6 +38,7 @@ pub use metadata::DefaultMetaData;
 use metadata::MetaData;
 use node::Node;
 pub use s3_metadata::S3MetaData;
+use serde::{Deserialize, Serialize};
 
 /// The time-to-live seconds of FUSE attributes
 const MY_TTL_SEC: u64 = 3600; // TODO: should be a long value, say 1 hour
@@ -88,6 +89,7 @@ pub struct SetAttrParam {
 }
 
 /// Rename parameters
+#[derive(Serialize, Deserialize, Debug)]
 pub struct RenameParam {
     /// Old parent directory i-number
     pub old_parent: INum,

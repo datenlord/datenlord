@@ -102,6 +102,16 @@ pub(crate) fn push_attr() -> Vec<u8> {
         .unwrap_or_else(|e| panic!("fail to serialize `PushFileAttr` response, {}", e))
 }
 
+pub(crate) fn rename() -> Vec<u8> {
+    bincode::serialize(&true)
+        .unwrap_or_else(|e| panic!("fail to serialize `Rename` response, {}", e))
+}
+
+pub(crate) fn remove() -> Vec<u8> {
+    bincode::serialize(&true)
+        .unwrap_or_else(|e| panic!("fail to serialize `Remove` response, {}", e))
+}
+
 pub(crate) fn deserialize_get_attr(bin: &[u8]) -> Option<FileAttr> {
     let attr: Option<SerialFileAttr> = bincode::deserialize(bin)
         .unwrap_or_else(|e| panic!("fail to deserialize DirEntry Map, {}", e));

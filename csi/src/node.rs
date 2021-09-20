@@ -310,11 +310,13 @@ impl Node for NodeImpl {
                         volume.vol_path, node_id
                     );
                 }
+                /*
                 // TODO: (walkaround) need to list dir before access dir.
                 let files = std::fs::read_dir(volume.vol_path)?
                     .map(|res| res.map(|e| e.path()))
                     .collect::<Result<Vec<_>, std::io::Error>>()?;
                 debug!("current files under volume: {:?}", files);
+                */
             }
 
             let target_dir = req.get_target_path();

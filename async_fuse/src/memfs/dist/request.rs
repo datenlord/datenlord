@@ -1,9 +1,14 @@
 //! Request between caches
 
-use super::super::dir::DirEntry;
-use super::types::{self, SerialDirEntry, SerialFileAttr};
+use crate::fuse::protocol::INum;
+
+use super::super::fs_util::FileAttr;
+use super::super::RenameParam;
+use super::types::{self, SerialFileAttr, SerialSFlag};
 use log::info;
+use nix::sys::stat::SFlag;
 use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
 
 #[derive(Serialize, Deserialize, Debug)]
 pub(crate) enum DistRequest {
@@ -16,6 +21,8 @@ pub(crate) enum DistRequest {
     LoadDir(String),
     UpdateDir(UpdateDirArgs),
     RemoveDirEntry(RemoveDirEntryArgs),
+    Rename(RenameParam),
+    Remove(RemoveArgs),
     GetInodeNum,
 }
 
@@ -23,13 +30,21 @@ pub(crate) enum DistRequest {
 pub(crate) struct UpdateDirArgs {
     pub(crate) parent_path: String,
     pub(crate) child_name: String,
-    pub(crate) entry: SerialDirEntry,
+    pub(crate) child_attr: SerialFileAttr,
+    pub(crate) target_path: Option<PathBuf>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
 pub(crate) struct RemoveDirEntryArgs {
     pub(crate) parent_path: String,
     pub(crate) child_name: String,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub(crate) struct RemoveArgs {
+    pub(crate) parent: INum,
+    pub(crate) child_name: String,
+    pub(crate) child_type: SerialSFlag,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -98,11 +113,17 @@ pub(crate) fn load_dir(path: &str) -> Vec<u8> {
     })
 }
 
-pub(crate) fn update_dir(parent: &str, child: &str, entry: &DirEntry) -> Vec<u8> {
+pub(crate) fn update_dir(
+    parent: &str,
+    child: &str,
+    child_attr: &FileAttr,
+    target_path: Option<&Path>,
+) -> Vec<u8> {
     let args = UpdateDirArgs {
         parent_path: parent.to_owned(),
         child_name: child.to_owned(),
-        entry: types::dir_entry_to_serial(entry),
+        child_attr: types::file_attr_to_serial(child_attr),
+        target_path: target_path.to_owned().map(|p| p.to_owned()),
     };
 
     bincode::serialize(&DistRequest::UpdateDir(args)).unwrap_or_else(|e| {
@@ -149,6 +170,30 @@ pub(crate) fn get_ino_num() -> Vec<u8> {
     bincode::serialize(&DistRequest::GetInodeNum).unwrap_or_else(|e| {
         panic!(
             "fail to serialize `GetInodeNum` distributed meta operation, {}",
+            e
+        )
+    })
+}
+
+pub(crate) fn rename(args: RenameParam) -> Vec<u8> {
+    bincode::serialize(&DistRequest::Rename(args)).unwrap_or_else(|e| {
+        panic!(
+            "fail to serialize `GetInodeNum` distributed meta operation, {}",
+            e
+        )
+    })
+}
+
+pub(crate) fn remove(parent: INum, child: &str, child_type: SFlag) -> Vec<u8> {
+    let args = RemoveArgs {
+        parent,
+        child_name: child.to_owned(),
+        child_type: types::entry_type_to_serial(child_type),
+    };
+
+    bincode::serialize(&DistRequest::Remove(args)).unwrap_or_else(|e| {
+        panic!(
+            "fail to serialize `RemoveDirEntry` distributed meta operation, {}",
             e
         )
     })

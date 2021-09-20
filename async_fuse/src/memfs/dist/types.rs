@@ -54,18 +54,27 @@ pub(crate) enum SerialSFlag {
     Dir,
     Lnk,
 }
+pub(crate) fn entry_type_to_serial(entry_type: SFlag) -> SerialSFlag {
+    match entry_type {
+        SFlag::S_IFDIR => SerialSFlag::Dir,
+        SFlag::S_IFREG => SerialSFlag::Reg,
+        SFlag::S_IFLNK => SerialSFlag::Lnk,
+        _ => panic!("unsupported entry type {:?}", entry_type),
+    }
+}
+
+pub(crate) fn serial_to_entry_type(entry_type: &SerialSFlag) -> SFlag {
+    match entry_type {
+        SerialSFlag::Dir => SFlag::S_IFDIR,
+        SerialSFlag::Reg => SFlag::S_IFREG,
+        SerialSFlag::Lnk => SFlag::S_IFLNK,
+    }
+}
 
 pub(crate) fn dir_entry_to_serial(entry: &DirEntry) -> SerialDirEntry {
     SerialDirEntry {
         ino: entry.ino(),
-        entry_type: {
-            match entry.entry_type() {
-                SFlag::S_IFDIR => SerialSFlag::Dir,
-                SFlag::S_IFREG => SerialSFlag::Reg,
-                SFlag::S_IFLNK => SerialSFlag::Lnk,
-                _ => panic!("unsupported entry type {:?}", entry.entry_type()),
-            }
-        },
+        entry_type: { entry_type_to_serial(entry.entry_type()) },
         name: entry.entry_name().to_owned(),
     }
 }
@@ -74,11 +83,7 @@ pub(crate) fn serial_to_dir_entry(entry: &SerialDirEntry) -> DirEntry {
     DirEntry::new(
         entry.ino,
         entry.name.to_owned(),
-        match entry.entry_type {
-            SerialSFlag::Dir => SFlag::S_IFDIR,
-            SerialSFlag::Reg => SFlag::S_IFREG,
-            SerialSFlag::Lnk => SFlag::S_IFLNK,
-        },
+        serial_to_entry_type(&entry.entry_type),
     )
 }
 

@@ -1,3 +1,6 @@
+use crate::fuse::protocol::INum;
+use crate::memfs::RenameParam;
+
 use super::super::dir::DirEntry;
 use super::super::fs_util::FileAttr;
 use super::etcd;
@@ -7,8 +10,10 @@ use super::tcp;
 use super::types;
 use common::etcd_delegate::EtcdDelegate;
 use log::debug;
+use nix::sys::stat::SFlag;
 use std::collections::BTreeMap;
 use std::net::TcpStream;
+use std::path::Path;
 use std::sync::Arc;
 
 pub(crate) async fn send_to_others<F, T>(
@@ -81,7 +86,8 @@ pub(crate) async fn update_dir(
     volume_info: &str,
     parent: &str,
     child: &str,
-    entry: &DirEntry,
+    child_attr: &FileAttr,
+    target_path: Option<&Path>,
 ) -> anyhow::Result<()> {
     debug!("update_dir parent {} child {}", parent, child);
     let do_nothing = |_: &[u8]| -> (bool, anyhow::Result<()>) { (false, Ok(())) };
@@ -91,13 +97,14 @@ pub(crate) async fn update_dir(
         etcd_client,
         node_id,
         volume_info,
-        &request::update_dir(parent, child, entry),
+        &request::update_dir(parent, child, child_attr, target_path),
         do_nothing,
         Ok(default),
     )
     .await
 }
 
+#[allow(dead_code)]
 pub(crate) async fn remove_dir_entry(
     etcd_client: Arc<EtcdDelegate>,
     node_id: &str,
@@ -270,4 +277,51 @@ pub(crate) async fn get_ino_num(
     }
 
     Ok(cur)
+}
+
+pub(crate) async fn rename(
+    etcd_client: Arc<EtcdDelegate>,
+    node_id: &str,
+    volume_info: &str,
+    rename_param: RenameParam,
+) -> anyhow::Result<()> {
+    debug!("rename {:?}", rename_param);
+    let do_nothing = |_: &[u8]| -> (bool, anyhow::Result<()>) { (false, Ok(())) };
+    let default = ();
+
+    send_to_others(
+        etcd_client,
+        node_id,
+        volume_info,
+        &request::rename(rename_param),
+        do_nothing,
+        Ok(default),
+    )
+    .await
+}
+
+pub(crate) async fn remove(
+    etcd_client: Arc<EtcdDelegate>,
+    node_id: &str,
+    volume_info: &str,
+    parent: INum,
+    child_name: &str,
+    child_type: SFlag,
+) -> anyhow::Result<()> {
+    debug!(
+        "remove parent {:?} child_name {:?} child_type {:?}",
+        parent, child_name, child_type
+    );
+    let do_nothing = |_: &[u8]| -> (bool, anyhow::Result<()>) { (false, Ok(())) };
+    let default = ();
+
+    send_to_others(
+        etcd_client,
+        node_id,
+        volume_info,
+        &request::remove(parent, child_name, child_type),
+        do_nothing,
+        Ok(default),
+    )
+    .await
 }
