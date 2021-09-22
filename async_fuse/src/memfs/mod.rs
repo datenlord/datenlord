@@ -728,38 +728,25 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
             flags,
             // req.request,
         );
-        let mut cache = self.metadata.cache().write().await;
-        let inode = cache.get_mut(&ino).unwrap_or_else(|| {
-            panic!(
-                "write() found fs is inconsistent, \
-                    the i-node of ino={} should be in cache",
-                ino,
-            );
-        });
-        let o_flags = fs_util::parse_oflag(flags);
-        let write_to_disk = true;
         let data_len = data.len();
-        let write_result = inode
-            .write_file(fh, offset, data, o_flags, write_to_disk)
+        let write_result = self
+            .metadata
+            .write_helper(ino, fh, offset, data, flags)
             .await;
         match write_result {
             Ok(written_size) => {
                 debug!(
                     "write() successfully wrote {} byte data to \
-                        the file of ino={} and name={:?} at offset={}",
-                    data_len,
-                    ino,
-                    inode.get_name(),
-                    offset,
+                        the file of ino={} at offset={}",
+                    data_len, ino, offset,
                 );
                 reply.written(written_size.cast()).await
             }
             Err(e) => {
                 debug!(
-                    "write() failed to write to the file of ino={} and name={:?} at offset={}, \
+                    "write() failed to write to the file of ino={} at offset={}, \
                         the error is: {}",
                     ino,
-                    inode.get_name(),
                     offset,
                     common::util::format_anyhow_error(&e),
                 );

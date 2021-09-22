@@ -81,6 +81,16 @@ pub trait MetaData {
 
     /// Delete cache in trash if necessary
     async fn delete_trash(&self, ino: &INum) -> bool;
+
+    /// Helper function to write data
+    async fn write_helper(
+        &self,
+        ino: u64,
+        fh: u64,
+        offset: i64,
+        data: Vec<u8>,
+        flags: u32,
+    ) -> anyhow::Result<usize>;
 }
 
 /// File system in-memory meta-data
@@ -715,6 +725,38 @@ impl MetaData for DefaultMetaData {
             ino, fh, datasync,
         );
         Ok(())
+    }
+
+    /// Helper function to write data
+    async fn write_helper(
+        &self,
+        ino: u64,
+        fh: u64,
+        offset: i64,
+        data: Vec<u8>,
+        flags: u32,
+    ) -> anyhow::Result<usize> {
+        let mut cache = self.cache().write().await;
+        let inode = cache.get_mut(&ino).unwrap_or_else(|| {
+            panic!(
+                "write() found fs is inconsistent, \
+                    the i-node of ino={} should be in cache",
+                ino,
+            );
+        });
+        debug!(
+            "write_helper() about to write {} byte data to file of ino={} \
+                and name {:?} at offset={}",
+            data.len(),
+            ino,
+            inode.get_name(),
+            offset
+        );
+        let o_flags = fs_util::parse_oflag(flags);
+        let write_to_disk = true;
+        inode
+            .write_file(fh, offset, data, o_flags, write_to_disk)
+            .await
     }
 }
 
