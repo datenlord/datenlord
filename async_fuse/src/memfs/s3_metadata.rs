@@ -26,6 +26,8 @@ use std::sync::atomic::Ordering;
 use std::sync::{atomic::AtomicU32, Arc};
 use std::time::Duration;
 
+use utilities::{Cast, OverflowArithmetic};
+
 /// The time-to-live seconds of FUSE attributes
 const MY_TTL_SEC: u64 = 3600; // TODO: should be a long value, say 1 hour
 /// The generation ID of FUSE attributes
@@ -160,7 +162,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         target_path: Option<&Path>,
     ) -> anyhow::Result<(Duration, FuseAttr, u64)> {
         // pre-check
-        let (parent_full_path, child_attr, parent_attr, fuse_attr) = {
+        let (parent_full_path, child_attr, fuse_attr) = {
             let mut cache = self.cache.write().await;
             let parent_node = self
                 .create_node_pre_check(parent, &node_name, &mut cache)
@@ -262,15 +264,10 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
                     parent, parent_name
                 )
             });
-            (
-                pnode.full_path().to_owned(),
-                new_node_attr,
-                pnode.get_attr(),
-                fuse_attr,
-            )
+            (pnode.full_path().to_owned(), new_node_attr, fuse_attr)
         };
 
-        self.sync_attr_remote(&parent_full_path, parent_attr).await;
+        self.sync_attr_remote(&parent_full_path).await;
         self.sync_dir_remote(&parent_full_path, node_name, &child_attr, target_path)
             .await;
         let ttl = Duration::new(MY_TTL_SEC, 0);
@@ -459,6 +456,45 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         inode.flush(ino, fh).await;
 
         Ok(())
+    }
+
+    /// Helper function to write data
+    async fn write_helper(
+        &self,
+        ino: u64,
+        fh: u64,
+        offset: i64,
+        data: Vec<u8>,
+        flags: u32,
+    ) -> anyhow::Result<usize> {
+        let data_len = data.len();
+        let (result, full_path) = {
+            let mut cache = self.cache().write().await;
+            let inode = cache.get_mut(&ino).unwrap_or_else(|| {
+                panic!(
+                    "write() found fs is inconsistent, \
+                        the i-node of ino={} should be in cache",
+                    ino,
+                );
+            });
+            debug!(
+                "write_helper() about to write {} byte data to file of ino={} \
+                and name {:?} at offset={}",
+                data.len(),
+                ino,
+                inode.get_name(),
+                offset
+            );
+            let o_flags = fs_util::parse_oflag(flags);
+            let write_to_disk = true;
+            let res = inode
+                .write_file(fh, offset, data, o_flags, write_to_disk)
+                .await;
+            (res, inode.get_full_path().to_string())
+        };
+        self.invalidate_remote(&full_path, offset, data_len).await;
+        self.sync_attr_remote(&full_path).await;
+        result
     }
 }
 
@@ -1079,12 +1115,31 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
     }
 
     /// Sync attr to other nodes
-    async fn sync_attr_remote(&self, node: &str, attr: FileAttr) {
+    async fn sync_attr_remote(&self, full_path: &str) {
+        let inum = {
+            let path2inum = self.path2inum.read().await;
+            path2inum
+                .get(full_path)
+                .unwrap_or_else(|| panic!("failed to find inum of {:?} from path2inum", full_path))
+                .to_owned()
+        };
+        let attr = self
+            .cache
+            .read()
+            .await
+            .get(&inum)
+            .unwrap_or_else(|| {
+                panic!(
+                    "failed to find inum={:?} path={:?} from cache",
+                    inum, full_path
+                )
+            })
+            .get_attr();
         if let Err(e) = dist_client::push_attr(
             self.etcd_client.clone(),
             &self.node_id,
             &self.volume_info,
-            node,
+            full_path,
             &attr,
         )
         .await
@@ -1158,6 +1213,28 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
         .await
         {
             panic!("failed to sync rename request to others, error: {}", e);
+        }
+    }
+
+    /// Invalidate cache from other nodes
+    async fn invalidate_remote(&self, full_path: &str, offset: i64, len: usize) {
+        if let Err(e) = dist_client::invalidate(
+            self.etcd_client.clone(),
+            &self.node_id,
+            &self.volume_info,
+            full_path,
+            offset
+                .overflow_div(self.data_cache.get_align().cast())
+                .cast(),
+            offset
+                .overflow_add(len.cast())
+                .overflow_sub(1)
+                .overflow_div(self.data_cache.get_align().cast())
+                .cast(),
+        )
+        .await
+        {
+            panic!("failed to invlidate others' cache, error: {}", e);
         }
     }
 }

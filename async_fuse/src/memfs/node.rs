@@ -34,6 +34,7 @@ pub trait Node: Sized {
     fn get_parent_ino(&self) -> INum;
     fn set_parent_ino(&mut self, parent: u64) -> INum;
     fn get_name(&self) -> &str;
+    fn get_full_path(&self) -> &str;
     fn set_name(&mut self, name: &str);
     fn get_type(&self) -> SFlag;
     fn get_attr(&self) -> FileAttr;
@@ -593,6 +594,12 @@ impl Node for DefaultNode {
     #[inline]
     fn get_name(&self) -> &str {
         self.name.as_str()
+    }
+
+    /// Get node full path
+    #[inline]
+    fn get_full_path(&self) -> &str {
+        self.full_path.as_str()
     }
 
     /// Set node name

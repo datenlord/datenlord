@@ -231,6 +231,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
     }
 
     /// Helper function to check need to load node data or not
+    #[allow(dead_code)]
     fn need_load_node_data_helper(&self) -> bool {
         if !self.is_node_data_empty() {
             debug!(
@@ -747,6 +748,12 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
         self.name.as_str()
     }
 
+    /// Get node full path
+    #[inline]
+    fn get_full_path(&self) -> &str {
+        self.full_path.as_str()
+    }
+
     /// Set node name
     #[inline]
     fn set_name(&mut self, name: &str) {
@@ -852,7 +859,9 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
             SFlag::S_IFDIR,
             "fobidden to check non-directory node need load data or not",
         );
-        self.need_load_node_data_helper()
+        // Dir data is synced. Don't need to load
+        false
+        //self.need_load_node_data_helper()
     }
 
     /// Check whether to load file content data or not
@@ -1240,6 +1249,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
                     new_len
                 };
 
+                // dist_client::read_data() won't get lock at remote, OK to put here.
                 let file_data_vec = match dist_client::read_data(
                     self.meta.etcd_client.clone(),
                     &self.meta.node_id,
@@ -1486,6 +1496,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
             (offset as u64).overflow_add(written_size as u64),
         );
 
+        /*
         if let Err(e) = dist_client::push_attr(
             self.meta.etcd_client.clone(),
             &self.meta.node_id,
@@ -1514,6 +1525,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
         {
             panic!("failed to invlidate others' cache, error: {}", e);
         }
+        */
 
         debug!("file {:?} size = {:?}", self.name, self.attr.size);
         self.update_mtime_ctime_to_now().await;
