@@ -247,17 +247,6 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
             let new_node_attr = new_node.get_attr();
             let new_node_full_path = new_node.full_path().to_owned();
             cache.insert(new_ino, new_node);
-
-            self.path2inum
-                .write()
-                .await
-                .insert(new_node_full_path, new_ino);
-            let fuse_attr = fs_util::convert_to_fuse_attr(new_node_attr);
-            debug!(
-                "create_node_helper() successfully created the new child name={:?} \
-                of ino={} and type={:?} under parent ino={} and name={:?}",
-                node_name_clone, new_ino, node_type, parent, parent_name,
-            );
             let pnode = cache.get(&parent).unwrap_or_else(|| {
                 panic!(
                     "failed to get parent inode {:?}, parent name {:?}",

@@ -240,11 +240,14 @@ async fn load_dir<S: S3BackEnd + Send + Sync + 'static>(
     meta: Arc<S3MetaData<S>>,
     path: &str,
 ) -> anyhow::Result<()> {
-    let path2inum = meta.path2inum.read().await;
+    let inum_opt = {
+        let path2inum = meta.path2inum.read().await;
+        path2inum.get(path).cloned()
+    };
 
-    match path2inum.get(path) {
+    match inum_opt {
         None => tcp::write_message(stream, response::load_dir_none().as_slice())?,
-        Some(inum) => match meta.cache.read().await.get(inum) {
+        Some(inum) => match meta.cache.read().await.get(&inum) {
             None => tcp::write_message(stream, response::load_dir_none().as_slice())?,
             Some(ref node) => {
                 tcp::write_message(stream, response::load_dir(node.get_dir_data()).as_slice())?
@@ -261,9 +264,9 @@ async fn update_dir<S: S3BackEnd + Send + Sync + 'static>(
     args: UpdateDirArgs,
 ) -> anyhow::Result<()> {
     debug!("receive update_dir request {:?}", args);
+    let mut cache = meta.cache.write().await;
     let mut path2inum = meta.path2inum.write().await;
     if let Some(parent_inum) = path2inum.get(&args.parent_path) {
-        let mut cache = meta.cache.write().await;
         if let Some(parent_node) = cache.get_mut(parent_inum) {
             let child_attr = args.child_attr;
             let child_node = S3Node::new_child_node_of_parent(
@@ -294,9 +297,12 @@ async fn remove_dir_entry<S: S3BackEnd + Send + Sync + 'static>(
     meta: Arc<S3MetaData<S>>,
     args: RemoveDirEntryArgs,
 ) -> anyhow::Result<()> {
-    let path2inum = meta.path2inum.read().await;
-    if let Some(parent_inum) = path2inum.get(&args.parent_path) {
-        if let Some(parent_node) = meta.cache.write().await.get_mut(parent_inum) {
+    let parent_inum_opt = {
+        let path2inum = meta.path2inum.read().await;
+        path2inum.get(&args.parent_path).cloned()
+    };
+    if let Some(parent_inum) = parent_inum_opt {
+        if let Some(parent_node) = meta.cache.write().await.get_mut(&parent_inum) {
             parent_node.get_dir_data_mut().remove(&args.child_name);
         }
     }
@@ -309,10 +315,13 @@ async fn get_attr<S: S3BackEnd + Send + Sync + 'static>(
     meta: Arc<S3MetaData<S>>,
     path: &str,
 ) -> anyhow::Result<()> {
-    let path2inum = meta.path2inum.read().await;
-    if let Some(inum) = path2inum.get(path) {
+    let inum_opt = {
+        let path2inum = meta.path2inum.read().await;
+        path2inum.get(path).cloned()
+    };
+    if let Some(inum) = inum_opt {
         let cache = meta.cache.read().await;
-        if let Some(node) = cache.get(inum) {
+        if let Some(node) = cache.get(&inum) {
             let attr = node.get_attr();
             debug!("Success get attr for path {} .", path);
             tcp::write_message(stream, &response::get_attr(&attr))?;
@@ -326,9 +335,8 @@ async fn get_attr<S: S3BackEnd + Send + Sync + 'static>(
         }
     } else {
         debug!(
-            "path {} is not find in path2inum, path2inum keys {:?}.",
+            "path {} is not find in path2inum.",
             path,
-            path2inum.keys()
         );
     }
 
@@ -342,9 +350,12 @@ async fn push_attr<S: S3BackEnd + Send + Sync + 'static>(
     path: &str,
     attr: &SerialFileAttr,
 ) -> anyhow::Result<()> {
-    let path2inum = meta.path2inum.read().await;
-    if let Some(inum) = path2inum.get(path) {
-        if let Some(node) = meta.cache.write().await.get_mut(inum) {
+    let inum_opt = {
+        let path2inum = meta.path2inum.read().await;
+        path2inum.get(path).cloned()
+    };
+    if let Some(inum) = inum_opt {
+        if let Some(node) = meta.cache.write().await.get_mut(&inum) {
             // Keep iNum
             let old_attr = node.get_attr();
             let mut new_attr = types::serial_to_file_attr(attr);

@@ -16,6 +16,8 @@ const ETCD_VOLUME_INFO_PREFIX: &str = "datenlord_volume_info_";
 const ETCD_FILE_NODE_LIST_LOCK_PREFIX: &str = "datenlord_file_node_list_lock_";
 /// ETCD file node list prefix
 const ETCD_FILE_NODE_LIST_PREFIX: &str = "datenlord_file_node_list_";
+/// ETCD inode number lock
+const ETCD_INODE_NUMBER_LOCK: &str = "datenlord_inode_number_lock";
 
 /// Register current node to etcd.
 /// The registered information contains IP.
@@ -283,4 +285,25 @@ pub(crate) async fn remove_node_from_file_list(
     };
 
     modify_file_node_list(etcd_client, file_name, remove_node_fun).await
+}
+
+/// Get the ETCD lock for inode number
+pub(crate) async fn lock_inode_number(etcd_client: Arc<EtcdDelegate>) -> anyhow::Result<Vec<u8>> {
+    let lock_key = etcd_client
+        .lock(ETCD_INODE_NUMBER_LOCK.as_bytes(), 10)
+        .await
+        .with_context(|| "lock fail update file node list")?;
+    Ok(lock_key)
+}
+
+/// Release the ETCD lock for inode number
+pub(crate) async fn unlock_inode_number(
+    etcd_client: Arc<EtcdDelegate>,
+    lock_key: Vec<u8>,
+) -> anyhow::Result<()> {
+    etcd_client
+        .unlock(lock_key)
+        .await
+        .with_context(|| "unlock fail while update file node list")?;
+    Ok(())
 }

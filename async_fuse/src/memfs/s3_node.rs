@@ -3,6 +3,7 @@
 use super::cache::{GlobalCache, IoMemBlock};
 use super::dir::DirEntry;
 use super::dist::client as dist_client;
+use super::dist::etcd;
 use super::fs_util::{self, FileAttr};
 use super::node::Node;
 use super::s3_metadata::S3MetaData;
@@ -157,6 +158,9 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
     }
 
     async fn new_inode_num(&self) -> u64 {
+        let lock_key = etcd::lock_inode_number(self.meta.etcd_client.clone())
+            .await
+            .unwrap_or_else(|e| panic!("failed to get etcd inode number lock, error is {:?}", e));
         let default = self.meta.cur_inum();
         let cur_inum = dist_client::get_ino_num(
             self.meta.etcd_client.clone(),
@@ -170,7 +174,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
             default
         });
 
-        if cur_inum > default {
+        let inum = if cur_inum > default {
             self.meta
                 .cur_inum
                 .store(cur_inum.overflow_add(1), atomic::Ordering::Relaxed);
@@ -180,7 +184,13 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
                 .cur_inum
                 .fetch_add(1, atomic::Ordering::SeqCst)
                 .cast()
-        }
+        };
+        etcd::unlock_inode_number(self.meta.etcd_client.clone(), lock_key)
+            .await
+            .unwrap_or_else(|e| {
+                panic!("failed to release etcd inode number lock, error is {:?}", e)
+            });
+        inum
     }
 
     /// Get fullpath of this node
