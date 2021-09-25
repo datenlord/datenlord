@@ -60,6 +60,7 @@ pub struct S3MetaData<S: S3BackEnd + Send + Sync + 'static> {
     pub(crate) path2inum: RwLock<BTreeMap<String, INum>>,
 }
 
+/// Parse S3 info
 fn parse_s3_info(info: &str) -> (&str, &str, &str, &str) {
     info.split(S3_INFO_DELIMITER)
         .next_tuple()
@@ -89,9 +90,9 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
 
         let etcd_arc = Arc::new(etcd_client);
         let data_cache = Arc::new(GlobalCache::new_dist_with_bz_and_capacity(
-            10 * 1024 * 1024,
+            10_485_760, // 10 * 1024 * 1024
             capacity,
-            etcd_arc.clone(),
+            Arc::<EtcdDelegate>::clone(&etcd_arc),
             node_id,
         ));
         let meta = Arc::new(Self {
@@ -99,7 +100,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
             cache: RwLock::new(BTreeMap::new()),
             etcd_client: etcd_arc,
             trash: RwLock::new(BTreeSet::new()),
-            data_cache: data_cache.clone(),
+            data_cache: Arc::<GlobalCache>::clone(&data_cache),
             cur_inum: AtomicU32::new(2),
             cur_fd: AtomicU32::new(4),
             node_id: node_id.to_owned(),
@@ -107,7 +108,12 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
             path2inum: RwLock::new(BTreeMap::new()),
         });
 
-        let server = CacheServer::new(ip.to_owned(), port.to_owned(), data_cache, meta.clone());
+        let server = CacheServer::new(
+            ip.to_owned(),
+            port.to_owned(),
+            data_cache,
+            Arc::<Self>::clone(&meta),
+        );
 
         let root_inode = S3Node::open_root_node(FUSE_ROOT_ID, "/", s3_backend, Arc::clone(&meta))
             .await
@@ -128,11 +134,12 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         &self.cache
     }
 
-    async fn delete_trash(&self, ino: &INum) -> bool {
+    /// Delete node from trash
+    async fn delete_trash(&self, ino: INum) -> bool {
         let mut trash = self.trash.write().await;
-        if trash.contains(ino) {
+        if trash.contains(&ino) {
             // deferred deletion
-            trash.remove(ino);
+            trash.remove(&ino);
             let mut cache = self.cache.write().await;
             let deleted_node = cache.remove(&ino).unwrap_or_else(|| {
                 panic!(
@@ -153,6 +160,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
     }
 
     /// Helper function to create node
+    #[allow(clippy::too_many_lines)]
     async fn create_node_helper(
         &self,
         parent: INum,
@@ -165,14 +173,13 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         let (parent_full_path, child_attr, fuse_attr) = {
             let mut cache = self.cache.write().await;
             let parent_node = self
-                .create_node_pre_check(parent, &node_name, &mut cache)
+                .create_node_pre_check(parent, node_name, &mut cache)
                 .await
                 .context("create_node_helper() failed to pre check")?;
             let parent_name = parent_node.get_name().to_owned();
             // all checks are passed, ready to create new node
             let m_flags = fs_util::parse_mode(mode);
             let new_ino: u64;
-            let node_name_clone = node_name.clone();
             let new_node = match node_type {
                 SFlag::S_IFDIR => {
                     debug!(
@@ -181,7 +188,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
                     node_name, m_flags, parent, parent_name,
                 );
                     parent_node
-                    .create_child_dir(node_name.clone(), m_flags)
+                    .create_child_dir(node_name, m_flags)
                     .await
                     .context(format!(
                         "create_node_helper() failed to create directory with name={:?} and mode={:?} \
@@ -199,10 +206,10 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
                     );
                     parent_node
                         .create_child_file(
-                            node_name.clone(),
+                            node_name,
                             o_flags,
                             m_flags,
-                            self.data_cache.clone(),
+                            Arc::<GlobalCache>::clone(&self.data_cache),
                         )
                         .await
                         .context(format!(
@@ -220,7 +227,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
                     );
                     parent_node
                     .create_child_symlink(
-                        node_name.clone(),
+                        node_name,
                         target_path.unwrap_or_else(|| panic!(
                             "create_node_helper() failed to \
                                 get target path when create symlink with name={:?} \
@@ -247,6 +254,16 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
             let new_node_attr = new_node.get_attr();
             let new_node_full_path = new_node.full_path().to_owned();
             cache.insert(new_ino, new_node);
+            self.path2inum
+                .write()
+                .await
+                .insert(new_node_full_path, new_ino);
+            let fuse_attr = fs_util::convert_to_fuse_attr(new_node_attr);
+            debug!(
+                "create_node_helper() successfully created the new child name={:?} \
+                of ino={} and type={:?} under parent ino={} and name={:?}",
+                node_name, new_ino, node_type, parent, parent_name,
+            );
             let pnode = cache.get(&parent).unwrap_or_else(|| {
                 panic!(
                     "failed to get parent inode {:?}, parent name {:?}",
@@ -281,6 +298,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
     }
 
     /// Helper function to lookup
+    #[allow(clippy::too_many_lines)]
     async fn lookup_helper(
         &self,
         parent: INum,
@@ -364,7 +382,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
                                 child_name,
                                 remote_attr,
                                 oflags,
-                                self.data_cache.clone(),
+                                Arc::<GlobalCache>::clone(&self.data_cache),
                             )
                             .await
                             .context(format!(
@@ -488,6 +506,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
 }
 
 impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
+    /// Get current inode number
     pub(crate) fn cur_inum(&self) -> u32 {
         self.cur_inum.load(Ordering::Relaxed)
     }
@@ -498,8 +517,8 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
         &self,
         parent: INum,
         node_name: &str,
-        cache: &'b mut RwLockWriteGuard<'a, BTreeMap<INum, <S3MetaData<S> as MetaData>::N>>,
-    ) -> anyhow::Result<&'b mut <S3MetaData<S> as MetaData>::N> {
+        cache: &'b mut RwLockWriteGuard<'a, BTreeMap<INum, <Self as MetaData>::N>>,
+    ) -> anyhow::Result<&'b mut <Self as MetaData>::N> {
         let parent_node = cache.get_mut(&parent).unwrap_or_else(|| {
             panic!(
                 "create_node_pre_check() found fs is inconsistent, \
@@ -824,7 +843,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
         let no_replace = flags == 1; // RENAME_NOREPLACE
 
         let pre_check_res = self
-            .rename_pre_check(old_parent, old_name, new_parent, &new_name, no_replace)
+            .rename_pre_check(old_parent, old_name, new_parent, new_name, no_replace)
             .await;
         let (_, _, _, new_entry_ino) = match pre_check_res {
             Ok((old_parent_fd, old_entry_ino, new_parent_fd, new_entry_ino)) => {
@@ -838,10 +857,11 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
                 return Err(e);
             }
         };
-        let new_entry_ino = new_entry_ino.unwrap();
+        let new_entry_ino =
+            new_entry_ino.unwrap_or_else(|| panic!("failed to get new entry inode"));
 
         let rename_in_cache_res = self
-            .rename_in_cache_helper(old_parent, old_name, new_parent, &new_name)
+            .rename_in_cache_helper(old_parent, old_name, new_parent, new_name)
             .await;
 
         if let Some(replaced_entry) = rename_in_cache_res {
@@ -883,7 +903,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
                 )
             });
             exchanged_node.set_parent_ino(old_parent);
-            exchanged_node.set_name(old_name.clone());
+            exchanged_node.set_name(old_name);
             let exchanged_attr = exchanged_node
                 .load_attribute()
                 .await
@@ -926,7 +946,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
         let no_replace = flags == 1; // RENAME_NOREPLACE
 
         let pre_check_res = self
-            .rename_pre_check(old_parent, &old_name, new_parent, &new_name, no_replace)
+            .rename_pre_check(old_parent, old_name, new_parent, new_name, no_replace)
             .await;
         let (_, old_entry_ino, _, new_entry_ino) = match pre_check_res {
             Ok((old_parent_fd, old_entry_ino, new_parent_fd, new_entry_ino)) => {
@@ -961,7 +981,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
             )
             });
             moved_node.set_parent_ino(new_parent);
-            moved_node.set_name(&new_name);
+            moved_node.set_name(new_name);
             debug!(
                 "rename_may_replace_local() successfully moved the from i-node \
                 of ino={} and name={:?} under from parent ino={} to \
@@ -971,7 +991,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
         }
 
         let rename_replace_res = self
-            .rename_in_cache_helper(old_parent, &old_name, new_parent, &new_name)
+            .rename_in_cache_helper(old_parent, old_name, new_parent, new_name)
             .await;
         debug_assert!(
             rename_replace_res.is_none(),
@@ -984,9 +1004,12 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
     /// Helper function to rename file locally
     pub(crate) async fn rename_local(&self, param: &RenameParam) {
         if param.flags == 2 {
-            let _ = self.rename_exchange_local(param).await;
+            if let Err(e) = self.rename_exchange_local(param).await {
+                panic!("failed to rename local param={:?}, error is {:?}", param, e);
+            }
+        } else if let Err(e) = self.rename_may_replace_local(param).await {
+            panic!("failed to rename local param={:?}, error is {:?}", param, e);
         } else {
-            let _ = self.rename_may_replace_local(param).await;
         }
     }
 
@@ -1013,7 +1036,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
                     parent,
                 );
             });
-            match parent_node.get_entry(&node_name) {
+            match parent_node.get_entry(node_name) {
                 None => {
                     debug!(
                         "remove_node_local() failed to find i-node name={:?} \
@@ -1125,7 +1148,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
             })
             .get_attr();
         if let Err(e) = dist_client::push_attr(
-            self.etcd_client.clone(),
+            Arc::<EtcdDelegate>::clone(&self.etcd_client),
             &self.node_id,
             &self.volume_info,
             full_path,
@@ -1146,7 +1169,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
         target_path: Option<&Path>,
     ) {
         if let Err(e) = dist_client::update_dir(
-            self.etcd_client.clone(),
+            Arc::<EtcdDelegate>::clone(&self.etcd_client),
             &self.node_id,
             &self.volume_info,
             parent,
@@ -1163,7 +1186,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
     /// Get attr from other nodes
     async fn get_attr_remote(&self, path: &str) -> Option<FileAttr> {
         match dist_client::get_attr(
-            self.etcd_client.clone(),
+            Arc::<EtcdDelegate>::clone(&self.etcd_client),
             &self.node_id,
             &self.volume_info,
             path,
@@ -1178,7 +1201,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
     /// Sync rename request to other nodes
     async fn rename_remote(&self, args: RenameParam) {
         if let Err(e) = dist_client::rename(
-            self.etcd_client.clone(),
+            Arc::<EtcdDelegate>::clone(&self.etcd_client),
             &self.node_id,
             &self.volume_info,
             args,
@@ -1192,7 +1215,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
     /// Sync remove request to other nodes
     async fn remove_remote(&self, parent: INum, child_name: &str, child_type: SFlag) {
         if let Err(e) = dist_client::remove(
-            self.etcd_client.clone(),
+            Arc::<EtcdDelegate>::clone(&self.etcd_client),
             &self.node_id,
             &self.volume_info,
             parent,
@@ -1208,7 +1231,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
     /// Invalidate cache from other nodes
     async fn invalidate_remote(&self, full_path: &str, offset: i64, len: usize) {
         if let Err(e) = dist_client::invalidate(
-            self.etcd_client.clone(),
+            Arc::<EtcdDelegate>::clone(&self.etcd_client),
             &self.node_id,
             &self.volume_info,
             full_path,

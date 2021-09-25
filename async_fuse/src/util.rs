@@ -14,12 +14,14 @@ use nix::sys::stat::SFlag;
 /// Format `nix::Error`
 // TODO: refactor this
 #[must_use]
+#[inline]
 pub fn format_nix_error(error: nix::Error) -> String {
     format!("{}, root cause: {:?}", error, error.source())
 }
 
 /// Build `nix::Error::Sys(..)` from `libc` error code
 #[must_use]
+#[inline]
 pub fn build_sys_error_from_errno(error_code: Errno) -> nix::Error {
     nix::Error::from_errno(error_code)
 }

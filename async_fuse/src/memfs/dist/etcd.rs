@@ -21,29 +21,30 @@ const ETCD_INODE_NUMBER_LOCK: &str = "datenlord_inode_number_lock";
 
 /// Register current node to etcd.
 /// The registered information contains IP.
-pub(crate) async fn register_node_id(
+pub async fn register_node_id(
     etcd_client: &EtcdDelegate,
     node_id: &str,
-    node_ip: &str,
+    node_ipaddr: &str,
     port: &str,
 ) -> anyhow::Result<()> {
     etcd_client
         .write_or_update_kv(
             format!("{}{}", ETCD_NODE_IP_PORT_PREFIX, node_id).as_str(),
-            &format!("{}:{}", node_ip, port),
+            &format!("{}:{}", node_ipaddr, port),
         )
         .await
         .with_context(|| {
             format!(
-                "Update Node Ip address failed, node_id:{}, node_ip: {}, port: {}",
-                node_id, node_ip, port
+                "Update Node Ip address failed, node_id:{}, node_ipaddr: {}, port: {}",
+                node_id, node_ipaddr, port
             )
         })?;
 
     Ok(())
 }
 
-pub(crate) async fn get_node_ip_and_port(
+/// Get ip address and port of a node
+pub async fn get_node_ip_and_port(
     etcd_client: Arc<EtcdDelegate>,
     node_id: &str,
 ) -> anyhow::Result<String> {
@@ -57,23 +58,20 @@ pub(crate) async fn get_node_ip_and_port(
             )
         })?;
 
-    match ip_and_port {
-        Some(ip_and_port) => {
-            debug!("node {} ip and port is {}", node_id, ip_and_port);
-            Ok(ip_and_port)
-        }
-        None => {
-            debug!("node {} missing ip and port information", node_id);
-            Err(anyhow::Error::msg(format!(
-                "Ip and port is not registered for Node {}",
-                node_id
-            )))
-        }
+    if let Some(ip_and_port) = ip_and_port {
+        debug!("node {} ip and port is {}", node_id, ip_and_port);
+        Ok(ip_and_port)
+    } else {
+        debug!("node {} missing ip and port information", node_id);
+        Err(anyhow::Error::msg(format!(
+            "Ip and port is not registered for Node {}",
+            node_id
+        )))
     }
 }
 
 /// Register volume information, add the volume to `node_id` list mapping
-pub(crate) async fn register_volume(
+pub async fn register_volume(
     etcd_client: &EtcdDelegate,
     node_id: &str,
     volume_info: &str,
@@ -89,8 +87,34 @@ pub(crate) async fn register_volume(
         .await
         .with_context(|| format!("get {} from etcd fail", volume_info_key))?;
 
-    let new_volume_node_list = match volume_node_list {
-        Some(node_list) => {
+    /*
+    let new_volume_node_list = if let Some(node_list) = volume_node_list {
+        let mut node_set: HashSet<String> = bincode::deserialize(node_list.as_slice())
+            .unwrap_or_else(|e| {
+                panic!(
+                    "fail to deserialize node list for volume {:?}, error: {}",
+                    volume_info, e
+                );
+            });
+        if !node_set.contains(node_id) {
+            node_set.insert(node_id.to_owned());
+        }
+
+        node_set
+    } else {
+        let mut hash = HashSet::new();
+        hash.insert(node_id.to_owned());
+        hash
+    };
+    */
+
+    let new_volume_node_list = volume_node_list.map_or_else(
+        || {
+            let mut hash = HashSet::new();
+            hash.insert(node_id.to_owned());
+            hash
+        },
+        |node_list| {
             let mut node_set: HashSet<String> = bincode::deserialize(node_list.as_slice())
                 .unwrap_or_else(|e| {
                     panic!(
@@ -103,13 +127,8 @@ pub(crate) async fn register_volume(
             }
 
             node_set
-        }
-        None => {
-            let mut hash = HashSet::new();
-            hash.insert(node_id.to_owned());
-            hash
-        }
-    };
+        },
+    );
 
     let volume_node_list_bin = bincode::serialize(&new_volume_node_list).unwrap_or_else(|e| {
         panic!(
@@ -137,7 +156,7 @@ pub(crate) async fn register_volume(
 
 /// Get node list related to a volume, execluding the input `node_ide` as its the local node id.
 /// This function is used to sync metadata, the inode information.
-pub(crate) async fn get_volume_nodes(
+pub async fn get_volume_nodes(
     etcd_client: Arc<EtcdDelegate>,
     node_id: &str,
     volume_info: &str,
@@ -148,38 +167,39 @@ pub(crate) async fn get_volume_nodes(
         .await
         .with_context(|| format!("get {} from etcd fail", volume_info_key))?;
 
-    let new_volume_node_list = match volume_node_list {
-        Some(node_list) => {
-            let mut node_set: HashSet<String> = bincode::deserialize(node_list.as_slice())
-                .unwrap_or_else(|e| {
-                    panic!(
-                        "fail to deserialize node list for volume {:?}, error: {}",
-                        volume_info, e
-                    );
-                });
+    let new_volume_node_list = if let Some(node_list) = volume_node_list {
+        let mut node_set: HashSet<String> = bincode::deserialize(node_list.as_slice())
+            .unwrap_or_else(|e| {
+                panic!(
+                    "fail to deserialize node list for volume {:?}, error: {}",
+                    volume_info, e
+                );
+            });
 
-            debug!("node set when get volume related node, {:?}", node_set);
+        debug!("node set when get volume related node, {:?}", node_set);
 
-            if node_set.contains(node_id) {
-                node_set.remove(node_id);
-            }
-
-            node_set
+        if node_set.contains(node_id) {
+            node_set.remove(node_id);
         }
-        None => {
-            debug!("node set is empty");
-            HashSet::new()
-        }
+
+        node_set
+    } else {
+        debug!("node set is empty");
+        HashSet::new()
     };
 
     Ok(new_volume_node_list)
 }
 
+/// Modify node list of a file
 async fn modify_file_node_list<F: Fn(Option<Vec<u8>>) -> HashSet<String>>(
     etcd_client: &EtcdDelegate,
     file_name: &[u8],
     fun: F,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<()>
+where
+    F: Send,
+{
     let mut file_lock_key = ETCD_FILE_NODE_LIST_LOCK_PREFIX.as_bytes().to_vec();
     file_lock_key.extend_from_slice(file_name);
 
@@ -225,14 +245,20 @@ async fn modify_file_node_list<F: Fn(Option<Vec<u8>>) -> HashSet<String>>(
     Ok(())
 }
 
-pub(crate) async fn add_node_to_file_list(
+/// Add a node to node list of a file
+pub async fn add_node_to_file_list(
     etcd_client: &EtcdDelegate,
     node_id: &str,
     file_name: &[u8],
 ) -> anyhow::Result<()> {
     let add_node_fun = |node_list: Option<Vec<u8>>| -> HashSet<String> {
-        match node_list {
-            Some(list) => {
+        node_list.map_or_else(
+            || {
+                let mut node_set = HashSet::<String>::new();
+                node_set.insert(node_id.to_owned());
+                node_set
+            },
+            |list| {
                 let mut node_set: HashSet<String> = bincode::deserialize(list.as_slice())
                     .unwrap_or_else(|e| {
                         panic!(
@@ -246,19 +272,15 @@ pub(crate) async fn add_node_to_file_list(
                 }
 
                 node_set
-            }
-            None => {
-                let mut node_set = HashSet::<String>::new();
-                node_set.insert(node_id.to_owned());
-                node_set
-            }
-        }
+            },
+        )
     };
 
     modify_file_node_list(etcd_client, file_name, add_node_fun).await
 }
 
-pub(crate) async fn remove_node_from_file_list(
+/// Remove a node to node list of a file
+pub async fn remove_node_from_file_list(
     etcd_client: &EtcdDelegate,
     node_id: &str,
     file_name: &[u8],
@@ -288,7 +310,7 @@ pub(crate) async fn remove_node_from_file_list(
 }
 
 /// Get the ETCD lock for inode number
-pub(crate) async fn lock_inode_number(etcd_client: Arc<EtcdDelegate>) -> anyhow::Result<Vec<u8>> {
+pub async fn lock_inode_number(etcd_client: Arc<EtcdDelegate>) -> anyhow::Result<Vec<u8>> {
     let lock_key = etcd_client
         .lock(ETCD_INODE_NUMBER_LOCK.as_bytes(), 10)
         .await
@@ -297,7 +319,7 @@ pub(crate) async fn lock_inode_number(etcd_client: Arc<EtcdDelegate>) -> anyhow:
 }
 
 /// Release the ETCD lock for inode number
-pub(crate) async fn unlock_inode_number(
+pub async fn unlock_inode_number(
     etcd_client: Arc<EtcdDelegate>,
     lock_key: Vec<u8>,
 ) -> anyhow::Result<()> {

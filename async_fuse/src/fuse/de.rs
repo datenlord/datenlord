@@ -220,6 +220,7 @@ impl<'b> Deserializer<'b> {
         Ok(OsStrExt::from_bytes(bytes_without_nul))
     }
 
+    /// Fetch some nul-terminated bytes and return an `str` without the nul byte.
     pub fn fetch_str(&mut self) -> Result<&'b str, DeserializeError> {
         let bytes_with_nul = self.fetch_c_str()?;
 
@@ -228,7 +229,8 @@ impl<'b> Deserializer<'b> {
             bytes_with_nul.get_unchecked(..len)
         };
 
-        Ok(std::str::from_utf8(bytes_without_nul).unwrap())
+        Ok(std::str::from_utf8(bytes_without_nul)
+            .unwrap_or_else(|e| panic!("failed to convert to utf8 string, error is {:?}", e)))
     }
 
     /// Returns `TooMuchData` if the bytes is not completely consumed

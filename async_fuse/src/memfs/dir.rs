@@ -154,7 +154,10 @@ impl DirEntry {
             None => panic!("entry name has no nul byte: {:?}", name_bytes),
             Some(idx) => {
                 debug_assert!(idx < 256);
-                String::from_utf8(unsafe { name_bytes.get_unchecked(..idx) }.to_vec()).unwrap()
+                String::from_utf8(unsafe { name_bytes.get_unchecked(..idx) }.to_vec())
+                    .unwrap_or_else(|e| {
+                        panic!("failed to convert to utf8 string, error is {:?}", e)
+                    })
             }
         };
 

@@ -16,7 +16,8 @@ use std::net::TcpStream;
 use std::path::Path;
 use std::sync::Arc;
 
-pub(crate) async fn send_to_others<F, T>(
+/// Send message to all other nodes
+async fn send_to_others<F, T>(
     etcd_client: Arc<EtcdDelegate>,
     node_id: &str,
     volume_info: &str,
@@ -25,13 +26,21 @@ pub(crate) async fn send_to_others<F, T>(
     default: anyhow::Result<T>,
 ) -> anyhow::Result<T>
 where
-    F: Fn(&[u8]) -> (bool, anyhow::Result<T>),
+    F: Fn(&[u8]) -> (bool, anyhow::Result<T>) + Send,
+    T: Send,
 {
     let mut result: anyhow::Result<T> = default;
-    if let Ok(nodes) = etcd::get_volume_nodes(etcd_client.clone(), node_id, volume_info).await {
+    if let Ok(nodes) = etcd::get_volume_nodes(
+        Arc::<EtcdDelegate>::clone(&etcd_client),
+        node_id,
+        volume_info,
+    )
+    .await
+    {
         for other_id in nodes {
             if let Ok(ref ip_and_port) =
-                etcd::get_node_ip_and_port(etcd_client.clone(), &other_id).await
+                etcd::get_node_ip_and_port(Arc::<EtcdDelegate>::clone(&etcd_client), &other_id)
+                    .await
             {
                 let mut one_result = Vec::new();
                 let mut stream = TcpStream::connect(ip_and_port)
@@ -49,10 +58,11 @@ where
             }
         }
     }
-    return result;
+    result
 }
 
-pub(crate) async fn load_dir(
+/// Load dir data from remote
+pub async fn load_dir(
     etcd_client: Arc<EtcdDelegate>,
     node_id: &str,
     volume_info: &str,
@@ -62,7 +72,7 @@ pub(crate) async fn load_dir(
     let load_dir_filter =
         |data: &[u8]| -> (bool, anyhow::Result<Option<BTreeMap<String, DirEntry>>>) {
             let de = response::deserialize_load_dir(data);
-            if let Some(_) = de {
+            if de.is_some() {
                 (true, Ok(de))
             } else {
                 (false, Ok(de))
@@ -80,7 +90,8 @@ pub(crate) async fn load_dir(
     .await
 }
 
-pub(crate) async fn update_dir(
+/// Update dir data to remote
+pub async fn update_dir(
     etcd_client: Arc<EtcdDelegate>,
     node_id: &str,
     volume_info: &str,
@@ -91,7 +102,6 @@ pub(crate) async fn update_dir(
 ) -> anyhow::Result<()> {
     debug!("update_dir parent {} child {}", parent, child);
     let do_nothing = |_: &[u8]| -> (bool, anyhow::Result<()>) { (false, Ok(())) };
-    let default = ();
 
     send_to_others(
         etcd_client,
@@ -99,13 +109,14 @@ pub(crate) async fn update_dir(
         volume_info,
         &request::update_dir(parent, child, child_attr, target_path),
         do_nothing,
-        Ok(default),
+        Ok(()),
     )
     .await
 }
 
 #[allow(dead_code)]
-pub(crate) async fn remove_dir_entry(
+/// Remove dir entry from remote
+pub async fn remove_dir_entry(
     etcd_client: Arc<EtcdDelegate>,
     node_id: &str,
     volume_info: &str,
@@ -114,7 +125,6 @@ pub(crate) async fn remove_dir_entry(
 ) -> anyhow::Result<()> {
     debug!("remove_dir_entry parent {} child {}", parent, child);
     let do_nothing = |_: &[u8]| -> (bool, anyhow::Result<()>) { (false, Ok(())) };
-    let default = ();
 
     send_to_others(
         etcd_client,
@@ -122,12 +132,13 @@ pub(crate) async fn remove_dir_entry(
         volume_info,
         &request::remove_dir_entry(parent, child),
         do_nothing,
-        Ok(default),
+        Ok(()),
     )
     .await
 }
 
-pub(crate) async fn get_attr(
+/// Get attr from remote
+pub async fn get_attr(
     etcd_client: Arc<EtcdDelegate>,
     node_id: &str,
     volume_info: &str,
@@ -136,7 +147,7 @@ pub(crate) async fn get_attr(
     debug!("get_attr {}", path);
     let get_attr_filter = |data: &[u8]| -> (bool, anyhow::Result<Option<FileAttr>>) {
         let de = response::deserialize_get_attr(data);
-        if let Some(_) = de {
+        if de.is_some() {
             (true, Ok(de))
         } else {
             (false, Ok(de))
@@ -154,7 +165,8 @@ pub(crate) async fn get_attr(
     .await
 }
 
-pub(crate) async fn push_attr(
+/// Push attr to remote
+pub async fn push_attr(
     etcd_client: Arc<EtcdDelegate>,
     node_id: &str,
     volume_info: &str,
@@ -163,7 +175,6 @@ pub(crate) async fn push_attr(
 ) -> anyhow::Result<()> {
     debug!("push_attr {}", path);
     let do_nothing = |_: &[u8]| -> (bool, anyhow::Result<()>) { (false, Ok(())) };
-    let default = ();
 
     send_to_others(
         etcd_client,
@@ -171,13 +182,13 @@ pub(crate) async fn push_attr(
         volume_info,
         &request::push_file_attr(path, types::file_attr_to_serial(attr)),
         do_nothing,
-        Ok(default),
+        Ok(()),
     )
     .await
 }
 
-/// end is included
-pub(crate) async fn invalidate(
+/// Invalidate file cache to remote
+pub async fn invalidate(
     etcd_client: Arc<EtcdDelegate>,
     node_id: &str,
     volume_info: &str,
@@ -187,7 +198,6 @@ pub(crate) async fn invalidate(
 ) -> anyhow::Result<()> {
     debug!("invalidate {} start {} end {}", path, start, end);
     let do_nothing = |_: &[u8]| -> (bool, anyhow::Result<()>) { (false, Ok(())) };
-    let default = ();
 
     let invalid_req = request::invalidate(path.as_bytes().to_vec(), vec![Index::Range(start, end)]);
 
@@ -197,13 +207,13 @@ pub(crate) async fn invalidate(
         volume_info,
         &invalid_req,
         do_nothing,
-        Ok(default),
+        Ok(()),
     )
     .await
 }
 
-/// end is included
-pub(crate) async fn read_data(
+/// Read data from remote
+pub async fn read_data(
     etcd_client: Arc<EtcdDelegate>,
     node_id: &str,
     volume_info: &str,
@@ -214,10 +224,17 @@ pub(crate) async fn read_data(
     debug!("read_data {} start {} end {}", path, start, end);
     let check = request::check_available(path.as_bytes().to_vec(), vec![Index::Range(start, end)]);
     let read_data = request::read(path.as_bytes().to_vec(), vec![Index::Range(start, end)]);
-    if let Ok(nodes) = etcd::get_volume_nodes(etcd_client.clone(), node_id, volume_info).await {
+    if let Ok(nodes) = etcd::get_volume_nodes(
+        Arc::<EtcdDelegate>::clone(&etcd_client),
+        node_id,
+        volume_info,
+    )
+    .await
+    {
         for other_id in nodes {
             if let Ok(ref ip_and_port) =
-                etcd::get_node_ip_and_port(etcd_client.clone(), &other_id).await
+                etcd::get_node_ip_and_port(Arc::<EtcdDelegate>::clone(&etcd_client), &other_id)
+                    .await
             {
                 {
                     let mut result = Vec::new();
@@ -227,7 +244,7 @@ pub(crate) async fn read_data(
 
                     tcp::write_message(&mut stream, &check)?;
                     tcp::read_message(&mut stream, &mut result)?;
-                    if let None = response::deserialize_check_available(&result) {
+                    if response::deserialize_check_available(&result).is_none() {
                         continue;
                     }
                 }
@@ -249,7 +266,8 @@ pub(crate) async fn read_data(
     Ok(None)
 }
 
-pub(crate) async fn get_ino_num(
+/// Get inode number from remote
+pub async fn get_ino_num(
     etcd_client: Arc<EtcdDelegate>,
     node_id: &str,
     volume_info: &str,
@@ -258,10 +276,17 @@ pub(crate) async fn get_ino_num(
     debug!("get_ino_num");
     let get_inum = request::get_ino_num();
     let mut cur = default;
-    if let Ok(nodes) = etcd::get_volume_nodes(etcd_client.clone(), node_id, volume_info).await {
+    if let Ok(nodes) = etcd::get_volume_nodes(
+        Arc::<EtcdDelegate>::clone(&etcd_client),
+        node_id,
+        volume_info,
+    )
+    .await
+    {
         for other_id in nodes {
             if let Ok(ref ip_and_port) =
-                etcd::get_node_ip_and_port(etcd_client.clone(), &other_id).await
+                etcd::get_node_ip_and_port(Arc::<EtcdDelegate>::clone(&etcd_client), &other_id)
+                    .await
             {
                 let mut stream = TcpStream::connect(ip_and_port)
                     .unwrap_or_else(|e| panic!("fail connect to {}, error: {}", ip_and_port, e));
@@ -279,7 +304,8 @@ pub(crate) async fn get_ino_num(
     Ok(cur)
 }
 
-pub(crate) async fn rename(
+/// Rename file request to remote
+pub async fn rename(
     etcd_client: Arc<EtcdDelegate>,
     node_id: &str,
     volume_info: &str,
@@ -287,7 +313,6 @@ pub(crate) async fn rename(
 ) -> anyhow::Result<()> {
     debug!("rename {:?}", rename_param);
     let do_nothing = |_: &[u8]| -> (bool, anyhow::Result<()>) { (false, Ok(())) };
-    let default = ();
 
     send_to_others(
         etcd_client,
@@ -295,12 +320,13 @@ pub(crate) async fn rename(
         volume_info,
         &request::rename(rename_param),
         do_nothing,
-        Ok(default),
+        Ok(()),
     )
     .await
 }
 
-pub(crate) async fn remove(
+/// Remove file request to remote
+pub async fn remove(
     etcd_client: Arc<EtcdDelegate>,
     node_id: &str,
     volume_info: &str,
@@ -313,7 +339,6 @@ pub(crate) async fn remove(
         parent, child_name, child_type
     );
     let do_nothing = |_: &[u8]| -> (bool, anyhow::Result<()>) { (false, Ok(())) };
-    let default = ();
 
     send_to_others(
         etcd_client,
@@ -321,7 +346,7 @@ pub(crate) async fn remove(
         volume_info,
         &request::remove(parent, child_name, child_type),
         do_nothing,
-        Ok(default),
+        Ok(()),
     )
     .await
 }

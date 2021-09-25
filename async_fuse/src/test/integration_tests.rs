@@ -10,7 +10,7 @@ use std::iter;
 use std::path::Path;
 use utilities::OverflowArithmetic;
 
-use super::test_util::{self, TEST_ACCESS_KEY, TEST_BUCKET_NAME, TEST_ENDPOINT, TEST_SECRET_KEY};
+use super::test_util;
 
 pub const BENCH_MOUNT_DIR: &str = "../fuse_bench";
 pub const S3_BENCH_MOUNT_DIR: &str = "../s3_fuse_bench";
@@ -510,24 +510,18 @@ fn test_bind_mount(fuse_mount_dir: &Path) -> anyhow::Result<()> {
 
 #[test]
 fn run_test() -> anyhow::Result<()> {
-    _run_test(DEFAULT_MOUNT_DIR, None)
+    _run_test(DEFAULT_MOUNT_DIR, false)
 }
 
 #[ignore]
 #[test]
 fn run_s3_test() -> anyhow::Result<()> {
-    _run_test(
-        S3_DEFAULT_MOUNT_DIR,
-        Some(format!(
-            "{};{};{};{}",
-            TEST_BUCKET_NAME, TEST_ENDPOINT, TEST_ACCESS_KEY, TEST_SECRET_KEY
-        )),
-    )
+    _run_test(S3_DEFAULT_MOUNT_DIR, true)
 }
 
-fn _run_test(mount_dir: &str, add_info: Option<String>) -> anyhow::Result<()> {
+fn _run_test(mount_dir: &str, is_s3: bool) -> anyhow::Result<()> {
     let mount_dir = Path::new(mount_dir);
-    let th = test_util::setup(mount_dir, add_info)?;
+    let th = test_util::setup(mount_dir, is_s3)?;
     info!("begin integration test");
 
     test_symlink_dir(mount_dir).context("test_symlink_dir() failed")?;
@@ -549,24 +543,18 @@ fn _run_test(mount_dir: &str, add_info: Option<String>) -> anyhow::Result<()> {
 
 #[test]
 fn run_bench() -> anyhow::Result<()> {
-    _run_bench(BENCH_MOUNT_DIR, None)
+    _run_bench(BENCH_MOUNT_DIR, false)
 }
 
 #[ignore]
 #[test]
 fn run_s3_bench() -> anyhow::Result<()> {
-    _run_bench(
-        S3_BENCH_MOUNT_DIR,
-        Some(format!(
-            "{};{};{};{}",
-            TEST_BUCKET_NAME, TEST_ENDPOINT, TEST_ACCESS_KEY, TEST_SECRET_KEY
-        )),
-    )
+    _run_bench(S3_BENCH_MOUNT_DIR, true)
 }
 
-fn _run_bench(mount_dir: &str, add_info: Option<String>) -> anyhow::Result<()> {
+fn _run_bench(mount_dir: &str, is_s3: bool) -> anyhow::Result<()> {
     let mount_dir = Path::new(mount_dir);
-    let th = test_util::setup(mount_dir, add_info)?;
+    let th = test_util::setup(mount_dir, is_s3)?;
 
     let fio_handle = std::process::Command::new("fio")
         .arg("../scripts/fio_jobs.ini")
