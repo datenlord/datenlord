@@ -12,25 +12,23 @@ use s3::{
 };
 use serde_xml_rs as serde_xml;
 use std::time::SystemTime;
-use utilities::Cast;
+use utilities::{Cast, OverflowArithmetic};
 
-#[derive(Debug)]
+/// S3 backend error
+#[derive(thiserror::Error, Debug)]
 pub enum S3Error {
+    /// S3 backend internal error
+    #[error("S3InternalError, the error is {0}")]
     S3InternalError(String),
 }
 
-impl Into<anyhow::Error> for S3Error {
-    fn into(self) -> anyhow::Error {
-        match self {
-            S3Error::S3InternalError(msg) => anyhow::Error::msg(msg),
-        }
-    }
-}
-
+/// S3 backend result
 pub type S3Result<T> = Result<T, S3Error>;
 
+/// S3 backend
 #[async_trait]
 pub trait S3BackEnd {
+    /// New `S3BackEnd`
     async fn new(
         bucket_name: &str,
         endpoint: &str,
@@ -39,21 +37,34 @@ pub trait S3BackEnd {
     ) -> S3Result<Self>
     where
         Self: Sized;
+    /// Get data of a file from S3 backend
     async fn get_data(&self, file: &str) -> S3Result<Vec<u8>>;
+    /// Get partial data of a file from S3 backend
     async fn get_partial_data(&self, file: &str, offset: usize, len: usize) -> S3Result<Vec<u8>>;
+    /// Put data of a file to S3 backend
     async fn put_data(&self, file: &str, data: &[u8], offset: usize, len: usize) -> S3Result<()>;
+    /// Put data vector of a file to S3 backend
     async fn put_data_vec(&self, file: &str, data: Vec<IoMemBlock>) -> S3Result<()>;
+    /// Delete a file from S3 backend
     async fn delete_data(&self, file: &str) -> S3Result<()>;
+    /// List file from S3 backend
     async fn list_file(&self, dir: &str) -> S3Result<Vec<String>>;
+    /// Create a dir to S3 backend
     async fn create_dir(&self, dir: &str) -> S3Result<()>;
+    /// Get len of a file from S3 backend
     async fn get_len(&self, file: &str) -> S3Result<usize>;
+    /// Get last modified time of a file from S3 backend
     async fn get_last_modified(&self, file: &str) -> S3Result<SystemTime>;
+    /// Get meta of a file from S3 backend
     async fn get_meta(&self, file: &str) -> S3Result<(usize, SystemTime)>;
+    /// Rename a file to S3 backend
     async fn rename(&self, old_file: &str, new_file: &str) -> S3Result<()>;
 }
 
+/// S3 backend implementation
 #[derive(Debug)]
 pub struct S3BackEndImpl {
+    /// S3 bucket
     bucket: Bucket,
 }
 
@@ -81,12 +92,12 @@ impl S3BackEnd for S3BackEndImpl {
             region: "fake_region".into(),
             endpoint: endpoint.into(),
         };
-        let credentials =
-            Credentials::new(Some(access_key), Some(secret_key), None, None, None).unwrap();
+        let credentials = Credentials::new(Some(access_key), Some(secret_key), None, None, None)
+            .unwrap_or_else(|e| panic!("failed to create credentials, error is {:?}", e));
         let config = BucketConfiguration::default();
         let bucket = Bucket::create_with_path_style(bucket_name, region, credentials, config)
             .await
-            .unwrap();
+            .unwrap_or_else(|e| panic!("failed to create bucket, error is {:?}", e));
 
         if !bucket.success() && bucket.response_code != 409 {
             return Err(S3Error::S3InternalError(format!(
@@ -107,7 +118,11 @@ impl S3BackEnd for S3BackEndImpl {
     async fn get_partial_data(&self, file: &str, offset: usize, len: usize) -> S3Result<Vec<u8>> {
         resultify_anyhow!(
             self.bucket
-                .get_object_range(file.to_string(), offset.cast(), Some((offset + len).cast()))
+                .get_object_range(
+                    file.to_string(),
+                    offset.cast(),
+                    Some((offset.overflow_add(len)).cast())
+                )
                 .await
         )
         .map(|(data, _)| data)
@@ -116,7 +131,17 @@ impl S3BackEnd for S3BackEndImpl {
     async fn put_data(&self, file: &str, data: &[u8], offset: usize, len: usize) -> S3Result<()> {
         resultify_anyhow!(
             self.bucket
-                .put_object(file.to_string(), &data[offset..(offset + len)])
+                //.put_object(file.to_string(), &data[offset..(offset.overflow_add(len))])
+                .put_object(
+                    file.to_string(),
+                    data.get(offset..(offset.overflow_add(len)))
+                        .unwrap_or_else(|| panic!(
+                            "failed to get slice index {}..{}, slice size={}",
+                            offset,
+                            offset.overflow_add(len),
+                            data.len()
+                        ))
+                )
                 .await
         )
         .map(|_| ())
@@ -134,7 +159,7 @@ impl S3BackEnd for S3BackEndImpl {
         resultify_anyhow!(
             self.bucket
                 .list(
-                    if dir.ends_with("/") {
+                    if dir.ends_with('/') {
                         dir.into()
                     } else {
                         format!("{}/", dir)
@@ -160,7 +185,7 @@ impl S3BackEnd for S3BackEndImpl {
     }
 
     async fn create_dir(&self, dir: &str) -> S3Result<()> {
-        self.put_data(dir, "".as_bytes(), 0, 0).await
+        self.put_data(dir, b"", 0, 0).await
     }
 
     async fn get_last_modified(&self, file: &str) -> S3Result<SystemTime> {
@@ -170,7 +195,12 @@ impl S3BackEnd for S3BackEndImpl {
                     "Can't get S3 file last_modified time".into(),
                 )),
                 Some(ref lm) => Ok(chrono::DateTime::parse_from_str(lm, "%a, %e %b %Y %T %Z")
-                    .unwrap()
+                    .unwrap_or_else(|e| {
+                        panic!(
+                            "failed to DateTime::parse_from_str {:?}, error is {:?}",
+                            lm, e
+                        )
+                    })
                     .into()),
             },
             Err(e) => Err(e),
@@ -187,7 +217,14 @@ impl S3BackEnd for S3BackEndImpl {
                     None => Err(S3Error::S3InternalError("Can't get S3 file length".into())),
                     Some(size) => Ok((
                         size.cast(),
-                        chrono::DateTime::parse_from_rfc2822(lm).unwrap().into(),
+                        chrono::DateTime::parse_from_rfc2822(lm)
+                            .unwrap_or_else(|e| {
+                                panic!(
+                                    "failed to DateTime::parse_from_rfc2822 {:?}, error is {:?}",
+                                    lm, e
+                                )
+                            })
+                            .into(),
                     )),
                 },
             },
@@ -200,12 +237,16 @@ impl S3BackEnd for S3BackEndImpl {
     }
 
     async fn put_data_vec(&self, file: &str, vec: Vec<IoMemBlock>) -> S3Result<()> {
-        if vec.len() == 0 {
+        if vec.is_empty() {
             return Ok(());
         }
 
         if vec.len() == 1 {
-            let buf = unsafe { vec.get(0).unwrap().as_slice() };
+            let buf = unsafe {
+                vec.get(0)
+                    .unwrap_or_else(|| panic!("put_data_vec() vec is empty"))
+                    .as_slice()
+            };
             return self.put_data(file, buf, 0, buf.len()).await;
         }
 
@@ -220,16 +261,14 @@ impl S3BackEnd for S3BackEndImpl {
         let path = msg.key;
         let upload_id = &msg.upload_id;
 
-        let mut part_number: u32 = 0;
         let mut etags = Vec::new();
 
-        let last_index = vec.len() - 1;
-        for (index, d) in vec.iter().enumerate() {
-            part_number += 1;
+        let last_index = vec.len().overflow_sub(1);
+        for (part_number, (index, d)) in vec.iter().enumerate().enumerate() {
             let command = Command::PutObject {
                 content: unsafe { d.as_slice() },
                 content_type: "application/octet-stream",
-                multipart: Some(Multipart::new(part_number, upload_id)), // upload_id: &msg.upload_id,
+                multipart: Some(Multipart::new(part_number.cast(), upload_id)), // upload_id: &msg.upload_id,
             };
             let request = RequestImpl::new(&self.bucket, &path, command);
             let (data, _code) = resultify_anyhow!(request.response_data(true).await)?;
@@ -244,7 +283,7 @@ impl S3BackEnd for S3BackEndImpl {
                     .enumerate()
                     .map(|(i, x)| Part {
                         etag: x.to_owned(),
-                        part_number: i as u32 + 1,
+                        part_number: i.cast::<u32>().overflow_add(1),
                     })
                     .collect::<Vec<Part>>();
                 let data = CompleteMultipartUploadData { parts: inner_data };
@@ -253,8 +292,7 @@ impl S3BackEnd for S3BackEndImpl {
                     data,
                 };
                 let complete_request = RequestImpl::new(&self.bucket, &path, complete);
-                let (_data, _code) =
-                    resultify_anyhow!(complete_request.response_data(false).await)?;
+                let (_, _) = resultify_anyhow!(complete_request.response_data(false).await)?;
             }
         }
         Ok(())
@@ -271,6 +309,7 @@ impl S3BackEnd for S3BackEndImpl {
     }
 }
 
+/// Format anyhow error to string
 #[must_use]
 pub fn format_anyhow_error(error: &anyhow::Error) -> String {
     let err_msg_vec = error
@@ -282,6 +321,7 @@ pub fn format_anyhow_error(error: &anyhow::Error) -> String {
     err_msg
 }
 
+/// Do nothing S3 backend
 pub struct DoNothingImpl {}
 
 #[async_trait]
@@ -355,6 +395,7 @@ mod test {
     }
 
     #[test]
+    #[ignore]
     fn test_get_meta() {
         smol::block_on(async {
             let s3_backend = create_backend().await;

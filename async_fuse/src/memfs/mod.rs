@@ -1,12 +1,16 @@
 //! The implementation of user space file system
 mod cache;
 mod dir;
+/// distributed communication module
 pub mod dist;
 mod fs_util;
+/// fs metadata module
 mod metadata;
 mod node;
+/// fs metadata with S3 backend module
 mod s3_metadata;
 mod s3_node;
+/// S3 backend wrapper module
 pub mod s3_wrapper;
 
 use std::collections::BTreeMap;
@@ -45,8 +49,10 @@ const MY_TTL_SEC: u64 = 3600; // TODO: should be a long value, say 1 hour
 
 /// In-memory file system
 pub struct MemFs<M: MetaData + Send + Sync + 'static> {
+    /// Fs metadata
     metadata: Arc<M>,
     #[allow(dead_code)]
+    /// Cache server
     server: Option<CacheServer>,
 }
 
@@ -328,8 +334,8 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
             );
         }
         {
-            if current_count == 0 {
-                let _ = self.metadata.delete_trash(&ino);
+            if current_count == 0 && !self.metadata.delete_trash(ino).await {
+                warn!("ino={:?} doesn't exist in trash", ino);
             }
         }
     }
@@ -429,7 +435,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         );
         let mknod_res = self
             .metadata
-            .create_node_helper(parent, name.into(), mode, SFlag::S_IFREG, None)
+            .create_node_helper(parent, name, mode, SFlag::S_IFREG, None)
             .await
             .context(format!(
                 "mknod() failed to create an i-node name={:?} and mode={:?} under parent ino={},",
@@ -466,7 +472,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         );
         let mkdir_res = self
             .metadata
-            .create_node_helper(parent, name.into(), mode, SFlag::S_IFDIR, None)
+            .create_node_helper(parent, name, mode, SFlag::S_IFDIR, None)
             .await
             .context(format!(
                 "mkdir() failed to create a directory name={:?} and mode={:?} under parent ino={}",
@@ -526,7 +532,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
 
         let unlink_res = self
             .metadata
-            .remove_node_helper(parent, name.into(), entry_type)
+            .remove_node_helper(parent, name, entry_type)
             .await
             .context(format!(
                 "unlink() failed to remove file name={:?} under parent ino={}",
@@ -958,7 +964,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
             );
         });
         if inode.need_load_dir_data() {
-            let load_res = inode.load_data(0usize, 0usize).await;
+            let load_res = inode.load_data(0_usize, 0_usize).await;
             if let Err(e) = load_res {
                 debug!(
                     "readdir() failed to load the data for directory of ino={} and name={:?}, \

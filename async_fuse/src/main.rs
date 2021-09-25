@@ -79,12 +79,17 @@ const CACHE_DEFAULT_CAPACITY: usize = 10 * 1024 * 1024 * 1024;
 /// The default service port number
 const DEFAULT_PORT_NUM: &str = "8089";
 
+/// Volume type
 enum VolumeType {
+    /// Do nothing S3 volume
     None,
+    /// S3 volume
     S3,
+    /// Local volume
     Local,
 }
 
+#[allow(clippy::too_many_lines)]
 fn main() -> anyhow::Result<()> {
     env_logger::init();
 
@@ -207,7 +212,7 @@ fn main() -> anyhow::Result<()> {
         Some(n) => n.parse().unwrap_or_else(|_| panic!("Invalid IP address")),
         None => panic!("No input node ip"),
     };
-    let node_ip = ip_address.to_string();
+    let node_ipaddr = ip_address.to_string();
 
     let volume_info = match matches.value_of(VOLUME_INFO_ARG_NAME) {
         Some(vi) => vi,
@@ -247,7 +252,8 @@ fn main() -> anyhow::Result<()> {
     start_metrics_server();
 
     smol::block_on(async move {
-        dist::etcd::register_node_id(&etcd_delegate, &node_id, &node_ip.to_string(), port).await?;
+        dist::etcd::register_node_id(&etcd_delegate, &node_id, &node_ipaddr.to_string(), port)
+            .await?;
         dist::etcd::register_volume(&etcd_delegate, &node_id, volume_info).await?;
         let mount_point = std::path::Path::new(&mount_point_str);
         match volume_type {
@@ -255,7 +261,7 @@ fn main() -> anyhow::Result<()> {
                 let fs: memfs::MemFs<memfs::DefaultMetaData> = memfs::MemFs::new(
                     mount_point_str,
                     cache_capacity,
-                    &node_ip,
+                    &node_ipaddr,
                     port,
                     etcd_delegate,
                     &node_id,
@@ -269,7 +275,7 @@ fn main() -> anyhow::Result<()> {
                 let fs: memfs::MemFs<memfs::S3MetaData<S3BackEndImpl>> = memfs::MemFs::new(
                     volume_info,
                     cache_capacity,
-                    &node_ip,
+                    &node_ipaddr,
                     port,
                     etcd_delegate,
                     &node_id,
@@ -283,7 +289,7 @@ fn main() -> anyhow::Result<()> {
                 let fs: memfs::MemFs<memfs::S3MetaData<DoNothingImpl>> = memfs::MemFs::new(
                     volume_info,
                     cache_capacity,
-                    &node_ip,
+                    &node_ipaddr,
                     port,
                     etcd_delegate,
                     &node_id,

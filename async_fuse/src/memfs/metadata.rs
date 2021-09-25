@@ -27,10 +27,13 @@ const MY_TTL_SEC: u64 = 3600; // TODO: should be a long value, say 1 hour
 /// The generation ID of FUSE attributes
 const MY_GENERATION: u64 = 1; // TODO: find a proper way to set generation
 
+/// MetaData of fs
 #[async_trait]
 pub trait MetaData {
+    /// Node type
     type N: Node + Send + Sync + 'static;
 
+    /// Create `MetaData`
     async fn new(
         root_path: &str,
         capacity: usize,
@@ -80,7 +83,7 @@ pub trait MetaData {
     fn cache(&self) -> &RwLock<BTreeMap<INum, Self::N>>;
 
     /// Delete cache in trash if necessary
-    async fn delete_trash(&self, ino: &INum) -> bool;
+    async fn delete_trash(&self, ino: INum) -> bool;
 
     /// Helper function to write data
     async fn write_helper(
@@ -124,7 +127,10 @@ impl MetaData for DefaultMetaData {
             .with_context(|| format!("failed to canonicalize the mount path={:?}", root_path))
             .unwrap_or_else(|e| panic!("{}", e));
 
-        let root_path = root_path.as_os_str().to_str().unwrap();
+        let root_path = root_path
+            .as_os_str()
+            .to_str()
+            .unwrap_or_else(|| panic!("failed to convert to utf8 string"));
 
         let meta = Arc::new(Self {
             root_path: root_path.into(),
@@ -150,11 +156,12 @@ impl MetaData for DefaultMetaData {
         &self.cache
     }
 
-    async fn delete_trash(&self, ino: &INum) -> bool {
+    /// Delete node from trash
+    async fn delete_trash(&self, ino: INum) -> bool {
         let mut trash = self.trash.write().await;
-        if trash.contains(ino) {
+        if trash.contains(&ino) {
             // deferred deletion
-            trash.remove(ino);
+            trash.remove(&ino);
             let mut cache = self.cache.write().await;
             let deleted_node = cache.remove(&ino).unwrap_or_else(|| {
                 panic!(
@@ -186,14 +193,13 @@ impl MetaData for DefaultMetaData {
         // pre-check
         let mut cache = self.cache.write().await;
         let parent_node = self
-            .create_node_pre_check(parent, &node_name, &mut cache)
+            .create_node_pre_check(parent, node_name, &mut cache)
             .await
             .context("create_node_helper() failed to pre check")?;
         let parent_name = parent_node.get_name().to_owned();
         // all checks are passed, ready to create new node
         let m_flags = fs_util::parse_mode(mode);
         let new_ino: u64;
-        let node_name_clone = node_name.clone();
         let new_node = match node_type {
             SFlag::S_IFDIR => {
                 debug!(
@@ -202,13 +208,13 @@ impl MetaData for DefaultMetaData {
                     node_name, m_flags, parent, parent_name,
                 );
                 parent_node
-                    .create_child_dir(node_name.clone(), m_flags)
+                    .create_child_dir(node_name, m_flags)
                     .await
                     .context(format!(
-                        "create_node_helper() failed to create directory with name={:?} and mode={:?} \
+                    "create_node_helper() failed to create directory with name={:?} and mode={:?} \
                             under parent directory of ino={} and name={:?}",
-                        node_name, m_flags, parent, parent_name,
-                    ))?
+                    node_name, m_flags, parent, parent_name,
+                ))?
             }
             SFlag::S_IFREG => {
                 let o_flags = OFlag::O_CREAT | OFlag::O_EXCL | OFlag::O_RDWR;
@@ -219,7 +225,12 @@ impl MetaData for DefaultMetaData {
                     node_name, o_flags, m_flags, parent, parent_name,
                 );
                 parent_node
-                    .create_child_file(node_name.clone(), o_flags, m_flags, self.data_cache.clone())
+                    .create_child_file(
+                        node_name,
+                        o_flags,
+                        m_flags,
+                        Arc::<GlobalCache>::clone(&self.data_cache),
+                    )
                     .await
                     .context(format!(
                         "create_node_helper() failed to create file with name={:?} and mode={:?} \
@@ -236,7 +247,7 @@ impl MetaData for DefaultMetaData {
                 );
                 parent_node
                     .create_child_symlink(
-                        node_name.clone(),
+                        node_name,
                         target_path.unwrap_or_else(|| panic!(
                             "create_node_helper() failed to \
                                 get target path when create symlink with name={:?} \
@@ -268,7 +279,7 @@ impl MetaData for DefaultMetaData {
         debug!(
             "create_node_helper() successfully created the new child name={:?} \
                 of ino={} and type={:?} under parent ino={} and name={:?}",
-            node_name_clone, new_ino, node_type, parent, parent_name,
+            node_name, new_ino, node_type, parent, parent_name,
         );
         Ok((ttl, fuse_attr, MY_GENERATION))
     }
@@ -291,7 +302,7 @@ impl MetaData for DefaultMetaData {
                     parent,
                 );
             });
-            match parent_node.get_entry(&node_name) {
+            match parent_node.get_entry(node_name) {
                 None => {
                     debug!(
                         "remove_node_helper() failed to find i-node name={:?} \
@@ -443,7 +454,12 @@ impl MetaData for DefaultMetaData {
                 SFlag::S_IFREG => {
                     let oflags = OFlag::O_RDWR;
                     parent_node
-                        .open_child_file(child_name, None, oflags, self.data_cache.clone())
+                        .open_child_file(
+                            child_name,
+                            None,
+                            oflags,
+                            Arc::<GlobalCache>::clone(&self.data_cache),
+                        )
                         .await
                         .context(format!(
                             "lookup_helper() failed to open child file name={:?} with flags={:?} \
@@ -505,7 +521,7 @@ impl MetaData for DefaultMetaData {
                 return Err(e);
             }
         };
-        let new_entry_ino = new_entry_ino.unwrap();
+        let new_entry_ino = new_entry_ino.unwrap_or_else(|| panic!("new entry ino is None"));
 
         let rename_in_cache_res = self
             .rename_in_cache_helper(old_parent, old_name, new_parent, &new_name)
@@ -551,7 +567,7 @@ impl MetaData for DefaultMetaData {
                 )
             });
             exchanged_node.set_parent_ino(old_parent);
-            exchanged_node.set_name(old_name.clone());
+            exchanged_node.set_name(old_name);
             let exchanged_attr = exchanged_node
                 .load_attribute()
                 .await
@@ -769,8 +785,8 @@ impl DefaultMetaData {
         &self,
         parent: INum,
         node_name: &str,
-        cache: &'b mut RwLockWriteGuard<'a, BTreeMap<INum, <DefaultMetaData as MetaData>::N>>,
-    ) -> anyhow::Result<&'b mut <DefaultMetaData as MetaData>::N> {
+        cache: &'b mut RwLockWriteGuard<'a, BTreeMap<INum, <Self as MetaData>::N>>,
+    ) -> anyhow::Result<&'b mut <Self as MetaData>::N> {
         let parent_node = cache.get_mut(&parent).unwrap_or_else(|| {
             panic!(
                 "create_node_pre_check() found fs is inconsistent, \

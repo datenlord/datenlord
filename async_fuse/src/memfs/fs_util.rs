@@ -48,9 +48,10 @@ pub struct FileAttr {
 }
 
 impl FileAttr {
+    /// New a `FileAttr`
     pub(crate) fn now() -> Self {
         let now = SystemTime::now();
-        FileAttr {
+        Self {
             ino: 0,
             size: 4096,
             blocks: 8,
@@ -59,7 +60,7 @@ impl FileAttr {
             ctime: now,
             crtime: now,
             kind: SFlag::S_IFREG,
-            perm: 0775,
+            perm: 0o775,
             nlink: 0,
             uid: 0,
             gid: 0,
@@ -71,7 +72,7 @@ impl FileAttr {
 
 impl Default for FileAttr {
     fn default() -> Self {
-        FileAttr {
+        Self {
             ino: 0,
             size: 4096,
             blocks: 8,
@@ -80,7 +81,7 @@ impl Default for FileAttr {
             ctime: SystemTime::UNIX_EPOCH,
             crtime: SystemTime::UNIX_EPOCH,
             kind: SFlag::S_IFREG,
-            perm: 0775,
+            perm: 0o775,
             nlink: 0,
             uid: 0,
             gid: 0,

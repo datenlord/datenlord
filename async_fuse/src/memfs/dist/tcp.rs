@@ -4,7 +4,8 @@ use std::io::{Read, Write};
 use std::net::TcpStream;
 use utilities::Cast;
 
-pub(crate) fn read_message(stream: &mut TcpStream, buf: &mut Vec<u8>) -> anyhow::Result<usize> {
+/// Read message from tcp stream
+pub fn read_message(stream: &mut TcpStream, buf: &mut Vec<u8>) -> anyhow::Result<usize> {
     let mut local_buf: [u8; 8] = [0; 8];
     stream.read_exact(&mut local_buf)?;
     let len = u64::from_be_bytes(local_buf);
@@ -17,7 +18,8 @@ pub(crate) fn read_message(stream: &mut TcpStream, buf: &mut Vec<u8>) -> anyhow:
     Ok(len.cast())
 }
 
-pub(crate) fn write_message(stream: &mut TcpStream, buf: &[u8]) -> anyhow::Result<usize> {
+/// Write message to tcp stream
+pub fn write_message(stream: &mut TcpStream, buf: &[u8]) -> anyhow::Result<usize> {
     let len: u64 = buf.len().cast();
     let len_buf = len.to_be_bytes();
     stream.write_all(&len_buf)?;
@@ -26,10 +28,8 @@ pub(crate) fn write_message(stream: &mut TcpStream, buf: &[u8]) -> anyhow::Resul
     Ok(len.cast())
 }
 
-pub(crate) fn write_message_vector(
-    stream: &mut TcpStream,
-    buf: Vec<IoMemBlock>,
-) -> anyhow::Result<usize> {
+/// Write message vector to tcp stream
+pub fn write_message_vector(stream: &mut TcpStream, buf: Vec<IoMemBlock>) -> anyhow::Result<usize> {
     let len: u64 = buf.iter().map(|b| b.len()).sum::<usize>().cast();
     let len_buf = len.to_be_bytes();
     stream.write_all(&len_buf)?;
@@ -41,14 +41,16 @@ pub(crate) fn write_message_vector(
     Ok(len.cast())
 }
 
-pub(crate) fn write_u32(stream: &mut TcpStream, num: u32) -> anyhow::Result<()> {
+/// Write u32 to tcp stream
+pub fn write_u32(stream: &mut TcpStream, num: u32) -> anyhow::Result<()> {
     let num_buf = num.to_be_bytes();
     stream.write_all(&num_buf)?;
 
     Ok(())
 }
 
-pub(crate) fn read_u32(stream: &mut TcpStream) -> anyhow::Result<u32> {
+/// Read u32 from tcp stream
+pub fn read_u32(stream: &mut TcpStream) -> anyhow::Result<u32> {
     let mut local_buf: [u8; 4] = [0; 4];
     stream.read_exact(&mut local_buf)?;
 

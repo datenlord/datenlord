@@ -3,7 +3,6 @@
 use crate::fuse::fuse_reply::{AsIoVec, CouldBeAsIoVecList};
 use aligned_utils::bytes::AlignedBytes;
 use common::error::DatenLordResult;
-use libc;
 use lockfree_cuckoohash::{pin, LockFreeCuckooHash as HashMap};
 use log::debug;
 use nix::sys::uio::IoVec;
@@ -97,7 +96,7 @@ impl GlobalCache {
     }
 
     #[allow(dead_code)]
-    /// Constructor with capacity and block_size
+    /// Constructor with capacity and `block_size`
     pub(crate) fn new_with_bz_and_capacity(block_size: usize, capacity: usize) -> Self {
         Self {
             inner: HashMap::new(),
@@ -112,7 +111,7 @@ impl GlobalCache {
     }
 
     #[allow(dead_code)]
-    /// Constructor with capacity and block_size
+    /// Constructor with capacity and `block_size`
     /// TODO: refactor with builder
     pub(crate) fn new_dist_with_bz_and_capacity(
         block_size: usize,
@@ -268,6 +267,7 @@ impl GlobalCache {
         result
     }
 
+    /// Invalidate file's cache
     pub(crate) fn invalidate(&self, file_name: &[u8], index: Vec<Index>) {
         let guard = pin();
         let file_cache = if let Some(cache) = self.inner.get(file_name, &guard) {
@@ -285,11 +285,11 @@ impl GlobalCache {
         let dealloc_fn = |global_index: usize| {
             let hash_index = global_index.overflow_div(bucket_size);
             let bucket = file_cache.get(&hash_index, &guard);
-            if let None = bucket {
+            let mut bucket = if let Some(b) = bucket {
+                b.write()
+            } else {
                 return;
-            }
-
-            let mut bucket = bucket.unwrap().write();
+            };
 
             let block = bucket
                 .get_mut(global_index.overflow_rem(bucket_size))
@@ -317,6 +317,7 @@ impl GlobalCache {
         }
     }
 
+    /// Check if file is available in cache
     pub(crate) fn check_available(
         &self,
         file_name: &[u8],
@@ -337,26 +338,42 @@ impl GlobalCache {
 
         let check_fn = |global_index: usize| -> Option<usize> {
             let hash_index = global_index.overflow_div(bucket_size);
-            let bucket = file_cache.get(&hash_index, &guard);
-            if let None = bucket {
-                return None;
+            let bucket_opt = file_cache.get(&hash_index, &guard);
+            /*
+            if let Some(bucket) = bucket_opt {
+                if bucket
+                    .write()
+                    .get(global_index.overflow_rem(bucket_size))
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "error when getting range of {} in the cache bucket",
+                            global_index.overflow_rem(bucket_size)
+                        )
+                    })
+                    .is_some()
+                {
+                    Some(global_index)
+                } else {
+                    None
+                }
+            } else {
+                None
             }
+            */
 
-            if let Some(_) = bucket
-                .unwrap()
-                .write()
-                .get(global_index.overflow_rem(bucket_size))
-                .unwrap_or_else(|| {
-                    panic!(
-                        "error when getting range of {} in the cache bucket",
-                        global_index.overflow_rem(bucket_size)
-                    )
-                })
-            {
-                return Some(global_index);
-            }
-
-            return None;
+            bucket_opt.and_then(|bucket| {
+                bucket
+                    .write()
+                    .get(global_index.overflow_rem(bucket_size))
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "error when getting range of {} in the cache bucket",
+                            global_index.overflow_rem(bucket_size)
+                        )
+                    })
+                    .as_ref()
+                    .map(|_| global_index)
+            })
         };
 
         let mut result = Vec::new();
@@ -387,6 +404,7 @@ impl GlobalCache {
         (result, all_hit)
     }
 
+    /// Read file from cache
     pub(crate) fn read(&self, file_name: &[u8], index: Vec<Index>) -> Vec<IoMemBlock> {
         let guard = pin();
         let file_cache = if let Some(cache) = self.inner.get(file_name, &guard) {
@@ -404,26 +422,47 @@ impl GlobalCache {
 
         let read_fn = |global_index: usize| -> IoMemBlock {
             let hash_index = global_index.overflow_div(bucket_size);
-            let bucket = file_cache.get(&hash_index, &guard);
-            if let None = bucket {
-                return IoMemBlock::new(None, 0, 0);
+            let bucket_opt = file_cache.get(&hash_index, &guard);
+            /*
+            if let Some(bucket) = bucket_opt {
+                if let Some(block) = bucket
+                    .write()
+                    .get(global_index.overflow_rem(bucket_size))
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "error when getting range of {} in the cache bucket",
+                            global_index.overflow_rem(bucket_size)
+                        )
+                    })
+                {
+                    IoMemBlock::new(Some(block.clone()), 0, block_size)
+                } else {
+                    IoMemBlock::new(None, 0, 0)
+                }
+            } else {
+                IoMemBlock::new(None, 0, 0)
             }
+            */
 
-            if let Some(block) = bucket
-                .unwrap()
-                .write()
-                .get(global_index.overflow_rem(bucket_size))
-                .unwrap_or_else(|| {
-                    panic!(
-                        "error when getting range of {} in the cache bucket",
-                        global_index.overflow_rem(bucket_size)
-                    )
-                })
-            {
-                return IoMemBlock::new(Some(block.clone()), 0, block_size);
-            }
-
-            return IoMemBlock::new(None, 0, 0);
+            bucket_opt.map_or_else(
+                || IoMemBlock::new(None, 0, 0),
+                |bucket| {
+                    bucket
+                        .write()
+                        .get(global_index.overflow_rem(bucket_size))
+                        .unwrap_or_else(|| {
+                            panic!(
+                                "error when getting range of {} in the cache bucket",
+                                global_index.overflow_rem(bucket_size)
+                            )
+                        })
+                        .as_ref()
+                        .map_or_else(
+                            || IoMemBlock::new(None, 0, 0),
+                            |block| IoMemBlock::new(Some(block.clone()), 0, block_size),
+                        )
+                },
+            )
         };
 
         let mut result = Vec::new();
@@ -477,7 +516,7 @@ impl GlobalCache {
             if let Some(ref etcd) = self.etcd_client {
                 if let Some(ref id) = self.node_id {
                     smol::block_on(async {
-                        if let Err(e) = etcd::add_node_to_file_list(etcd, &id, file_name).await {
+                        if let Err(e) = etcd::add_node_to_file_list(etcd, id, file_name).await {
                             panic!(
                                 "Cannot add node {} to file {:?} node list, error: {}",
                                 id, file_name, e
@@ -645,11 +684,12 @@ impl GlobalCache {
         Ok(())
     }
 
+    /// Remove file cache
     pub(crate) fn remove_file_cache(&self, file_name: &[u8]) -> bool {
         if let Some(ref etcd) = self.etcd_client {
             if let Some(ref id) = self.node_id {
                 smol::block_on(async {
-                    if let Err(e) = etcd::remove_node_from_file_list(etcd, &id, file_name).await {
+                    if let Err(e) = etcd::remove_node_from_file_list(etcd, id, file_name).await {
                         panic!(
                             "Cannot remove node {} to file {:?} node list, error: {}",
                             id, file_name, e

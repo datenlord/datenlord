@@ -26,47 +26,76 @@ use std::sync::Arc;
 use std::time::SystemTime;
 use utilities::{Cast, OverflowArithmetic};
 
+/// Fs node trait
 #[async_trait]
 pub trait Node: Sized {
+    /// Get inode number
     fn get_ino(&self) -> INum;
+    /// Set inode number
     fn set_ino(&mut self, ino: INum);
+    /// Get fd
     fn get_fd(&self) -> RawFd;
+    /// Get parent inode number
     fn get_parent_ino(&self) -> INum;
+    /// Set parent inode number
     fn set_parent_ino(&mut self, parent: u64) -> INum;
+    /// Get node name
     fn get_name(&self) -> &str;
+    /// Get node full path
     fn get_full_path(&self) -> &str;
+    /// Set node name
     fn set_name(&mut self, name: &str);
+    /// Get node type
     fn get_type(&self) -> SFlag;
+    /// Get node attr
     fn get_attr(&self) -> FileAttr;
+    /// Set node attr
     async fn set_attr(&mut self, new_attr: FileAttr) -> FileAttr;
+    /// Get node attr and increase lookup count
     fn lookup_attr(&self) -> FileAttr;
+    /// Get node open count
     fn get_open_count(&self) -> i64;
+    /// Decrease node open count
     fn dec_open_count(&self) -> i64;
+    /// Get node lookup count
     fn get_lookup_count(&self) -> i64;
+    /// Decrease node lookup count
     fn dec_lookup_count_by(&self, nlookup: u64) -> i64;
+    /// Load node attr
     async fn load_attribute(&mut self) -> anyhow::Result<FileAttr>;
+    /// Flush node data
     async fn flush(&mut self, ino: INum, fh: u64);
+    /// Duplicate fd
     async fn dup_fd(&self, oflags: OFlag) -> anyhow::Result<RawFd>;
+    /// Check whether a node is an empty file or an empty directory
     fn is_node_data_empty(&self) -> bool;
+    /// check whether to load directory entry data or not
     fn need_load_dir_data(&self) -> bool;
+    /// Check whether to load file content data or not
     async fn need_load_file_data(&self, offset: usize, len: usize) -> bool;
+    /// Get a directory entry by name
     fn get_entry(&self, name: &str) -> Option<&DirEntry>;
+    /// Create symlink in a directory
     async fn create_child_symlink(
         &mut self,
         child_symlink_name: &str,
         target_path: PathBuf,
     ) -> anyhow::Result<Self>;
+    /// Read symlink itself in a directory, not follow symlink
     async fn load_child_symlink(
         &self,
         child_symlink_name: &str,
         remote: Option<FileAttr>,
     ) -> anyhow::Result<Self>;
+    /// Open sub-directory in a directory
     async fn open_child_dir(
         &self,
         child_dir_name: &str,
         remote: Option<FileAttr>,
     ) -> anyhow::Result<Self>;
+    /// Create sub-directory in a directory
     async fn create_child_dir(&mut self, child_dir_name: &str, mode: Mode) -> anyhow::Result<Self>;
+    /// Open file in a directory
     async fn open_child_file(
         &self,
         child_file_name: &str,
@@ -74,6 +103,7 @@ pub trait Node: Sized {
         oflags: OFlag,
         global_cache: Arc<GlobalCache>,
     ) -> anyhow::Result<Self>;
+    /// Create file in a directory
     async fn create_child_file(
         &mut self,
         child_file_name: &str,
@@ -81,14 +111,23 @@ pub trait Node: Sized {
         mode: Mode,
         global_cache: Arc<GlobalCache>,
     ) -> anyhow::Result<Self>;
+    /// Load data from directory, file or symlink target.
     async fn load_data(&mut self, offset: usize, len: usize) -> anyhow::Result<usize>;
+    /// Insert directory entry for rename()
     async fn insert_entry_for_rename(&mut self, child_entry: DirEntry) -> Option<DirEntry>;
+    /// Remove directory entry from cache only for rename()
     async fn remove_entry_for_rename(&mut self, child_name: &str) -> Option<DirEntry>;
+    /// Unlink directory entry from both cache and disk
     async fn unlink_entry(&mut self, child_name: &str) -> anyhow::Result<DirEntry>;
+    /// Read directory
     fn read_dir(&self, func: &mut dyn FnMut(&BTreeMap<String, DirEntry>) -> usize) -> usize;
+    /// Get symlink target path
     fn get_symlink_target(&self) -> &Path;
+    /// Get fs stat
     async fn statefs(&self) -> anyhow::Result<StatFsParam>;
+    /// Get file data
     async fn get_file_data(&self, offset: usize, len: usize) -> Vec<IoMemBlock>;
+    /// Write to file
     async fn write_file(
         &mut self,
         fh: u64,
@@ -97,8 +136,11 @@ pub trait Node: Sized {
         oflags: OFlag,
         write_to_disk: bool,
     ) -> anyhow::Result<usize>;
+    /// Close file
     async fn close(&mut self, ino: INum, fh: u64, flush: bool);
+    /// Close dir
     async fn closedir(&self, ino: INum, fh: u64);
+    /// Precheck before set attr
     async fn setattr_precheck(&self, param: SetAttrParam) -> anyhow::Result<(bool, FileAttr)>;
 }
 
@@ -281,7 +323,7 @@ impl DefaultNode {
         };
 
         let child_symlink_name_string = child_symlink_name.to_string();
-        let open_res = smol::unblock(move || {
+        smol::unblock(move || {
             fcntl::openat(
                 dir_fd,
                 child_symlink_name_string.as_str(),
@@ -289,149 +331,8 @@ impl DefaultNode {
                 Mode::all(),
             )
         })
-        .await;
-        open_res
+        .await
     }
-
-    /*
-    /// Helper function to create or open sub-directory in a directory
-    async fn open_child_dir_helper(
-        &mut self,
-        child_dir_name: &str,
-        mode: Mode,
-        create_dir: bool,
-    ) -> anyhow::Result<Self> {
-        let ino = self.get_ino();
-        let fd = self.fd;
-        let dir_data = self.get_dir_data_mut();
-        if create_dir {
-            debug_assert!(
-                !dir_data.contains_key(child_dir_name),
-                "open_child_dir_helper() cannot create duplicated directory name={:?}",
-                child_dir_name
-            );
-            let child_dir_name_string = child_dir_name.to_string();
-            smol::unblock(move || stat::mkdirat(fd, child_dir_name_string.as_str(), mode))
-                .await
-                .context(format!(
-                    "open_child_dir_helper() failed to create directory \
-                        name={:?} under parent ino={}",
-                    child_dir_name, ino,
-                ))?;
-        }
-
-        let child_raw_fd = fs_util::open_dir_at(fd, child_dir_name)
-            .await
-            .context(format!(
-                "open_child_dir_helper() failed to open the new directory name={:?} \
-                    under parent ino={}",
-                child_dir_name, ino,
-            ))?;
-
-        // get new directory attribute
-        let child_attr = fs_util::load_attr(child_raw_fd).await.context(format!(
-            "open_child_dir_helper() failed to get the attribute of the new child directory={:?}",
-            child_dir_name,
-        ))?;
-        debug_assert_eq!(SFlag::S_IFDIR, child_attr.kind);
-
-        if create_dir {
-            // insert new entry to parent directory
-            // TODO: support thread-safe
-            let previous_value = dir_data.insert(
-                child_dir_name.to_string(),
-                DirEntry::new(child_attr.ino, child_dir_name.to_string(), SFlag::S_IFDIR),
-            );
-            debug_assert!(previous_value.is_none()); // double check creation race
-        }
-
-        let mut full_path = self.full_path().to_owned();
-        full_path.push_str(child_dir_name);
-        full_path.push('/');
-
-        // lookup count and open count are increased to 1 by creation
-        let child_node = Self::new(
-            self.get_ino(),
-            child_dir_name,
-            full_path,
-            child_attr,
-            DefaultNodeData::Directory(BTreeMap::new()),
-            child_raw_fd,
-            Arc::clone(&self.meta),
-        );
-
-        // if !create_dir {
-        //     // load directory data on open
-        //     child_node
-        //         .load_data()
-        //         .await
-        //         .context("open_child_dir_helper() failed to load child directory entry data")?;
-        // }
-        Ok(child_node)
-    }
-    */
-
-    /*
-    /// Helper function to open or create file in a directory
-    async fn open_child_file_helper(
-        &mut self,
-        child_file_name: &str,
-        oflags: OFlag,
-        mode: Mode,
-        create_file: bool,
-        global_cache: Arc<GlobalCache>,
-    ) -> anyhow::Result<Self> {
-        let ino = self.get_ino();
-        let fd = self.fd;
-        let dir_data = self.get_dir_data_mut();
-        if create_file {
-            debug_assert!(
-                !dir_data.contains_key(child_file_name),
-                "open_child_file_helper() cannot create duplicated file name={:?}",
-                child_file_name
-            );
-            debug_assert!(oflags.contains(OFlag::O_CREAT));
-        }
-        let child_file_name_string = child_file_name.to_string();
-        let child_fd =
-            smol::unblock(move || fcntl::openat(fd, child_file_name_string.as_str(), oflags, mode))
-                .await
-                .context(format!(
-                    "open_child_file_helper() failed to open a file name={:?} \
-                under parent ino={} with oflags={:?} and mode={:?}",
-                    child_file_name, ino, oflags, mode,
-                ))?;
-
-        // get new file attribute
-        let child_attr = fs_util::load_attr(child_fd)
-            .await
-            .context("open_child_file_helper() failed to get the attribute of the new child")?;
-        debug_assert_eq!(SFlag::S_IFREG, child_attr.kind);
-
-        if create_file {
-            // insert new entry to parent directory
-            // TODO: support thread-safe
-            let previous_value = dir_data.insert(
-                child_file_name.to_string(),
-                DirEntry::new(child_attr.ino, child_file_name.to_string(), SFlag::S_IFREG),
-            );
-            debug_assert!(previous_value.is_none()); // double check creation race
-        }
-
-        let mut full_path = self.full_path().to_owned();
-        full_path.push_str(child_file_name);
-
-        Ok(Self::new(
-            self.get_ino(),
-            child_file_name,
-            full_path,
-            child_attr,
-            DefaultNodeData::RegFile(global_cache),
-            child_fd,
-            Arc::clone(&self.meta),
-        ))
-    }
-    */
 
     /// Helper function to create or read symlink itself in a directory
     #[cfg(target_os = "macos")]
@@ -535,7 +436,7 @@ impl DefaultNode {
         path: &str,
         meta: Arc<DefaultMetaData>,
     ) -> anyhow::Result<Self> {
-        let dir_fd = fs_util::open_dir(&Path::new(path)).await?;
+        let dir_fd = fs_util::open_dir(Path::new(path)).await?;
         let mut attr = fs_util::load_attr(dir_fd).await?;
         attr.ino = root_ino; // replace root ino with 1
 
@@ -566,6 +467,7 @@ impl Node for DefaultNode {
         self.get_attr().ino
     }
 
+    /// Set node i-number
     #[inline]
     fn set_ino(&mut self, ino: INum) {
         self.attr.ino = ino;
@@ -678,6 +580,7 @@ impl Node for DefaultNode {
         Ok(attr)
     }
 
+    /// flush node data
     async fn flush(&mut self, ino: INum, fh: u64) {
         let new_fd = smol::unblock(move || unistd::dup(fh.cast()))
             .await
@@ -1142,13 +1045,13 @@ impl Node for DefaultNode {
             }
             DefaultNodeData::RegFile(ref global_cache) => {
                 let aligned_offset = global_cache.round_down(offset);
-                let new_len =
+                let new_len_tmp =
                     global_cache.round_up(offset.overflow_sub(aligned_offset).overflow_add(len));
 
-                let new_len = if new_len.overflow_add(aligned_offset) > self.attr.size.cast() {
+                let new_len = if new_len_tmp.overflow_add(aligned_offset) > self.attr.size.cast() {
                     self.attr.size.cast::<usize>().overflow_sub(aligned_offset)
                 } else {
-                    new_len
+                    new_len_tmp
                 };
 
                 let file_data_vec = fs_util::load_file_data(self.get_fd(), aligned_offset, new_len)
@@ -1283,7 +1186,7 @@ impl Node for DefaultNode {
         }
     }
 
-    ///
+    /// Get fs stat
     async fn statefs(&self) -> anyhow::Result<StatFsParam> {
         let fd = self.fd;
         smol::unblock(move || {
@@ -1388,6 +1291,7 @@ impl Node for DefaultNode {
         Ok(written_size)
     }
 
+    /// Close file
     async fn close(&mut self, ino: INum, fh: u64, flush: bool) {
         let fd = fh.cast();
         if flush {
@@ -1423,6 +1327,7 @@ impl Node for DefaultNode {
         self.dec_open_count(); // decrease open count before reply in case reply failed
     }
 
+    /// Close dir
     async fn closedir(&self, ino: INum, fh: u64) {
         smol::unblock(move || unistd::close(fh.cast()))
             .await
@@ -1447,6 +1352,8 @@ impl Node for DefaultNode {
         );
     }
 
+    /// Precheck before set attr
+    #[allow(clippy::too_many_lines)]
     async fn setattr_precheck(&self, param: SetAttrParam) -> anyhow::Result<(bool, FileAttr)> {
         let fd = self.get_fd();
         let mut attr = self.get_attr();
@@ -1571,7 +1478,7 @@ impl Node for DefaultNode {
 }
 
 /// Rename all the files
-pub(crate) async fn rename_fullpath_recursive(
+pub async fn rename_fullpath_recursive(
     ino: INum,
     parent: INum,
     cache: &RwLock<BTreeMap<INum, DefaultNode>>,

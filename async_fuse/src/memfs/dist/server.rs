@@ -18,9 +18,13 @@ use std::net::{TcpListener, TcpStream};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 
+/// Distributed cache server
 pub struct CacheServer {
+    /// Ip address
     ip: String,
+    /// Port number
     port: String,
+    /// Server thread handler
     th: Option<JoinHandle<bool>>,
 }
 
@@ -59,6 +63,7 @@ impl Drop for CacheServer {
 }
 
 impl CacheServer {
+    /// New a `CacheServer `
     pub(crate) fn new<S: S3BackEnd + Send + Sync + 'static>(
         ip: String,
         port: String,
@@ -106,8 +111,8 @@ impl CacheServer {
                                 );
                             }
                         } else {
-                            let cache_clone = cache.clone();
-                            let meta_clone = meta.clone();
+                            let cache_clone = Arc::<GlobalCache>::clone(&cache);
+                            let meta_clone = Arc::<S3MetaData<S>>::clone(&meta);
 
                             smol::spawn(async move {
                                 let mut local_stream = stream;
@@ -132,6 +137,7 @@ impl CacheServer {
     }
 }
 
+/// Dispatch request
 async fn dispatch<S: S3BackEnd + Send + Sync + 'static>(
     stream: &mut TcpStream,
     cache: Arc<GlobalCache>,
@@ -150,91 +156,100 @@ async fn dispatch<S: S3BackEnd + Send + Sync + 'static>(
     match request {
         DistRequest::TurnOff => {
             turnoff(stream)?;
-            return Ok(false);
+            Ok(false)
         }
         DistRequest::Invalidate(args) => {
-            invalidate(stream, cache, args)?;
-            return Ok(true);
+            invalidate(stream, &cache, args)?;
+            Ok(true)
         }
 
         DistRequest::CheckAvailable(args) => {
-            check_available(stream, cache, args)?;
-            return Ok(true);
+            check_available(stream, &cache, args)?;
+            Ok(true)
         }
 
         DistRequest::Read(args) => {
-            read(stream, cache, args)?;
-            return Ok(true);
+            read(stream, &cache, args)?;
+            Ok(true)
         }
         DistRequest::LoadDir(path) => {
             load_dir(stream, meta, &path).await?;
-            return Ok(true);
+            Ok(true)
         }
         DistRequest::UpdateDir(args) => {
             update_dir(stream, meta, args).await?;
-            return Ok(true);
+            Ok(true)
         }
         DistRequest::RemoveDirEntry(args) => {
             remove_dir_entry(stream, meta, args).await?;
-            return Ok(true);
+            Ok(true)
         }
         DistRequest::GetFileAttr(path) => {
             get_attr(stream, meta, &path).await?;
-            return Ok(true);
+            Ok(true)
         }
         DistRequest::PushFileAttr((path, attr)) => {
             push_attr(stream, meta, &path, &attr).await?;
-            return Ok(true);
+            Ok(true)
         }
         DistRequest::Rename(args) => {
             rename(stream, meta, args).await?;
-            return Ok(true);
+            Ok(true)
         }
         DistRequest::Remove(args) => {
             remove(stream, meta, args).await?;
-            return Ok(true);
+            Ok(true)
         }
         DistRequest::GetInodeNum => {
             get_inode_num(stream, meta).await?;
-            return Ok(true);
+            Ok(true)
         }
     }
 }
 
+/// Handle `TurnOff` request
 fn turnoff(stream: &mut TcpStream) -> anyhow::Result<()> {
     tcp::write_message(stream, response::turnoff().as_slice())?;
     Ok(())
 }
 
-fn invalidate(stream: &mut TcpStream, cache: Arc<GlobalCache>, args: OpArgs) -> anyhow::Result<()> {
+/// Handle `Invalidate` request
+fn invalidate(
+    stream: &mut TcpStream,
+    cache: &Arc<GlobalCache>,
+    args: OpArgs,
+) -> anyhow::Result<()> {
     cache.invalidate(args.file_name.as_slice(), args.index);
     tcp::write_message(stream, response::invalidate().as_slice())?;
     Ok(())
 }
 
+/// Handle `CheckAvailable` request
 fn check_available(
     stream: &mut TcpStream,
-    cache: Arc<GlobalCache>,
+    cache: &Arc<GlobalCache>,
     args: OpArgs,
 ) -> anyhow::Result<()> {
     let available = cache.check_available(args.file_name.as_slice(), args.index);
     if available.1 {
         tcp::write_message(
             stream,
-            response::check_available(Some(available.0)).as_slice(),
+            response::check_available(&Some(available.0)).as_slice(),
         )?;
     } else {
-        tcp::write_message(stream, response::check_available(None).as_slice())?;
+        tcp::write_message(stream, response::check_available(&None).as_slice())?;
     }
     Ok(())
 }
 
-fn read(stream: &mut TcpStream, cache: Arc<GlobalCache>, args: OpArgs) -> anyhow::Result<()> {
+/// Handle `Read` request
+fn read(stream: &mut TcpStream, cache: &Arc<GlobalCache>, args: OpArgs) -> anyhow::Result<()> {
     let data = cache.read(args.file_name.as_slice(), args.index);
     tcp::write_message_vector(stream, data)?;
     Ok(())
 }
 
+/// Handle `LoadDir` request
 async fn load_dir<S: S3BackEnd + Send + Sync + 'static>(
     stream: &mut TcpStream,
     meta: Arc<S3MetaData<S>>,
@@ -249,7 +264,7 @@ async fn load_dir<S: S3BackEnd + Send + Sync + 'static>(
         None => tcp::write_message(stream, response::load_dir_none().as_slice())?,
         Some(inum) => match meta.cache.read().await.get(&inum) {
             None => tcp::write_message(stream, response::load_dir_none().as_slice())?,
-            Some(ref node) => {
+            Some(node) => {
                 tcp::write_message(stream, response::load_dir(node.get_dir_data()).as_slice())?
             }
         },
@@ -258,6 +273,7 @@ async fn load_dir<S: S3BackEnd + Send + Sync + 'static>(
     Ok(())
 }
 
+/// Handle `UpdateDir` request
 async fn update_dir<S: S3BackEnd + Send + Sync + 'static>(
     stream: &mut TcpStream,
     meta: Arc<S3MetaData<S>>,
@@ -270,7 +286,7 @@ async fn update_dir<S: S3BackEnd + Send + Sync + 'static>(
         if let Some(parent_node) = cache.get_mut(parent_inum) {
             let child_attr = args.child_attr;
             let child_node = S3Node::new_child_node_of_parent(
-                &parent_node,
+                parent_node,
                 &args.child_name,
                 types::serial_to_file_attr(&child_attr),
                 args.target_path,
@@ -292,6 +308,7 @@ async fn update_dir<S: S3BackEnd + Send + Sync + 'static>(
     Ok(())
 }
 
+/// Handle `RemoveDirEntry` request
 async fn remove_dir_entry<S: S3BackEnd + Send + Sync + 'static>(
     stream: &mut TcpStream,
     meta: Arc<S3MetaData<S>>,
@@ -310,6 +327,7 @@ async fn remove_dir_entry<S: S3BackEnd + Send + Sync + 'static>(
     Ok(())
 }
 
+/// Handle `GetAttr` request
 async fn get_attr<S: S3BackEnd + Send + Sync + 'static>(
     stream: &mut TcpStream,
     meta: Arc<S3MetaData<S>>,
@@ -334,16 +352,14 @@ async fn get_attr<S: S3BackEnd + Send + Sync + 'static>(
             );
         }
     } else {
-        debug!(
-            "path {} is not find in path2inum.",
-            path,
-        );
+        debug!("path {} is not find in path2inum.", path,);
     }
 
     tcp::write_message(stream, &response::get_attr_none())?;
     Ok(())
 }
 
+/// Handle `PushAttr` request
 async fn push_attr<S: S3BackEnd + Send + Sync + 'static>(
     stream: &mut TcpStream,
     meta: Arc<S3MetaData<S>>,
@@ -369,6 +385,7 @@ async fn push_attr<S: S3BackEnd + Send + Sync + 'static>(
     Ok(())
 }
 
+/// Handle `Rename` request
 async fn rename<S: S3BackEnd + Send + Sync + 'static>(
     stream: &mut TcpStream,
     meta: Arc<S3MetaData<S>>,
@@ -379,23 +396,31 @@ async fn rename<S: S3BackEnd + Send + Sync + 'static>(
     Ok(())
 }
 
+/// Handle `Remove` request
 async fn remove<S: S3BackEnd + Send + Sync + 'static>(
     stream: &mut TcpStream,
     meta: Arc<S3MetaData<S>>,
     args: RemoveArgs,
 ) -> anyhow::Result<()> {
     debug!("receive remove request {:?}", args);
-    let _ = meta
+    if let Err(e) = meta
         .remove_node_local(
             args.parent,
             &args.child_name,
             types::serial_to_entry_type(&args.child_type),
         )
-        .await;
+        .await
+    {
+        panic!(
+            "failed to remove child {:?} from parent {:?} locally, error is {:?}",
+            args.parent, args.child_name, e,
+        );
+    }
     tcp::write_message(stream, &response::remove())?;
     Ok(())
 }
 
+/// Handle `GetInodeNum` request
 async fn get_inode_num<S: S3BackEnd + Send + Sync + 'static>(
     stream: &mut TcpStream,
     meta: Arc<S3MetaData<S>>,

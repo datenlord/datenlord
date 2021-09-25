@@ -6,8 +6,9 @@ use nix::sys::stat::SFlag;
 use serde::{Deserialize, Serialize};
 use std::time::SystemTime;
 
+/// Serializable `DirEntry`
 #[derive(Serialize, Deserialize, Debug)]
-pub(crate) struct SerialDirEntry {
+pub struct SerialDirEntry {
     /// The i-number of the entry
     ino: ino_t,
     /// The `SFlag` type of the entry
@@ -16,6 +17,7 @@ pub(crate) struct SerialDirEntry {
     name: String,
 }
 
+/// Serializable `FileAttr`
 #[derive(Serialize, Deserialize, Debug)]
 pub struct SerialFileAttr {
     /// Inode number
@@ -48,13 +50,19 @@ pub struct SerialFileAttr {
     flags: u32,
 }
 
+/// Serializable `SFlag`
 #[derive(Serialize, Deserialize, Debug)]
-pub(crate) enum SerialSFlag {
+pub enum SerialSFlag {
+    /// Regular file
     Reg,
+    /// Directory
     Dir,
+    /// Symbolic link
     Lnk,
 }
-pub(crate) fn entry_type_to_serial(entry_type: SFlag) -> SerialSFlag {
+
+/// Convert `SFlag` to `SerialSFlag`
+pub fn entry_type_to_serial(entry_type: SFlag) -> SerialSFlag {
     match entry_type {
         SFlag::S_IFDIR => SerialSFlag::Dir,
         SFlag::S_IFREG => SerialSFlag::Reg,
@@ -63,15 +71,17 @@ pub(crate) fn entry_type_to_serial(entry_type: SFlag) -> SerialSFlag {
     }
 }
 
-pub(crate) fn serial_to_entry_type(entry_type: &SerialSFlag) -> SFlag {
-    match entry_type {
+/// Convert `SerialSFlag` to `SFlag`
+pub const fn serial_to_entry_type(entry_type: &SerialSFlag) -> SFlag {
+    match *entry_type {
         SerialSFlag::Dir => SFlag::S_IFDIR,
         SerialSFlag::Reg => SFlag::S_IFREG,
         SerialSFlag::Lnk => SFlag::S_IFLNK,
     }
 }
 
-pub(crate) fn dir_entry_to_serial(entry: &DirEntry) -> SerialDirEntry {
+/// Convert `DirEntry` to `SerialDirEntry`
+pub fn dir_entry_to_serial(entry: &DirEntry) -> SerialDirEntry {
     SerialDirEntry {
         ino: entry.ino(),
         entry_type: { entry_type_to_serial(entry.entry_type()) },
@@ -79,7 +89,8 @@ pub(crate) fn dir_entry_to_serial(entry: &DirEntry) -> SerialDirEntry {
     }
 }
 
-pub(crate) fn serial_to_dir_entry(entry: &SerialDirEntry) -> DirEntry {
+/// Convert `SerialDirEntry` to `DirEntry`
+pub fn serial_to_dir_entry(entry: &SerialDirEntry) -> DirEntry {
     DirEntry::new(
         entry.ino,
         entry.name.to_owned(),
@@ -87,7 +98,8 @@ pub(crate) fn serial_to_dir_entry(entry: &SerialDirEntry) -> DirEntry {
     )
 }
 
-pub(crate) fn file_attr_to_serial(attr: &FileAttr) -> SerialFileAttr {
+/// Convert `FileAttr` to `SerialFileAttr`
+pub fn file_attr_to_serial(attr: &FileAttr) -> SerialFileAttr {
     SerialFileAttr {
         ino: attr.ino,
         size: attr.size,
@@ -114,7 +126,8 @@ pub(crate) fn file_attr_to_serial(attr: &FileAttr) -> SerialFileAttr {
     }
 }
 
-pub(crate) fn serial_to_file_attr(attr: &SerialFileAttr) -> FileAttr {
+/// Convert `SerialFileAttr` to `FileAttr`
+pub const fn serial_to_file_attr(attr: &SerialFileAttr) -> FileAttr {
     FileAttr {
         ino: attr.ino,
         size: attr.size,

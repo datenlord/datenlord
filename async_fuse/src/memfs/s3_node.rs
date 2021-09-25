@@ -12,6 +12,7 @@ use super::SetAttrParam;
 use crate::fuse::fuse_reply::{AsIoVec, StatFsParam};
 use crate::fuse::protocol::INum;
 use async_trait::async_trait;
+use common::etcd_delegate::EtcdDelegate;
 use log::{debug, warn};
 use nix::fcntl::OFlag;
 use nix::sys::stat::Mode;
@@ -103,7 +104,9 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
     ) -> Self {
         let data = match child_attr.kind {
             SFlag::S_IFDIR => S3NodeData::Directory(BTreeMap::new()),
-            SFlag::S_IFREG => S3NodeData::RegFile(parent.meta.data_cache.clone()),
+            SFlag::S_IFREG => {
+                S3NodeData::RegFile(Arc::<GlobalCache>::clone(&parent.meta.data_cache))
+            }
             SFlag::S_IFLNK => {
                 if let Some(path) = target_path {
                     S3NodeData::SymLink(path)
@@ -157,13 +160,14 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
         old_attr
     }
 
+    /// Get a new inode number
     async fn new_inode_num(&self) -> u64 {
-        let lock_key = etcd::lock_inode_number(self.meta.etcd_client.clone())
+        let lock_key = etcd::lock_inode_number(Arc::<EtcdDelegate>::clone(&self.meta.etcd_client))
             .await
             .unwrap_or_else(|e| panic!("failed to get etcd inode number lock, error is {:?}", e));
         let default = self.meta.cur_inum();
         let cur_inum = dist_client::get_ino_num(
-            self.meta.etcd_client.clone(),
+            Arc::<EtcdDelegate>::clone(&self.meta.etcd_client),
             &self.meta.node_id,
             &self.meta.volume_info,
             default,
@@ -185,7 +189,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
                 .fetch_add(1, atomic::Ordering::SeqCst)
                 .cast()
         };
-        etcd::unlock_inode_number(self.meta.etcd_client.clone(), lock_key)
+        etcd::unlock_inode_number(Arc::<EtcdDelegate>::clone(&self.meta.etcd_client), lock_key)
             .await
             .unwrap_or_else(|e| {
                 panic!("failed to release etcd inode number lock, error is {:?}", e)
@@ -198,18 +202,22 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
         self.full_path.as_str()
     }
 
+    /// Set fullpath of this node
     fn set_full_path(&mut self, full_path: String) {
         self.full_path = full_path;
     }
 
+    /// Get new fd
     fn new_fd(&self) -> u32 {
         self.meta.cur_fd.fetch_add(1, atomic::Ordering::SeqCst)
     }
 
+    /// Get absolute path of a child file
     fn absolute_path_with_child(&self, child: &str) -> String {
         format!("{}{}", self.full_path, child)
     }
 
+    /// Get absolute path of a child dir
     fn absolute_dir_with_child(&self, child: &str) -> String {
         format!("{}{}/", self.full_path, child)
     }
@@ -290,300 +298,6 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
         }
     }
 
-    /*
-    /// Helper function to create or open sub-directory in a directory
-    async fn open_child_dir_helper(
-        &mut self,
-        child_dir_name: &str,
-        mode: Mode,
-        create_dir: bool,
-    ) -> anyhow::Result<Self> {
-        let absolute_path = self.absolute_dir_with_child(child_dir_name);
-        if create_dir {
-            let dir_data = self.get_dir_data();
-            // TODO return error
-            debug_assert!(
-                !dir_data.contains_key(child_dir_name),
-                "open_child_dir_helper() cannot create duplicated directory name={:?}",
-                child_dir_name
-            );
-            let _ = self.s3_backend.create_dir(absolute_path.as_str()).await;
-        }
-
-        // get new directory attribute
-        let child_attr = if create_dir {
-            FileAttr {
-                ino: self.new_inode_num().await,
-                kind: SFlag::S_IFDIR,
-                perm: fs_util::parse_mode_bits(mode.bits()),
-                ..FileAttr::now()
-            }
-        } else {
-            match dist_client::get_attr(
-                self.meta.etcd_client.clone(),
-                &self.meta.node_id,
-                &self.meta.volume_info,
-                &absolute_path,
-            )
-            .await?
-            {
-                None => {
-                    let last_modified = self
-                        .s3_backend
-                        .get_last_modified(absolute_path.as_str())
-                        .await
-                        .unwrap();
-                    FileAttr {
-                        ino: self.new_inode_num().await,
-                        kind: SFlag::S_IFDIR,
-                        atime: last_modified,
-                        mtime: last_modified,
-                        ctime: last_modified,
-                        crtime: last_modified,
-                        ..FileAttr::default()
-                    }
-                }
-                Some(attr) => attr,
-            }
-        };
-
-        debug_assert_eq!(SFlag::S_IFDIR, child_attr.kind);
-
-        if create_dir {
-            // insert new entry to parent directory
-            let entry = DirEntry::new(child_attr.ino, child_dir_name.to_string(), SFlag::S_IFDIR);
-            /*
-            dist_client::update_dir(
-                self.meta.etcd_client.clone(),
-                &self.meta.node_id,
-                &self.meta.volume_info,
-                &self.full_path,
-                child_dir_name,
-                &entry,
-            )
-            .await?;
-            */
-
-            let dir_data = self.get_dir_data_mut();
-            let previous_value = dir_data.insert(child_dir_name.to_string(), entry);
-            debug_assert!(previous_value.is_none()); // double check creation race
-        }
-
-        // lookup count and open count are increased to 1 by creation
-        let full_path = format!("{}{}/", self.full_path, child_dir_name);
-
-        let child_node = Self::new(
-            self.get_ino(),
-            child_dir_name,
-            full_path,
-            child_attr,
-            S3NodeData::Directory(BTreeMap::new()),
-            Arc::clone(&self.s3_backend),
-            Arc::clone(&self.meta),
-        );
-
-        Ok(child_node)
-    }
-    */
-
-    /*
-    /// Helper function to open or create file in a directory
-    async fn open_child_file_helper(
-        &mut self,
-        child_file_name: &str,
-        oflags: OFlag,
-        mode: Mode,
-        create_file: bool,
-        global_cache: Arc<GlobalCache>,
-    ) -> anyhow::Result<Self> {
-        let absolute_path = self.absolute_path_with_child(child_file_name);
-        if create_file {
-            let dir_data = self.get_dir_data();
-            debug_assert!(
-                !dir_data.contains_key(child_file_name),
-                "open_child_file_helper() cannot create duplicated file name={:?}",
-                child_file_name
-            );
-            debug_assert!(oflags.contains(OFlag::O_CREAT));
-            let _ = self
-                .s3_backend
-                .put_data(absolute_path.as_str(), "".as_bytes(), 0, 0)
-                .await;
-        }
-
-        // get new file attribute
-        let child_attr = if create_file {
-            FileAttr {
-                ino: self.new_inode_num().await,
-                kind: SFlag::S_IFREG,
-                perm: fs_util::parse_mode_bits(mode.bits()),
-                size: 0,
-                blocks: 0,
-                ..FileAttr::now()
-            }
-        } else {
-            let absolute_path = self.absolute_path_with_child(child_file_name);
-            match dist_client::get_attr(
-                self.meta.etcd_client.clone(),
-                &self.meta.node_id,
-                &self.meta.volume_info,
-                &absolute_path,
-            )
-            .await?
-            {
-                None => {
-                    let (content_len, last_modified) = self
-                        .s3_backend
-                        .get_meta(absolute_path.as_str())
-                        .await
-                        .unwrap();
-                    FileAttr {
-                        ino: self.new_inode_num().await,
-                        kind: SFlag::S_IFREG,
-                        size: content_len.cast(),
-                        blocks: ((content_len + BLOCK_SIZE - 1) / BLOCK_SIZE).cast(),
-                        atime: last_modified,
-                        mtime: last_modified,
-                        ctime: last_modified,
-                        crtime: last_modified,
-                        ..FileAttr::default()
-                    }
-                }
-                Some(attr) => attr,
-            }
-        };
-        debug_assert_eq!(SFlag::S_IFREG, child_attr.kind);
-
-        if create_file {
-            let entry = DirEntry::new(child_attr.ino, child_file_name.to_string(), SFlag::S_IFREG);
-            /*
-            dist_client::update_dir(
-                self.meta.etcd_client.clone(),
-                &self.meta.node_id,
-                &self.meta.volume_info,
-                &self.full_path,
-                child_file_name,
-                &entry,
-            )
-            .await?;
-            */
-
-            let dir_data = self.get_dir_data_mut();
-            // insert new entry to parent directory
-            // TODO: support thread-safe
-            let previous_value = dir_data.insert(child_file_name.to_string(), entry);
-            debug_assert!(previous_value.is_none()); // double check creation race
-        }
-
-        Ok(Self::new(
-            self.get_ino(),
-            child_file_name,
-            format!("{}{}", self.full_path, child_file_name),
-            child_attr,
-            S3NodeData::RegFile(global_cache),
-            Arc::clone(&self.s3_backend),
-            Arc::clone(&self.meta),
-        ))
-    }
-    */
-
-    /*
-    /// Helper function to create or read symlink itself in a directory
-    async fn create_or_load_child_symlink_helper(
-        &mut self,
-        child_symlink_name: &str,
-        target_path_opt: Option<PathBuf>, // If not None, create symlink
-    ) -> anyhow::Result<Self> {
-        let absolute_path = self.absolute_path_with_child(child_symlink_name);
-        if let Some(ref target_path) = target_path_opt {
-            let dir_data = self.get_dir_data();
-            debug_assert!(
-                !dir_data.contains_key(child_symlink_name),
-                "create_or_load_child_symlink_helper() cannot create duplicated symlink name={:?}",
-                child_symlink_name,
-            );
-            let target_str = target_path.to_str().unwrap();
-            let _ = self
-                .s3_backend
-                .put_data(
-                    absolute_path.as_str(),
-                    target_str.as_bytes(),
-                    0,
-                    target_str.len(),
-                )
-                .await;
-        };
-
-        // get symbol file attribute
-        let child_attr = if let Some(ref target_path) = target_path_opt {
-            FileAttr {
-                ino: self.new_inode_num().await,
-                kind: SFlag::S_IFLNK,
-                size: target_path.to_str().unwrap().len().cast(),
-                blocks: 0,
-                perm: 0777,
-                ..FileAttr::now()
-            }
-        } else {
-            let (len, last_modified) = self
-                .s3_backend
-                .get_meta(absolute_path.as_str())
-                .await
-                .unwrap();
-            FileAttr {
-                ino: self.new_inode_num().await,
-                kind: SFlag::S_IFLNK,
-                size: len.cast(),
-                blocks: 0,
-                perm: 0777,
-                atime: last_modified,
-                mtime: last_modified,
-                ctime: last_modified,
-                crtime: last_modified,
-                ..FileAttr::default()
-            }
-        };
-
-        let target_path = if let Some(target_path) = target_path_opt {
-            // insert new entry to parent directory
-            let entry = DirEntry::new(
-                child_attr.ino,
-                child_symlink_name.to_string(),
-                SFlag::S_IFLNK,
-            );
-            /*
-            dist_client::update_dir(
-                self.meta.etcd_client.clone(),
-                &self.meta.node_id,
-                &self.meta.volume_info,
-                &self.full_path,
-                child_symlink_name,
-                &entry,
-            )
-            .await?;
-            */
-            let dir_data = self.get_dir_data_mut();
-            let previous_value = dir_data.insert(child_symlink_name.to_string(), entry);
-            debug_assert!(previous_value.is_none()); // double check creation race
-            target_path
-        } else {
-            PathBuf::from(
-                String::from_utf8(self.s3_backend.get_data(&absolute_path).await.unwrap()).unwrap(),
-            )
-        };
-
-        Ok(Self::new(
-            self.get_ino(),
-            child_symlink_name,
-            format!("{}{}", self.full_path, child_symlink_name),
-            child_attr,
-            S3NodeData::SymLink(target_path),
-            Arc::clone(&self.s3_backend),
-            Arc::clone(&self.meta),
-        ))
-    }
-    */
-
     /// Increase node open count
     fn inc_open_count(&self) -> i64 {
         // TODO: add the usage
@@ -600,12 +314,12 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
         let now = SystemTime::now();
         let attr = FileAttr {
             ino: root_ino,
-            atime: now.clone(),
-            mtime: now.clone(),
-            ctime: now.clone(),
+            atime: now,
+            mtime: now,
+            ctime: now,
             crtime: now,
             kind: SFlag::S_IFDIR,
-            ..Default::default()
+            ..FileAttr::default()
         };
 
         let root_node = Self::new(
@@ -621,9 +335,10 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
         Ok(root_node)
     }
 
+    /// flush all data of a node
     async fn flush_all_data(&mut self) -> anyhow::Result<()> {
         let data_cache = match self.data {
-            S3NodeData::RegFile(ref data_cache) => data_cache.clone(),
+            S3NodeData::RegFile(ref data_cache) => Arc::<GlobalCache>::clone(data_cache),
             // Do nothing for Directory.
             // TODO: Sync dir data to S3 storage
             S3NodeData::Directory(..) => return Ok(()),
@@ -643,20 +358,19 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
             }
         }
 
-        let _ = self
-            .s3_backend
+        self.s3_backend
             .put_data_vec(
                 &self.full_path,
                 data_cache.get_file_cache(self.full_path.as_bytes(), 0, size.cast()),
             )
-            .await;
+            .await?;
 
         Ok(())
     }
 }
 
 /// Rename all the files
-pub(crate) async fn rename_fullpath_recursive<S: S3BackEnd + Send + Sync + 'static>(
+pub async fn rename_fullpath_recursive<S: S3BackEnd + Send + Sync + 'static>(
     ino: INum,
     parent: INum,
     cache: &RwLock<BTreeMap<INum, S3Node<S>>>,
@@ -664,12 +378,10 @@ pub(crate) async fn rename_fullpath_recursive<S: S3BackEnd + Send + Sync + 'stat
     let mut node_pool: VecDeque<(INum, INum)> = VecDeque::new();
     node_pool.push_back((ino, parent));
 
-    while !node_pool.is_empty() {
-        let (child, parent) = node_pool.pop_front().unwrap();
-
+    while let Some((child, parent)) = node_pool.pop_front() {
         let parent_path = {
-            let rcache = cache.read().await;
-            let parent_node = rcache.get(&parent).unwrap_or_else(|| {
+            let read_cache = cache.read().await;
+            let parent_node = read_cache.get(&parent).unwrap_or_else(|| {
                 panic!(
                 "impossible case when rename, the parent i-node of ino={} should be in the cache",
                 parent
@@ -679,8 +391,8 @@ pub(crate) async fn rename_fullpath_recursive<S: S3BackEnd + Send + Sync + 'stat
         };
 
         {
-            let mut wcache = cache.write().await;
-            let child_node = wcache.get_mut(&child).unwrap_or_else(|| {
+            let mut write_cache = cache.write().await;
+            let child_node = write_cache.get_mut(&child).unwrap_or_else(|| {
                 panic!(
                 "impossible case when rename, the child i-node of ino={} should be in the cache",
                 child
@@ -701,8 +413,14 @@ pub(crate) async fn rename_fullpath_recursive<S: S3BackEnd + Send + Sync + 'stat
             };
 
             let is_reg = if let S3NodeData::RegFile(ref global_cache) = child_node.data {
-                let _ =
-                    global_cache.rename(old_path.as_str().as_bytes(), new_path.as_str().as_bytes());
+                if let Err(e) =
+                    global_cache.rename(old_path.as_str().as_bytes(), new_path.as_str().as_bytes())
+                {
+                    panic!(
+                        "failed to rename from {:?} to {:?} in global cache, error is {:?}",
+                        old_path, new_path, e
+                    );
+                }
                 true
             } else {
                 false
@@ -710,10 +428,21 @@ pub(crate) async fn rename_fullpath_recursive<S: S3BackEnd + Send + Sync + 'stat
 
             if is_reg {
                 // TODO: Should not flush data, remove this once the "real" cache rename is available
-                let _ = child_node.flush_all_data().await;
+                if let Err(e) = child_node.flush_all_data().await {
+                    panic!(
+                        "failed to flush all data of node {:?}, error is {:?}",
+                        child_node.get_full_path(),
+                        e
+                    );
+                }
             }
 
-            let _ = child_node.s3_backend.rename(&old_path, &new_path).await;
+            if let Err(e) = child_node.s3_backend.rename(&old_path, &new_path).await {
+                panic!(
+                    "failed to rename from {:?} to {:?} in s3 backend, error is {:?}",
+                    old_path, new_path, e
+                );
+            }
 
             child_node.set_full_path(new_path);
         }
@@ -821,7 +550,11 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
 
     /// Load attribute
     async fn load_attribute(&mut self) -> anyhow::Result<FileAttr> {
-        let (content_len, last_modified) = self.s3_backend.get_meta(&self.full_path).await.unwrap();
+        let (content_len, last_modified) = self
+            .s3_backend
+            .get_meta(&self.full_path)
+            .await
+            .unwrap_or_else(|e| panic!("failed to get meta from s3 backend, error is {:?}", e));
 
         let attr = FileAttr {
             ino: self.get_ino(),
@@ -844,7 +577,13 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
     }
 
     async fn flush(&mut self, _ino: INum, _fh: u64) {
-        let _ = self.flush_all_data().await;
+        if let Err(e) = self.flush_all_data().await {
+            panic!(
+                "failed to flash all data of {:?}, error is {:?}",
+                self.get_full_path(),
+                e
+            );
+        }
     }
 
     /// Duplicate fd
@@ -892,7 +631,9 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
                 cache_result.is_empty()
                     || cache_result.iter().filter(|b| !(*b).can_convert()).count() != 0
             }
-            _ => panic!("need_load_file_data should handle regular file"),
+            S3NodeData::Directory(..) | S3NodeData::SymLink(..) => {
+                panic!("need_load_file_data should handle regular file")
+            }
         }
     }
 
@@ -914,8 +655,10 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
             "create_child_symlink() cannot create duplicated symlink name={:?}",
             child_symlink_name,
         );
-        let target_str = target_path.to_str().unwrap();
-        let _ = self
+        let target_str = target_path
+            .to_str()
+            .unwrap_or_else(|| panic!("failed to convert {:?} to utf8 string", target_path));
+        if let Err(e) = self
             .s3_backend
             .put_data(
                 absolute_path.as_str(),
@@ -923,15 +666,25 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
                 0,
                 target_str.len(),
             )
-            .await;
+            .await
+        {
+            panic!(
+                "failed to put data of file {:?} to s3 backend, error is {:?}",
+                absolute_path, e
+            );
+        }
 
         // get symbol file attribute
         let child_attr = FileAttr {
             ino: self.new_inode_num().await,
             kind: SFlag::S_IFLNK,
-            size: target_path.to_str().unwrap().len().cast(),
+            size: target_path
+                .to_str()
+                .unwrap_or_else(|| panic!("failed to convert to utf8 string"))
+                .len()
+                .cast(),
             blocks: 0,
-            perm: 0777,
+            perm: 0o777,
             ..FileAttr::now()
         };
 
@@ -942,19 +695,8 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
                 child_symlink_name.to_string(),
                 SFlag::S_IFLNK,
             );
-            /*
-            dist_client::update_dir(
-                self.meta.etcd_client.clone(),
-                &self.meta.node_id,
-                &self.meta.volume_info,
-                &self.full_path,
-                child_symlink_name,
-                &entry,
-            )
-            .await?;
-            */
-            let dir_data = self.get_dir_data_mut();
-            let previous_value = dir_data.insert(child_symlink_name.to_string(), entry);
+            let dir_data_mut = self.get_dir_data_mut();
+            let previous_value = dir_data_mut.insert(child_symlink_name.to_string(), entry);
             debug_assert!(previous_value.is_none()); // double check creation race
             target_path
         };
@@ -985,14 +727,19 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
                     .s3_backend
                     .get_meta(absolute_path.as_str())
                     .await
-                    .unwrap();
+                    .unwrap_or_else(|e| {
+                        panic!(
+                            "failed to get meta of {:?} from s3 backend, error is {:?}",
+                            absolute_path, e
+                        )
+                    });
                 // get symbol file attribute
                 FileAttr {
                     ino: self.new_inode_num().await,
                     kind: SFlag::S_IFLNK,
                     size: len.cast(),
                     blocks: 0,
-                    perm: 0777,
+                    perm: 0o777,
                     atime: last_modified,
                     mtime: last_modified,
                     ctime: last_modified,
@@ -1005,7 +752,18 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
         debug_assert_eq!(SFlag::S_IFLNK, child_attr.kind);
 
         let target_path = PathBuf::from(
-            String::from_utf8(self.s3_backend.get_data(&absolute_path).await.unwrap()).unwrap(),
+            String::from_utf8(
+                self.s3_backend
+                    .get_data(&absolute_path)
+                    .await
+                    .unwrap_or_else(|e| {
+                        panic!(
+                            "failed to get data of {:?} from s3 backend, error is {:?}",
+                            absolute_path, e
+                        )
+                    }),
+            )
+            .unwrap_or_else(|e| panic!("failed to convert to utf string, error is {:?}", e)),
         );
 
         Ok(Self::new(
@@ -1034,7 +792,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
                     .s3_backend
                     .get_last_modified(absolute_path.as_str())
                     .await
-                    .unwrap();
+                    .unwrap_or_else(|e| panic!("failed to get last modified of file {:?} from s3 backend, error is {:?}", absolute_path, e));
                 FileAttr {
                     ino: self.new_inode_num().await,
                     kind: SFlag::S_IFDIR,
@@ -1076,7 +834,12 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
             "create_child_dir() cannot create duplicated directory name={:?}",
             child_dir_name
         );
-        let _ = self.s3_backend.create_dir(absolute_path.as_str()).await;
+        if let Err(e) = self.s3_backend.create_dir(absolute_path.as_str()).await {
+            panic!(
+                "failed to create dir={:?} in s3 backend, error is {:?}",
+                absolute_path, e
+            );
+        }
 
         // get new directory attribute
         let child_attr = FileAttr {
@@ -1089,20 +852,9 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
 
         // insert new entry to parent directory
         let entry = DirEntry::new(child_attr.ino, child_dir_name.to_string(), SFlag::S_IFDIR);
-        /*
-        dist_client::update_dir(
-            self.meta.etcd_client.clone(),
-            &self.meta.node_id,
-            &self.meta.volume_info,
-            &self.full_path,
-            child_dir_name,
-            &entry,
-        )
-        .await?;
-        */
 
-        let dir_data = self.get_dir_data_mut();
-        let previous_value = dir_data.insert(child_dir_name.to_string(), entry);
+        let dir_data_mut = self.get_dir_data_mut();
+        let previous_value = dir_data_mut.insert(child_dir_name.to_string(), entry);
         debug_assert!(previous_value.is_none()); // double check creation race
 
         // lookup count and open count are increased to 1 by creation
@@ -1138,12 +890,21 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
                     .s3_backend
                     .get_meta(absolute_path.as_str())
                     .await
-                    .unwrap();
+                    .unwrap_or_else(|e| {
+                        panic!(
+                            "failed to get meta of {:?} from s3 backend, error is {:?}",
+                            absolute_path, e
+                        )
+                    });
                 FileAttr {
                     ino: self.new_inode_num().await,
                     kind: SFlag::S_IFREG,
                     size: content_len.cast(),
-                    blocks: ((content_len + BLOCK_SIZE - 1) / BLOCK_SIZE).cast(),
+                    blocks: content_len
+                        .overflow_add(BLOCK_SIZE)
+                        .overflow_sub(1)
+                        .overflow_div(BLOCK_SIZE)
+                        .cast(),
                     atime: last_modified,
                     mtime: last_modified,
                     ctime: last_modified,
@@ -1182,10 +943,16 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
             child_file_name
         );
         debug_assert!(oflags.contains(OFlag::O_CREAT));
-        let _ = self
+        if let Err(e) = self
             .s3_backend
-            .put_data(absolute_path.as_str(), "".as_bytes(), 0, 0)
-            .await;
+            .put_data(absolute_path.as_str(), b"", 0, 0)
+            .await
+        {
+            panic!(
+                "failed to put data of file {:?} to s3 backend, error is {:?}",
+                absolute_path, e
+            );
+        }
 
         // get new file attribute
         let child_attr = FileAttr {
@@ -1199,22 +966,11 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
         debug_assert_eq!(SFlag::S_IFREG, child_attr.kind);
 
         let entry = DirEntry::new(child_attr.ino, child_file_name.to_string(), SFlag::S_IFREG);
-        /*
-        dist_client::update_dir(
-            self.meta.etcd_client.clone(),
-            &self.meta.node_id,
-            &self.meta.volume_info,
-            &self.full_path,
-            child_file_name,
-            &entry,
-        )
-        .await?;
-        */
 
-        let dir_data = self.get_dir_data_mut();
+        let dir_data_mut = self.get_dir_data_mut();
         // insert new entry to parent directory
         // TODO: support thread-safe
-        let previous_value = dir_data.insert(child_file_name.to_string(), entry);
+        let previous_value = dir_data_mut.insert(child_file_name.to_string(), entry);
         debug_assert!(previous_value.is_none()); // double check creation race
 
         self.update_mtime_ctime_to_now().await;
@@ -1236,7 +992,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
             S3NodeData::Directory(..) => {
                 // TODO: really read dir from S3
                 let entries = match dist_client::load_dir(
-                    self.meta.etcd_client.clone(),
+                    Arc::<EtcdDelegate>::clone(&self.meta.etcd_client),
                     &self.meta.node_id,
                     &self.meta.volume_info,
                     &self.full_path,
@@ -1251,17 +1007,18 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
             }
             S3NodeData::RegFile(ref global_cache) => {
                 let aligned_offset = global_cache.round_down(offset);
-                let new_len = global_cache.round_up(offset - aligned_offset + len);
+                let new_len_tmp =
+                    global_cache.round_up(offset.overflow_sub(aligned_offset).overflow_add(len));
 
-                let new_len = if (new_len + aligned_offset) > self.attr.size as usize {
-                    self.attr.size as usize - aligned_offset
+                let new_len = if new_len_tmp.overflow_add(aligned_offset) > self.attr.size.cast() {
+                    self.attr.size.cast::<usize>().overflow_sub(aligned_offset)
                 } else {
-                    new_len
+                    new_len_tmp
                 };
 
                 // dist_client::read_data() won't get lock at remote, OK to put here.
                 let file_data_vec = match dist_client::read_data(
-                    self.meta.etcd_client.clone(),
+                    Arc::<EtcdDelegate>::clone(&self.meta.etcd_client),
                     &self.meta.node_id,
                     &self.meta.volume_info,
                     &self.full_path,
@@ -1298,13 +1055,18 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
                     "load_data() successfully load {} byte file content data",
                     read_size
                 );
-                let _ = global_cache.write_or_update(
+                if let Err(e) = global_cache.write_or_update(
                     self.full_path.as_bytes(),
                     aligned_offset,
                     read_size,
                     &file_data_vec,
                     false,
-                );
+                ) {
+                    panic!(
+                        "failed to write or update file {:?} to global cache, error is {:?}",
+                        self.full_path, e
+                    );
+                }
                 Ok(read_size)
             }
             S3NodeData::SymLink(..) => {
@@ -1315,24 +1077,6 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
 
     /// Insert directory entry for rename()
     async fn insert_entry_for_rename(&mut self, child_entry: DirEntry) -> Option<DirEntry> {
-        /*
-        dist_client::update_dir(
-            self.meta.etcd_client.clone(),
-            &self.meta.node_id,
-            &self.meta.volume_info,
-            &self.full_path,
-            child_entry.entry_name(),
-            &child_entry,
-        )
-        .await
-        .unwrap_or_else(|e| {
-            panic!(
-                "insert_entry_for_rename update remote dir failed, error: {}",
-                e
-            )
-        });
-        */
-
         let dir_data = self.get_dir_data_mut();
         let previous_entry = dir_data.insert(child_entry.entry_name().into(), child_entry);
 
@@ -1348,23 +1092,6 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
 
     /// Remove directory entry from cache only for rename()
     async fn remove_entry_for_rename(&mut self, child_name: &str) -> Option<DirEntry> {
-        /*
-        dist_client::remove_dir_entry(
-            self.meta.etcd_client.clone(),
-            &self.meta.node_id,
-            &self.meta.volume_info,
-            &self.full_path,
-            child_name,
-        )
-        .await
-        .unwrap_or_else(|e| {
-            panic!(
-                "remove_entry_for_rename update remote dir failed, error: {}",
-                e
-            )
-        });
-        */
-
         let dir_data = self.get_dir_data_mut();
         let remove_res = dir_data.remove(child_name);
         if remove_res.is_some() {
@@ -1375,18 +1102,6 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
 
     /// Unlink directory entry from both cache and disk
     async fn unlink_entry(&mut self, child_name: &str) -> anyhow::Result<DirEntry> {
-        /*
-        dist_client::remove_dir_entry(
-            self.meta.etcd_client.clone(),
-            &self.meta.node_id,
-            &self.meta.volume_info,
-            &self.full_path,
-            child_name,
-        )
-        .await
-        .unwrap_or_else(|e| panic!("unlink_entry update remote dir failed, error: {}", e));
-        */
-
         let dir_data = self.get_dir_data_mut();
         let removed_entry = dir_data.remove(child_name).unwrap_or_else(|| {
             panic!(
@@ -1400,10 +1115,17 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
         // delete from disk and close the handler
         match removed_entry.entry_type() {
             SFlag::S_IFDIR | SFlag::S_IFREG | SFlag::S_IFLNK => {
-                let _ = self
+                if let Err(e) = self
                     .s3_backend
                     .delete_data(&self.absolute_path_with_child(child_name))
-                    .await;
+                    .await
+                {
+                    panic!(
+                        "failed to delete data of {:?} from s3 backend, error is {:?}",
+                        self.absolute_path_with_child(child_name),
+                        e
+                    );
+                }
             }
             _ => panic!(
                 "unlink_entry() found unsupported entry type={:?}",
@@ -1433,13 +1155,17 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
     /// Fake data for statefs
     /// TODO: handle some important data from S3 storage
     async fn statefs(&self) -> anyhow::Result<StatFsParam> {
-        let inode_num = self.meta.cur_inum.load(atomic::Ordering::Relaxed) - 1;
+        let inode_num = self
+            .meta
+            .cur_inum
+            .load(atomic::Ordering::Relaxed)
+            .overflow_sub(1);
         Ok(StatFsParam {
-            blocks: 10000000000,
-            bfree: 10000000000,
-            bavail: 10000000000,
+            blocks: 10_000_000_000,
+            bfree: 10_000_000_000,
+            bavail: 10_000_000_000,
             files: inode_num.cast(),
-            f_free: 1000000,
+            f_free: 1_000_000,
             bsize: 4096, // TODO: consider use customized block size
             namelen: 1024,
             frsize: 4096,
@@ -1470,8 +1196,8 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
         let this: &Self = self;
 
         let ino = this.get_ino();
-        if this.need_load_file_data(offset as usize, data.len()).await {
-            let load_res = self.load_data(offset as usize, data.len()).await;
+        if this.need_load_file_data(offset.cast(), data.len()).await {
+            let load_res = self.load_data(offset.cast(), data.len()).await;
             if let Err(e) = load_res {
                 debug!(
                     "read() failed to load file data of ino={} and name={:?}, the error is: {}",
@@ -1490,52 +1216,26 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
             S3NodeData::RegFile(ref file_data) => file_data,
         };
 
-        let _ = cache.write_or_update(
+        if let Err(e) = cache.write_or_update(
             self.full_path.as_bytes(),
-            offset as usize,
+            offset.cast(),
             data.len(),
             data.as_slice(),
             true,
-        );
+        ) {
+            panic!(
+                "failed to write_or_update {:?} to cache, error is {:?}",
+                self.full_path, e
+            );
+        }
 
         let written_size = data.len();
 
         // update the attribute of the written file
         self.attr.size = std::cmp::max(
             self.attr.size,
-            (offset as u64).overflow_add(written_size as u64),
+            offset.cast::<u64>().overflow_add(written_size.cast()),
         );
-
-        /*
-        if let Err(e) = dist_client::push_attr(
-            self.meta.etcd_client.clone(),
-            &self.meta.node_id,
-            &self.meta.volume_info,
-            &self.full_path,
-            &self.get_attr(),
-        )
-        .await
-        {
-            panic!("failed to push attribute to others, error: {}", e);
-        }
-
-        if let Err(e) = dist_client::invalidate(
-            self.meta.etcd_client.clone(),
-            &self.meta.node_id,
-            &self.meta.volume_info,
-            &self.full_path,
-            offset.overflow_div(cache.get_align().cast()).cast(),
-            offset
-                .overflow_add(written_size.cast())
-                .overflow_sub(1)
-                .overflow_div(cache.get_align().cast())
-                .cast(),
-        )
-        .await
-        {
-            panic!("failed to invlidate others' cache, error: {}", e);
-        }
-        */
 
         debug!("file {:?} size = {:?}", self.name, self.attr.size);
         self.update_mtime_ctime_to_now().await;
@@ -1544,7 +1244,12 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
     }
 
     async fn close(&mut self, _ino: INum, _fh: u64, _flush: bool) {
-        let _ = self.flush_all_data().await;
+        if let Err(e) = self.flush_all_data().await {
+            panic!(
+                "failed to flush all data of {:?}, error is {:?}",
+                self.full_path, e
+            );
+        }
         self.dec_open_count();
     }
 

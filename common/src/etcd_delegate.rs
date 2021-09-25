@@ -16,10 +16,12 @@ use std::time::Duration;
 pub struct EtcdDelegate {
     /// The inner etcd client
     etcd_rs_client: etcd_client::Client,
+    /// Etcd end point address
     end_point: Vec<String>,
 }
 
 impl Debug for EtcdDelegate {
+    #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("EtcdDelegate")
             .field("endpoint", &self.end_point)
@@ -107,7 +109,7 @@ impl EtcdDelegate {
     }
 
     /// Get one key-value pair from etcd
-    async fn get_one_kv_async<T: DeserializeOwned, K: Into<Vec<u8>> + Debug + Clone>(
+    async fn get_one_kv_async<T: DeserializeOwned, K: Into<Vec<u8>> + Debug + Clone + Send>(
         &self,
         key: K,
     ) -> DatenLordResult<Option<T>> {
@@ -130,7 +132,7 @@ impl EtcdDelegate {
     /// Write a key value pair to etcd
     async fn write_to_etcd<
         T: DeserializeOwned + Serialize + Clone + Debug + Send + Sync,
-        K: Into<Vec<u8>> + Debug + Clone,
+        K: Into<Vec<u8>> + Debug + Clone + Send,
     >(
         &self,
         key: K,
@@ -202,7 +204,10 @@ impl EtcdDelegate {
 
     /// Get zero or one key-value pair from etcd
     #[inline]
-    pub async fn get_at_most_one_value<T: DeserializeOwned, K: Into<Vec<u8>> + Debug + Clone>(
+    pub async fn get_at_most_one_value<
+        T: DeserializeOwned,
+        K: Into<Vec<u8>> + Debug + Clone + Send,
+    >(
         &self,
         key: K,
     ) -> DatenLordResult<Option<T>> {
@@ -250,7 +255,7 @@ impl EtcdDelegate {
     #[inline]
     pub async fn write_or_update_kv<
         T: DeserializeOwned + Serialize + Clone + Debug + Send + Sync,
-        K: Into<Vec<u8>> + Debug + Clone,
+        K: Into<Vec<u8>> + Debug + Clone + Send,
     >(
         &self,
         key: K,
