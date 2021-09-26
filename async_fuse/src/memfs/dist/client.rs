@@ -45,8 +45,11 @@ where
                 let mut one_result = Vec::new();
                 let mut stream = TcpStream::connect(ip_and_port)
                     .unwrap_or_else(|e| panic!("fail connect to {}, error: {}", ip_and_port, e));
+                println!("xxxxxxxxxxxx111111111xxxxxxxxxxxxxx");
                 tcp::write_message(&mut stream, data)?;
+                println!("xxxxxxxxxxxx222222222xxxxxxxxxxxxxx");
                 tcp::read_message(&mut stream, &mut one_result)?;
+                println!("xxxxxxxxxxxx333333333xxxxxxxxxxxxxx");
 
                 let parsed = filter(one_result.as_slice());
 
