@@ -58,7 +58,10 @@ pub fn setup(mount_dir: &Path, is_s3: bool) -> anyhow::Result<JoinHandle<()>> {
                 ss.run().await?;
             } else {
                 let fs: memfs::MemFs<memfs::DefaultMetaData> = memfs::MemFs::new(
-                    mount_point.as_os_str().to_str().unwrap(),
+                    mount_point
+                        .as_os_str()
+                        .to_str()
+                        .unwrap_or_else(|| panic!("failed to convert to utf8 string")),
                     CACHE_DEFAULT_CAPACITY,
                     TEST_NODE_IP,
                     TEST_PORT,

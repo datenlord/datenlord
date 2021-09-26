@@ -391,7 +391,7 @@ mod test {
             TEST_SECRET_KEY,
         )
         .await
-        .unwrap()
+        .unwrap_or_else(|e| panic!("failed to create s3 backend, error is {:?}", e))
     }
 
     #[test]
@@ -399,8 +399,12 @@ mod test {
     fn test_get_meta() {
         smol::block_on(async {
             let s3_backend = create_backend().await;
-            let _ = s3_backend.create_dir("test_dir").await;
-            let _ = s3_backend.get_meta("test_dir").await;
+            if let Err(e) = s3_backend.create_dir("test_dir").await {
+                panic!("failed to create dir in s3 backend, error is {:?}", e);
+            }
+            if let Err(e) = s3_backend.get_meta("test_dir").await {
+                panic!("failed to get meta from s3 backend, error is {:?}", e);
+            }
         });
     }
 }

@@ -519,8 +519,8 @@ fn run_s3_test() -> anyhow::Result<()> {
     _run_test(S3_DEFAULT_MOUNT_DIR, true)
 }
 
-fn _run_test(mount_dir: &str, is_s3: bool) -> anyhow::Result<()> {
-    let mount_dir = Path::new(mount_dir);
+fn _run_test(mount_dir_str: &str, is_s3: bool) -> anyhow::Result<()> {
+    let mount_dir = Path::new(mount_dir_str);
     let th = test_util::setup(mount_dir, is_s3)?;
     info!("begin integration test");
 
@@ -552,8 +552,8 @@ fn run_s3_bench() -> anyhow::Result<()> {
     _run_bench(S3_BENCH_MOUNT_DIR, true)
 }
 
-fn _run_bench(mount_dir: &str, is_s3: bool) -> anyhow::Result<()> {
-    let mount_dir = Path::new(mount_dir);
+fn _run_bench(mount_dir_str: &str, is_s3: bool) -> anyhow::Result<()> {
+    let mount_dir = Path::new(mount_dir_str);
     let th = test_util::setup(mount_dir, is_s3)?;
 
     let fio_handle = std::process::Command::new("fio")
