@@ -273,7 +273,7 @@ jobs:
           tar zxvf kubernetes-test-linux-amd64.tar.gz
           kubectl config view --raw > $K8S_CONFIG
           #kubernetes/test/bin/e2e.test -v=5 -ginkgo.failFast -ginkgo.failOnPending -ginkgo.debug -ginkgo.v -ginkgo.focus='External.Storage' -kubectl-path=`which kubectl` -kubeconfig=$K8S_CONFIG -storage.testdriver=`realpath $E2E_TEST_CONFIG`
-          kubernetes/test/bin/ginkgo -p -v -failFast -failOnPending -debug -focus='External.Storage' -skip='(.*Dynamic PV.*filesystem.*should access to two volumes with the same volume mode and retain data across pod recreation on .* node | \[Disruptive\])' kubernetes/test/bin/e2e.test -- -v=5 -kubectl-path=`which kubectl` -kubeconfig=`realpath $K8S_CONFIG` -storage.testdriver=`realpath $E2E_TEST_CONFIG`
+          kubernetes/test/bin/ginkgo -p -v -failFast -failOnPending -debug -focus='External.Storage' -skip='.*\[Disruptive\].*' kubernetes/test/bin/e2e.test -- -v=5 -kubectl-path=`which kubectl` -kubeconfig=`realpath $K8S_CONFIG` -storage.testdriver=`realpath $E2E_TEST_CONFIG`
           # Run [Disruptive] test in serial and separately
           kubernetes/test/bin/ginkgo -v -failFast -failOnPending -debug -focus='External.Storage.*\[Disruptive\]' kubernetes/test/bin/e2e.test -- -v=5 -kubectl-path=`which kubectl` -kubeconfig=`realpath $K8S_CONFIG` -storage.testdriver=`realpath $E2E_TEST_CONFIG`
       - name: Quick Start Test
