@@ -8,7 +8,6 @@ use super::SetAttrParam;
 use crate::fuse::fuse_reply::{AsIoVec, StatFsParam};
 use crate::fuse::protocol::INum;
 use crate::metrics;
-use crate::util;
 use anyhow::Context;
 use async_trait::async_trait;
 use log::debug;
