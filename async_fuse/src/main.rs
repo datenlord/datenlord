@@ -50,11 +50,10 @@ pub mod util;
 
 use common::etcd_delegate::EtcdDelegate;
 use fuse::session::Session;
-use metrics::start_metrics_server;
-use std::env;
 use log::debug;
 use memfs::dist;
 use memfs::s3_wrapper::{DoNothingImpl, S3BackEndImpl};
+use metrics::start_metrics_server;
 use std::net::IpAddr;
 
 /// Service port number

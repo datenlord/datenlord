@@ -11,6 +11,7 @@ use super::s3_wrapper::S3BackEnd;
 use super::SetAttrParam;
 use crate::fuse::fuse_reply::{AsIoVec, StatFsParam};
 use crate::fuse::protocol::INum;
+use crate::metrics;
 use async_trait::async_trait;
 use common::etcd_delegate::EtcdDelegate;
 use log::{debug, warn};
@@ -627,9 +628,15 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
 
         match self.data {
             S3NodeData::RegFile(ref cache) => {
-                let cache_result = cache.get_file_cache(self.full_path.as_bytes(), offset, len);
-                cache_result.is_empty()
-                    || cache_result.iter().filter(|b| !(*b).can_convert()).count() != 0
+                let file_cache = cache.get_file_cache(self.full_path.as_bytes(), offset, len);
+                let cache_miss = file_cache.is_empty()
+                    || file_cache.iter().filter(|b| !(*b).can_convert()).count() != 0;
+                if cache_miss {
+                    metrics::CACHE_MISSES.inc();
+                } else {
+                    metrics::CACHE_HITS.inc();
+                }
+                cache_miss
             }
             S3NodeData::Directory(..) | S3NodeData::SymLink(..) => {
                 panic!("need_load_file_data should handle regular file")
