@@ -136,10 +136,12 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
 
     /// Delete node from trash
     async fn delete_trash(&self, ino: INum) -> bool {
-        let mut trash = self.trash.write().await;
-        if trash.contains(&ino) {
+        let contains = {
+            let mut trash = self.trash.write().await;
+            trash.remove(&ino)
+        };
+        if contains {
             // deferred deletion
-            trash.remove(&ino);
             let mut cache = self.cache.write().await;
             let deleted_node = cache.remove(&ino).unwrap_or_else(|| {
                 panic!(
@@ -154,9 +156,10 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
                 ino,
                 deleted_node.get_name(),
             );
-            return true;
+            true
+        } else {
+            false
         }
-        false
     }
 
     /// Helper function to create node
@@ -601,14 +604,21 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
         if deferred_deletion {
             // deferred deletion
             // TODO: support thread-safe
-            let cache = self.cache.read().await;
-            let node = cache.get(&ino).unwrap_or_else(|| {
-                panic!(
-                    "impossible case, may_deferred_delete_node_helper() \
+            let (node_name, node_open_count, node_lookup_count) = {
+                let cache = self.cache.read().await;
+                let node = cache.get(&ino).unwrap_or_else(|| {
+                    panic!(
+                        "impossible case, may_deferred_delete_node_helper() \
                         should already find the i-node of ino={} to remove",
-                    ino,
-                );
-            });
+                        ino,
+                    );
+                });
+                (
+                    node.get_name().to_owned(),
+                    node.get_open_count(),
+                    node.get_lookup_count(),
+                )
+            };
             {
                 let mut trash = self.trash.write().await;
                 let insert_result = trash.insert(ino); // check thread-safe in case of deferred deletion race
@@ -622,11 +632,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
                 "may_deferred_delete_node_helper() defered removed \
                     the i-node name={:?} of ino={} under parent ino={}, \
                     open count={}, lookup count={}",
-                node.get_name(),
-                ino,
-                parent_ino,
-                node.get_open_count(),
-                node.get_lookup_count(),
+                node_name, ino, parent_ino, node_open_count, node_lookup_count,
             );
         } else {
             // immediate deletion
