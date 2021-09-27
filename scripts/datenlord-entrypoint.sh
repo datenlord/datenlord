@@ -23,4 +23,4 @@ while [ $# -gt 0 ]; do
 done
 
 /usr/local/bin/umount-in-container.sh $MOUNTPOINT
-/usr/local/bin/datenlord-fuse $ARGS
+/usr/local/bin/datenlord $ARGS

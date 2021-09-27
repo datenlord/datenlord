@@ -229,10 +229,8 @@ jobs:
           test -n "$ALERTS" || (echo "FAILED TO FIND ALERTS" && /bin/false)
       - name: Docker build fuse and csi
         run: |
-          docker build . --build-arg RUST_IMAGE_VERSION=$RUST_VERSION --file ./Dockerfile --target fuse --tag $DATENLORD_IMAGE
-          docker build . --build-arg RUST_IMAGE_VERSION=$RUST_VERSION --file ./Dockerfile --target csi --tag $DATENLORD_CSI_IMAGE
+          docker build . --build-arg RUST_IMAGE_VERSION=$RUST_VERSION --file ./Dockerfile --target datenlord --tag $DATENLORD_IMAGE
           kind load docker-image $DATENLORD_IMAGE
-          kind load docker-image $DATENLORD_CSI_IMAGE
       - name: Deploy DatenLord to K8S
         run: |
           kubectl cluster-info
