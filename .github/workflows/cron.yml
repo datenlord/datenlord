@@ -276,13 +276,13 @@ jobs:
           kubernetes/test/bin/ginkgo -v -failFast -failOnPending -debug -focus='External.Storage' -skip='\[Feature:|\[Disruptive\]|\[Serial\]' kubernetes/test/bin/e2e.test -- -v=5 -kubectl-path=`which kubectl` -kubeconfig=`realpath $K8S_CONFIG` -storage.testdriver=`realpath $E2E_TEST_CONFIG`
           # Run [Disruptive] test in serial and separately
           kubernetes/test/bin/ginkgo -v -failFast -failOnPending -debug -focus='External.Storage.*(\[Feature:|\[Disruptive\]|\[Serial\])' kubernetes/test/bin/e2e.test -- -v=5 -kubectl-path=`which kubectl` -kubeconfig=`realpath $K8S_CONFIG` -storage.testdriver=`realpath $E2E_TEST_CONFIG`
-      - name: Quick Start Test
-        run: |
-          kubectl delete -f $CONFIG_KIND
-          sed -e 's/e2e_test/latest/g' $CONFIG_KIND > $CONFIG_DOCKERHUB
-          kubectl apply -f $CONFIG_DOCKERHUB
-          kubectl wait --for=condition=Ready pod -l app=$CONTROLLER_APP_LABEL -n $DATENLORD_NAMESPACE --timeout=60s
-          kubectl wait --for=condition=Ready pod -l app=$NODE_APP_LABEL -n $DATENLORD_NAMESPACE --timeout=60s
+      #- name: Quick Start Test
+      #  run: |
+      #    kubectl delete -f $CONFIG_KIND
+      #    sed -e 's/e2e_test/latest/g' $CONFIG_KIND > $CONFIG_DOCKERHUB
+      #    kubectl apply -f $CONFIG_DOCKERHUB
+      #    kubectl wait --for=condition=Ready pod -l app=$CONTROLLER_APP_LABEL -n $DATENLORD_NAMESPACE --timeout=60s
+      #    kubectl wait --for=condition=Ready pod -l app=$NODE_APP_LABEL -n $DATENLORD_NAMESPACE --timeout=60s
 
       - name: Print DatenLord logs
         if: ${{ failure() }}
