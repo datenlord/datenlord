@@ -299,7 +299,7 @@ jobs:
           gcc -Wall -DHAS_TRUNCATE64 -DHAS_STAT64 fstest.c -o fstest
           cd -
           mkdir fuse_mount_dir
-          sudo pod_ip_address=127.0.0.1 RUST_LOG=debug target/debug/async_fuse -m ./fuse_mount_dir --volume_info fake_info --etcd=127.0.0.1:2379 &>datenlord.log &
+          sudo RUST_LOG=debug target/debug/async_fuse -m ./fuse_mount_dir --volume_info "fuse-test-bucket\;http://127.0.0.1:9000\;test\;test1234" --volume_type=none --etcd=127.0.0.1:2379 --port=8800 --nodeid=test --nodeip=127.0.0.1 &>datenlord.log &
           cd fuse_mount_dir
           sudo prove -rv ../ntfs-3g-pjd-fstest/tests/chflags
           sudo prove -rv ../ntfs-3g-pjd-fstest/tests/xacl
