@@ -203,10 +203,18 @@ spec:
             privileged: true
             allowPrivilegeEscalation: true
           image: datenlord/datenlord:e2e_test
+          ports:
+            - containerPort: 9897
           imagePullPolicy: "IfNotPresent"
           args:
             - "--mountpoint=$(FUSE_MOUNT_DIR)"
             - "--volume_info=$(FUSE_VOLUME_INFO)"
+            - "--etcd=$(ETCD_ENDPOINT)"
+            - "--nodeid=$(NODE_ID)"
+            - "--nodeip=$(NODE_IP)"
+            - "--capacity=$(CACHE_CAPACITY)"
+            - "--port=8800"
+            - "--volume_type=none"
           lifecycle:
             #postStart:
             #  exec:
@@ -220,13 +228,24 @@ spec:
             - name: ETCD_ENDPOINT
               value: csi-etcd-svc:2379
             - name: FUSE_VOLUME_INFO
-              value: https://mybucket
+              value: fuse-test-bucket\;http://127.0.0.1:9000\;test\;test1234
+              # The capacity for the cache in memfs, 1GB
+            - name: CACHE_CAPACITY
+              value: "1073741824"
+            - name: SMOL_THREADS
+              value: "10"
             - name: RUST_LOG
               value: debug
             - name: RUST_BACKTRACE
               value: full
-            - name: pod_ip_address
-              value: "127.0.0.1"
+            - name: NODE_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: NODE_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
           volumeMounts:
             - name: datenlord-data-dir
               # This mount path must be the same inside and outside container
@@ -371,6 +390,24 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
+  name: datenlord-metric-exporter-service
+  namespace: csi-datenlord
+  annotations:
+      prometheus.io/scrape: 'true'
+      prometheus.io/port:   '9897'
+spec:
+  selector: 
+    app: csi-nodeplugin-datenlord
+  type: NodePort  
+  ports:
+    - port: 8088
+      targetPort: 9897
+      nodePort: 30001
+
+---
+apiVersion: v1
+kind: Service
+metadata:
   name: csi-etcd-svc
   namespace: csi-datenlord
 spec:
@@ -408,7 +445,7 @@ spec:
     matchLabels:
       app: csi-etcd
   serviceName: "csi-etcd"
-  replicas: 3
+  replicas: 1
   template:
     metadata:
       labels:
@@ -427,11 +464,11 @@ spec:
             - "/usr/local/bin/etcd"
           args:
             - "--name=$(NODE_ID)"
-            - "--initial-advertise-peer-urls=http://$(NODE_ID):2380"
+            - "--initial-advertise-peer-urls=http://$(NODE_ID).csi-etcd:2380"
             - "--listen-peer-urls=http://0.0.0.0:2380"
             - "--advertise-client-urls=http://$(NODE_ID).csi-etcd:2379"
             - "--listen-client-urls=http://0.0.0.0:2379"
-            - "--initial-cluster=$(PEER)"
+           #- "--initial-cluster=$(PEER)"
             - "--listen-metrics-urls=http://0.0.0.0:2381"
             - "--data-dir=/var/lib/etcd/default.etcd"
           env:
@@ -445,8 +482,8 @@ spec:
             httpGet:
               path: /health
               port: 2381
-            initialDelaySeconds: 10
-            periodSeconds: 5
+            initialDelaySeconds: 20
+            periodSeconds: 10
           volumeMounts:
             - name: etcd-data-dir
               mountPath: /var/lib/etcd
@@ -619,7 +656,134 @@ spec:
           hostPath:
             path: /var/lib/kubelet/plugins/csi.datenlord.io
             type: DirectoryOrCreate
-
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: datenlord-scheduler
+  namespace: csi-datenlord
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: datenlord-scheduler-cluster-admin
+  namespace: csi-datenlord
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-admin
+subjects:
+  - kind: ServiceAccount
+    namespace: csi-datenlord
+    name: datenlord-scheduler
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: datenlord-scheduler-config
+  namespace: csi-datenlord
+data:
+  config.yaml: |
+    apiVersion: kubescheduler.config.k8s.io/v1beta1
+    kind: KubeSchedulerConfiguration
+    leaderElection:
+      leaderElect: false
+    clientConnection:
+      acceptContentTypes: ""
+      burst: 100
+      contentType: application/vnd.kubernetes.protobuf
+      kubeconfig: ""
+      qps: 50
+    healthzBindAddress: 0.0.0.0:10251
+    metricsBindAddress: 0.0.0.0:10251
+    profiles:
+    - schedulerName: datenlord-scheduler
+    extenders:
+    - urlPrefix: "http://127.0.0.1:12345"
+      filterVerb: "filter"
+      prioritizeVerb: "prioritize"
+      nodeCacheCapable: false
+      ignorable: false
+      weight: 1
+      enableHTTPS: false
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: datenlord-scheduler
+  namespace: csi-datenlord
+  labels:
+    app: datenlord-scheduler
+spec:
+  selector:
+    matchLabels:
+      app: datenlord-scheduler
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: datenlord-scheduler
+    spec:
+      serviceAccountName: datenlord-scheduler
+      volumes:
+      - name: datenlord-scheduler-config
+        configMap:
+          name: datenlord-scheduler-config
+      containers:
+        - name: datenlord-scheduler
+          image: k8s.gcr.io/kube-scheduler:v1.19.1
+          imagePullPolicy: IfNotPresent
+          args:
+          - kube-scheduler
+          - --config=/datenlord-scheduler/config.yaml
+          - --address=0.0.0.0
+          - --leader-elect=false
+          - -v=4
+          volumeMounts:
+          - name: datenlord-scheduler-config
+            mountPath: /datenlord-scheduler
+        - name: datenlord-scheduler-extender
+          image: datenlord/csiplugin:e2e_test
+          imagePullPolicy: "IfNotPresent"
+          args:
+            - "--endpoint=$(CSI_CONTROLLER_ENDPOINT)"
+            - "--nodeid=$(NODE_ID)"
+            - "--nodeip=127.0.0.1"
+            - "--workerport=12345"
+            - "--runas=scheduler-extender"
+            - "--etcd=csi-etcd-svc:2379"
+            - "--scheduler-extender-port=12345"
+          env:
+            - name: NODE_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: NODE_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: CSI_CONTROLLER_ENDPOINT
+              value: unix:///plugin/controller.sock
+            - name: RUST_LOG
+              value: csi=debug
+            - name: RUST_BACKTRACE
+              value: full
+          ports:
+            - containerPort: 12345
+              hostPort: 12345
+      affinity:
+        podAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - namespaces:
+                - kube-system
+              topologyKey: kubernetes.io/hostname
+              labelSelector:
+                matchLabels:
+                  component: kube-scheduler      
+      tolerations:
+      - key: node-role.kubernetes.io/master
+        operator: "Exists"
+        effect: NoSchedule
 ---
 apiVersion: storage.k8s.io/v1
 kind: CSIDriver

@@ -592,9 +592,9 @@ async fn dispatch<'a>(
             let reply = ReplyEmpty::new(req.unique(), fd);
             let param = RenameParam {
                 old_parent: req.nodeid(),
-                old_name: oldname.to_os_string(),
+                old_name: oldname.to_string(),
                 new_parent: arg.newdir,
-                new_name: newname.to_os_string(),
+                new_name: newname.to_string(),
                 flags: 0,
             };
             fs.rename(req, param, reply).await
@@ -613,7 +613,7 @@ async fn dispatch<'a>(
                 .await
         }
         Operation::Write { arg, data } => {
-            assert_eq!(data.len(), arg.size.cast());
+            assert_eq!(data.len(), arg.size.cast::<usize>());
             let reply = ReplyWrite::new(req.unique(), fd);
             fs.write(
                 req,
@@ -676,7 +676,7 @@ async fn dispatch<'a>(
             const fn get_position(_arg: &FuseSetXAttrIn) -> u32 {
                 0
             }
-            assert!(value.len() == arg.size.cast());
+            assert!(value.len() == arg.size.cast::<usize>());
             let reply = ReplyEmpty::new(req.unique(), fd);
             fs.setxattr(req, name, value, arg.flags, get_position(arg), reply)
                 .await
@@ -789,13 +789,10 @@ async fn dispatch<'a>(
             let reply = ReplyEmpty::new(req.unique(), fd);
             let param = RenameParam {
                 old_parent: req.nodeid(),
-                old_name: oldname.to_os_string(),
+                old_name: oldname.to_string(),
                 new_parent: arg.newdir,
-                new_name: newname.to_os_string(),
-                #[cfg(target_os = "linux")]
+                new_name: newname.to_string(),
                 flags: arg.flags,
-                #[cfg(target_os = "macos")]
-                flags: arg.flags.cast(),
             };
             fs.rename(req, param, reply).await
         }

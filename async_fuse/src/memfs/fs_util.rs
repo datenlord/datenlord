@@ -4,7 +4,6 @@ use super::dir::{Dir, DirEntry};
 use crate::fuse::protocol::{FuseAttr, INum};
 
 use std::collections::BTreeMap;
-use std::ffi::OsString;
 use std::os::unix::io::RawFd;
 use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -48,10 +47,54 @@ pub struct FileAttr {
     pub flags: u32,
 }
 
+impl FileAttr {
+    /// New a `FileAttr`
+    pub(crate) fn now() -> Self {
+        let now = SystemTime::now();
+        Self {
+            ino: 0,
+            size: 4096,
+            blocks: 8,
+            atime: now,
+            mtime: now,
+            ctime: now,
+            crtime: now,
+            kind: SFlag::S_IFREG,
+            perm: 0o775,
+            nlink: 0,
+            uid: 0,
+            gid: 0,
+            rdev: 0,
+            flags: 0,
+        }
+    }
+}
+
+impl Default for FileAttr {
+    fn default() -> Self {
+        Self {
+            ino: 0,
+            size: 4096,
+            blocks: 8,
+            atime: SystemTime::UNIX_EPOCH,
+            mtime: SystemTime::UNIX_EPOCH,
+            ctime: SystemTime::UNIX_EPOCH,
+            crtime: SystemTime::UNIX_EPOCH,
+            kind: SFlag::S_IFREG,
+            perm: 0o775,
+            nlink: 0,
+            uid: 0,
+            gid: 0,
+            rdev: 0,
+            flags: 0,
+        }
+    }
+}
+
 /// Parse `OFlag`
 pub fn parse_oflag(flags: u32) -> OFlag {
     debug_assert!(
-        flags < std::i32::MAX.cast(),
+        flags < std::i32::MAX.cast::<u32>(),
         "helper_parse_oflag() found flags={} overflow, larger than u16::MAX",
         flags,
     );
@@ -63,7 +106,7 @@ pub fn parse_oflag(flags: u32) -> OFlag {
 /// Parse file mode
 pub fn parse_mode(mode: u32) -> Mode {
     debug_assert!(
-        mode < std::u16::MAX.cast(),
+        mode < std::u16::MAX.cast::<u32>(),
         "helper_parse_mode() found mode={} overflow, larger than u16::MAX",
         mode,
     );
@@ -89,7 +132,7 @@ pub fn parse_mode_bits(mode: u32) -> u16 {
 /// Parse `SFlag`
 pub fn parse_sflag(flags: u32) -> SFlag {
     debug_assert!(
-        flags < std::u16::MAX.cast(),
+        flags < std::u16::MAX.cast::<u32>(),
         "parse_sflag() found flags={} overflow, larger than u16::MAX",
         flags,
     );
@@ -119,11 +162,11 @@ pub async fn open_dir(path: &Path) -> anyhow::Result<RawFd> {
 }
 
 /// Open directory relative to current working directory
-pub async fn open_dir_at(dfd: RawFd, child_name: OsString) -> anyhow::Result<RawFd> {
-    let sub_dir_name = child_name.clone();
+pub async fn open_dir_at(dfd: RawFd, child_name: &str) -> anyhow::Result<RawFd> {
+    let sub_dir_name = child_name.to_string();
     let oflags = get_dir_oflags();
     let dir_fd =
-        smol::unblock(move || fcntl::openat(dfd, sub_dir_name.as_os_str(), oflags, Mode::empty()))
+        smol::unblock(move || fcntl::openat(dfd, sub_dir_name.as_str(), oflags, Mode::empty()))
             .await
             .context(format!(
                 "open_dir_at() failed to open sub-directory={:?} under parent fd={}",
@@ -228,7 +271,7 @@ pub fn time_from_system_time(system_time: &SystemTime) -> (u64, u32) {
                 "time_from_system_time() failed to convert SystemTime={:?} \
                 to timestamp(seconds, nano-seconds), the error is: {}",
                 system_time,
-                crate::util::format_anyhow_error(&e),
+                common::util::format_anyhow_error(&e),
             )
         });
     (duration.as_secs(), duration.subsec_nanos())
@@ -271,7 +314,7 @@ pub fn convert_to_fuse_attr(attr: FileAttr) -> FuseAttr {
 }
 
 /// Helper funtion to load directory data
-pub async fn load_dir_data(dirfd: RawFd) -> anyhow::Result<BTreeMap<OsString, DirEntry>> {
+pub async fn load_dir_data(dirfd: RawFd) -> anyhow::Result<BTreeMap<String, DirEntry>> {
     smol::unblock(move || {
         let dir = Dir::opendirat(dirfd, ".", OFlag::empty())
             .with_context(|| format!("failed to build Dir from fd={}", dirfd))?;
@@ -289,13 +332,27 @@ pub async fn load_dir_data(dirfd: RawFd) -> anyhow::Result<BTreeMap<OsString, Di
 }
 
 /// Helper function to load file data
-pub async fn load_file_data(fd: RawFd, file_size: usize) -> anyhow::Result<Vec<u8>> {
+pub async fn load_file_data(fd: RawFd, offset: usize, len: usize) -> anyhow::Result<Vec<u8>> {
     let file_data_vec = smol::unblock(move || {
-        let mut file_data_vec: Vec<u8> = Vec::with_capacity(file_size);
-        unsafe {
-            file_data_vec.set_len(file_data_vec.capacity());
-        }
-        let read_size = nix::unistd::read(fd, &mut *file_data_vec)?;
+        let mut file_data_vec: Vec<u8> = Vec::with_capacity(len);
+
+        let read_size = unsafe {
+            let res = libc::pread(
+                fd,
+                file_data_vec.as_mut_ptr().cast(),
+                len.cast(),
+                offset.cast(),
+            );
+
+            if res < 0 {
+                return Err(anyhow::Error::msg(format!(
+                    "linux pread failed with Error code: {}",
+                    res
+                )));
+            } else {
+                res.cast::<usize>()
+            }
+        };
         unsafe {
             file_data_vec.set_len(read_size);
         }
@@ -303,6 +360,6 @@ pub async fn load_file_data(fd: RawFd, file_size: usize) -> anyhow::Result<Vec<u
         Ok::<Vec<u8>, anyhow::Error>(file_data_vec)
     })
     .await?;
-    debug_assert_eq!(file_data_vec.len(), file_size.cast());
+    debug_assert_eq!(file_data_vec.len(), len);
     Ok(file_data_vec)
 }

@@ -38,155 +38,57 @@
     clippy::multiple_crate_versions, // multi-version dependency crates is not able to fix
     clippy::panic, // allow debug_assert, panic in production code
     // clippy::panic_in_result_fn,
+    clippy::unknown_clippy_lints,  // allow rustc and clippy verison mismatch
 )]
-
-use log::debug;
 
 mod fuse;
 mod memfs;
+/// Datenlord metrics
+pub mod metrics;
 pub mod proactor;
 pub mod util;
-use common::error::Context;
+
 use common::etcd_delegate::EtcdDelegate;
 use fuse::session::Session;
-use std::env;
+use log::debug;
+use memfs::dist;
+use memfs::s3_wrapper::{DoNothingImpl, S3BackEndImpl};
+use metrics::start_metrics_server;
+use std::net::IpAddr;
 
-/// Ip address environment var name
-const ENV_IP_ADDRESS: &str = "pod_ip_address";
+/// Service port number
+const PORT_NUM_ARG_NAME: &str = "port";
 /// Argument name of FUSE mount point
 const MOUNT_POINT_ARG_NAME: &str = "mountpoint";
+/// Argument name of FUSE mount point
+const CACHE_CAPACITY_ARG_NAME: &str = "capacity";
 /// Argument name of ETCD addresses
 const ETCD_ADDRESS_ARG_NAME: &str = "etcd";
+/// Argument name of Node ID
+const NODE_ID_ARG_NAME: &str = "nodeid";
+/// Argument name of Node IP
+const NODE_IP_ARG_NAME: &str = "nodeip";
 /// Argument name of Volume information
-const VOLUME_INFO: &str = "volume_info";
-/// ETCD node id lock
-const ETCD_NODE_ID_LOCK: &str = "datenlord_etcd_node_id_lock";
-/// ETCD node id counter key
-const ETCD_NODE_ID_COUNTER_KEY: &str = "datenlord_etcd_node_id_counter";
-/// ETCD ndoe id info
-const ETCD_NODE_ID_INFO_PREFIX: &str = "datenlord_etcd_node_id_info_";
-/// ETCD volume information lock
-const ETCD_VOLUME_INFO_LOCK: &str = "datenlord_etcd_volume_info_lock";
-/// ETCD volume information prefix
-const ETCD_VOLUME_INFO_PREFIX: &str = "datenlord_etcd_volume_info_";
+const VOLUME_INFO_ARG_NAME: &str = "volume_info";
+/// Argument name of Volume type
+const VOLUME_TYPE_ARG_NAME: &str = "volume_type";
+/// The default capacity in bytes, 10GB
+const CACHE_DEFAULT_CAPACITY: usize = 10 * 1024 * 1024 * 1024;
+// TODO: Duplicated definition
+/// The default service port number
+const DEFAULT_PORT_NUM: &str = "8089";
 
-/// Register current node to etcd and get a dedicated node id.
-/// The registered information contains IP.
-async fn register_node_id(etcd_client: &EtcdDelegate) -> anyhow::Result<u64> {
-    let lock_key = etcd_client
-        .lock(ETCD_NODE_ID_LOCK.as_bytes(), 10)
-        .await
-        .with_context(|| "lock fail while register node_id")?;
-
-    let node_id: Option<Vec<u8>> = etcd_client
-        .get_at_most_one_value(ETCD_NODE_ID_COUNTER_KEY)
-        .await
-        .with_context(|| format!("get {} from etcd fail", ETCD_NODE_ID_COUNTER_KEY))?;
-
-    let node_id = match node_id {
-        Some(current_id_str) => {
-            let current_id = std::str::from_utf8(current_id_str.as_slice())?;
-            let (new_id, overflow) = current_id
-                .parse::<u64>()
-                .unwrap_or_else(|_| {
-                    panic!("{} can't be parsed as node id (integer)", current_id);
-                })
-                .overflowing_add(1);
-            if overflow {
-                panic!("node_id({}) is too large, it overflows", current_id);
-            } else {
-                new_id
-            }
-        }
-        None => 0,
-    };
-
-    let node_id_string = node_id.to_string();
-
-    etcd_client
-        .write_or_update_kv(ETCD_NODE_ID_COUNTER_KEY, &node_id_string)
-        .await
-        .with_context(|| {
-            format!(
-                "update {} to value {} failed",
-                ETCD_NODE_ID_COUNTER_KEY, node_id_string
-            )
-        })?;
-
-    etcd_client
-        .unlock(lock_key)
-        .await
-        .with_context(|| "unlock fail while register node_id")?;
-
-    let ip = env::var(ENV_IP_ADDRESS).unwrap_or_else(|_| {
-        panic!(
-            "pod Ip address should be assigned via environment variable: {}!",
-            ENV_IP_ADDRESS
-        );
-    });
-    etcd_client
-        .write_or_update_kv(
-            &format!("{}{}", ETCD_NODE_ID_INFO_PREFIX, node_id_string),
-            &ip,
-        )
-        .await
-        .with_context(|| {
-            format!(
-                "Update Node Ip address failed, node_id:{}, ip: {}",
-                node_id_string, ip
-            )
-        })?;
-
-    Ok(node_id)
+/// Volume type
+enum VolumeType {
+    /// Do nothing S3 volume
+    None,
+    /// S3 volume
+    S3,
+    /// Local volume
+    Local,
 }
 
-/// Register volume information, add the volume to `node_id` list mapping
-async fn register_volume(
-    etcd_client: &EtcdDelegate,
-    node_id: u64,
-    volume_info: &str,
-) -> anyhow::Result<()> {
-    let lock_key = etcd_client
-        .lock(ETCD_VOLUME_INFO_LOCK.as_bytes(), 10)
-        .await
-        .with_context(|| "lock fail while register volume")?;
-
-    let volume_info_key = &format!("{}{}", ETCD_VOLUME_INFO_PREFIX, volume_info);
-    let volume_node_list: Option<Vec<u8>> = etcd_client
-        .get_at_most_one_value(volume_info_key)
-        .await
-        .with_context(|| format!("get {} from etcd fail", ETCD_NODE_ID_COUNTER_KEY))?;
-
-    let node_id_str = node_id.to_string();
-    let volume_node_list = match volume_node_list {
-        Some(node_list) => {
-            let list_str = std::str::from_utf8(node_list.as_slice())?;
-            if list_str.split(',').filter(|s| &node_id_str == s).count() == 0 {
-                format!("{},{}", list_str, node_id_str)
-            } else {
-                node_id_str
-            }
-        }
-        None => node_id_str,
-    };
-
-    etcd_client
-        .write_or_update_kv(volume_info_key, &volume_node_list)
-        .await
-        .with_context(|| {
-            format!(
-                "Update Volume to Node Id mapping failed, volume:{}, node id: {}",
-                volume_info, node_id
-            )
-        })?;
-
-    etcd_client
-        .unlock(lock_key)
-        .await
-        .with_context(|| "unlock fail while register volume")?;
-    Ok(())
-}
-
+#[allow(clippy::too_many_lines)]
 fn main() -> anyhow::Result<()> {
     env_logger::init();
 
@@ -205,6 +107,18 @@ fn main() -> anyhow::Result<()> {
                 ),
         )
         .arg(
+            clap::Arg::with_name(CACHE_CAPACITY_ARG_NAME)
+                .short("c")
+                .long(CACHE_CAPACITY_ARG_NAME)
+                .value_name("CACHE_CAPACITY")
+                .takes_value(true)
+                .required(false)
+                .help(
+                    "Set cache capacity in bytes, \
+                        required argument, no default value",
+                ),
+        )
+        .arg(
             clap::Arg::with_name(ETCD_ADDRESS_ARG_NAME)
                 .short("e")
                 .long(ETCD_ADDRESS_ARG_NAME)
@@ -218,9 +132,28 @@ fn main() -> anyhow::Result<()> {
                 ),
         )
         .arg(
-            clap::Arg::with_name(VOLUME_INFO)
+            clap::Arg::with_name(NODE_ID_ARG_NAME)
+                .long(NODE_ID_ARG_NAME)
+                .value_name("NODE ID")
+                .takes_value(true)
+                .required(true)
+                .help(
+                    "Set the name of the node, \
+                        should be a real host name, \
+                        required argument, no default value",
+                ),
+        )
+        .arg(
+            clap::Arg::with_name(NODE_IP_ARG_NAME)
+                .long(NODE_IP_ARG_NAME)
+                .value_name("NODE IP")
+                .takes_value(true)
+                .help("Set the ip of the node"),
+        )
+        .arg(
+            clap::Arg::with_name(VOLUME_INFO_ARG_NAME)
                 .short("v")
-                .long(VOLUME_INFO)
+                .long(VOLUME_INFO_ARG_NAME)
                 .value_name("VOLUME_INFO")
                 .takes_value(true)
                 .required(true)
@@ -229,8 +162,29 @@ fn main() -> anyhow::Result<()> {
                         required argument, no default value",
                 ),
         )
+        .arg(
+            clap::Arg::with_name(VOLUME_TYPE_ARG_NAME)
+                .long(VOLUME_TYPE_ARG_NAME)
+                .value_name("VOLUME_TYPE")
+                .takes_value(true)
+                .help(
+                    "Set volume backend type, \
+                        required argument",
+                ),
+        )
+        .arg(
+            clap::Arg::with_name(PORT_NUM_ARG_NAME)
+                .long(PORT_NUM_ARG_NAME)
+                .value_name("PORT_NUM")
+                .takes_value(true)
+                .help(&format!(
+                    "Set service port number, \
+                        required argument, default value is {}",
+                    DEFAULT_PORT_NUM
+                )),
+        )
         .get_matches();
-    let mount_point = match matches.value_of(MOUNT_POINT_ARG_NAME) {
+    let mount_point_str = match matches.value_of(MOUNT_POINT_ARG_NAME) {
         Some(mp) => mp,
         None => panic!("No mount point input"),
     };
@@ -249,22 +203,102 @@ fn main() -> anyhow::Result<()> {
         None => panic!("etcd addresses must be set, no default value"),
     };
 
-    let volume_info = match matches.value_of(VOLUME_INFO) {
+    let node_id = match matches.value_of(NODE_ID_ARG_NAME) {
+        Some(n) => n.to_owned(),
+        None => panic!("No input node ID"),
+    };
+    let ip_address: IpAddr = match matches.value_of(NODE_IP_ARG_NAME) {
+        Some(n) => n.parse().unwrap_or_else(|_| panic!("Invalid IP address")),
+        None => panic!("No input node ip"),
+    };
+    let node_ipaddr = ip_address.to_string();
+
+    let volume_info = match matches.value_of(VOLUME_INFO_ARG_NAME) {
         Some(vi) => vi,
         None => panic!("No volume information input"),
     };
-
     let etcd_delegate = EtcdDelegate::new(etcd_address_vec)?;
+    debug!("FUSE mount point: {}", mount_point_str);
 
-    debug!("FUSE mount point: {}", mount_point);
+    let cache_capacity = match matches.value_of(CACHE_CAPACITY_ARG_NAME) {
+        Some(cc) => cc.parse::<usize>().unwrap_or_else(|_| {
+            panic!(format!(
+                "cannot parse cache capacity in usize, the input is: {}",
+                cc
+            ))
+        }),
+        None => CACHE_DEFAULT_CAPACITY,
+    };
+
+    let volume_type = match matches.value_of(VOLUME_TYPE_ARG_NAME) {
+        Some(vt) => {
+            if vt == "s3" {
+                VolumeType::S3
+            } else if vt == "none" {
+                VolumeType::None
+            } else {
+                VolumeType::Local
+            }
+        }
+        None => VolumeType::Local,
+    };
+
+    let port = match matches.value_of(PORT_NUM_ARG_NAME) {
+        Some(p) => p,
+        None => DEFAULT_PORT_NUM,
+    };
+
+    start_metrics_server();
 
     smol::block_on(async move {
-        let node_id = register_node_id(&etcd_delegate).await?;
-        register_volume(&etcd_delegate, node_id, volume_info).await?;
-        let mount_point = std::path::Path::new(&mount_point);
-        let fs = memfs::MemFs::new(mount_point).await?;
-        let ss = Session::new(mount_point, fs).await?;
-        ss.run().await?;
+        dist::etcd::register_node_id(&etcd_delegate, &node_id, &node_ipaddr.to_string(), port)
+            .await?;
+        dist::etcd::register_volume(&etcd_delegate, &node_id, volume_info).await?;
+        let mount_point = std::path::Path::new(&mount_point_str);
+        match volume_type {
+            VolumeType::Local => {
+                let fs: memfs::MemFs<memfs::DefaultMetaData> = memfs::MemFs::new(
+                    mount_point_str,
+                    cache_capacity,
+                    &node_ipaddr,
+                    port,
+                    etcd_delegate,
+                    &node_id,
+                    volume_info,
+                )
+                .await?;
+                let ss = Session::new(mount_point, fs).await?;
+                ss.run().await?;
+            }
+            VolumeType::S3 => {
+                let fs: memfs::MemFs<memfs::S3MetaData<S3BackEndImpl>> = memfs::MemFs::new(
+                    volume_info,
+                    cache_capacity,
+                    &node_ipaddr,
+                    port,
+                    etcd_delegate,
+                    &node_id,
+                    volume_info,
+                )
+                .await?;
+                let ss = Session::new(mount_point, fs).await?;
+                ss.run().await?;
+            }
+            VolumeType::None => {
+                let fs: memfs::MemFs<memfs::S3MetaData<DoNothingImpl>> = memfs::MemFs::new(
+                    volume_info,
+                    cache_capacity,
+                    &node_ipaddr,
+                    port,
+                    etcd_delegate,
+                    &node_id,
+                    volume_info,
+                )
+                .await?;
+                let ss = Session::new(mount_point, fs).await?;
+                ss.run().await?;
+            }
+        }
         Ok(())
     })
 }

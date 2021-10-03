@@ -176,6 +176,15 @@ pub enum DatenLordError {
         context: Vec<String>,
     },
 
+    /// Error caused by serde_json::Error
+    #[error("serde_json::Error, the error is {:?}, context is {:#?}", .source, .context)]
+    SerdeJsonErr {
+        /// Error source
+        source: serde_json::Error,
+        /// Context of the error
+        context: Vec<String>,
+    },
+
     /// API is not implemented
     #[error("Not implemented, context is {:#?}", .context)]
     Unimplemented {
@@ -202,6 +211,7 @@ impl<T, E> Context<T, E> for Result<T, E>
 where
     E: std::error::Error + Into<DatenLordError>,
 {
+    #[inline]
     fn add_context<C>(self, ctx: C) -> DatenLordResult<T>
     where
         C: Into<String>,
@@ -209,6 +219,7 @@ where
         self.map_err(|e| e.into().add_context(ctx))
     }
 
+    #[inline]
     fn with_context<C, F>(self, f: F) -> DatenLordResult<T>
     where
         C: Into<String>,
@@ -220,6 +231,7 @@ where
 
 impl DatenLordError {
     /// Add context for `DatenLordError`
+    #[inline]
     pub fn add_context<C>(mut self, ctx: C) -> Self
     where
         C: Into<String>,
@@ -255,12 +267,14 @@ impl DatenLordError {
                 UmountErr,
                 SystemTimeErr,
                 GrpcioErr,
+                SerdeJsonErr,
                 Unimplemented
             ]
         );
         self
     }
     /// Add context for `DatenLordError` lazily
+    #[inline]
     pub fn with_context<C, F>(self, f: F) -> Self
     where
         C: Into<String>,
@@ -273,6 +287,7 @@ impl DatenLordError {
 macro_rules! implement_from {
     ($source: path, $target: ident) => {
         impl From<$source> for DatenLordError {
+            #[inline]
             fn from(error: $source) -> Self {
                 Self::$target {
                     source: error,
@@ -290,8 +305,10 @@ implement_from!(bincode::Error, BincodeErr);
 implement_from!(nix::Error, NixErr);
 implement_from!(std::time::SystemTimeError, SystemTimeErr);
 implement_from!(grpcio::Error, GrpcioErr);
+implement_from!(serde_json::Error, SerdeJsonErr);
 
 impl From<DatenLordError> for RpcStatusCode {
+    #[inline]
     fn from(error: DatenLordError) -> Self {
         match error {
             DatenLordError::IoErr { .. }
@@ -302,6 +319,7 @@ impl From<DatenLordError> for RpcStatusCode {
             | DatenLordError::MountErr { .. }
             | DatenLordError::UmountErr { .. }
             | DatenLordError::SystemTimeErr { .. }
+            | DatenLordError::SerdeJsonErr { .. }
             | DatenLordError::WalkdirErr { .. } => Self::INTERNAL,
             DatenLordError::GrpcioErr { source, .. } => match source {
                 grpcio::Error::RpcFailure(ref s) => s.status,

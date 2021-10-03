@@ -37,6 +37,7 @@
     clippy::module_name_repetitions, // repeation of module name in a struct name is not big deal
     clippy::multiple_crate_versions, // multi-version dependency crates is not able to fix
     clippy::panic, // allow debug_assert, panic in production code
+    clippy::unknown_clippy_lints,  // allow rustc and clippy verison mismatch
 )]
 
 // Ignore format and lint to generated code
@@ -87,6 +88,7 @@ mod controller;
 mod identity;
 mod meta_data;
 mod node;
+mod scheduler_extender;
 mod util;
 mod worker;
 
@@ -96,6 +98,7 @@ use controller::ControllerImpl;
 use identity::IdentityImpl;
 use meta_data::{DatenLordNode, MetaData};
 use node::NodeImpl;
+use scheduler_extender::SchdulerExtender;
 use util::RunAsRole;
 use worker::WorkerImpl;
 
@@ -103,6 +106,7 @@ use clap::{App, Arg, ArgMatches};
 use grpcio::{Environment, Server};
 use log::{debug, info};
 use std::net::IpAddr;
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 /// Build meta data
@@ -227,50 +231,38 @@ fn run_single_server_helper(srv: &mut Server) {
     }
 }
 
-/// Run Controller server
-fn run_sync_controller_server(mut controller_server: Server) {
-    run_single_server_helper(&mut controller_server);
+/// Run `gRPC` servers asynchronuously
+fn run_async_grpc_servers(servers: &mut [Server]) {
+    /// The future to run `gRPC` servers
+    async fn run_servers(servers: &mut [Server]) {
+        servers.iter_mut().for_each(|mut server| {
+            run_single_server_helper(&mut server);
+        });
+        let f = futures::future::pending::<()>();
+        f.await;
+    }
+    smol::block_on(async move {
+        run_servers(servers).await;
+    });
+}
 
+/// Run `gRPC` servers synchronuously
+fn run_sync_grpc_servers(servers: &mut [Server]) {
+    servers.iter_mut().for_each(|mut server| {
+        run_single_server_helper(&mut server);
+    });
     loop {
         std::thread::park();
     }
 }
 
-/// Run Controller server asynchronuously
-fn run_async_controller_server(controller_server: Server) {
-    /// The future to run `gRPC` server
-    async fn run_server(mut controller_server: Server) {
-        run_single_server_helper(&mut controller_server);
-        let f = futures::future::pending::<()>();
-        f.await;
+/// Run `gRPC` servers
+fn run_grpc_servers(servers: &mut [Server], async_server: bool) {
+    if async_server {
+        run_async_grpc_servers(servers);
+    } else {
+        run_sync_grpc_servers(servers);
     }
-    smol::block_on(async move {
-        run_server(controller_server).await;
-    });
-}
-
-/// Run Node server synchronuously
-fn run_sync_node_servers(mut node_server: Server, mut worker_server: Server) {
-    run_single_server_helper(&mut node_server);
-    run_single_server_helper(&mut worker_server);
-
-    loop {
-        std::thread::park();
-    }
-}
-
-/// Run Node server asynchronuously
-fn run_async_node_servers(node_server: Server, worker_server: Server) {
-    /// The future to run `gRPC` server
-    async fn run_server(mut node_server: Server, mut worker_server: Server) {
-        run_single_server_helper(&mut node_server);
-        run_single_server_helper(&mut worker_server);
-        let f = futures::future::pending::<()>();
-        f.await;
-    }
-    smol::block_on(async move {
-        run_server(node_server, worker_server).await;
-    });
 }
 
 /// Argument name of end point
@@ -289,6 +281,8 @@ const DATA_DIR_ARG_NAME: &str = "datadir";
 const RUN_AS_ARG_NAME: &str = "runas";
 /// Argument name of etcd addresses
 const ETCD_ADDRESS_ARG_NAME: &str = "etcd";
+/// Argument name of scheduler extender port
+const SCHEDULER_EXTENDER_PORT_ARG_NAME: &str = "scheduler-extender-port";
 
 /// CLI arguments
 struct CliArgs {
@@ -308,9 +302,12 @@ struct CliArgs {
     pub run_as: RunAsRole,
     /// Etcd address
     pub etcd_address_vec: Vec<String>,
+    /// Scheduler extender port
+    pub scheduler_extender_port: u16,
 }
 
 /// Parse command line arguments
+#[allow(clippy::too_many_lines)] //allow this for argument parser function as there is no other logic in this function
 fn parse_args() -> CliArgs {
     let matches = App::new("DatenLord")
         .about("Cloud Native Storage")
@@ -387,7 +384,7 @@ fn parse_args() -> CliArgs {
                 .takes_value(true)
                 .help(
                     "Set the runtime service, \
-                        set as controller, node or both, \
+                        set as controller, node or scheduler-extender, \
                         default as node",
                 ),
         )
@@ -403,6 +400,13 @@ fn parse_args() -> CliArgs {
                         if multiple etcd addresses use comma to seperate, \
                         required argument, no default value",
                 ),
+        )
+        .arg(
+            Arg::with_name(SCHEDULER_EXTENDER_PORT_ARG_NAME)
+                .long(SCHEDULER_EXTENDER_PORT_ARG_NAME)
+                .value_name("SCHEDULER EXTENDER PORT")
+                .takes_value(true)
+                .help("Set the port of the scheduler extender"),
         )
         .get_matches();
     get_args(&matches)
@@ -450,11 +454,11 @@ fn get_args(matches: &ArgMatches) -> CliArgs {
     };
     let run_as = match matches.value_of(RUN_AS_ARG_NAME) {
         Some(r) => match r {
-            "both" => RunAsRole::Both,
             "controller" => RunAsRole::Controller,
             "node" => RunAsRole::Node,
+            "scheduler-extender" => RunAsRole::SchedulerExtender,
             _ => panic!(
-                "invalid {} argument {}, must be one of both, controller, worker",
+                "invalid {} argument {}, must be one of controller, node, scheduler-extender",
                 RUN_AS_ARG_NAME, r,
             ),
         },
@@ -473,6 +477,13 @@ fn get_args(matches: &ArgMatches) -> CliArgs {
             .collect(),
         None => Vec::new(),
     };
+    let scheduler_extender_port = match matches.value_of(SCHEDULER_EXTENDER_PORT_ARG_NAME) {
+        Some(p) => match p.parse::<u16>() {
+            Ok(port) => port,
+            Err(e) => panic!("failed to parse port, the error is: {}", e),
+        },
+        None => 12345,
+    };
     CliArgs {
         end_point,
         worker_port,
@@ -482,6 +493,7 @@ fn get_args(matches: &ArgMatches) -> CliArgs {
         data_dir,
         run_as,
         etcd_address_vec,
+        scheduler_extender_port,
     }
 }
 
@@ -490,7 +502,7 @@ fn main() -> DatenLordResult<()> {
 
     let args = parse_args();
     debug!(
-        "{}={}, {}={}, {}={}, {}={}, {}={}, {}={}, {}={:?}, {}={:?}",
+        "{}={}, {}={}, {}={}, {}={}, {}={}, {}={}, {}={:?}, {}={:?}, {}={}",
         END_POINT_ARG_NAME,
         args.end_point,
         WORKER_PORT_ARG_NAME,
@@ -507,6 +519,8 @@ fn main() -> DatenLordResult<()> {
         args.run_as,
         ETCD_ADDRESS_ARG_NAME,
         args.etcd_address_vec,
+        SCHEDULER_EXTENDER_PORT_ARG_NAME,
+        args.scheduler_extender_port,
     );
 
     let etcd_delegate = EtcdDelegate::new(args.etcd_address_vec)?;
@@ -519,28 +533,34 @@ fn main() -> DatenLordResult<()> {
         etcd_delegate,
     )?;
     let md = Arc::new(meta_data);
-    let async_server = false;
-    if let RunAsRole::Controller = args.run_as {
-        let controller_server = build_grpc_controller_server(
-            &args.end_point,
-            &args.driver_name,
-            Arc::<MetaData>::clone(&md),
-        )?;
-        if async_server {
-            run_async_controller_server(controller_server);
-        } else {
-            run_sync_controller_server(controller_server);
+    let async_server = true;
+    match args.run_as {
+        RunAsRole::Controller => {
+            let controller_server = build_grpc_controller_server(
+                &args.end_point,
+                &args.driver_name,
+                Arc::<MetaData>::clone(&md),
+            )?;
+            run_grpc_servers(&mut [controller_server], async_server);
         }
-    } else {
-        let worker_server = build_grpc_worker_server(Arc::<MetaData>::clone(&md))?;
-        let node_server = build_grpc_node_server(&args.end_point, &args.driver_name, md)?;
-        if async_server {
-            run_async_node_servers(node_server, worker_server);
-        } else {
-            run_sync_node_servers(node_server, worker_server);
+        RunAsRole::Node => {
+            let worker_server = build_grpc_worker_server(Arc::<MetaData>::clone(&md))?;
+            let node_server = build_grpc_node_server(&args.end_point, &args.driver_name, md)?;
+            run_grpc_servers(&mut [node_server, worker_server], async_server);
+        }
+        RunAsRole::SchedulerExtender => {
+            let scheduler_extender = SchdulerExtender::new(
+                Arc::<MetaData>::clone(&md),
+                SocketAddr::new(args.ip_address, args.scheduler_extender_port),
+            );
+            let scheduler_extender_thread = std::thread::spawn(move || {
+                scheduler_extender.start();
+            });
+            scheduler_extender_thread
+                .join()
+                .unwrap_or_else(|e| panic!("scheduler extender error: {:?}", e));
         }
     }
-
     Ok(())
 }
 
@@ -639,7 +659,6 @@ mod test {
         let node_id = DEFAULT_NODE_NAME;
         let ip_address = DEFAULT_NODE_IP;
         let data_dir = util::DATA_DIR;
-        let run_as = RunAsRole::Both;
         let ephemeral = false;
         let node = DatenLordNode::new(
             node_id.to_owned(),
@@ -648,7 +667,21 @@ mod test {
             util::MAX_VOLUME_STORAGE_CAPACITY,
             util::MAX_VOLUMES_PER_NODE,
         );
-        MetaData::new(data_dir.to_owned(), ephemeral, run_as, etcd_delegate, node)
+        // Register Node metadata to etcd, but return Controller metadata for test
+        let _ = MetaData::new(
+            data_dir.to_owned(),
+            ephemeral,
+            RunAsRole::Node,
+            etcd_delegate.clone(),
+            node.clone(),
+        )?;
+        MetaData::new(
+            data_dir.to_owned(),
+            ephemeral,
+            RunAsRole::Controller,
+            etcd_delegate,
+            node,
+        )
     }
 
     fn test_meta_data() -> DatenLordResult<()> {
@@ -744,7 +777,9 @@ mod test {
                 del_snap_res.snap_id, snap_id,
                 "deleted snapshot ID not match"
             );
-            let del_vol_res = meta_data.delete_volume_meta_data(vol_id).await?;
+            let del_vol_res = meta_data
+                .delete_volume_meta_data(vol_id, meta_data.get_node_id())
+                .await?;
             assert_eq!(del_vol_res.vol_id, vol_id, "deleted volume ID not match");
             Ok(())
         })
@@ -762,7 +797,6 @@ mod test {
         let ip_address = DEFAULT_NODE_IP.to_owned();
         let driver_name = util::CSI_PLUGIN_NAME.to_owned();
         let data_dir = util::DATA_DIR.to_owned();
-        let run_as = RunAsRole::Both;
         let etcd_address_vec = get_etcd_address_vec();
         let etcd_delegate = EtcdDelegate::new(etcd_address_vec)?;
 
@@ -774,55 +808,59 @@ mod test {
                 "failed to clear test data, the error is: {}",
                 clear_res.unwrap_err(),
             );
-            let meta_data = match build_meta_data(
+            let controller_meta_data = match build_meta_data(
                 worker_port,
-                node_id,
+                node_id.clone(),
                 ip_address,
-                data_dir,
-                run_as,
-                etcd_delegate,
+                data_dir.clone(),
+                RunAsRole::Controller,
+                etcd_delegate.clone(),
             ) {
                 Ok(md) => md,
                 Err(e) => panic!("failed to build meta data, the error is : {}", e,),
             };
-            let md = Arc::new(meta_data);
+            let controller_md = Arc::new(controller_meta_data);
             let controller_server = match build_grpc_controller_server(
                 &controller_end_point,
                 &driver_name,
-                Arc::<MetaData>::clone(&md),
+                Arc::<MetaData>::clone(&controller_md),
             ) {
                 Ok(server) => server,
                 Err(e) => panic!("failed to build CSI server, the error is : {}", e,),
             };
+            let node_meta_data = match build_meta_data(
+                worker_port,
+                node_id.clone(),
+                ip_address,
+                data_dir.clone(),
+                RunAsRole::Node,
+                etcd_delegate.clone(),
+            ) {
+                Ok(md) => md,
+                Err(e) => panic!("failed to build meta data, the error is : {}", e,),
+            };
+            let node_worker_md = Arc::new(node_meta_data);
             let node_server = match build_grpc_node_server(
                 &node_end_point,
                 &driver_name,
-                Arc::<MetaData>::clone(&md),
+                Arc::<MetaData>::clone(&node_worker_md),
             ) {
                 Ok(server) => server,
                 Err(e) => panic!("failed to build Node server, the error is : {}", e,),
             };
-            let worker_server = match build_grpc_worker_server(md) {
+            let worker_server = match build_grpc_worker_server(node_worker_md) {
                 Ok(server) => server,
                 Err(e) => panic!("failed to build Worker server, the error is : {}", e,),
             };
 
             // Keep running the task in the background
             let _controller_thread = thread::spawn(move || {
-                if async_server {
-                    run_async_controller_server(controller_server);
-                } else {
-                    run_sync_controller_server(controller_server);
-                }
+                run_grpc_servers(&mut [controller_server], async_server);
             });
 
             // Keep running the task in the background
             let _node_thread = thread::spawn(move || {
-                if async_server {
-                    run_async_node_servers(node_server, worker_server);
-                } else {
-                    run_sync_node_servers(node_server, worker_server);
-                }
+                run_grpc_servers(&mut [node_server, worker_server], async_server);
             });
         });
 
@@ -1589,7 +1627,7 @@ mod test {
         );
         assert_eq!(
             info_resp.get_max_volumes_per_node(),
-            util::MAX_VOLUMES_PER_NODE.into(),
+            util::MAX_VOLUMES_PER_NODE.cast::<i64>(),
             "max volumes per node not match",
         );
         let topology = info_resp.get_accessible_topology();

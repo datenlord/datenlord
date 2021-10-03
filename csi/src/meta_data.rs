@@ -2,7 +2,7 @@
 
 use grpcio::{ChannelBuilder, Environment};
 use log::{debug, error, info, warn};
-use rand::Rng;
+use rand::{seq::IteratorRandom, Rng};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::convert::From;
@@ -14,9 +14,10 @@ use std::sync::Arc;
 use utilities::Cast;
 
 use super::csi::{
-    CreateVolumeRequest, ListSnapshotsResponse_Entry, ListVolumesResponse_Entry,
-    VolumeCapability_AccessMode_Mode, VolumeContentSource, VolumeContentSource_SnapshotSource,
-    VolumeContentSource_VolumeSource, VolumeContentSource_oneof_type,
+    CreateVolumeRequest, ListSnapshotsResponse_Entry, ListVolumesResponse_Entry, Topology,
+    TopologyRequirement, VolumeCapability_AccessMode_Mode, VolumeContentSource,
+    VolumeContentSource_SnapshotSource, VolumeContentSource_VolumeSource,
+    VolumeContentSource_oneof_type,
 };
 use super::datenlord_worker_grpc::WorkerClient;
 use super::util::{self, BindMountMode, RunAsRole};
@@ -86,6 +87,8 @@ pub struct MetaData {
 const CONTROLLER_PREFIX: &str = "controller";
 /// The etcd key prefix to node ID
 const NODE_PREFIX: &str = "node";
+/// The etcd key prefix to scheduler extender
+const SCHEDULER_EXTENDER_PREFIX: &str = "scheduler_extender";
 /// The etcd key prefix to node ID and snapshot ID
 const NODE_SNAPSHOT_PREFIX: &str = "node_snapshot_id";
 /// The etcd key prefix to node ID and volume ID
@@ -104,6 +107,10 @@ const VOLUME_NAME_PREFIX: &str = "volume_name";
 const VOLUME_BIND_MOUNT_PATH_PREFIX: &str = "volume_bind_mount_path";
 /// The separator used to split multiple volume bind mount paths
 const VOLUME_BIND_MOUNT_PATH_SEPARATOR: &str = "\n";
+/// The etcd lock prefix to volume
+const ETCD_VOLUME_LOCK_PREFIX: &str = "etcd_volume_lock";
+/// The etcd lock prefix to volume bind mount path
+const ETCD_VOLUME_BIND_MOUNT_PATH_LOCK_PREFIX: &str = "etcd_volume_bind_mount_path_lock";
 
 impl MetaData {
     /// Create `MetaData`
@@ -123,12 +130,11 @@ impl MetaData {
                 node,
             };
             match md.run_as {
-                RunAsRole::Both => {
-                    md.register_to_etcd(CONTROLLER_PREFIX).await?;
-                    md.register_to_etcd(NODE_PREFIX).await?;
-                }
                 RunAsRole::Controller => md.register_to_etcd(CONTROLLER_PREFIX).await?,
                 RunAsRole::Node => md.register_to_etcd(NODE_PREFIX).await?,
+                RunAsRole::SchedulerExtender => {
+                    md.register_to_etcd(SCHEDULER_EXTENDER_PREFIX).await?
+                }
             }
 
             Ok(md)
@@ -140,7 +146,7 @@ impl MetaData {
         let key = format!("{}/{}", prefix, self.get_node_id());
         debug!("register node ID={} to etcd", key);
         self.etcd_delegate
-            .write_or_update_kv(&key, &self.node)
+            .write_or_update_kv(key, &self.node)
             .await
             .with_context(|| {
                 format!(
@@ -190,60 +196,117 @@ impl MetaData {
             .clone())
     }
 
+    /// Select a random node from topology
+    fn get_random_node_from_topology(topology: &[Topology]) -> Option<&String> {
+        let mut rng = rand::thread_rng();
+        topology
+            .iter()
+            .choose(&mut rng)
+            .and_then(|t| t.get_segments().get(util::TOPOLOGY_KEY_NODE))
+    }
+
+    /// Validate if a node exists in topology
+    fn validate_node_in_topology(node_id: &str, topology: &[Topology]) -> bool {
+        topology
+            .iter()
+            .any(|t| t.get_segments().iter().any(|(_, v)| v == node_id))
+    }
+
+    /// Validate if a node exists in accessibility requirements
+    fn validate_node_in_accessibility_requirements(
+        node_id: &str,
+        access_req: &TopologyRequirement,
+    ) -> bool {
+        let match_requisite = Self::validate_node_in_topology(node_id, access_req.get_requisite());
+        let match_preferred = Self::validate_node_in_topology(node_id, access_req.get_preferred());
+        match_requisite || match_preferred
+    }
+
     /// Select a node to create volume or snapshot
     pub async fn select_node(&self, req: &CreateVolumeRequest) -> DatenLordResult<DatenLordNode> {
-        let node_id = if req.has_volume_content_source() {
+        if req.has_volume_content_source() {
             let volume_src = req.get_volume_content_source();
-            if volume_src.has_snapshot() {
+            let node_id = if volume_src.has_snapshot() {
                 let snapshot_id = &volume_src.get_snapshot().snapshot_id;
                 self.get_snapshot_by_id(snapshot_id)
                     .await
-                    .map(|snapshot| Some(snapshot.node_id))?
+                    .map(|snapshot| snapshot.node_id)?
             } else if volume_src.has_volume() {
                 let volume_id = &volume_src.get_volume().volume_id;
-                self.get_volume_by_id(volume_id)
-                    .await
-                    .map(|volume| Some(volume.node_id))?
+                let volume = self.get_volume_by_id(volume_id).await?;
+                volume
+                    .node_ids
+                    .get(0)
+                    .unwrap_or_else(|| {
+                        panic!("volume ID={} has an empty node id vector", volume_id)
+                    })
+                    .to_owned()
             } else {
-                None
+                panic!("failed to find snapshot and volume from content source");
+            };
+            debug!("select node ID={} from volume content source", node_id);
+            if req.has_accessibility_requirements()
+                && !Self::validate_node_in_accessibility_requirements(
+                    &node_id,
+                    req.get_accessibility_requirements(),
+                )
+            {
+                panic!(
+                    "select node ID={} is not in requisite topology and preferred topology",
+                    node_id,
+                );
+            } else {
+                self.get_node_by_id(&node_id)
+                    .await
+                    .or_else(|_| panic!("failed to get node ID={} from etcd", node_id))
             }
-        } else {
-            None
-        };
-        match node_id {
-            None => {
-                debug!("request doesn't have node id, select random node");
-                self.select_random_node().await
-            }
-            Some(node_id) => {
-                debug!("select node ID={} from request", node_id);
-                if req.has_accessibility_requirements() {
-                    let match_requisite = req
-                        .get_accessibility_requirements()
-                        .get_requisite()
-                        .iter()
-                        .any(|t| t.get_segments().iter().any(|(_k, v)| v == &node_id));
-                    let match_preferred = req
-                        .get_accessibility_requirements()
-                        .get_preferred()
-                        .iter()
-                        .any(|t| t.get_segments().iter().any(|(_k, v)| v == &node_id));
-                    if match_requisite || match_preferred {
-                        self.get_node_by_id(&node_id)
-                            .await
-                            .or_else(|_| panic!("failed to get node ID={}", node_id))
-                    } else {
+        } else if req.has_accessibility_requirements() {
+            let preferred_topology = req.get_accessibility_requirements().get_preferred();
+            let requisite_topology = req.get_accessibility_requirements().get_requisite();
+
+            let node_id = if requisite_topology.is_empty() && preferred_topology.is_empty() {
+                panic!("request has accessibility requirements but both requisite and preferred topology are empty");
+            } else if preferred_topology.is_empty() {
+                Self::get_random_node_from_topology(requisite_topology).unwrap_or_else(|| {
+                    panic!("failed to get node id from accessibility requirements")
+                })
+            } else {
+                // Get first preferred topology
+                let node_id = preferred_topology
+                    .get(0)
+                    .unwrap_or_else(|| {
                         panic!(
-                            "select node ID={} is not in request required topology and preferred topology",
-                            node_id,
-                        );
-                    }
+                            "failed to get the first topology from preferred topology, list={:?}",
+                            preferred_topology,
+                        )
+                    })
+                    .get_segments()
+                    .get(util::TOPOLOGY_KEY_NODE)
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "failed to get the key {} from topology segments",
+                            util::TOPOLOGY_KEY_NODE,
+                        )
+                    });
+                if !requisite_topology.is_empty()
+                    && !Self::validate_node_in_topology(node_id, requisite_topology)
+                {
+                    panic!("node ID={} doesn't exist in requisite topology", node_id);
                 } else {
-                    self.get_node_by_id(&node_id)
-                        .await
-                        .or_else(|_| panic!("failed to get node ID={}", node_id))
+                    node_id
                 }
-            }
+            };
+
+            debug!(
+                "select node ID={} from accessibility requirements",
+                &node_id
+            );
+            self.get_node_by_id(node_id)
+                .await
+                .or_else(|_| panic!("failed to get node ID={} from etcd", node_id))
+        } else {
+            debug!("request doesn't have volume content source and accessibility requirements, select random node");
+            self.select_random_node().await
         }
     }
 
@@ -269,6 +332,15 @@ impl MetaData {
         &self.node
     }
 
+    /// Get all nodes in cluster
+    pub async fn get_nodes(&self) -> DatenLordResult<Vec<String>> {
+        let nodes: Vec<DatenLordNode> = self
+            .etcd_delegate
+            .get_list(&format!("{}/", NODE_PREFIX))
+            .await?;
+        Ok(nodes.iter().map(|node| node.node_id.to_owned()).collect())
+    }
+
     /// Is volume data ephemeral or not
     pub const fn is_ephemeral(&self) -> bool {
         self.ephemeral
@@ -283,7 +355,7 @@ impl MetaData {
     pub async fn get_node_by_id(&self, node_id: &str) -> DatenLordResult<DatenLordNode> {
         let get_res = self
             .etcd_delegate
-            .get_at_most_one_value(&format!("{}/{}", NODE_PREFIX, node_id))
+            .get_at_most_one_value(format!("{}/{}", NODE_PREFIX, node_id))
             .await;
         match get_res {
             Ok(val) => val.ok_or(NodeNotFound {
@@ -301,7 +373,7 @@ impl MetaData {
     pub async fn get_snapshot_by_id(&self, snap_id: &str) -> DatenLordResult<DatenLordSnapshot> {
         let get_res = self
             .etcd_delegate
-            .get_at_most_one_value(&format!("{}/{}", SNAPSHOT_ID_PREFIX, snap_id))
+            .get_at_most_one_value(format!("{}/{}", SNAPSHOT_ID_PREFIX, snap_id))
             .await;
         match get_res {
             Ok(val) => val.ok_or(SnapshotNotFound {
@@ -323,7 +395,7 @@ impl MetaData {
         let snap_name_key = format!("{}/{}", SNAPSHOT_NAME_PREFIX, snap_name);
         let snap_id: String = match self
             .etcd_delegate
-            .get_at_most_one_value(&snap_name_key)
+            .get_at_most_one_value(snap_name_key)
             .await
         {
             Ok(val) => {
@@ -359,7 +431,7 @@ impl MetaData {
         let src_vol_id_key = format!("{}/{}", SNAPSHOT_SOURCE_ID_PREFIX, src_volume_id);
         let snap_id: String = match self
             .etcd_delegate
-            .get_at_most_one_value(&src_vol_id_key)
+            .get_at_most_one_value(src_vol_id_key)
             .await
         {
             Ok(val) => {
@@ -548,7 +620,7 @@ impl MetaData {
     pub async fn get_volume_by_id(&self, vol_id: &str) -> DatenLordResult<DatenLordVolume> {
         match self
             .etcd_delegate
-            .get_at_most_one_value(&format!("{}/{}", VOLUME_ID_PREFIX, vol_id))
+            .get_at_most_one_value(format!("{}/{}", VOLUME_ID_PREFIX, vol_id))
             .await
         {
             Ok(val) => val.ok_or(VolumeNotFound {
@@ -568,19 +640,18 @@ impl MetaData {
     /// Get volume by name
     pub async fn get_volume_by_name(&self, vol_name: &str) -> DatenLordResult<DatenLordVolume> {
         let vol_name_key = format!("{}/{}", VOLUME_NAME_PREFIX, vol_name);
-        let vol_id: String = match self
-            .etcd_delegate
-            .get_at_most_one_value(&vol_name_key)
-            .await
-        {
+        let vol_id: String = match self.etcd_delegate.get_at_most_one_value(vol_name_key).await {
             Ok(val) => {
                 if let Some(v) = val {
                     v
                 } else {
-                    debug!("failed to find volume by name={} from etcd", vol_name,);
+                    debug!("volume with name={} is not found in etcd", vol_name,);
                     return Err(VolumeNotFound {
                         volume_id: vol_name.to_string(),
-                        context: vec![format!("Volume name={} is not found in etcd", vol_name)],
+                        context: vec![format!(
+                            "Volume with name={} is not found in etcd",
+                            vol_name
+                        )],
                     });
                 }
             }
@@ -715,16 +786,18 @@ impl MetaData {
         );
 
         // Volume ephemeral field cannot be changed
-        let node_vol_key = format!("{}/{}/{}", NODE_VOLUME_PREFIX, volume.node_id, vol_id);
-        let node_vol_pre_value = self
-            .etcd_delegate
-            .update_existing_kv(&node_vol_key, &volume.ephemeral)
+        let node_vol_key = format!("{}/{}/{}", NODE_VOLUME_PREFIX, self.get_node_id(), vol_id);
+        //let node_vol_pre_value = self
+        self.etcd_delegate
+            .write_or_update_kv(node_vol_key.clone(), &volume.ephemeral)
             .await?;
+        /*
         debug_assert_eq!(
             node_vol_pre_value, vol_id_pre_value.ephemeral,
             "replaced volume key={} value not match",
             node_vol_key,
         );
+        */
 
         Ok(vol_id_pre_value)
     }
@@ -750,7 +823,7 @@ impl MetaData {
             .await
             .with_context(|| format!("failed to add new volume key={} to etcd", vol_name_key,))?;
 
-        let node_vol_key = format!("{}/{}/{}", NODE_VOLUME_PREFIX, volume.node_id, vol_id);
+        let node_vol_key = format!("{}/{}/{}", NODE_VOLUME_PREFIX, self.get_node_id(), vol_id);
         self.etcd_delegate
             .write_new_kv(&node_vol_key, &volume.ephemeral)
             .await
@@ -759,9 +832,31 @@ impl MetaData {
         Ok(())
     }
 
-    /// Delete the volume meta data
-    pub async fn delete_volume_meta_data(&self, vol_id: &str) -> DatenLordResult<DatenLordVolume> {
-        info!("deleting volume ID={}", vol_id);
+    /// Delete node id from the volume meta data.
+    /// If the node id is the last one then delete the whole meta data.
+    /// Delete voume meta data from etcd
+    pub async fn delete_volume_meta_data(
+        &self,
+        vol_id: &str,
+        node_id: &str,
+    ) -> DatenLordResult<DatenLordVolume> {
+        info!("deleting volume ID={} on node ID={}", vol_id, node_id);
+
+        let etcd_vol_lock = format!("{}/{}", ETCD_VOLUME_LOCK_PREFIX, vol_id);
+        let lock_key = self
+            .etcd_delegate
+            .lock(etcd_vol_lock.as_bytes(), 10)
+            .await
+            .with_context(|| format!("failed to lock {}", etcd_vol_lock))?;
+        let volume = self.get_volume_by_id(vol_id).await?;
+        if volume.get_primary_node_id() != node_id {
+            panic!(
+                "Should only delete volume on primary node ID={}
+                request node ID={}",
+                volume.get_primary_node_id(),
+                node_id
+            );
+        }
 
         // TODO: use etcd transancation?
         let vol_id_key = format!("{}/{}", VOLUME_ID_PREFIX, vol_id);
@@ -776,14 +871,16 @@ impl MetaData {
             .delete_exact_one_value(&vol_name_key)
             .await?;
 
-        let node_vol_key = format!(
-            "{}/{}/{}",
-            NODE_VOLUME_PREFIX, vol_id_pre_value.node_id, vol_id
-        );
+        let node_vol_key = format!("{}/{}/{}", NODE_VOLUME_PREFIX, node_id, vol_id);
         let _node_vol_pre_value: bool = self
             .etcd_delegate
             .delete_exact_one_value(&node_vol_key)
             .await?;
+
+        self.etcd_delegate
+            .unlock(lock_key)
+            .await
+            .with_context(|| format!("failed to unlock {}", etcd_vol_lock))?;
 
         let get_mount_path_res = self.get_volume_bind_mount_path(vol_id).await;
         if let Ok(pre_mount_path_vec) = get_mount_path_res {
@@ -817,7 +914,7 @@ impl MetaData {
         }
         debug!(
             "deleted volume ID={} name={} at node ID={}",
-            vol_id, vol_name_pre_value, vol_id_pre_value.node_id,
+            vol_id, vol_name_pre_value, node_id,
         );
         Ok(vol_id_pre_value)
     }
@@ -901,14 +998,15 @@ impl MetaData {
         let dst_path = self.get_volume_path(dst_volume_id);
 
         let src_volume = self.get_volume_by_id(src_volume_id).await?;
-        assert_eq!(
-            src_volume.node_id,
-            self.get_node_id(),
-            "volume ID={} is on node ID={} not on local node ID={}",
-            src_volume_id,
-            src_volume.node_id,
-            self.get_node_id(),
-        );
+
+        if !src_volume.check_exist_on_node_id(self.get_node_id()) {
+            panic!(
+                "volume ID={} is on node IDs={:?} not on local node ID={}",
+                src_volume_id,
+                src_volume.node_ids,
+                self.get_node_id()
+            )
+        };
         if src_volume.get_size() > dst_volume_size {
             return Err(ArgumentInvalid {
                 context: vec![format!(
@@ -965,6 +1063,17 @@ impl MetaData {
         vol_id: &str,
         mount_path: &str,
     ) -> DatenLordResult<HashSet<String>> {
+        let etcd_vol_mount_path_lock = format!(
+            "{}/{}/{}",
+            ETCD_VOLUME_BIND_MOUNT_PATH_LOCK_PREFIX,
+            self.get_node_id(),
+            vol_id,
+        );
+        let lock_key = self
+            .etcd_delegate
+            .lock(etcd_vol_mount_path_lock.as_bytes(), 10)
+            .await
+            .with_context(|| format!("failed to lock {}", etcd_vol_mount_path_lock))?;
         let mut mount_path_set =
             self.get_volume_bind_mount_path(vol_id)
                 .await
@@ -979,7 +1088,7 @@ impl MetaData {
                 vol_id,
             );
             mount_path_set.remove(mount_path);
-            if mount_path_set.is_empty() {
+            let pre_path_set = if mount_path_set.is_empty() {
                 // Delete the last mount path
                 self.delete_volume_all_bind_mount_path(vol_id).await
             } else {
@@ -1001,7 +1110,12 @@ impl MetaData {
                     .split(VOLUME_BIND_MOUNT_PATH_SEPARATOR)
                     .map(std::borrow::ToOwned::to_owned)
                     .collect())
-            }
+            };
+            self.etcd_delegate
+                .unlock(lock_key)
+                .await
+                .with_context(|| format!("failed to unlock {}", etcd_vol_mount_path_lock))?;
+            pre_path_set
         } else {
             Ok(mount_path_set)
         }
@@ -1042,7 +1156,7 @@ impl MetaData {
         );
         let get_opt: Option<String> = self
             .etcd_delegate
-            .get_at_most_one_value(&volume_mount_path_key)
+            .get_at_most_one_value(volume_mount_path_key)
             .await?;
         match get_opt {
             Some(pre_mount_paths) => Ok((&pre_mount_paths)
@@ -1061,7 +1175,18 @@ impl MetaData {
         vol_id: &str,
         target_path: &str,
         bind_mount_mode: BindMountMode,
-    ) {
+    ) -> DatenLordResult<()> {
+        let etcd_vol_mount_path_lock = format!(
+            "{}/{}/{}",
+            ETCD_VOLUME_BIND_MOUNT_PATH_LOCK_PREFIX,
+            self.get_node_id(),
+            vol_id,
+        );
+        let lock_key = self
+            .etcd_delegate
+            .lock(etcd_vol_mount_path_lock.as_bytes(), 10)
+            .await
+            .with_context(|| format!("failed to lock {}", etcd_vol_mount_path_lock))?;
         let get_mount_path_res = self.get_volume_bind_mount_path(vol_id).await;
         let mut mount_path_set = match get_mount_path_res {
             Ok(v) => v,
@@ -1120,6 +1245,11 @@ impl MetaData {
                 debug!("no need to update volume mount path in etcd when re-mount");
             }
         }
+        self.etcd_delegate
+            .unlock(lock_key)
+            .await
+            .with_context(|| format!("failed to unlock {}", etcd_vol_mount_path_lock))?;
+        Ok(())
     }
 
     /// Bind mount volume directory to target path if root
@@ -1187,7 +1317,10 @@ impl MetaData {
         });
         if let Err(bind_err) = mount_res {
             if ephemeral {
-                match self.delete_volume_meta_data(vol_id).await {
+                match self
+                    .delete_volume_meta_data(vol_id, self.get_node_id())
+                    .await
+                {
                     Ok(_) => debug!(
                         "successfully deleted ephemeral volume ID={}, when bind mount failed",
                         vol_id,
@@ -1206,7 +1339,7 @@ impl MetaData {
                 vol_path, target_dir,
             );
             self.save_volume_bind_mount_path(vol_id, target_dir, bind_mount_mode)
-                .await;
+                .await?;
         }
 
         Ok(())
@@ -1275,14 +1408,14 @@ impl MetaData {
         snap_name: &str,
     ) -> DatenLordResult<DatenLordSnapshot> {
         let src_vol = self.get_volume_by_id(src_vol_id).await?;
-        assert_eq!(
-            src_vol.node_id,
-            self.get_node_id(),
-            "volume ID={} is on node ID={} not on local node ID={}",
-            src_vol_id,
-            src_vol.node_id,
-            self.get_node_id(),
-        );
+        if !src_vol.check_exist_on_node_id(self.get_node_id()) {
+            panic!(
+                "volume ID={} is on node IDs={:?} not on local node ID={}",
+                src_vol_id,
+                src_vol.node_ids,
+                self.get_node_id()
+            )
+        };
 
         let snap_path = self.get_snapshot_path(snap_id);
         let snap_path_owned = snap_path.to_owned();
@@ -1417,8 +1550,10 @@ pub struct DatenLordVolume {
     pub vol_id: String,
     /// Volume size in bytes
     pub size_bytes: i64,
-    /// The ID of the node the volume stored at
-    pub node_id: String,
+    /// The vector of ID of nodes the volume stored at
+    pub node_ids: Vec<String>,
+    /// The vector of nodes that the volume can be accessible
+    pub accessible_nodes: Vec<String>,
     /// The volume diretory path
     pub vol_path: PathBuf,
     /// Volume access mode
@@ -1437,8 +1572,10 @@ struct DatenLordVolumeBasicFields {
     pub vol_id: String,
     /// Volume size in bytes
     pub size_bytes: i64,
-    /// The ID of the node the volume stored at
-    pub node_id: String,
+    /// The vector of ID of the nodes the volume stored at
+    pub node_ids: Vec<String>,
+    /// The vector of nodes that the volume can be accessible
+    pub accessible_nodes: Vec<String>,
     /// The volume diretory path
     pub vol_path: PathBuf,
     /// The volume is ephemeral or not
@@ -1463,7 +1600,10 @@ impl DatenLordVolume {
             !basic_fields.vol_name.is_empty(),
             "volume name cannot be empty"
         );
-        assert!(!basic_fields.node_id.is_empty(), "node ID cannot be empty");
+        assert!(
+            !basic_fields.node_ids.is_empty(),
+            "node IDs cannot be empty"
+        );
         assert!(
             basic_fields.size_bytes >= 0,
             "invalid volume size: {}",
@@ -1479,7 +1619,8 @@ impl DatenLordVolume {
             vol_id: basic_fields.vol_id,
             vol_name: basic_fields.vol_name,
             size_bytes: basic_fields.size_bytes,
-            node_id: basic_fields.node_id,
+            node_ids: basic_fields.node_ids,
+            accessible_nodes: basic_fields.accessible_nodes,
             vol_path: basic_fields.vol_path,
             vol_access_mode: converted_vol_access_mode_vec,
             content_source: vol_source,
@@ -1509,7 +1650,8 @@ impl DatenLordVolume {
                 vol_id: vol_id.to_owned(),
                 vol_name: vol_name.to_owned(),
                 size_bytes: util::EPHEMERAL_VOLUME_STORAGE_CAPACITY,
-                node_id: node_id.to_owned(),
+                node_ids: vec![node_id.to_owned()],
+                accessible_nodes: vec![node_id.to_owned()],
                 vol_path: vol_path.to_owned(),
                 ephemeral: true, // ephemeral
             },
@@ -1523,6 +1665,7 @@ impl DatenLordVolume {
         req: &CreateVolumeRequest,
         vol_id: &str,
         node_id: &str,
+        accessible_nodes: Vec<String>,
         vol_path: &Path,
     ) -> DatenLordResult<Self> {
         Self::new(
@@ -1530,7 +1673,8 @@ impl DatenLordVolume {
                 vol_id: vol_id.to_owned(),
                 vol_name: req.get_name().to_owned(),
                 size_bytes: req.get_capacity_range().get_required_bytes(),
-                node_id: node_id.to_owned(),
+                node_ids: vec![node_id.to_owned()],
+                accessible_nodes,
                 vol_path: vol_path.to_owned(),
                 ephemeral: false,
             },
@@ -1547,7 +1691,7 @@ impl DatenLordVolume {
     }
 
     /// Create volume directory
-    fn create_vol_dir(&self) -> DatenLordResult<()> {
+    pub fn create_vol_dir(&self) -> DatenLordResult<()> {
         fs::create_dir_all(&self.vol_path).with_context(|| {
             format!(
                 "failed to create directory={:?} for volume ID={} and name={}",
@@ -1579,6 +1723,23 @@ impl DatenLordVolume {
         } else {
             false
         }
+    }
+
+    /// Check if volume is stored on node id
+    pub fn check_exist_on_node_id(&self, node_id: &str) -> bool {
+        self.node_ids.iter().any(|node| node == node_id)
+    }
+
+    /// Check if volume can be accessible on node id
+    pub fn check_exist_in_accessible_nodes(&self, node_id: &str) -> bool {
+        self.accessible_nodes.iter().any(|node| node == node_id)
+    }
+
+    /// Get primary node id on which the volume is accessed first.
+    pub fn get_primary_node_id(&self) -> &str {
+        self.node_ids
+            .get(0)
+            .unwrap_or_else(|| panic!("volume ID={} doesn't have primary node id", self.vol_id))
     }
 }
 

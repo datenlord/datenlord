@@ -13,9 +13,12 @@ use utilities::OverflowArithmetic;
 use super::test_util;
 
 pub const BENCH_MOUNT_DIR: &str = "../fuse_bench";
+pub const S3_BENCH_MOUNT_DIR: &str = "../s3_fuse_bench";
 pub const DEFAULT_MOUNT_DIR: &str = "../fuse_test";
+pub const S3_DEFAULT_MOUNT_DIR: &str = "../s3_fuse_test";
 pub const FILE_CONTENT: &str = "0123456789ABCDEF";
 
+#[cfg(test)]
 fn test_file_manipulation_rust_way(mount_dir: &Path) -> anyhow::Result<()> {
     info!("file manipulation Rust style");
     let file_path = Path::new(mount_dir).join("tmp.txt");
@@ -33,6 +36,7 @@ fn test_file_manipulation_rust_way(mount_dir: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
 fn test_file_manipulation_nix_way(mount_dir: &Path) -> anyhow::Result<()> {
     info!("file manipulation C style");
     let file_path = Path::new(mount_dir).join("tmp.test");
@@ -74,6 +78,7 @@ fn test_file_manipulation_nix_way(mount_dir: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
 fn test_dir_manipulation_nix_way(mount_dir: &Path) -> anyhow::Result<()> {
     info!("directory manipulation C style");
     let dir_path = Path::new(mount_dir).join("test_dir");
@@ -128,6 +133,7 @@ fn test_dir_manipulation_nix_way(mount_dir: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
 fn test_deferred_deletion(mount_dir: &Path) -> anyhow::Result<()> {
     info!("file deletion deferred");
     let file_path = Path::new(mount_dir).join("test_file.txt");
@@ -178,6 +184,7 @@ fn test_deferred_deletion(mount_dir: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
 fn test_rename_file(mount_dir: &Path) -> anyhow::Result<()> {
     info!("rename file");
     let from_dir = Path::new(mount_dir).join("from_dir");
@@ -223,6 +230,7 @@ fn test_rename_file(mount_dir: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
 fn test_rename_file_replace(mount_dir: &Path) -> anyhow::Result<()> {
     info!("rename file no replace");
     let oflags = OFlag::O_CREAT | OFlag::O_EXCL | OFlag::O_RDWR;
@@ -304,6 +312,7 @@ fn test_rename_file_replace(mount_dir: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
 fn test_rename_dir(mount_dir: &Path) -> anyhow::Result<()> {
     info!("rename directory");
     let from_dir = Path::new(mount_dir).join("from_dir");
@@ -340,6 +349,7 @@ fn test_rename_dir(mount_dir: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
 fn test_symlink_dir(mount_dir: &Path) -> anyhow::Result<()> {
     info!("create and read symlink to directory");
     let src_dir = Path::new(mount_dir).join("src_dir");
@@ -359,7 +369,7 @@ fn test_symlink_dir(mount_dir: &Path) -> anyhow::Result<()> {
 
     let dst_path = Path::new(&dst_dir).join(src_file_name);
     fs::write(&dst_path, FILE_CONTENT)
-        .context(format!("failed to write to file={:?}", src_path))?;
+        .context(format!("failed to write to file={:?}", dst_path))?;
     let content = fs::read_to_string(&src_path).context("read symlink target file failed")?;
     assert_eq!(
         content, FILE_CONTENT,
@@ -399,6 +409,7 @@ fn test_symlink_dir(mount_dir: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
 fn test_symlink_file(mount_dir: &Path) -> anyhow::Result<()> {
     info!("create and read symlink to file");
 
@@ -438,6 +449,7 @@ fn test_symlink_file(mount_dir: &Path) -> anyhow::Result<()> {
 /// Test bind mount a FUSE directory to a tmpfs directory
 /// this test case need root privilege
 #[cfg(target_os = "linux")]
+#[cfg(test)]
 fn test_bind_mount(fuse_mount_dir: &Path) -> anyhow::Result<()> {
     use nix::mount::MsFlags;
 
@@ -498,8 +510,18 @@ fn test_bind_mount(fuse_mount_dir: &Path) -> anyhow::Result<()> {
 
 #[test]
 fn run_test() -> anyhow::Result<()> {
-    let mount_dir = Path::new(DEFAULT_MOUNT_DIR);
-    let th = test_util::setup(mount_dir)?;
+    _run_test(DEFAULT_MOUNT_DIR, false)
+}
+
+#[ignore]
+#[test]
+fn run_s3_test() -> anyhow::Result<()> {
+    _run_test(S3_DEFAULT_MOUNT_DIR, true)
+}
+
+fn _run_test(mount_dir_str: &str, is_s3: bool) -> anyhow::Result<()> {
+    let mount_dir = Path::new(mount_dir_str);
+    let th = test_util::setup(mount_dir, is_s3)?;
     info!("begin integration test");
 
     test_symlink_dir(mount_dir).context("test_symlink_dir() failed")?;
@@ -521,12 +543,22 @@ fn run_test() -> anyhow::Result<()> {
 
 #[test]
 fn run_bench() -> anyhow::Result<()> {
-    let mount_dir = Path::new(BENCH_MOUNT_DIR);
-    let th = test_util::setup(mount_dir)?;
+    _run_bench(BENCH_MOUNT_DIR, false)
+}
+
+#[ignore]
+#[test]
+fn run_s3_bench() -> anyhow::Result<()> {
+    _run_bench(S3_BENCH_MOUNT_DIR, true)
+}
+
+fn _run_bench(mount_dir_str: &str, is_s3: bool) -> anyhow::Result<()> {
+    let mount_dir = Path::new(mount_dir_str);
+    let th = test_util::setup(mount_dir, is_s3)?;
 
     let fio_handle = std::process::Command::new("fio")
         .arg("../scripts/fio_jobs.ini")
-        .env("BENCH_DIR", BENCH_MOUNT_DIR)
+        .env("BENCH_DIR", mount_dir)
         .output()
         .context("fio command failed to start, maybe install fio first")?;
     let fio_res = if fio_handle.status.success() {

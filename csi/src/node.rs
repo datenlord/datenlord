@@ -105,7 +105,10 @@ impl NodeImplInner {
     /// Delete ephemeral volume
     /// `tolerant_error` means whether to ignore umount error or not
     async fn delete_ephemeral_volume(&self, volume: &DatenLordVolume, tolerant_error: bool) {
-        let delete_ephemeral_res = self.meta_data.delete_volume_meta_data(&volume.vol_id).await;
+        let delete_ephemeral_res = self
+            .meta_data
+            .delete_volume_meta_data(&volume.vol_id, self.meta_data.get_node_id())
+            .await;
         if let Err(e) = delete_ephemeral_res {
             if tolerant_error {
                 error!(
@@ -238,6 +241,7 @@ impl Node for NodeImpl {
         util::spawn_grpc_task(sink, task);
     }
 
+    #[allow(clippy::too_many_lines)]
     fn node_publish_volume(
         &mut self,
         _ctx: RpcContext,
@@ -249,7 +253,6 @@ impl Node for NodeImpl {
 
         let task = async move {
             NodeImplInner::node_publish_volume_pre_check(&req)?;
-
             let read_only = req.get_readonly();
             let volume_context = req.get_volume_context();
             let device_id = match volume_context.get("deviceID") {
@@ -284,6 +287,38 @@ impl Node for NodeImpl {
                     return Err(e);
                 };
             }
+
+            let mut volume = self_inner.meta_data.get_volume_by_id(vol_id).await?;
+            let node_id = self_inner.meta_data.get_node_id();
+            if !volume.check_exist_in_accessible_nodes(node_id) {
+                return Err(ArgumentInvalid {
+                    context: vec![format!(
+                        "volume ID={} is not accessible on node ID={}",
+                        vol_id, node_id
+                    )],
+                });
+            }
+            if !volume.check_exist_on_node_id(node_id) {
+                volume.node_ids.push(node_id.to_owned());
+                self_inner
+                    .meta_data
+                    .update_volume_meta_data(vol_id, &volume)
+                    .await?;
+                if !volume.vol_path.exists() {
+                    panic!(
+                        "volume path {:?} doesn't exist on node ID={}",
+                        volume.vol_path, node_id
+                    );
+                }
+                /*
+                // TODO: (walkaround) need to list dir before access dir.
+                let files = std::fs::read_dir(volume.vol_path)?
+                    .map(|res| res.map(|e| e.path()))
+                    .collect::<Result<Vec<_>, std::io::Error>>()?;
+                debug!("current files under volume: {:?}", files);
+                */
+            }
+
             let target_dir = req.get_target_path();
             match req.get_volume_capability().access_type {
                 None => {
@@ -329,7 +364,6 @@ impl Node for NodeImpl {
                     }
                 }
             }
-
             let r = NodePublishVolumeResponse::new();
             Ok(r)
         };

@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-rules-conf
+  labels:
+    name: prometheus-rules-conf
+  namespace: datenlord-monitoring
+data:
+  prometheus_rules.rules: |-
+    groups:
+    - name: alertmanager_test
+      rules:
+      - alert: InstanceDown
+        expr: sum(container_memory_usage_bytes) > 40000000000
+        for: 5m
+        labels:
+          severity: email
+        annotations:
+          summary: "High Memory Usage"

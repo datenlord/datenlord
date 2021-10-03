@@ -20,5 +20,6 @@ LABEL description="DatenLord Memory Filesystem"
 
 COPY --from=builder /tmp/build/target/release/async_fuse /usr/local/bin/datenlord-fuse
 COPY --from=builder /tmp/build/scripts/umount-in-container.sh /usr/local/bin/umount-in-container.sh
-ENTRYPOINT ["/bin/sh", "-c", "/usr/local/bin/umount-in-container.sh $FUSE_MOUNT_DIR && exec /usr/local/bin/datenlord-fuse -m $FUSE_MOUNT_DIR --etcd $ETCD_ENDPOINT --volume_info $FUSE_VOLUME_INFO"]
+COPY --from=builder /tmp/build/scripts/datenlord-entrypoint.sh /usr/local/bin/datenlord-entrypoint.sh
+ENTRYPOINT ["/usr/local/bin/datenlord-entrypoint.sh"]
 CMD []
