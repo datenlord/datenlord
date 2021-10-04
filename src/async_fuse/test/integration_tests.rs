@@ -352,7 +352,11 @@ fn test_rename_dir(mount_dir: &Path) -> anyhow::Result<()> {
 #[cfg(test)]
 fn test_symlink_dir(mount_dir: &Path) -> anyhow::Result<()> {
     info!("create and read symlink to directory");
-    let src_dir = Path::new(mount_dir).join("src_dir");
+
+    let current_dir = std::env::current_dir()?;
+    std::env::set_current_dir(Path::new(mount_dir))?;
+
+    let src_dir = Path::new("src_dir");
     if src_dir.exists() {
         fs::remove_dir_all(&src_dir)?;
     }
@@ -361,13 +365,14 @@ fn test_symlink_dir(mount_dir: &Path) -> anyhow::Result<()> {
     let src_file_name = "src.txt";
     let src_path = Path::new(&src_dir).join(src_file_name);
 
-    let dst_dir = Path::new(mount_dir).join("dst_dir");
-    unistd::symlinkat(&src_dir, None, &dst_dir).context("create symlink failed")?;
+    let dst_dir = Path::new("dst_dir");
+    unistd::symlinkat(src_dir, None, dst_dir).context("create symlink failed")?;
     // std::os::unix::fs::symlink(&src_path, &dst_path).context("create symlink failed")?;
     let target_path = std::fs::read_link(&dst_dir).context("read symlink failed ")?;
     assert_eq!(src_dir, target_path, "symlink target path not match");
 
-    let dst_path = Path::new(&dst_dir).join(src_file_name);
+    //let dst_path = Path::new(&dst_dir).join(src_file_name);
+    let dst_path = Path::new("./dst_dir").join(src_file_name);
     fs::write(&dst_path, FILE_CONTENT)
         .context(format!("failed to write to file={:?}", dst_path))?;
     let content = fs::read_to_string(&src_path).context("read symlink target file failed")?;
@@ -406,6 +411,7 @@ fn test_symlink_dir(mount_dir: &Path) -> anyhow::Result<()> {
     fs::remove_dir_all(&dst_dir)?; // immediate deletion
     assert!(!src_dir.exists());
     assert!(!dst_dir.exists());
+    std::env::set_current_dir(current_dir)?;
     Ok(())
 }
 
@@ -413,11 +419,14 @@ fn test_symlink_dir(mount_dir: &Path) -> anyhow::Result<()> {
 fn test_symlink_file(mount_dir: &Path) -> anyhow::Result<()> {
     info!("create and read symlink to file");
 
-    let src_path = Path::new(mount_dir).join("src.txt");
+    let current_dir = std::env::current_dir()?;
+    std::env::set_current_dir(Path::new(mount_dir))?;
+
+    let src_path = Path::new("src.txt");
     fs::write(&src_path, FILE_CONTENT)?;
 
-    let dst_path = Path::new(mount_dir).join("dst.txt");
-    unistd::symlinkat(&src_path, None, &dst_path).context("create symlink failed")?;
+    let dst_path = Path::new("dst.txt");
+    unistd::symlinkat(src_path, None, dst_path).context("create symlink failed")?;
     // std::os::unix::fs::symlink(&src_path, &dst_path).context("create symlink failed")?;
     let target_path = std::fs::read_link(&dst_path).context("read symlink failed ")?;
     assert_eq!(src_path, target_path, "symlink target path not match");
@@ -443,6 +452,7 @@ fn test_symlink_file(mount_dir: &Path) -> anyhow::Result<()> {
     fs::remove_file(&dst_path)?; // immediate deletion
     assert!(!src_path.exists());
     assert!(!dst_path.exists());
+    std::env::set_current_dir(current_dir)?;
     Ok(())
 }
 
