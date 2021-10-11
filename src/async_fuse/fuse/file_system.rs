@@ -13,16 +13,19 @@ use std::path::Path;
 
 use async_trait::async_trait;
 
-#[allow(missing_docs)]
-#[allow(clippy::missing_docs_in_private_items)]
+/// FUSE filesystem trait
 #[async_trait]
 pub trait FileSystem {
+    /// Initialize filesystem
     async fn init(&self, req: &Request<'_>) -> nix::Result<()>;
 
+    /// Clean up filesystem
     async fn destroy(&self, req: &Request<'_>);
 
+    /// Interrupt another FUSE request
     async fn interrupt(&self, req: &Request<'_>, unique: u64);
 
+    /// Look up a directory entry by name and get its attributes.
     async fn lookup(
         &self,
         req: &Request<'_>,
@@ -31,10 +34,13 @@ pub trait FileSystem {
         reply: ReplyEntry,
     ) -> nix::Result<usize>;
 
+    /// Forget about an inode
     async fn forget(&self, req: &Request<'_>, nlookup: u64);
 
+    /// Get file attributes.
     async fn getattr(&self, req: &Request<'_>, reply: ReplyAttr) -> nix::Result<usize>;
 
+    /// Set file attributes.
     async fn setattr(
         &self,
         req: &Request<'_>,
@@ -42,8 +48,10 @@ pub trait FileSystem {
         reply: ReplyAttr,
     ) -> nix::Result<usize>;
 
+    /// Read symbolic link.
     async fn readlink(&self, req: &Request<'_>, reply: ReplyData) -> nix::Result<usize>;
 
+    /// Create file node.
     async fn mknod(
         &self,
         req: &Request<'_>,
@@ -54,6 +62,7 @@ pub trait FileSystem {
         reply: ReplyEntry,
     ) -> nix::Result<usize>;
 
+    /// Create a directory
     async fn mkdir(
         &self,
         req: &Request<'_>,
@@ -63,6 +72,7 @@ pub trait FileSystem {
         reply: ReplyEntry,
     ) -> nix::Result<usize>;
 
+    /// Remove a file
     async fn unlink(
         &self,
         req: &Request<'_>,
@@ -71,6 +81,7 @@ pub trait FileSystem {
         reply: ReplyEmpty,
     ) -> nix::Result<usize>;
 
+    /// Remove a directory
     async fn rmdir(
         &self,
         req: &Request<'_>,
@@ -79,6 +90,7 @@ pub trait FileSystem {
         reply: ReplyEmpty,
     ) -> nix::Result<usize>;
 
+    /// Create a symbolic link
     async fn symlink(
         &self,
         req: &Request<'_>,
@@ -88,6 +100,7 @@ pub trait FileSystem {
         reply: ReplyEntry,
     ) -> nix::Result<usize>;
 
+    /// Rename a file
     async fn rename(
         &self,
         req: &Request<'_>,
@@ -95,6 +108,7 @@ pub trait FileSystem {
         reply: ReplyEmpty,
     ) -> nix::Result<usize>;
 
+    /// Create a hard link
     async fn link(
         &self,
         _req: &Request<'_>,
@@ -103,8 +117,10 @@ pub trait FileSystem {
         reply: ReplyEntry,
     ) -> nix::Result<usize>;
 
+    /// Open a file
     async fn open(&self, req: &Request<'_>, flags: u32, reply: ReplyOpen) -> nix::Result<usize>;
 
+    /// Read data
     async fn read(
         &self,
         req: &Request<'_>,
@@ -114,6 +130,7 @@ pub trait FileSystem {
         reply: ReplyData,
     ) -> nix::Result<usize>;
 
+    /// Write data
     async fn write(
         &self,
         req: &Request<'_>,
@@ -124,6 +141,7 @@ pub trait FileSystem {
         reply: ReplyWrite,
     ) -> nix::Result<usize>;
 
+    /// Flush method
     async fn flush(
         &self,
         req: &Request<'_>,
@@ -132,6 +150,7 @@ pub trait FileSystem {
         reply: ReplyEmpty,
     ) -> nix::Result<usize>;
 
+    /// Release an open file
     async fn release(
         &self,
         req: &Request<'_>,
@@ -142,6 +161,7 @@ pub trait FileSystem {
         reply: ReplyEmpty,
     ) -> nix::Result<usize>;
 
+    /// Synchronize file contents
     async fn fsync(
         &self,
         req: &Request<'_>,
@@ -150,8 +170,10 @@ pub trait FileSystem {
         reply: ReplyEmpty,
     ) -> nix::Result<usize>;
 
+    /// Open a directory
     async fn opendir(&self, req: &Request<'_>, flags: u32, reply: ReplyOpen) -> nix::Result<usize>;
 
+    /// Read directory
     async fn readdir(
         &self,
         req: &Request<'_>,
@@ -160,6 +182,7 @@ pub trait FileSystem {
         mut reply: ReplyDirectory,
     ) -> nix::Result<usize>;
 
+    /// Release an open directory
     async fn releasedir(
         &self,
         req: &Request<'_>,
@@ -168,6 +191,7 @@ pub trait FileSystem {
         reply: ReplyEmpty,
     ) -> nix::Result<usize>;
 
+    /// Synchronize directory contents
     async fn fsyncdir(
         &self,
         req: &Request<'_>,
@@ -176,8 +200,10 @@ pub trait FileSystem {
         reply: ReplyEmpty,
     ) -> nix::Result<usize>;
 
+    /// Get file system statistics
     async fn statfs(&self, req: &Request<'_>, reply: ReplyStatFs) -> nix::Result<usize>;
 
+    /// Set an extended attribute
     async fn setxattr(
         &self,
         _req: &Request<'_>,
@@ -188,6 +214,7 @@ pub trait FileSystem {
         reply: ReplyEmpty,
     ) -> nix::Result<usize>;
 
+    /// Get an extended attribute
     async fn getxattr(
         &self,
         _req: &Request<'_>,
@@ -196,6 +223,7 @@ pub trait FileSystem {
         reply: ReplyXAttr,
     ) -> nix::Result<usize>;
 
+    /// Get an extended attribute
     async fn listxattr(
         &self,
         _req: &Request<'_>,
@@ -203,6 +231,7 @@ pub trait FileSystem {
         reply: ReplyXAttr,
     ) -> nix::Result<usize>;
 
+    /// Remove an extended attribute
     async fn removexattr(
         &self,
         _req: &Request<'_>,
@@ -210,9 +239,11 @@ pub trait FileSystem {
         reply: ReplyEmpty,
     ) -> nix::Result<usize>;
 
+    /// Check file access permissions
     async fn access(&self, _req: &Request<'_>, _mask: u32, reply: ReplyEmpty)
         -> nix::Result<usize>;
 
+    /// Create and open a file
     async fn create(
         &self,
         _req: &Request<'_>,
@@ -223,6 +254,7 @@ pub trait FileSystem {
         reply: ReplyCreate,
     ) -> nix::Result<usize>;
 
+    /// Test for a POSIX file lock
     async fn getlk(
         &self,
         _req: &Request<'_>,
@@ -230,6 +262,7 @@ pub trait FileSystem {
         reply: ReplyLock,
     ) -> nix::Result<usize>;
 
+    /// Acquire, modify or release a POSIX file lock
     async fn setlk(
         &self,
         _req: &Request<'_>,
@@ -238,6 +271,7 @@ pub trait FileSystem {
         reply: ReplyEmpty,
     ) -> nix::Result<usize>;
 
+    /// Map block index within file to block index within device
     async fn bmap(
         &self,
         _req: &Request<'_>,
