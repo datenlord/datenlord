@@ -47,7 +47,7 @@ pub const MAX_VOLUMES_PER_NODE: i32 = 256;
 /// The socket file to be binded by worker service
 pub const LOCAL_WORKER_SOCKET: &str = "unix:///tmp/worker.sock";
 /// The default path to bind mount helper command
-pub const DEFAULT_BIND_MOUNT_HELPER_CMD_PATH: &str = "../target/debug/bind_mounter";
+pub const DEFAULT_BIND_MOUNT_HELPER_CMD_PATH: &str = "./target/debug/bind_mounter";
 /// The key of the bind mount helper command path environment variable
 pub const BIND_MOUNT_HELPER_CMD_ENV_KEY: &str = "BIND_MOUNTER";
 
