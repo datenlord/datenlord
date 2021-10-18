@@ -8,7 +8,7 @@
     // box_pointers,
     // elided_lifetimes_in_paths, // allow anonymous lifetime
     // missing_copy_implementations, // Copy may cause unnecessary memory copy
-    missing_debug_implementations,
+    // missing_debug_implementations,
     missing_docs, // TODO: add documents
     single_use_lifetimes, // TODO: fix lifetime names only used once
     trivial_casts, // TODO: remove trivial casts in code
@@ -38,8 +38,11 @@
     clippy::multiple_crate_versions, // multi-version dependency crates is not able to fix
     clippy::panic, // allow debug_assert, panic in production code
     // clippy::panic_in_result_fn,
-    clippy::clippy::missing_errors_doc, // TODO: add error docs
-    clippy::unknown_clippy_lints,  // allow rustc and clippy verison mismatch
+    clippy::missing_errors_doc, // TODO: add error docs
+    clippy::exhaustive_structs,
+    clippy::exhaustive_enums,
+    clippy::missing_panics_doc, // TODO: add panic docs
+    clippy::panic_in_result_fn,
 )]
 
 pub mod async_fuse;
@@ -47,11 +50,11 @@ mod common;
 mod csi;
 
 use crate::common::etcd_delegate::EtcdDelegate;
-use clap::{App, Arg, ArgMatches};
+use clap::{App, Arg, ArgMatches, SubCommand};
 use csi::meta_data::MetaData;
 use csi::scheduler_extender::SchdulerExtender;
 use csi::util;
-use log::debug;
+use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 
@@ -82,8 +85,6 @@ const END_POINT_ARG_NAME: &str = "endpoint";
 const WORKER_PORT_ARG_NAME: &str = "workerport";
 /// Argument name of driver name
 const DRIVER_NAME_ARG_NAME: &str = "drivername";
-/// Argument name of run as role
-const RUN_AS_ARG_NAME: &str = "runas";
 /// Argument name of scheduler extender port
 const SCHEDULER_EXTENDER_PORT_ARG_NAME: &str = "scheduler-extender-port";
 
@@ -100,37 +101,6 @@ pub enum RunAsRole {
     AsyncFuse,
 }
 
-#[derive(Clone, Debug)]
-/// CLI arguments
-pub struct CliArgs {
-    /// End point
-    pub end_point: String,
-    /// Worker port
-    pub worker_port: u16,
-    /// Node ID
-    pub node_id: String,
-    /// Node IP
-    pub ip_address: IpAddr,
-    /// Driver name
-    pub driver_name: String,
-    /// Mount dir
-    pub mount_dir: String,
-    /// Role name
-    pub run_as: RunAsRole,
-    /// Etcd address
-    pub etcd_address_vec: Vec<String>,
-    /// Scheduler extender port
-    pub scheduler_extender_port: u16,
-    /// Cache capacity
-    pub cache_capacity: usize,
-    /// Server port
-    pub server_port: String,
-    /// Volume info
-    pub volume_info: String,
-    /// Volume type
-    pub volume_type: VolumeType,
-}
-
 /// Volume type
 #[derive(Clone, Copy, Debug)]
 pub enum VolumeType {
@@ -142,163 +112,219 @@ pub enum VolumeType {
     Local,
 }
 
-/// Parse command line arguments
-#[allow(clippy::too_many_lines)] //allow this for argument parser function as there is no other logic in this function
-fn parse_args() -> CliArgs {
-    let matches = App::new("DatenLord")
-        .about("Cloud Native Storage")
-        .arg(
-            clap::Arg::with_name(MOUNT_POINT_ARG_NAME)
-                .short("m")
-                .long(MOUNT_POINT_ARG_NAME)
-                .value_name("MOUNT_DIR")
-                .takes_value(true)
-                .required(true)
-                .help(
-                    "Set the mount point of FUSE, \
-                        required argument, no default value",
-                ),
-        )
-        .arg(
-            clap::Arg::with_name(CACHE_CAPACITY_ARG_NAME)
-                .short("c")
-                .long(CACHE_CAPACITY_ARG_NAME)
-                .value_name("CACHE_CAPACITY")
-                .takes_value(true)
-                .required(false)
-                .help(
-                    "Set cache capacity in bytes, \
-                        required argument, no default value",
-                ),
-        )
-        .arg(
-            Arg::with_name(END_POINT_ARG_NAME)
-                .short("s")
-                .long(END_POINT_ARG_NAME)
-                .value_name("SOCKET_FILE")
-                .takes_value(true)
-                .required(true)
-                .help(
-                    "Set the socket end point of CSI service, \
-                        required argument, no default value",
-                ),
-        )
-        .arg(
-            Arg::with_name(WORKER_PORT_ARG_NAME)
-                .short("p")
-                .long(WORKER_PORT_ARG_NAME)
-                .value_name("PORT")
-                .takes_value(true)
-                .required(true)
-                .help(
-                    "Set the port of worker service port, \
-                        no default value",
-                ),
-        )
-        .arg(
-            Arg::with_name(NODE_ID_ARG_NAME)
-                .short("n")
-                .long(NODE_ID_ARG_NAME)
-                .value_name("NODE ID")
-                .takes_value(true)
-                .required(true)
-                .help(
-                    "Set the name of the node, \
-                        should be a real host name, \
-                        required argument, no default value",
-                ),
-        )
-        .arg(
-            Arg::with_name(NODE_IP_ARG_NAME)
-                .long(NODE_IP_ARG_NAME)
-                .value_name("NODE IP")
-                .takes_value(true)
-                .required(true)
-                .help("Set the ip of the node"),
-        )
-        .arg(
-            Arg::with_name(DRIVER_NAME_ARG_NAME)
-                .short("d")
-                .long(DRIVER_NAME_ARG_NAME)
-                .value_name("DRIVER NAME")
-                .takes_value(true)
-                .help(&format!(
-                    "Set the CSI driver name, default as {}",
-                    util::CSI_PLUGIN_NAME,
-                )),
-        )
-        .arg(
-            Arg::with_name(RUN_AS_ARG_NAME)
-                .short("r")
-                .long(RUN_AS_ARG_NAME)
-                .value_name("ROLE NAME")
-                .takes_value(true)
-                .help(
-                    "Set the runtime service, \
-                        set as controller, node, async-fuse or scheduler-extender, \
-                        default as node",
-                ),
-        )
-        .arg(
-            Arg::with_name(ETCD_ADDRESS_ARG_NAME)
-                .short("e")
-                .long(ETCD_ADDRESS_ARG_NAME)
-                .value_name("ETCD IP:PORT,ETCD IP:PORT")
-                .takes_value(true)
-                .required(true)
-                .help(
-                    "Set the etcd addresses of format ip:port, \
-                        if multiple etcd addresses use comma to seperate, \
-                        required argument, no default value",
-                ),
-        )
-        .arg(
-            Arg::with_name(SCHEDULER_EXTENDER_PORT_ARG_NAME)
-                .long(SCHEDULER_EXTENDER_PORT_ARG_NAME)
-                .value_name("SCHEDULER EXTENDER PORT")
-                .takes_value(true)
-                .help("Set the port of the scheduler extender"),
-        )
-        .arg(
-            clap::Arg::with_name(VOLUME_INFO_ARG_NAME)
-                .short("v")
-                .long(VOLUME_INFO_ARG_NAME)
-                .value_name("VOLUME_INFO")
-                .takes_value(true)
-                .required(true)
-                .help(
-                    "Set volume backend information, \
-                        required argument, no default value",
-                ),
-        )
-        .arg(
-            clap::Arg::with_name(VOLUME_TYPE_ARG_NAME)
-                .long(VOLUME_TYPE_ARG_NAME)
-                .value_name("VOLUME_TYPE")
-                .takes_value(true)
-                .help(
-                    "Set volume backend type, \
-                        required argument",
-                ),
-        )
-        .arg(
-            clap::Arg::with_name(SERVER_PORT_NUM_ARG_NAME)
-                .long(SERVER_PORT_NUM_ARG_NAME)
-                .value_name("PORT_NUM")
-                .takes_value(true)
-                .help(&format!(
-                    "Set service port number, \
-                        required argument, default value is {}",
-                    DEFAULT_PORT_NUM
-                )),
-        )
-        .get_matches();
-    get_args(&matches)
+/// Async fuse args type
+#[derive(Debug)]
+pub struct AsyncFuseArgs {
+    /// Node id
+    pub node_id: String,
+    /// IP address
+    pub ip_address: IpAddr,
+    /// Server port
+    pub server_port: String,
+    /// Volume type
+    pub volume_type: VolumeType,
+    /// Mount dir
+    pub mount_dir: String,
+    /// Cache capacity
+    pub cache_capacity: usize,
+    /// Volume info
+    pub volume_info: String,
 }
 
-/// Get arguments value
-#[allow(clippy::too_many_lines)] //allow for this function as there is no other logic in this function
-fn get_args(matches: &ArgMatches) -> CliArgs {
+/// Arg for generate default command
+#[derive(Debug)]
+pub struct ArgParam {
+    /// Arg name
+    pub name: &'static str,
+    /// In short
+    pub short: Option<&'static str>,
+    /// In long
+    pub long: Option<&'static str>,
+    /// The value name
+    pub value_name: &'static str,
+    /// Is take value
+    pub take_value: bool,
+    /// Is required
+    pub required: bool,
+    /// The help message
+    pub help: &'static str,
+}
+
+impl ArgParam {
+    /// Get the arg name for index
+    pub fn get_name(&self) -> &'static str {
+        return self.name;
+    }
+
+    /// Generate the arg with short&long or not
+    pub fn new_arg<'a>(&self) -> Arg<'a, 'a> {
+        match (self.short, self.long) {
+            (Some(s), Some(l)) => {
+                return Arg::with_name(&self.name)
+                .short(s)
+                .long(l)
+                .value_name(self.value_name)
+                .takes_value(self.take_value)
+                .required(self.required)
+                .help(self.help);
+            },
+            (Some(s), None) => {
+                return Arg::with_name(&self.name)
+                .short(s)
+                .value_name(self.value_name)
+                .takes_value(self.take_value)
+                .required(self.required)
+                .help(self.help);
+            },
+            (None, Some(l)) => {
+                return Arg::with_name(&self.name)
+                .long(l)
+                .value_name(self.value_name)
+                .takes_value(self.take_value)
+                .required(self.required)
+                .help(self.help);
+            },
+            (None, None) => {
+                return Arg::with_name(&self.name)
+                .value_name(self.value_name)
+                .takes_value(self.take_value)
+                .required(self.required)
+                .help(self.help);
+            },
+        }
+    }
+}
+
+/// Generate the default arg
+pub fn get_default_arg_map() -> HashMap<&'static str, Arg<'static, 'static>> {
+    let vec = vec![
+        ArgParam {
+            name: MOUNT_POINT_ARG_NAME,
+            short: Some("m"),
+            long: Some(MOUNT_POINT_ARG_NAME),
+            value_name: "MOUNT_DIR",
+            take_value: true,
+            required: true,
+            help: "Set the mount point of FUSE, \
+            required argument, no default value",
+        },
+        ArgParam {
+            name: CACHE_CAPACITY_ARG_NAME,
+            short: Some("c"),
+            long: Some(CACHE_CAPACITY_ARG_NAME),
+            value_name: "CACHE_CAPACITY",
+            take_value: true,
+            required: true,
+            help: "Set cache capacity in bytes, \
+            required argument, no default value",
+        },
+        ArgParam {
+            name: END_POINT_ARG_NAME,
+            short: Some("s"),
+            long: Some(END_POINT_ARG_NAME),
+            value_name: "SOCKET_FILE",
+            take_value: true,
+            required: true,
+            help: "Set the socket end point of CSI service, \
+            required argument, no default value",
+        },
+        ArgParam {
+            name: WORKER_PORT_ARG_NAME,
+            short: Some("p"),
+            long: Some(WORKER_PORT_ARG_NAME),
+            value_name: "PORT",
+            take_value: true,
+            required: true,
+            help: "Set the port of worker service port, \
+            no default value",
+        },
+        ArgParam {
+            name: NODE_ID_ARG_NAME,
+            short: Some("n"),
+            long: Some(NODE_ID_ARG_NAME),
+            value_name: "NODE ID",
+            take_value: true,
+            required: true,
+            help: "Set the name of the node, \
+            should be a real host name, \
+            required argument, no default value",
+        },
+        ArgParam {
+            name: NODE_IP_ARG_NAME,
+            short: Some("i"),
+            long: Some(NODE_IP_ARG_NAME),
+            value_name: "NODE IP",
+            take_value: true,
+            required: true,
+            help: "Set the ip of the node",
+        },
+        ArgParam {
+            name: DRIVER_NAME_ARG_NAME,
+            short: Some("d"),
+            long: Some(DRIVER_NAME_ARG_NAME),
+            value_name: "DRIVER NAME",
+            take_value: true,
+            required: true,
+            help: "Set the CSI driver name, default as io.datenlord.csi.plugin",
+        },
+        ArgParam {
+            name: ETCD_ADDRESS_ARG_NAME,
+            short: Some("e"),
+            long: Some(ETCD_ADDRESS_ARG_NAME),
+            value_name: "ETCD IP:PORT,ETCD IP:PORT",
+            take_value: true,
+            required: true,
+            help: "Set the etcd addresses of format ip:port, \
+            if multiple etcd addresses use comma to seperate, \
+            required argument, no default value",
+        },
+        ArgParam {
+            name: SCHEDULER_EXTENDER_PORT_ARG_NAME,
+            short: Some("S"),
+            long: Some(SCHEDULER_EXTENDER_PORT_ARG_NAME),
+            value_name: "SCHEDULER EXTENDER PORT",
+            take_value: true,
+            required: true,
+            help: "Set the port of the scheduler extender",
+        },
+        ArgParam {
+            name: VOLUME_INFO_ARG_NAME,
+            short: Some("v"),
+            long: Some(VOLUME_INFO_ARG_NAME),
+            value_name: "VOLUME_INFO",
+            take_value: true,
+            required: true,
+            help: "Set volume backend information, \
+            required argument, no default value",
+        },
+        ArgParam {
+            name: VOLUME_TYPE_ARG_NAME,
+            short: Some("V"),
+            long: Some(VOLUME_TYPE_ARG_NAME),
+            value_name: "VOLUME_TYPE",
+            take_value: true,
+            required: true,
+            help: "Set volume backend type, \
+            required argument",
+        },
+        ArgParam {
+            name: SERVER_PORT_NUM_ARG_NAME,
+            short: Some("P"),
+            long: Some(SERVER_PORT_NUM_ARG_NAME),
+            value_name: "PORT_NUM",
+            take_value: true,
+            required: true,
+            help: "Set service port number, \
+                    required argument, default value is 8089",
+        },
+    ];
+    let m: HashMap<&'static str, Arg<'static, 'static>> =
+        vec.iter().map(|s| (s.get_name(), s.new_arg())).collect();
+    return m;
+}
+
+/// Get endpoint
+pub fn get_end_point(matches: &ArgMatches) -> String {
     let end_point = match matches.value_of(END_POINT_ARG_NAME) {
         Some(s) => {
             let sock = s.to_owned();
@@ -312,6 +338,11 @@ fn get_args(matches: &ArgMatches) -> CliArgs {
         }
         None => panic!("No valid socket end point"),
     };
+    end_point
+}
+
+/// get worker port
+pub fn get_worker_port(matches: &ArgMatches) -> u16 {
     let worker_port = match matches.value_of(WORKER_PORT_ARG_NAME) {
         Some(p) => match p.parse::<u16>() {
             Ok(port) => port,
@@ -319,37 +350,60 @@ fn get_args(matches: &ArgMatches) -> CliArgs {
         },
         None => panic!("No valid worker port"),
     };
+    worker_port
+}
+
+/// Get node id
+pub fn get_node_id(matches: &ArgMatches) -> String {
     let node_id = match matches.value_of(NODE_ID_ARG_NAME) {
         Some(n) => n.to_owned(),
         None => panic!("No input node ID"),
     };
+    node_id
+}
 
+/// Get ip address
+pub fn get_ip_address(matches: &ArgMatches, node_id: String) -> IpAddr {
     let ip_address = match matches.value_of(NODE_IP_ARG_NAME) {
         Some(n) => n.parse().unwrap_or_else(|_| panic!("Invalid IP address")),
-        None => util::get_ip_of_node(&node_id),
+        None => crate::util::get_ip_of_node(&node_id),
     };
+    ip_address
+}
 
+/// Get driver name
+pub fn get_driver_name(matches: &ArgMatches) -> String {
     let driver_name = match matches.value_of(DRIVER_NAME_ARG_NAME) {
         Some(d) => d.to_owned(),
-        None => util::CSI_PLUGIN_NAME.to_owned(),
+        None => crate::util::CSI_PLUGIN_NAME.to_owned(),
     };
+    driver_name
+}
+
+/// Get mount dir
+pub fn get_mount_dir<'a>(matches: &'a ArgMatches) -> &'a str {
     let mount_dir = match matches.value_of(MOUNT_POINT_ARG_NAME) {
         Some(mp) => mp,
         None => panic!("No mount point input"),
     };
-    let run_as = match matches.value_of(RUN_AS_ARG_NAME) {
-        Some(r) => match r {
-            "controller" => RunAsRole::Controller,
-            "node" => RunAsRole::Node,
-            "scheduler-extender" => RunAsRole::SchedulerExtender,
-            "async-fuse" => RunAsRole::AsyncFuse,
-            _ => panic!(
-                "invalid {} argument {}, must be one of controller, node, scheduler-extender, async-fuse",
-                RUN_AS_ARG_NAME, r,
-            ),
-        },
-        None => RunAsRole::Node,
-    };
+    mount_dir
+}
+
+/// Get role
+pub fn get_run_as(role: Option<&str>) -> RunAsRole {
+    match role {
+        Some("start_csi_controller") => return RunAsRole::Controller,
+        Some("start_node") => return RunAsRole::Node,
+        Some("start_scheduler_extender") => return RunAsRole::SchedulerExtender,
+        Some("start_async_fuse") => return RunAsRole::AsyncFuse,
+        _ => panic!(
+            "invalid argument, must be one of start_controller, start_node, start_scheduler_extender, start_async_fuse"
+        ),
+    }
+}
+
+/// Get etcd addresses
+pub fn get_etcd_address_vec(matches: &ArgMatches) -> Vec<String> {
     let etcd_address_vec = match matches.value_of(ETCD_ADDRESS_ARG_NAME) {
         Some(a) => a
             .split(',')
@@ -363,6 +417,11 @@ fn get_args(matches: &ArgMatches) -> CliArgs {
             .collect(),
         None => Vec::new(),
     };
+    etcd_address_vec
+}
+
+/// Get scheduler port
+pub fn get_scheduler_port(matches: &ArgMatches) -> u16 {
     let scheduler_extender_port = match matches.value_of(SCHEDULER_EXTENDER_PORT_ARG_NAME) {
         Some(p) => match p.parse::<u16>() {
             Ok(port) => port,
@@ -370,26 +429,43 @@ fn get_args(matches: &ArgMatches) -> CliArgs {
         },
         None => 12345,
     };
+    scheduler_extender_port
+}
 
+/// Get cache capacity
+pub fn get_cache_capacity(matches: &ArgMatches) -> usize {
     let cache_capacity = match matches.value_of(CACHE_CAPACITY_ARG_NAME) {
         Some(cc) => cc.parse::<usize>().unwrap_or_else(|_| {
-            panic!(format!(
-                "cannot parse cache capacity in usize, the input is: {}",
-                cc
-            ))
+            panic!(
+                "{}",
+                format!("cannot parse cache capacity in usize, the input is: {}", cc)
+            )
         }),
         None => CACHE_DEFAULT_CAPACITY,
     };
+    cache_capacity
+}
 
+/// Get volume info
+pub fn get_volume_info<'a>(matches: &'a ArgMatches) -> &'a str {
     let volume_info = match matches.value_of(VOLUME_INFO_ARG_NAME) {
         Some(vi) => vi,
         None => panic!("No volume information input"),
     };
+    volume_info
+}
+
+/// Get server port
+pub fn get_server_port<'a>(matches: &'a ArgMatches) -> &'a str {
     let server_port = match matches.value_of(SERVER_PORT_NUM_ARG_NAME) {
         Some(p) => p,
         None => DEFAULT_PORT_NUM,
     };
+    server_port
+}
 
+/// Get volume type
+pub fn get_volume_type(matches: &ArgMatches) -> VolumeType {
     let volume_type = match matches.value_of(VOLUME_TYPE_ARG_NAME) {
         Some(vt) => {
             if vt == "s3" {
@@ -402,117 +478,184 @@ fn get_args(matches: &ArgMatches) -> CliArgs {
         }
         None => VolumeType::Local,
     };
-    CliArgs {
-        end_point,
+    volume_type
+}
+
+/// Generate the metadata
+pub fn gen_metadata<'a>(name: &'a str) -> App<'a, 'a> {
+    let arg_map = get_default_arg_map();
+    SubCommand::with_name(name)
+        .arg(arg_map.get(MOUNT_POINT_ARG_NAME).unwrap().clone())
+        .arg(arg_map.get(WORKER_PORT_ARG_NAME).unwrap().clone())
+        .arg(arg_map.get(NODE_ID_ARG_NAME).unwrap().clone())
+        .arg(arg_map.get(NODE_IP_ARG_NAME).unwrap().clone())
+        .arg(arg_map.get(ETCD_ADDRESS_ARG_NAME).unwrap().clone())
+}
+
+/// Parse the metadata
+pub fn parse_metadata(
+    matches: &ArgMatches,
+    role_name: Option<&str>,
+) -> Result<MetaData, common::error::DatenLordError> {
+    let etcd_delegate = EtcdDelegate::new(get_etcd_address_vec(matches)).unwrap();
+    let worker_port = get_worker_port(matches);
+    let node_id = get_node_id(matches);
+    let ip_address = get_ip_address(matches, node_id.clone());
+    let mount_dir = get_mount_dir(matches);
+    let run_as = get_run_as(role_name);
+
+    let metadata = csi::build_meta_data(
         worker_port,
-        node_id,
+        node_id.clone(),
         ip_address,
-        driver_name,
-        mount_dir: mount_dir.to_owned(),
+        mount_dir.to_string(),
         run_as,
-        etcd_address_vec,
-        scheduler_extender_port,
-        cache_capacity,
-        server_port: server_port.to_owned(),
-        volume_info: volume_info.to_owned(),
-        volume_type,
-    }
+        etcd_delegate,
+    );
+
+    return metadata;
+}
+
+/// Parse the args in subcommand
+fn parse_args() -> ArgMatches<'static> {
+    let arg_map = get_default_arg_map();
+    let matches = App::new("datenlord")
+        .subcommand(
+            gen_metadata("start_csi_controller")
+                .arg(arg_map.get(DRIVER_NAME_ARG_NAME).unwrap().clone())
+                .arg(arg_map.get(END_POINT_ARG_NAME).unwrap().clone()),
+        )
+        .subcommand(
+            gen_metadata("start_node")
+                .arg(arg_map.get(DRIVER_NAME_ARG_NAME).unwrap().clone())
+                .arg(arg_map.get(END_POINT_ARG_NAME).unwrap().clone())
+                // Now gen async fuse data other args
+                .arg(arg_map.get(SERVER_PORT_NUM_ARG_NAME).unwrap().clone())
+                .arg(arg_map.get(VOLUME_TYPE_ARG_NAME).unwrap().clone())
+                .arg(arg_map.get(CACHE_CAPACITY_ARG_NAME).unwrap().clone())
+                .arg(arg_map.get(VOLUME_INFO_ARG_NAME).unwrap().clone()),
+        )
+        .subcommand(
+            gen_metadata("start_scheduler_extender").arg(
+                arg_map
+                    .get(SCHEDULER_EXTENDER_PORT_ARG_NAME)
+                    .unwrap()
+                    .clone(),
+            ),
+        )
+        .subcommand(
+            SubCommand::with_name("async_fuse")
+                .arg(arg_map.get(SERVER_PORT_NUM_ARG_NAME).unwrap().clone())
+                .arg(arg_map.get(VOLUME_TYPE_ARG_NAME).unwrap().clone())
+                .arg(arg_map.get(CACHE_CAPACITY_ARG_NAME).unwrap().clone())
+                .arg(arg_map.get(VOLUME_INFO_ARG_NAME).unwrap().clone())
+                .arg(arg_map.get(NODE_ID_ARG_NAME).unwrap().clone())
+                .arg(arg_map.get(NODE_IP_ARG_NAME).unwrap().clone())
+                .arg(arg_map.get(MOUNT_POINT_ARG_NAME).unwrap().clone())
+                .arg(arg_map.get(ETCD_ADDRESS_ARG_NAME).unwrap().clone()),
+        )
+        .get_matches();
+    return matches;
 }
 
 #[allow(clippy::too_many_lines)]
 fn main() -> anyhow::Result<()> {
     env_logger::init();
-    let args = parse_args();
 
-    debug!(
-        "{}={}, {}={}, {}={}, {}={}, {}={}, {}={}, {}={:?}, {}={:?}, {}={}, {}={}, {}={}, {}={}, {}={:?}",
-        END_POINT_ARG_NAME,
-        args.end_point,
-        WORKER_PORT_ARG_NAME,
-        args.worker_port,
-        NODE_ID_ARG_NAME,
-        args.node_id,
-        NODE_IP_ARG_NAME,
-        args.ip_address,
-        DRIVER_NAME_ARG_NAME,
-        args.driver_name,
-        MOUNT_POINT_ARG_NAME,
-        args.mount_dir,
-        RUN_AS_ARG_NAME,
-        args.run_as,
-        ETCD_ADDRESS_ARG_NAME,
-        args.etcd_address_vec,
-        SCHEDULER_EXTENDER_PORT_ARG_NAME,
-        args.scheduler_extender_port,
-        CACHE_CAPACITY_ARG_NAME,
-        args.cache_capacity,
-        SERVER_PORT_NUM_ARG_NAME,
-        args.server_port,
-        VOLUME_INFO_ARG_NAME,
-        args.volume_info,
-        VOLUME_TYPE_ARG_NAME,
-        args.volume_type,
-    );
+    let matches = parse_args();
+    if let Some(matches) = matches.subcommand_matches("start_csi_controller") {
+        let metadata = parse_metadata(matches, Some("start_csi_controller"))?;
+        let md = Arc::new(metadata);
+        let async_server = true;
 
-    let args_clone = args.clone();
-    let etcd_delegate = EtcdDelegate::new(args.etcd_address_vec)?;
-    let etcd_delegate_clone = etcd_delegate.clone();
-    let meta_data = csi::build_meta_data(
-        args.worker_port,
-        args.node_id,
-        args.ip_address,
-        args.mount_dir,
-        args.run_as,
-        etcd_delegate,
-    )?;
-    let md = Arc::new(meta_data);
-    let async_server = true;
-
-    match args.run_as {
-        RunAsRole::Controller => {
-            let controller_server = csi::build_grpc_controller_server(
-                &args.end_point,
-                &args.driver_name,
-                Arc::<MetaData>::clone(&md),
-            )?;
-            csi::run_grpc_servers(&mut [controller_server], async_server);
-        }
-        RunAsRole::Node => {
-            let worker_server = csi::build_grpc_worker_server(Arc::<MetaData>::clone(&md))?;
-            let node_server = csi::build_grpc_node_server(&args.end_point, &args.driver_name, md)?;
-            let csi_thread = std::thread::spawn(move || {
-                csi::run_grpc_servers(&mut [node_server, worker_server], async_server);
-            });
-            let async_fuse_thread = std::thread::spawn(move || {
-                if let Err(e) = async_fuse::start_async_fuse(etcd_delegate_clone, &args_clone) {
-                    panic!("failed to start async fuse, error is {:?}", e);
-                }
-            });
-            csi_thread
-                .join()
-                .unwrap_or_else(|e| panic!("csi thread error: {:?}", e));
-            async_fuse_thread
-                .join()
-                .unwrap_or_else(|e| panic!("csi thread error: {:?}", e));
-        }
-        RunAsRole::SchedulerExtender => {
-            let scheduler_extender = SchdulerExtender::new(
-                Arc::<MetaData>::clone(&md),
-                SocketAddr::new(args.ip_address, args.scheduler_extender_port),
-            );
-            let scheduler_extender_thread = std::thread::spawn(move || {
-                scheduler_extender.start();
-            });
-            scheduler_extender_thread
-                .join()
-                .unwrap_or_else(|e| panic!("scheduler extender error: {:?}", e));
-        }
-        RunAsRole::AsyncFuse => {
-            if let Err(e) = async_fuse::start_async_fuse(etcd_delegate_clone, &args_clone) {
-                panic!("failed to start async fuse, error is {:?}", e);
-            }
-        }
+        let end_point = get_end_point(matches);
+        let driver_name = get_driver_name(matches);
+        let controller_server = csi::build_grpc_controller_server(
+            &end_point,
+            &driver_name,
+            Arc::<MetaData>::clone(&md),
+        )?;
+        csi::run_grpc_servers(&mut [controller_server], async_server);
     }
 
+    if let Some(matches) = matches.subcommand_matches("start_node") {
+        let metadata = parse_metadata(matches, Some("start_node"))?;
+
+        let md = Arc::new(metadata);
+        let async_server = true;
+
+        let etcd_delegate = EtcdDelegate::new(get_etcd_address_vec(matches))?;
+        let node_id = get_node_id(matches);
+        let ip_address = get_ip_address(matches, node_id.clone());
+        let mount_dir = get_mount_dir(matches);
+        let end_point = get_end_point(matches);
+        let driver_name = get_driver_name(matches);
+
+        let worker_server = csi::build_grpc_worker_server(Arc::<MetaData>::clone(&md))?;
+        let node_server = csi::build_grpc_node_server(&end_point, &driver_name, md)?;
+        let csi_thread = std::thread::spawn(move || {
+            csi::run_grpc_servers(&mut [node_server, worker_server], async_server);
+        });
+
+        let async_args = AsyncFuseArgs {
+            node_id: node_id.clone(),
+            ip_address,
+            server_port: get_server_port(matches).to_string(),
+            volume_type: get_volume_type(matches),
+            mount_dir: mount_dir.to_string(),
+            cache_capacity: get_cache_capacity(matches),
+            volume_info: get_volume_info(matches).to_string(),
+        };
+        let async_fuse_thread = std::thread::spawn(move || {
+            if let Err(e) = async_fuse::start_async_fuse(etcd_delegate.clone(), &async_args) {
+                panic!("failed to start async fuse, error is {:?}", e);
+            }
+        });
+        csi_thread
+            .join()
+            .unwrap_or_else(|e| panic!("csi thread error: {:?}", e));
+        async_fuse_thread
+            .join()
+            .unwrap_or_else(|e| panic!("csi thread error: {:?}", e));
+    }
+
+    if let Some(matches) = matches.subcommand_matches("start_scheduler_extender") {
+        let metadata = parse_metadata(matches, Some("start_scheduler_extender"))?;
+        let md = Arc::new(metadata);
+        let sep = get_scheduler_port(matches);
+        let node_id = get_node_id(matches);
+        let ip_address = get_ip_address(matches, node_id.clone());
+
+        let scheduler_extender = SchdulerExtender::new(
+            Arc::<MetaData>::clone(&md),
+            SocketAddr::new(ip_address, sep),
+        );
+        let scheduler_extender_thread = std::thread::spawn(move || {
+            scheduler_extender.start();
+        });
+        scheduler_extender_thread
+            .join()
+            .unwrap_or_else(|e| panic!("scheduler extender error: {:?}", e));
+    }
+
+    if let Some(matches) = matches.subcommand_matches("start_async_fuse") {
+        let etcd_delegate = EtcdDelegate::new(get_etcd_address_vec(matches))?;
+        let node_id = get_node_id(matches);
+        let ip_address = get_ip_address(matches, node_id.clone());
+        let mount_dir = get_mount_dir(matches);
+        let async_args = AsyncFuseArgs {
+            node_id: node_id.clone(),
+            ip_address,
+            server_port: get_server_port(matches).to_string(),
+            volume_type: get_volume_type(matches),
+            mount_dir: mount_dir.to_string(),
+            cache_capacity: get_cache_capacity(matches),
+            volume_info: get_volume_info(matches).to_string(),
+        };
+
+        if let Err(e) = async_fuse::start_async_fuse(etcd_delegate, &async_args) {
+            panic!("failed to start async fuse, error is {:?}", e);
+        }
+    }
     Ok(())
 }

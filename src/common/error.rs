@@ -322,7 +322,7 @@ impl From<DatenLordError> for RpcStatusCode {
             | DatenLordError::SerdeJsonErr { .. }
             | DatenLordError::WalkdirErr { .. } => Self::INTERNAL,
             DatenLordError::GrpcioErr { source, .. } => match source {
-                grpcio::Error::RpcFailure(ref s) => s.status,
+                grpcio::Error::RpcFailure(ref s) => s.code(),
                 grpcio::Error::Codec(..)
                 | grpcio::Error::CallFailure(..)
                 | grpcio::Error::RpcFinished(..)

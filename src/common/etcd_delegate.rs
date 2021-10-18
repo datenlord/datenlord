@@ -35,13 +35,12 @@ impl EtcdDelegate {
     pub fn new(etcd_address_vec: Vec<String>) -> DatenLordResult<Self> {
         let end_point = etcd_address_vec.clone();
         let etcd_rs_client = smol::block_on(Compat::new(async move {
-            etcd_client::Client::connect(etcd_client::ClientConfig {
-                endpoints: etcd_address_vec.clone(),
-                auth: None,
-                cache_enable: true,
-                // TODO: cache size should come from parameter
-                cache_size: 64,
-            })
+            etcd_client::Client::connect(etcd_client::ClientConfig::new(
+                etcd_address_vec.clone(),
+                None,
+                64,
+                true,
+            ))
             .await
             .with_context(|| {
                 format!(

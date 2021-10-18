@@ -176,8 +176,8 @@ pub async fn async_fail<R>(sink: UnarySink<R>, err: DatenLordError) {
         "the input RpcStatusCode should not be OK"
     );
     */
-    let details = format!("{}", err);
-    let rs = RpcStatus::new(err, Some(details));
+    //let details = format!("{}", err);
+    let rs = RpcStatus::new(err);
     let res = sink.fail(rs).await;
 
     if let Err(e) = res {

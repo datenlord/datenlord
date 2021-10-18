@@ -94,10 +94,9 @@ impl NodeImplInner {
         let add_ephemeral_res = self.meta_data.add_volume_meta_data(vol_id, &volume).await;
         debug_assert!(
             add_ephemeral_res.is_ok(),
-            format!(
-                "ephemeral volume ID={} and name={} is duplicated",
-                vol_id, vol_name,
-            )
+            "ephemeral volume ID={} and name={} is duplicated",
+            vol_id,
+            vol_name,
         );
         Ok(())
     }
