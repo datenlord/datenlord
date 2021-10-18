@@ -1,6 +1,6 @@
 //! FUSE async implementation
 
-use crate::{common::etcd_delegate::EtcdDelegate, CliArgs, VolumeType};
+use crate::{common::etcd_delegate::EtcdDelegate, AsyncFuseArgs, VolumeType};
 use fuse::session::Session;
 use memfs::s3_wrapper::{DoNothingImpl, S3BackEndImpl};
 
@@ -12,7 +12,7 @@ pub mod proactor;
 pub mod util;
 
 /// Start async-fuse
-pub fn start_async_fuse(etcd_delegate: EtcdDelegate, args: &CliArgs) -> anyhow::Result<()> {
+pub fn start_async_fuse(etcd_delegate: EtcdDelegate, args: &AsyncFuseArgs) -> anyhow::Result<()> {
     metrics::start_metrics_server();
 
     smol::block_on(async move {
