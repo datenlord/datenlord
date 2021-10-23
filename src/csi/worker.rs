@@ -53,7 +53,7 @@ impl WorkerImplInner {
         match *content_source {
             VolumeSource::Snapshot(ref source_snapshot_id) => {
                 self.meta_data
-                    .copy_volume_from_snapshot(vol_size, source_snapshot_id, &vol_id.to_string())
+                    .copy_volume_from_snapshot(vol_size, source_snapshot_id, &vol_id.to_owned())
                     .await?;
                 info!(
                     "successfully populated volume ID={} and name={} \
@@ -67,7 +67,7 @@ impl WorkerImplInner {
             }
             VolumeSource::Volume(ref source_volume_id) => {
                 self.meta_data
-                    .copy_volume_from_volume(vol_size, source_volume_id, &vol_id.to_string())
+                    .copy_volume_from_volume(vol_size, source_volume_id, &vol_id.to_owned())
                     .await?;
                 info!(
                     "successfully populated volume ID={} and name={} \
@@ -104,7 +104,7 @@ impl Worker for WorkerImpl {
                                 util::TOPOLOGY_KEY_NODE,
                             )
                         })
-                        .to_owned()
+                        .clone()
                 })
                 .collect()
         }

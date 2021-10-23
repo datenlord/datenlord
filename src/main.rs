@@ -38,8 +38,11 @@
     clippy::multiple_crate_versions, // multi-version dependency crates is not able to fix
     clippy::panic, // allow debug_assert, panic in production code
     // clippy::panic_in_result_fn,
-    clippy::clippy::missing_errors_doc, // TODO: add error docs
-    clippy::unknown_clippy_lints,  // allow rustc and clippy verison mismatch
+    clippy::missing_errors_doc, // TODO: add error docs
+    clippy::exhaustive_structs,
+    clippy::exhaustive_enums,
+    clippy::missing_panics_doc, // TODO: add panic docs
+    clippy::panic_in_result_fn,
 )]
 
 pub mod async_fuse;
@@ -373,10 +376,7 @@ fn get_args(matches: &ArgMatches) -> CliArgs {
 
     let cache_capacity = match matches.value_of(CACHE_CAPACITY_ARG_NAME) {
         Some(cc) => cc.parse::<usize>().unwrap_or_else(|_| {
-            panic!(format!(
-                "cannot parse cache capacity in usize, the input is: {}",
-                cc
-            ))
+            panic!("cannot parse cache capacity in usize, the input is: {}", cc)
         }),
         None => CACHE_DEFAULT_CAPACITY,
     };

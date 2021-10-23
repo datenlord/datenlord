@@ -68,6 +68,7 @@ pub struct S3BackEndImpl {
     bucket: Bucket,
 }
 
+/// Transfer anyhow error to `S3Error`
 macro_rules! resultify_anyhow {
     ($e: expr) => {
         match $e {
@@ -112,14 +113,14 @@ impl S3BackEnd for S3BackEndImpl {
     }
 
     async fn get_data(&self, file: &str) -> S3Result<Vec<u8>> {
-        resultify_anyhow!(self.bucket.get_object(file.to_string()).await).map(|(data, _)| data)
+        resultify_anyhow!(self.bucket.get_object(file.to_owned()).await).map(|(data, _)| data)
     }
 
     async fn get_partial_data(&self, file: &str, offset: usize, len: usize) -> S3Result<Vec<u8>> {
         resultify_anyhow!(
             self.bucket
                 .get_object_range(
-                    file.to_string(),
+                    file.to_owned(),
                     offset.cast(),
                     Some((offset.overflow_add(len)).cast())
                 )
@@ -131,9 +132,9 @@ impl S3BackEnd for S3BackEndImpl {
     async fn put_data(&self, file: &str, data: &[u8], offset: usize, len: usize) -> S3Result<()> {
         resultify_anyhow!(
             self.bucket
-                //.put_object(file.to_string(), &data[offset..(offset.overflow_add(len))])
+                //.put_object(file.to_owned(), &data[offset..(offset.overflow_add(len))])
                 .put_object(
-                    file.to_string(),
+                    file.to_owned(),
                     data.get(offset..(offset.overflow_add(len)))
                         .unwrap_or_else(|| panic!(
                             "failed to get slice index {}..{}, slice size={}",
@@ -147,7 +148,7 @@ impl S3BackEnd for S3BackEndImpl {
         .map(|_| ())
     }
     async fn get_len(&self, file: &str) -> S3Result<usize> {
-        match resultify_anyhow!(self.bucket.head_object(file.to_string()).await) {
+        match resultify_anyhow!(self.bucket.head_object(file.to_owned()).await) {
             Ok((head_object, _)) => match head_object.content_length {
                 None => Err(S3Error::S3InternalError("Can't get S3 file length".into())),
                 Some(size) => Ok(size.cast()),
@@ -170,16 +171,16 @@ impl S3BackEnd for S3BackEndImpl {
         )
         .map(|list| {
             let mut result: Vec<String> = vec![];
-            list.iter().for_each(|lbr| {
+            for lbr in &list {
                 lbr.contents.iter().for_each(|c| {
-                    result.push(c.key.to_owned());
+                    result.push(c.key.clone());
                 });
                 if let Some(ref vec) = lbr.common_prefixes {
-                    vec.iter().for_each(|cp| {
-                        result.push(cp.prefix.to_owned());
-                    });
+                    for cp in vec.iter() {
+                        result.push(cp.prefix.clone());
+                    }
                 }
-            });
+            }
             result
         })
     }
@@ -189,7 +190,7 @@ impl S3BackEnd for S3BackEndImpl {
     }
 
     async fn get_last_modified(&self, file: &str) -> S3Result<SystemTime> {
-        match resultify_anyhow!(self.bucket.head_object(file.to_string()).await) {
+        match resultify_anyhow!(self.bucket.head_object(file.to_owned()).await) {
             Ok((head_object, _)) => match head_object.last_modified {
                 None => Err(S3Error::S3InternalError(
                     "Can't get S3 file last_modified time".into(),
@@ -208,7 +209,7 @@ impl S3BackEnd for S3BackEndImpl {
     }
 
     async fn get_meta(&self, file: &str) -> S3Result<(usize, SystemTime)> {
-        match resultify_anyhow!(self.bucket.head_object(file.to_string()).await) {
+        match resultify_anyhow!(self.bucket.head_object(file.to_owned()).await) {
             Ok((head_object, _)) => match head_object.last_modified {
                 None => Err(S3Error::S3InternalError(
                     "Can't get S3 file last_modified time".into(),
@@ -275,14 +276,14 @@ impl S3BackEnd for S3BackEndImpl {
             let etag = std::str::from_utf8(data.as_slice())
                 .map_err(|e| S3Error::S3InternalError(format!("{}", e)))?;
 
-            etags.push(etag.to_string());
+            etags.push(etag.to_owned());
 
             if index == last_index {
                 let inner_data = etags
                     .iter()
                     .enumerate()
                     .map(|(i, x)| Part {
-                        etag: x.to_owned(),
+                        etag: x.clone(),
                         part_number: i.cast::<u32>().overflow_add(1),
                     })
                     .collect::<Vec<Part>>();
@@ -299,7 +300,7 @@ impl S3BackEnd for S3BackEndImpl {
     }
 
     async fn rename(&self, old_file: &str, new_file: &str) -> S3Result<()> {
-        let _ = resultify_anyhow!(
+        let _ret = resultify_anyhow!(
             self.bucket
                 .copy_object_in_same_bucket(old_file, new_file)
                 .await

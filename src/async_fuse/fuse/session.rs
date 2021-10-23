@@ -593,9 +593,9 @@ async fn dispatch<'a>(
             let reply = ReplyEmpty::new(req.unique(), fd);
             let param = RenameParam {
                 old_parent: req.nodeid(),
-                old_name: oldname.to_string(),
+                old_name: oldname.to_owned(),
                 new_parent: arg.newdir,
-                new_name: newname.to_string(),
+                new_name: newname.to_owned(),
                 flags: 0,
             };
             fs.rename(req, param, reply).await
@@ -790,9 +790,9 @@ async fn dispatch<'a>(
             let reply = ReplyEmpty::new(req.unique(), fd);
             let param = RenameParam {
                 old_parent: req.nodeid(),
-                old_name: oldname.to_string(),
+                old_name: oldname.to_owned(),
                 new_parent: arg.newdir,
-                new_name: newname.to_string(),
+                new_name: newname.to_owned(),
                 flags: arg.flags,
             };
             fs.rename(req, param, reply).await

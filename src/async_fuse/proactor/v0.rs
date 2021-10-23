@@ -17,7 +17,7 @@ struct Fd(RawFd);
 
 impl Drop for Fd {
     fn drop(&mut self) {
-        debug_assert!(unistd::close(self.0).is_ok())
+        debug_assert!(unistd::close(self.0).is_ok());
     }
 }
 

@@ -535,7 +535,7 @@ impl MetaData for DefaultMetaData {
             );
             let exchange_entry = DirEntry::new(
                 new_entry_ino,
-                old_name.to_string(),
+                old_name.to_owned(),
                 replaced_entry.entry_type(),
             );
 
@@ -834,7 +834,7 @@ impl DefaultMetaData {
                 );
             });
             parent_ino = node.get_parent_ino();
-            node_name = node.get_name().to_string();
+            node_name = node.get_name().to_owned();
 
             debug_assert!(node.get_lookup_count() >= 0); // lookup count cannot be negative
             if node.get_lookup_count() > 0 {
@@ -1070,11 +1070,9 @@ impl DefaultMetaData {
                     old_parent,
                     old_parent_node.get_name(),
                 ),
-                Some(old_entry) => DirEntry::new(
-                    old_entry.ino(),
-                    new_name.to_string(),
-                    old_entry.entry_type(),
-                ),
+                Some(old_entry) => {
+                    DirEntry::new(old_entry.ino(), new_name.to_owned(), old_entry.entry_type())
+                }
             }
         };
         node::rename_fullpath_recursive(entry_to_move.ino(), new_parent, &self.cache).await;

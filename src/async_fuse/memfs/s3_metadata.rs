@@ -500,7 +500,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
             let res = inode
                 .write_file(fh, offset, data, o_flags, write_to_disk)
                 .await;
-            (res, inode.get_full_path().to_string())
+            (res, inode.get_full_path().to_owned())
         };
         self.invalidate_remote(&full_path, offset, data_len).await;
         self.sync_attr_remote(&full_path).await;
@@ -569,7 +569,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
                 );
             });
             parent_ino = node.get_parent_ino();
-            node_name = node.get_name().to_string();
+            node_name = node.get_name().to_owned();
 
             debug_assert!(node.get_lookup_count() >= 0); // lookup count cannot be negative
             if node.get_lookup_count() > 0 {
@@ -813,11 +813,9 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
                     old_parent,
                     old_parent_node.get_name(),
                 ),
-                Some(old_entry) => DirEntry::new(
-                    old_entry.ino(),
-                    new_name.to_string(),
-                    old_entry.entry_type(),
-                ),
+                Some(old_entry) => {
+                    DirEntry::new(old_entry.ino(), new_name.to_owned(), old_entry.entry_type())
+                }
             }
         };
 
@@ -878,7 +876,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
             );
             let exchange_entry = DirEntry::new(
                 new_entry_ino,
-                old_name.to_string(),
+                old_name.to_owned(),
                 replaced_entry.entry_type(),
             );
 

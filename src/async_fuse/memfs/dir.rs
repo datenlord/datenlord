@@ -27,7 +27,12 @@ impl Drop for Dir {
     fn drop(&mut self) {
         let dirp = self.0.as_ptr();
         let ret = unsafe { libc::closedir(dirp) };
-        debug_assert_eq!(ret, 0, "failed to closedir: {}", io::Error::last_os_error());
+        debug_assert_eq!(
+            ret,
+            0_i32,
+            "failed to closedir: {}",
+            io::Error::last_os_error()
+        );
     }
 }
 
@@ -121,8 +126,8 @@ impl DirEntry {
     pub const fn new(ino: ino_t, name: String, entry_type: SFlag) -> Self {
         Self {
             ino,
-            name,
             entry_type,
+            name,
         }
     }
     /// Returns the inode number (`d_ino`) of the underlying `dirent`.
@@ -174,8 +179,8 @@ impl DirEntry {
 
         Self {
             ino,
-            name,
             entry_type,
+            name,
         }
     }
 }
@@ -198,7 +203,7 @@ unsafe fn next_entry(dirp: *mut libc::DIR, eos: &mut bool) -> Option<io::Result<
         if p_dirent.is_null() {
             *eos = true;
             clear_errno();
-            if errno() == 0 {
+            if errno() == 0_i32 {
                 return None;
             }
             return Some(Err(io::Error::last_os_error()));

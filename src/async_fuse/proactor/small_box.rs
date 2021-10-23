@@ -20,7 +20,7 @@ unsafe impl Sync for SmallBox {}
 
 /// Type-erased drop function
 unsafe fn drop_value<T>(p: *mut ()) {
-    ptr::drop_in_place(p.cast::<T>())
+    ptr::drop_in_place(p.cast::<T>());
 }
 
 impl SmallBox {

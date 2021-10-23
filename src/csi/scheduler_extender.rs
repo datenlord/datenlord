@@ -74,6 +74,7 @@ pub struct SchdulerExtender {
     server: Server,
 }
 
+/// Send error reply if result is error or get wrapped data
 macro_rules! try_or_return_err {
     ($request:expr, $result:expr, $error:expr) => {
         match $result {
@@ -129,7 +130,7 @@ impl SchdulerExtender {
                     for node in all_nodes {
                         nodes_map.insert(node, 1_usize);
                     }
-                    volumes.iter().for_each(|vol| {
+                    for vol in &volumes {
                         let vol_res = smol::block_on(async {
                             self.meta_data.get_volume_by_name(&vol.name).await
                         });
@@ -140,10 +141,10 @@ impl SchdulerExtender {
                                 }
                             });
                         }
-                    });
+                    }
                     let accessible_nodes: HashSet<_> = nodes_map
                         .iter()
-                        .filter_map(|(k, v)| if v == &volumes.len() { Some(k) } else { None })
+                        .filter_map(|(k, v)| (v == &volumes.len()).then(|| k))
                         .collect();
 
                     if let Some(ref node_list) = args.Nodes {
@@ -152,65 +153,59 @@ impl SchdulerExtender {
                             .iter()
                             .filter_map(|n| {
                                 n.metadata.name.as_ref().and_then(|name| {
-                                    if accessible_nodes.contains(&name) {
-                                        Some(n.to_owned())
-                                    } else {
-                                        None
-                                    }
+                                    accessible_nodes.contains(&name).then(|| n.clone())
                                 })
                             })
                             .collect();
-                        return ExtenderFilterResult {
+                        ExtenderFilterResult {
                             Nodes: Some(NodeList {
-                                metadata: node_list.metadata.to_owned(),
+                                metadata: node_list.metadata.clone(),
                                 items: candidate_nodes,
                             }),
                             NodeNames: None,
                             FailedNodes: HashMap::new(),
-                            Error: "".to_string(),
-                        };
+                            Error: "".to_owned(),
+                        }
                     } else if let Some(ref nodes) = args.NodeNames {
                         let candidate_nodes: Vec<_> = nodes
                             .iter()
-                            .filter_map(|n| {
-                                if accessible_nodes.contains(n) {
-                                    Some(n.to_owned())
-                                } else {
-                                    None
-                                }
-                            })
+                            .filter_map(|n| accessible_nodes.contains(n).then(|| n.clone()))
                             .collect();
-                        return ExtenderFilterResult {
+                        ExtenderFilterResult {
                             Nodes: None,
                             NodeNames: Some(candidate_nodes),
                             FailedNodes: HashMap::new(),
-                            Error: "".to_string(),
-                        };
+                            Error: "".to_owned(),
+                        }
                     } else {
+                        ExtenderFilterResult {
+                            Nodes: args.Nodes,
+                            NodeNames: args.NodeNames,
+                            FailedNodes: HashMap::new(),
+                            Error: "".to_owned(),
+                        }
                     }
                 }
-                Err(e) => {
-                    return ExtenderFilterResult {
-                        Nodes: args.Nodes.map(|node_list| NodeList {
-                            metadata: node_list.metadata,
-                            items: vec![],
-                        }),
-                        NodeNames: args.NodeNames.and(Some(vec![])),
-                        FailedNodes: HashMap::new(),
-                        Error: format!(
-                            "faile to get all nodes from etcd, failed to schedule, the error is {}",
-                            e
-                        ),
-                    };
-                }
-            };
-        }
-
-        ExtenderFilterResult {
-            Nodes: args.Nodes,
-            NodeNames: args.NodeNames,
-            FailedNodes: HashMap::new(),
-            Error: "".to_string(),
+                Err(e) => ExtenderFilterResult {
+                    Nodes: args.Nodes.map(|node_list| NodeList {
+                        metadata: node_list.metadata,
+                        items: vec![],
+                    }),
+                    NodeNames: args.NodeNames.and(Some(vec![])),
+                    FailedNodes: HashMap::new(),
+                    Error: format!(
+                        "faile to get all nodes from etcd, failed to schedule, the error is {}",
+                        e
+                    ),
+                },
+            }
+        } else {
+            ExtenderFilterResult {
+                Nodes: args.Nodes,
+                NodeNames: args.NodeNames,
+                FailedNodes: HashMap::new(),
+                Error: "".to_owned(),
+            }
         }
     }
 
@@ -235,7 +230,7 @@ impl SchdulerExtender {
                     let args: ExtenderArgs = try_or_return_err!(
                         request,
                         serde_json::from_reader(body),
-                        "failed to parse request".to_string()
+                        "failed to parse request".to_owned()
                     );
 
                     let response = if request.url() == "/filter" {
@@ -244,7 +239,7 @@ impl SchdulerExtender {
                         try_or_return_err!(
                             request,
                             serde_json::to_string(&result),
-                            "failed to serialize response".to_string()
+                            "failed to serialize response".to_owned()
                         )
                     } else {
                         info!("Receive prioritize");
@@ -252,7 +247,7 @@ impl SchdulerExtender {
                         try_or_return_err!(
                             request,
                             serde_json::to_string(&result),
-                            "failed to serialize response".to_string()
+                            "failed to serialize response".to_owned()
                         )
                     };
                     Ok(request.respond(Response::from_string(response))?)

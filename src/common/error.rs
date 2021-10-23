@@ -236,6 +236,7 @@ impl DatenLordError {
     where
         C: Into<String>,
     {
+        /// Append context for `DatenLordError`
         macro_rules! append_context {
             ($context: ident, [$($target:ident),*]) => {
                 match self {
@@ -284,6 +285,7 @@ impl DatenLordError {
     }
 }
 
+/// Implement from trait for `DatenLordError`
 macro_rules! implement_from {
     ($source: path, $target: ident) => {
         impl From<$source> for DatenLordError {
@@ -322,7 +324,7 @@ impl From<DatenLordError> for RpcStatusCode {
             | DatenLordError::SerdeJsonErr { .. }
             | DatenLordError::WalkdirErr { .. } => Self::INTERNAL,
             DatenLordError::GrpcioErr { source, .. } => match source {
-                grpcio::Error::RpcFailure(ref s) => s.status,
+                grpcio::Error::RpcFailure(ref s) => s.code(),
                 grpcio::Error::Codec(..)
                 | grpcio::Error::CallFailure(..)
                 | grpcio::Error::RpcFinished(..)

@@ -163,7 +163,7 @@ pub async fn open_dir(path: &Path) -> anyhow::Result<RawFd> {
 
 /// Open directory relative to current working directory
 pub async fn open_dir_at(dfd: RawFd, child_name: &str) -> anyhow::Result<RawFd> {
-    let sub_dir_name = child_name.to_string();
+    let sub_dir_name = child_name.to_owned();
     let oflags = get_dir_oflags();
     let dir_fd =
         smol::unblock(move || fcntl::openat(dfd, sub_dir_name.as_str(), oflags, Mode::empty()))
@@ -323,7 +323,7 @@ pub async fn load_dir_data(dirfd: RawFd) -> anyhow::Result<BTreeMap<String, DirE
             let entry = entry?;
             if let SFlag::S_IFDIR | SFlag::S_IFREG | SFlag::S_IFLNK = entry.entry_type() {
                 let name = entry.entry_name().to_owned();
-                let _ = dir_entry_map.insert(name, entry);
+                let _map = dir_entry_map.insert(name, entry);
             }
         }
         Ok(dir_entry_map)
@@ -349,9 +349,8 @@ pub async fn load_file_data(fd: RawFd, offset: usize, len: usize) -> anyhow::Res
                     "linux pread failed with Error code: {}",
                     res
                 )));
-            } else {
-                res.cast::<usize>()
             }
+            res.cast::<usize>()
         };
         unsafe {
             file_data_vec.set_len(read_size);

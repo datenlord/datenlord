@@ -177,43 +177,43 @@ pub struct FuseFileLock {
 #[allow(dead_code)]
 pub mod setattr_flags {
     /// To set file mode
-    pub const FATTR_MODE: u32 = 1 << 0;
+    pub const FATTR_MODE: u32 = 1 << 0_i32;
     /// To set file user ID
-    pub const FATTR_UID: u32 = 1 << 1;
+    pub const FATTR_UID: u32 = 1 << 1_i32;
     /// To set file group ID
-    pub const FATTR_GID: u32 = 1 << 2;
+    pub const FATTR_GID: u32 = 1 << 2_i32;
     /// To set file size
-    pub const FATTR_SIZE: u32 = 1 << 3;
+    pub const FATTR_SIZE: u32 = 1 << 3_i32;
     /// To set file access time
-    pub const FATTR_ATIME: u32 = 1 << 4;
+    pub const FATTR_ATIME: u32 = 1 << 4_i32;
     /// To set content modified time
-    pub const FATTR_MTIME: u32 = 1 << 5;
+    pub const FATTR_MTIME: u32 = 1 << 5_i32;
     /// To set file handler
-    pub const FATTR_FH: u32 = 1 << 6;
+    pub const FATTR_FH: u32 = 1 << 6_i32;
     /// To set atime as of now
     #[cfg(feature = "abi-7-9")]
-    pub const FATTR_ATIME_NOW: u32 = 1 << 7;
+    pub const FATTR_ATIME_NOW: u32 = 1 << 7_i32;
     /// To set mtime as of now
     #[cfg(feature = "abi-7-9")]
-    pub const FATTR_MTIME_NOW: u32 = 1 << 8;
+    pub const FATTR_MTIME_NOW: u32 = 1 << 8_i32;
     /// To set file lock owner
     #[cfg(feature = "abi-7-9")]
-    pub const FATTR_LOCKOWNER: u32 = 1 << 9;
+    pub const FATTR_LOCKOWNER: u32 = 1 << 9_i32;
     /// To set meta-data change time
     #[cfg(feature = "abi-7-23")]
-    pub const FATTR_CTIME: u32 = 1 << 10;
+    pub const FATTR_CTIME: u32 = 1 << 10_i32;
     /// To set creation time
     #[cfg(target_os = "macos")]
-    pub const FATTR_CRTIME: u32 = 1 << 28;
+    pub const FATTR_CRTIME: u32 = 1 << 28_i32;
     /// To set change time
     #[cfg(target_os = "macos")]
-    pub const FATTR_CHGTIME: u32 = 1 << 29;
+    pub const FATTR_CHGTIME: u32 = 1 << 29_i32;
     /// To set backup time
     #[cfg(target_os = "macos")]
-    pub const FATTR_BKUPTIME: u32 = 1 << 30;
+    pub const FATTR_BKUPTIME: u32 = 1 << 30_i32;
     /// To set flags, see chflags(2)
     #[cfg(target_os = "macos")]
-    pub const FATTR_FLAGS: u32 = 1 << 31;
+    pub const FATTR_FLAGS: u32 = 1 << 31_i32;
 }
 
 pub use setattr_flags::*;
@@ -235,27 +235,27 @@ pub mod fopen_flags {
     pub const FOPEN_DIRECT_IO: u32 = 1;
 
     /// don't invalidate the data cache on open
-    pub const FOPEN_KEEP_CACHE: u32 = 1 << 1;
+    pub const FOPEN_KEEP_CACHE: u32 = 1 << 1_i32;
 
     /// the file is not seekable
     #[cfg(feature = "abi-7-10")]
-    pub const FOPEN_NONSEEKABLE: u32 = 1 << 2;
+    pub const FOPEN_NONSEEKABLE: u32 = 1 << 2_i32;
 
     /// allow caching this directory
     #[cfg(feature = "abi-7-28")]
-    pub const FOPEN_CACHE_DIR: u32 = 1 << 3;
+    pub const FOPEN_CACHE_DIR: u32 = 1 << 3_i32;
 
     /// the file is stream-like (no file position at all)
     #[cfg(feature = "abi-7-31")]
-    pub const FOPEN_STREAM: u32 = 1 << 4;
+    pub const FOPEN_STREAM: u32 = 1 << 4_i32;
 
     /// macOS purge attribute
     #[cfg(target_os = "macos")]
-    pub const FOPEN_PURGE_ATTR: u32 = 1 << 30;
+    pub const FOPEN_PURGE_ATTR: u32 = 1 << 30_i32;
 
     /// macOS purge UBC
     #[cfg(target_os = "macos")]
-    pub const FOPEN_PURGE_UBC: u32 = 1 << 31;
+    pub const FOPEN_PURGE_UBC: u32 = 1 << 31_i32;
 }
 
 pub use fopen_flags::*;
@@ -266,97 +266,97 @@ pub mod init_flags {
     /// `FUSE_ASYNC_READ`: asynchronous read requests
     pub const FUSE_ASYNC_READ: u32 = 1;
     /// `FUSE_POSIX_LOCKS`: remote locking for POSIX file locks
-    pub const FUSE_POSIX_LOCKS: u32 = 1 << 1;
+    pub const FUSE_POSIX_LOCKS: u32 = 1 << 1_i32;
     /// `FUSE_FILE_OPS`: kernel sends file handle for fstat, etc... (not yet supported)
     #[cfg(feature = "abi-7-9")]
-    pub const FUSE_FILE_OPS: u32 = 1 << 2;
+    pub const FUSE_FILE_OPS: u32 = 1 << 2_i32;
     /// `FUSE_ATOMIC_O_TRUNC`: handles the `O_TRUNC` open flag in the filesystem
     #[cfg(feature = "abi-7-9")]
-    pub const FUSE_ATOMIC_O_TRUNC: u32 = 1 << 3;
+    pub const FUSE_ATOMIC_O_TRUNC: u32 = 1 << 3_i32;
     /// `FUSE_EXPORT_SUPPORT`: filesystem handles lookups of "." and ".."
     #[cfg(feature = "abi-7-10")]
-    pub const FUSE_EXPORT_SUPPORT: u32 = 1 << 4;
+    pub const FUSE_EXPORT_SUPPORT: u32 = 1 << 4_i32;
     /// `FUSE_BIG_WRITES`: filesystem can handle write size larger than 4kB
     #[cfg(feature = "abi-7-9")]
-    pub const FUSE_BIG_WRITES: u32 = 1 << 5;
+    pub const FUSE_BIG_WRITES: u32 = 1 << 5_i32;
     /// `FUSE_DONT_MASK`: don't apply umask to file mode on create operations
     #[cfg(feature = "abi-7-12")]
-    pub const FUSE_DONT_MASK: u32 = 1 << 6;
+    pub const FUSE_DONT_MASK: u32 = 1 << 6_i32;
     /// `FUSE_SPLICE_WRITE`: kernel supports splice write on the device
     #[cfg(feature = "abi-7-14")]
-    pub const FUSE_SPLICE_WRITE: u32 = 1 << 7;
+    pub const FUSE_SPLICE_WRITE: u32 = 1 << 7_i32;
     /// `FUSE_SPLICE_MOVE`: kernel supports splice move on the device
     #[cfg(feature = "abi-7-14")]
-    pub const FUSE_SPLICE_MOVE: u32 = 1 << 8;
+    pub const FUSE_SPLICE_MOVE: u32 = 1 << 8_i32;
     /// `FUSE_SPLICE_READ`: kernel supports splice read on the device
     #[cfg(feature = "abi-7-14")]
-    pub const FUSE_SPLICE_READ: u32 = 1 << 9;
+    pub const FUSE_SPLICE_READ: u32 = 1 << 9_i32;
     /// `FUSE_FLOCK_LOCKS`: remote locking for BSD style file locks
     #[cfg(feature = "abi-7-17")]
-    pub const FUSE_FLOCK_LOCKS: u32 = 1 << 10;
+    pub const FUSE_FLOCK_LOCKS: u32 = 1 << 10_i32;
     /// `FUSE_HAS_IOCTL_DIR`: kernel supports ioctl on directories
     #[cfg(feature = "abi-7-18")]
-    pub const FUSE_HAS_IOCTL_DIR: u32 = 1 << 11;
+    pub const FUSE_HAS_IOCTL_DIR: u32 = 1 << 11_i32;
     /// `FUSE_AUTO_INVAL_DATA`: automatically invalidate cached pages
     #[cfg(feature = "abi-7-20")]
-    pub const FUSE_AUTO_INVAL_DATA: u32 = 1 << 12;
+    pub const FUSE_AUTO_INVAL_DATA: u32 = 1 << 12_i32;
     /// `FUSE_DO_READDIRPLUS`: do READDIRPLUS (READDIR+LOOKUP in one)
     #[cfg(feature = "abi-7-21")]
-    pub const FUSE_DO_READDIRPLUS: u32 = 1 << 13;
+    pub const FUSE_DO_READDIRPLUS: u32 = 1 << 13_i32;
 
     // TODO: verify it's added in 7.21
     /// `FUSE_READDIRPLUS_AUTO`: adaptive readdirplus
     #[cfg(feature = "abi-7-21")]
-    pub const FUSE_READDIRPLUS_AUTO: u32 = 1 << 14;
+    pub const FUSE_READDIRPLUS_AUTO: u32 = 1 << 14_i32;
     /// `FUSE_ASYNC_DIO`: asynchronous direct I/O submission
     #[cfg(feature = "abi-7-22")]
-    pub const FUSE_ASYNC_DIO: u32 = 1 << 15;
+    pub const FUSE_ASYNC_DIO: u32 = 1 << 15_i32;
     /// `FUSE_WRITEBACK_CACHE`: use writeback cache for buffered writes
     #[cfg(feature = "abi-7-23")]
-    pub const FUSE_WRITEBACK_CACHE: u32 = 1 << 16;
+    pub const FUSE_WRITEBACK_CACHE: u32 = 1 << 16_i32;
     /// `FUSE_NO_OPEN_SUPPORT`: kernel supports zero-message opens
     #[cfg(feature = "abi-7-23")]
-    pub const FUSE_NO_OPEN_SUPPORT: u32 = 1 << 17;
+    pub const FUSE_NO_OPEN_SUPPORT: u32 = 1 << 17_i32;
     /// `FUSE_PARALLEL_DIROPS`: allow parallel lookups and readdir
     #[cfg(feature = "abi-7-25")]
-    pub const FUSE_PARALLEL_DIROPS: u32 = 1 << 18;
+    pub const FUSE_PARALLEL_DIROPS: u32 = 1 << 18_i32;
     /// `FUSE_HANDLE_KILLPRIV`: fs handles killing suid/sgid/cap on write/chown/trunc
     #[cfg(feature = "abi-7-26")]
-    pub const FUSE_HANDLE_KILLPRIV: u32 = 1 << 19;
+    pub const FUSE_HANDLE_KILLPRIV: u32 = 1 << 19_i32;
     /// `FUSE_POSIX_ACL`: filesystem supports posix acls
     #[cfg(feature = "abi-7-26")]
-    pub const FUSE_POSIX_ACL: u32 = 1 << 20;
+    pub const FUSE_POSIX_ACL: u32 = 1 << 20_i32;
     /// `FUSE_ABORT_ERROR`: reading the device after abort returns ECONNABORTED
     #[cfg(feature = "abi-7-27")]
-    pub const FUSE_ABORT_ERROR: u32 = 1 << 21;
+    pub const FUSE_ABORT_ERROR: u32 = 1 << 21_i32;
     /// `FUSE_MAX_PAGES`: `init_out.max_pages` contains the max number of req pages
     #[cfg(feature = "abi-7-28")]
-    pub const FUSE_MAX_PAGES: u32 = 1 << 22;
+    pub const FUSE_MAX_PAGES: u32 = 1 << 22_i32;
     /// `FUSE_CACHE_SYMLINKS`: cache READLINK responses
     #[cfg(feature = "abi-7-28")]
-    pub const FUSE_CACHE_SYMLINKS: u32 = 1 << 23;
+    pub const FUSE_CACHE_SYMLINKS: u32 = 1 << 23_i32;
     /// `FUSE_NO_OPENDIR_SUPPORT`: kernel supports zero-message opendir
     #[cfg(feature = "abi-7-29")]
-    pub const FUSE_NO_OPENDIR_SUPPORT: u32 = 1 << 24;
+    pub const FUSE_NO_OPENDIR_SUPPORT: u32 = 1 << 24_i32;
     /// `FUSE_EXPLICIT_INVAL_DATA`: only invalidate cached pages on explicit request
     #[cfg(feature = "abi-7-30")]
-    pub const FUSE_EXPLICIT_INVAL_DATA: u32 = 1 << 25;
+    pub const FUSE_EXPLICIT_INVAL_DATA: u32 = 1 << 25_i32;
 
     /// macOS allocate
     #[cfg(target_os = "macos")]
-    pub const FUSE_ALLOCATE: u32 = 1 << 27;
+    pub const FUSE_ALLOCATE: u32 = 1 << 27_i32;
     /// macOS exchange data
     #[cfg(target_os = "macos")]
-    pub const FUSE_EXCHANGE_DATA: u32 = 1 << 28;
+    pub const FUSE_EXCHANGE_DATA: u32 = 1 << 28_i32;
     /// macOS case insensitive
     #[cfg(target_os = "macos")]
-    pub const FUSE_CASE_INSENSITIVE: u32 = 1 << 29;
+    pub const FUSE_CASE_INSENSITIVE: u32 = 1 << 29_i32;
     /// macOS volume rename
     #[cfg(target_os = "macos")]
-    pub const FUSE_VOL_RENAME: u32 = 1 << 30;
+    pub const FUSE_VOL_RENAME: u32 = 1 << 30_i32;
     /// macOS extended times
     #[cfg(target_os = "macos")]
-    pub const FUSE_XTIMES: u32 = 1 << 31;
+    pub const FUSE_XTIMES: u32 = 1 << 31_i32;
 }
 
 pub use init_flags::*;
@@ -366,37 +366,37 @@ pub use init_flags::*;
 /// `CUSE_UNRESTRICTED_IOCTL`:  use unrestricted ioctl
 #[allow(dead_code)]
 #[cfg(feature = "abi-7-11")]
-pub const CUSE_UNRESTRICTED_IOCTL: u32 = 1 << 0; // use unrestricted ioctl
+pub const CUSE_UNRESTRICTED_IOCTL: u32 = 1 << 0_i32; // use unrestricted ioctl
 
 /// Release with flush
-pub const FUSE_RELEASE_FLUSH: u32 = 1 << 0;
+pub const FUSE_RELEASE_FLUSH: u32 = 1 << 0_i32;
 /// Release with `flock` unlock
 #[allow(dead_code)]
 #[cfg(feature = "abi-7-17")]
-pub const FUSE_RELEASE_FLOCK_UNLOCK: u32 = 1 << 1;
+pub const FUSE_RELEASE_FLOCK_UNLOCK: u32 = 1 << 1_i32;
 
 /// Getattr flags
 #[allow(dead_code)]
 #[cfg(feature = "abi-7-9")]
-pub const FUSE_GETATTR_FH: u32 = 1 << 0;
+pub const FUSE_GETATTR_FH: u32 = 1 << 0_i32;
 
 /// Lock flags
 #[allow(dead_code)]
 #[cfg(feature = "abi-7-9")]
-pub const FUSE_LK_FLOCK: u32 = 1 << 0;
+pub const FUSE_LK_FLOCK: u32 = 1 << 0_i32;
 
 /// WRITE flags
 #[allow(dead_code)]
 pub mod write_flags {
     /// `FUSE_WRITE_CACHE`: delayed write from page cache, file handle is guessed
     #[cfg(feature = "abi-7-9")]
-    pub const FUSE_WRITE_CACHE: u32 = 1 << 0;
+    pub const FUSE_WRITE_CACHE: u32 = 1 << 0_i32;
     /// `FUSE_WRITE_LOCKOWNER`: `lock_owner` field is valid
     #[cfg(feature = "abi-7-9")]
-    pub const FUSE_WRITE_LOCKOWNER: u32 = 1 << 1;
+    pub const FUSE_WRITE_LOCKOWNER: u32 = 1 << 1_i32;
     /// `FUSE_WRITE_KILL_PRIV`: kill suid and sgid bits
     #[cfg(feature = "abi-7-31")]
-    pub const FUSE_WRITE_KILL_PRIV: u32 = 1 << 2;
+    pub const FUSE_WRITE_KILL_PRIV: u32 = 1 << 2_i32;
 }
 
 pub use write_flags::*;
@@ -404,29 +404,29 @@ pub use write_flags::*;
 /// Read flags
 #[allow(dead_code)]
 #[cfg(feature = "abi-7-9")]
-pub const FUSE_READ_LOCKOWNER: u32 = 1 << 1;
+pub const FUSE_READ_LOCKOWNER: u32 = 1 << 1_i32;
 
 /// Ioctl flags
 #[allow(dead_code)]
 pub mod ioctl_flags {
     /// `FUSE_IOCTL_COMPAT`: 32bit compat ioctl on 64bit machine
     #[cfg(feature = "abi-7-11")]
-    pub const FUSE_IOCTL_COMPAT: u32 = 1 << 0;
+    pub const FUSE_IOCTL_COMPAT: u32 = 1 << 0_i32;
     /// `FUSE_IOCTL_UNRESTRICTED`: not restricted to well-formed ioctls, retry allowed
     #[cfg(feature = "abi-7-11")]
-    pub const FUSE_IOCTL_UNRESTRICTED: u32 = 1 << 1;
+    pub const FUSE_IOCTL_UNRESTRICTED: u32 = 1 << 1_i32;
     /// `FUSE_IOCTL_RETRY`: retry with new iovecs
     #[cfg(feature = "abi-7-11")]
-    pub const FUSE_IOCTL_RETRY: u32 = 1 << 2;
+    pub const FUSE_IOCTL_RETRY: u32 = 1 << 2_i32;
     /// `FUSE_IOCTL_32BIT`: 32bit ioctl
     #[cfg(feature = "abi-7-16")]
-    pub const FUSE_IOCTL_32BIT: u32 = 1 << 3;
+    pub const FUSE_IOCTL_32BIT: u32 = 1 << 3_i32;
     /// `FUSE_IOCTL_DIR`: is a directory
     #[cfg(feature = "abi-7-18")]
-    pub const FUSE_IOCTL_DIR: u32 = 1 << 4;
+    pub const FUSE_IOCTL_DIR: u32 = 1 << 4_i32;
     /// `FUSE_IOCTL_COMPAT_X32`: x32 compat ioctl on 64bit machine (64bit `time_t`)
     #[cfg(feature = "abi-7-30")]
-    pub const FUSE_IOCTL_COMPAT_X32: u32 = 1 << 5;
+    pub const FUSE_IOCTL_COMPAT_X32: u32 = 1 << 5_i32;
 
     /// `FUSE_IOCTL_MAX_IOV`: maximum of `in_iovecs + out_iovecs`
     #[cfg(feature = "abi-7-11")]
@@ -440,14 +440,14 @@ pub use ioctl_flags::*;
 /// `FUSE_POLL_SCHEDULE_NOTIFY`: request poll notify
 #[allow(dead_code)]
 #[cfg(feature = "abi-7-11")]
-pub const FUSE_POLL_SCHEDULE_NOTIFY: u32 = 1 << 0;
+pub const FUSE_POLL_SCHEDULE_NOTIFY: u32 = 1 << 0_i32;
 
 /// Fsync flags
 ///
 /// `FUSE_FSYNC_FDATASYNC`: sync data only, not metadata
 #[allow(dead_code)]
 #[cfg(feature = "abi-7-31")]
-pub const FUSE_FSYNC_FDATASYNC: u32 = 1 << 0;
+pub const FUSE_FSYNC_FDATASYNC: u32 = 1 << 0_i32;
 
 /// FUSE operation code `fuse_opcode`
 #[allow(

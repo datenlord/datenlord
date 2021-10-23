@@ -5,7 +5,7 @@ on:
   schedule: [cron: "0 */4 * * *"]
 
 env:
-  RUST_VERSION: 1.47.0
+  RUST_VERSION: 1.56.1
   CONFIG_MINIKUBE: scripts/datenlord_minikube.yaml
   CONFIG_KIND: scripts/datenlord.yaml
   CONFIG_DOCKERHUB: datenlord-deploy.yaml

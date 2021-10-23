@@ -29,12 +29,14 @@ pub fn as_abi_bytes<T: FuseAbiData + Sized>(raw: &T) -> &[u8] {
     unsafe { as_bytes_unchecked(raw) }
 }
 
+/// Impl `FuseAbiData` trait
 macro_rules! mark_abi_type {
     ($ty: ty) => {
         unsafe impl FuseAbiData for $ty {}
     };
 }
 
+/// Impl `FuseAbiData` for sized types
 macro_rules! mark_sized_types {
     (@kernel size_check: $name: ident, $($ty:ident,)+) => {
         $(

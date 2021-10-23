@@ -42,7 +42,7 @@ pub fn setup(mount_dir: &Path, is_s3: bool) -> anyhow::Result<JoinHandle<()>> {
 
     let fs_task = smol::spawn(async move {
         async fn run_fs(mount_point: &Path, is_s3: bool) -> anyhow::Result<()> {
-            let etcd_delegate = EtcdDelegate::new(vec![TEST_ETCD_ENDPOINT.to_string()])?;
+            let etcd_delegate = EtcdDelegate::new(vec![TEST_ETCD_ENDPOINT.to_owned()])?;
             if is_s3 {
                 let fs: memfs::MemFs<memfs::S3MetaData<DoNothingImpl>> = memfs::MemFs::new(
                     TEST_VOLUME_INFO,

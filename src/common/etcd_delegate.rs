@@ -35,13 +35,13 @@ impl EtcdDelegate {
     pub fn new(etcd_address_vec: Vec<String>) -> DatenLordResult<Self> {
         let end_point = etcd_address_vec.clone();
         let etcd_rs_client = smol::block_on(Compat::new(async move {
-            etcd_client::Client::connect(etcd_client::ClientConfig {
-                endpoints: etcd_address_vec.clone(),
-                auth: None,
-                cache_enable: true,
+            etcd_client::Client::connect(etcd_client::ClientConfig::new(
+                etcd_address_vec.clone(),
+                None,
                 // TODO: cache size should come from parameter
-                cache_size: 64,
-            })
+                64,
+                true,
+            ))
             .await
             .with_context(|| {
                 format!(
@@ -216,6 +216,9 @@ impl EtcdDelegate {
     }
 
     /// Update a existing key value pair to etcd
+    /// # Panics
+    ///
+    /// Will panic if failed to get previous value
     #[inline]
     pub async fn update_existing_kv<
         T: DeserializeOwned + Serialize + Clone + Debug + Send + Sync,
@@ -233,6 +236,9 @@ impl EtcdDelegate {
     }
 
     /// Write a new key value pair to etcd
+    /// # Panics
+    ///
+    /// Will panic if key has already existed in etcd
     #[inline]
     pub async fn write_new_kv<T: DeserializeOwned + Serialize + Clone + Debug + Send + Sync>(
         &self,
@@ -273,6 +279,9 @@ impl EtcdDelegate {
     }
 
     /// Delete an existing key value pair from etcd
+    /// # Panics
+    ///
+    /// Will panic if failed to get key from etcd
     #[inline]
     pub async fn delete_exact_one_value<T: DeserializeOwned + Clone + Debug + Send + Sync>(
         &self,

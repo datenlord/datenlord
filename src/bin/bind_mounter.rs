@@ -159,8 +159,8 @@ fn main() -> DatenLordResult<()> {
             .with_context(|| format!("failed to umount {:?}", umount_path))?;
     } else {
         mount::mount::<Path, Path, OsStr, OsStr>(
-            Some(&from_path),
-            &to_path,
+            Some(from_path),
+            to_path,
             if fs_type.is_empty() {
                 None
             } else {

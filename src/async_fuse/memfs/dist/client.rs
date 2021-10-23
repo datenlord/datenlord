@@ -52,9 +52,8 @@ where
 
                 if parsed.0 {
                     return parsed.1;
-                } else {
-                    result = parsed.1;
                 }
+                result = parsed.1;
             }
         }
     }

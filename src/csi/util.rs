@@ -43,7 +43,7 @@ pub const TOPOLOGY_KEY_NODE: &str = "topology.csi.datenlord.io/node";
 /// The key of ephemeral in volume context
 pub const EPHEMERAL_KEY_CONTEXT: &str = "csi.storage.k8s.io/ephemeral";
 /// Default max volume per node, should read from input argument
-pub const MAX_VOLUMES_PER_NODE: i32 = 256;
+pub const MAX_VOLUMES_PER_NODE: i32 = 256_i32;
 /// The socket file to be binded by worker service
 pub const LOCAL_WORKER_SOCKET: &str = "unix:///tmp/worker.sock";
 /// The default path to bind mount helper command
@@ -92,7 +92,7 @@ pub fn copy_directory_recursively(
         let target_path = to_path.join(stripped_path);
         if entry_path.is_dir() {
             if !target_path.exists() {
-                fs::create_dir(&target_path)?;
+                fs::create_dir_all(&target_path)?;
             }
         } else if entry_path.is_file() {
             fs::copy(entry_path, &target_path)?;
@@ -121,7 +121,7 @@ pub fn build_create_volume_response(
         .for_each(|(topology, node)| {
             (*topology)
                 .mut_segments()
-                .insert(TOPOLOGY_KEY_NODE.to_owned(), node.to_owned());
+                .insert(TOPOLOGY_KEY_NODE.to_owned(), node.clone());
         });
     v.set_volume_id(vol_id.to_owned());
     v.set_capacity_bytes(req.get_capacity_range().get_required_bytes());
@@ -177,7 +177,7 @@ pub async fn async_fail<R>(sink: UnarySink<R>, err: DatenLordError) {
     );
     */
     let details = format!("{}", err);
-    let rs = RpcStatus::new(err, Some(details));
+    let rs = RpcStatus::with_message(err, details);
     let res = sink.fail(rs).await;
 
     if let Err(e) = res {
@@ -279,7 +279,7 @@ pub fn mount_volume_bind_path(
             Err(e) => {
                 return Err(IoErr {
                     source: e,
-                    context: vec!["bind mount helper command failed to start".to_string()],
+                    context: vec!["bind mount helper command failed to start".to_owned()],
                 });
             }
         };
@@ -351,7 +351,7 @@ pub fn umount_volume_bind_path(target_dir: &str) -> DatenLordResult<()> {
 
 /// Get ip address of node
 pub fn get_ip_of_node(node_id: &str) -> IpAddr {
-    let hostname = format!("{}:{}", node_id, 0);
+    let hostname = format!("{}:{}", node_id, 0_i32);
     let sockets = hostname.to_socket_addrs();
     let addrs: Vec<_> = sockets
         .unwrap_or_else(|_| panic!("Failed to resolve node ID={}", node_id))

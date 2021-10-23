@@ -105,7 +105,7 @@ impl ControllerImplInner {
         let volume_size = req.get_capacity_range().get_required_bytes();
         if ex_vol.get_size() != volume_size {
             return Err(VolumeAlreadyExist {
-                volume_id: vol_name.to_string(),
+                volume_id: vol_name.to_owned(),
                 context: vec![format!(
                     "volume with the same name={} already exist but with different size",
                     vol_name,
@@ -224,7 +224,7 @@ impl ControllerImplInner {
             }
         } else {
             Err(SnapshotAlreadyExist {
-                snapshot_id: snap_name.to_string(),
+                snapshot_id: snap_name.to_owned(),
                 context: vec![format!(
                     "snapshot with the same name={} exists on node ID={} \
                             but of different source volume ID",
@@ -285,14 +285,14 @@ impl ControllerImplInner {
         let vol_name = req.get_name();
         if vol_name.is_empty() {
             return Err(ArgumentInvalid {
-                context: vec!["name missing in request".to_string()],
+                context: vec!["name missing in request".to_owned()],
             });
         }
 
         let req_caps = req.get_volume_capabilities();
         if req_caps.is_empty() {
             return Err(ArgumentInvalid {
-                context: vec!["volume capabilities missing in request".to_string()],
+                context: vec!["volume capabilities missing in request".to_owned()],
             });
         }
 
@@ -305,12 +305,12 @@ impl ControllerImplInner {
         });
         if access_type_block {
             return Err(ArgumentInvalid {
-                context: vec!["access type block not supported".to_string()],
+                context: vec!["access type block not supported".to_owned()],
             });
         }
         if access_mode_multi_writer {
             return Err(ArgumentInvalid {
-                context: vec!["access mode MULTI_NODE_SINGLE_WRITER and MULTI_NODE_MULTI_WRITER not supported".to_string()],
+                context: vec!["access mode MULTI_NODE_SINGLE_WRITER and MULTI_NODE_MULTI_WRITER not supported".to_owned()],
             });
         }
 
@@ -388,7 +388,7 @@ impl Controller for ControllerImpl {
             let vol_id = req.get_volume_id();
             if vol_id.is_empty() {
                 return Err(ArgumentInvalid {
-                    context: vec!["volume ID missing in request".to_string()],
+                    context: vec!["volume ID missing in request".to_owned()],
                 });
             }
 
@@ -457,7 +457,7 @@ impl Controller for ControllerImpl {
 
         util::spawn_grpc_task(sink, async {
             Err(Unimplemented {
-                context: vec!["unimplemented".to_string()],
+                context: vec!["unimplemented".to_owned()],
             })
         });
     }
@@ -472,7 +472,7 @@ impl Controller for ControllerImpl {
 
         util::spawn_grpc_task(sink, async {
             Err(Unimplemented {
-                context: vec!["unimplemented".to_string()],
+                context: vec!["unimplemented".to_owned()],
             })
         });
     }
@@ -491,7 +491,7 @@ impl Controller for ControllerImpl {
             // Check arguments
             if vol_id.is_empty() {
                 return Err(ArgumentInvalid {
-                    context: vec!["volume ID cannot be empty".to_string()],
+                    context: vec!["volume ID cannot be empty".to_owned()],
                 });
             }
             let vol_caps = req.get_volume_capabilities();
@@ -510,13 +510,13 @@ impl Controller for ControllerImpl {
                 if !cap.has_mount() && !cap.has_block() {
                     return Err(ArgumentInvalid {
                         context: vec![
-                            "cannot have neither mount nor block access type undefined".to_string()
+                            "cannot have neither mount nor block access type undefined".to_owned()
                         ],
                     });
                 }
                 if cap.has_block() {
                     return Err(ArgumentInvalid {
-                        context: vec!["access type block is not supported".to_string()],
+                        context: vec!["access type block is not supported".to_owned()],
                     });
                 }
                 // TODO: a real driver would check the capabilities of the given volume with
@@ -589,7 +589,7 @@ impl Controller for ControllerImpl {
 
         util::spawn_grpc_task(sink, async {
             Err(Unimplemented {
-                context: vec!["unimplemented".to_string()],
+                context: vec!["unimplemented".to_owned()],
             })
         });
     }
@@ -627,14 +627,14 @@ impl Controller for ControllerImpl {
             let snap_name = req.get_name();
             if snap_name.is_empty() {
                 return Err(ArgumentInvalid {
-                    context: vec!["name missing in request".to_string()],
+                    context: vec!["name missing in request".to_owned()],
                 });
             }
             // Check source volume exists
             let src_vol_id = req.get_source_volume_id();
             if src_vol_id.is_empty() {
                 return Err(ArgumentInvalid {
-                    context: vec!["source volume ID missing in request".to_string()],
+                    context: vec!["source volume ID missing in request".to_owned()],
                 });
             }
 
@@ -698,7 +698,7 @@ impl Controller for ControllerImpl {
             let snap_id = req.get_snapshot_id();
             if snap_id.is_empty() {
                 return Err(ArgumentInvalid {
-                    context: vec!["snapshot ID missing in request".to_string()],
+                    context: vec!["snapshot ID missing in request".to_owned()],
                 });
             }
 
@@ -789,9 +789,8 @@ impl Controller for ControllerImpl {
                         );
                         if let SnapshotNotFound { .. } = e {
                             return Ok(ListSnapshotsResponse::new());
-                        } else {
-                            return Err(e);
                         }
+                        return Err(e);
                     }
                 }
             }
@@ -816,9 +815,8 @@ impl Controller for ControllerImpl {
                         );
                         if let SnapshotNotFound { .. } = e {
                             return Ok(ListSnapshotsResponse::new());
-                        } else {
-                            return Err(e);
                         }
+                        return Err(e);
                     }
                 }
             }
@@ -863,13 +861,13 @@ impl Controller for ControllerImpl {
             let vol_id = req.get_volume_id();
             if vol_id.is_empty() {
                 return Err(ArgumentInvalid {
-                    context: vec!["volume ID is not provided".to_string()],
+                    context: vec!["volume ID is not provided".to_owned()],
                 });
             }
 
             if !req.has_capacity_range() {
                 return Err(ArgumentInvalid {
-                    context: vec!["capacity range not provided".to_string()],
+                    context: vec!["capacity range not provided".to_owned()],
                 });
             }
             let cap_range = req.get_capacity_range();
@@ -923,7 +921,7 @@ impl Controller for ControllerImpl {
 
         util::spawn_grpc_task(sink, async {
             Err(Unimplemented {
-                context: vec!["unimplemented".to_string()],
+                context: vec!["unimplemented".to_owned()],
             })
         });
     }
