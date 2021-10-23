@@ -1,7 +1,7 @@
 #!/bin/bash
 
 set -x
-RUST_VERSION="1.47.0"
+RUST_VERSION="1.56.1"
 
 repo="$(echo ${DOCKER_REPO} | awk -F'/' '{print $NF}')"
 

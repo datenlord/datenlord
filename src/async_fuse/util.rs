@@ -130,7 +130,7 @@ pub fn errno() -> i32 {
 #[cfg(target_os = "linux")]
 #[inline]
 pub fn clear_errno() {
-    unsafe { *libc::__errno_location() = 0 }
+    unsafe { *libc::__errno_location() = 0_i32 }
 }
 
 /// Converts [`nix::Error`] to [`io::Error`]

@@ -169,7 +169,7 @@ impl<T: Operation + Send + Unpin + 'static> Future for IoRequest<T> {
         match step {
             Step::Preparing => 'prepare: loop {
                 if let Some(ref mut listener) = this.listener {
-                    if let Poll::Pending = Pin::new(listener).poll(cx) {
+                    if Pin::new(listener).poll(cx).is_pending() {
                         state.step = Step::Preparing;
                         return Poll::Pending;
                     }
@@ -195,7 +195,7 @@ impl<T: Operation + Send + Unpin + 'static> Future for IoRequest<T> {
 
                 unsafe {
                     let state = &mut *state;
-                    T::prepare(&mut this.operation, &mut state.storage, &mut state.sqe)
+                    T::prepare(&mut this.operation, &mut state.storage, &mut state.sqe);
                 };
 
                 state.waker = Some(cx.waker().clone());
@@ -251,7 +251,7 @@ impl<T: Operation + Send + Unpin + 'static> Drop for IoRequest<T> {
 
 /// Converts `cqe.raw_result()` to [`io::Result<u32>`]
 fn resultify(res: i32) -> io::Result<u32> {
-    if res >= 0 {
+    if res >= 0_i32 {
         Ok(better_as::number::wrapping_cast(res))
     } else {
         Err(io::Error::from_raw_os_error(res.wrapping_neg()))
@@ -398,7 +398,7 @@ impl Proactor {
 
                 unsafe {
                     SQE::overwrite_uninit(sqe, ptr::read(state.sqe.as_mut_ptr().cast()))
-                        .set_user_data(usize_to_u64(addr))
+                        .set_user_data(usize_to_u64(addr));
                 };
 
                 state.step = Step::Submitted;
@@ -428,7 +428,7 @@ impl Proactor {
                     state.res = cqe.raw_result();
                     state.step = Step::Completed;
                     if let Some(waker) = state.waker.take() {
-                        waker.wake()
+                        waker.wake();
                     }
                 }
                 Step::Dropped => {

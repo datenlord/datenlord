@@ -85,7 +85,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
             s3_backend,
             parent,
             full_path,
-            name: name.to_string(),
+            name: name.to_owned(),
             attr,
             data,
             // lookup count set to 1 by creation
@@ -122,7 +122,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
             s3_backend: Arc::clone(&parent.s3_backend),
             parent: parent.get_ino(),
             full_path,
-            name: child_name.to_string(),
+            name: child_name.to_owned(),
             attr: child_attr,
             data,
             // lookup count set to 0 for sync
@@ -388,7 +388,7 @@ pub async fn rename_fullpath_recursive<S: S3BackEnd + Send + Sync + 'static>(
                 parent
             )
             });
-            parent_node.full_path.to_owned()
+            parent_node.full_path.clone()
         };
 
         {
@@ -400,7 +400,7 @@ pub async fn rename_fullpath_recursive<S: S3BackEnd + Send + Sync + 'static>(
             )
             });
             child_node.set_parent_ino(parent);
-            let old_path = child_node.full_path.to_owned();
+            let old_path = child_node.full_path.clone();
             let new_path = match child_node.data {
                 S3NodeData::Directory(ref dir_data) => {
                     dir_data.values().into_iter().for_each(|grandchild_node| {
@@ -414,14 +414,7 @@ pub async fn rename_fullpath_recursive<S: S3BackEnd + Send + Sync + 'static>(
             };
 
             let is_reg = if let S3NodeData::RegFile(ref global_cache) = child_node.data {
-                if let Err(e) =
-                    global_cache.rename(old_path.as_str().as_bytes(), new_path.as_str().as_bytes())
-                {
-                    panic!(
-                        "failed to rename from {:?} to {:?} in global cache, error is {:?}",
-                        old_path, new_path, e
-                    );
-                }
+                global_cache.rename(old_path.as_str().as_bytes(), new_path.as_str().as_bytes());
                 true
             } else {
                 false
@@ -466,7 +459,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
     /// Get node fd
     #[inline]
     fn get_fd(&self) -> RawFd {
-        0
+        0_i32
     }
 
     /// Get parent node i-number
@@ -497,7 +490,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
     /// Set node name
     #[inline]
     fn set_name(&mut self, name: &str) {
-        self.name = name.to_string();
+        self.name = name.to_owned();
     }
 
     /// Get node type, directory or file
@@ -699,11 +692,11 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
             // insert new entry to parent directory
             let entry = DirEntry::new(
                 child_attr.ino,
-                child_symlink_name.to_string(),
+                child_symlink_name.to_owned(),
                 SFlag::S_IFLNK,
             );
             let dir_data_mut = self.get_dir_data_mut();
-            let previous_value = dir_data_mut.insert(child_symlink_name.to_string(), entry);
+            let previous_value = dir_data_mut.insert(child_symlink_name.to_owned(), entry);
             debug_assert!(previous_value.is_none()); // double check creation race
             target_path
         };
@@ -858,10 +851,10 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
         debug_assert_eq!(SFlag::S_IFDIR, child_attr.kind);
 
         // insert new entry to parent directory
-        let entry = DirEntry::new(child_attr.ino, child_dir_name.to_string(), SFlag::S_IFDIR);
+        let entry = DirEntry::new(child_attr.ino, child_dir_name.to_owned(), SFlag::S_IFDIR);
 
         let dir_data_mut = self.get_dir_data_mut();
-        let previous_value = dir_data_mut.insert(child_dir_name.to_string(), entry);
+        let previous_value = dir_data_mut.insert(child_dir_name.to_owned(), entry);
         debug_assert!(previous_value.is_none()); // double check creation race
 
         // lookup count and open count are increased to 1 by creation
@@ -972,12 +965,12 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
         };
         debug_assert_eq!(SFlag::S_IFREG, child_attr.kind);
 
-        let entry = DirEntry::new(child_attr.ino, child_file_name.to_string(), SFlag::S_IFREG);
+        let entry = DirEntry::new(child_attr.ino, child_file_name.to_owned(), SFlag::S_IFREG);
 
         let dir_data_mut = self.get_dir_data_mut();
         // insert new entry to parent directory
         // TODO: support thread-safe
-        let previous_value = dir_data_mut.insert(child_file_name.to_string(), entry);
+        let previous_value = dir_data_mut.insert(child_file_name.to_owned(), entry);
         debug_assert!(previous_value.is_none()); // double check creation race
 
         self.update_mtime_ctime_to_now().await;
@@ -1062,18 +1055,13 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
                     "load_data() successfully load {} byte file content data",
                     read_size
                 );
-                if let Err(e) = global_cache.write_or_update(
+                global_cache.write_or_update(
                     self.full_path.as_bytes(),
                     aligned_offset,
                     read_size,
                     &file_data_vec,
                     false,
-                ) {
-                    panic!(
-                        "failed to write or update file {:?} to global cache, error is {:?}",
-                        self.full_path, e
-                    );
-                }
+                );
                 Ok(read_size)
             }
             S3NodeData::SymLink(..) => {
@@ -1223,18 +1211,13 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
             S3NodeData::RegFile(ref file_data) => file_data,
         };
 
-        if let Err(e) = cache.write_or_update(
+        cache.write_or_update(
             self.full_path.as_bytes(),
             offset.cast(),
             data.len(),
             data.as_slice(),
             true,
-        ) {
-            panic!(
-                "failed to write_or_update {:?} to cache, error is {:?}",
-                self.full_path, e
-            );
-        }
+        );
 
         let written_size = data.len();
 

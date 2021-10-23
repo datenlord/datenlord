@@ -104,12 +104,11 @@ impl CacheServer {
                                     panic!("failed to send turnoff reply, error is {}", e)
                                 });
                                 return true;
-                            } else {
-                                panic!(
-                                    "should only receive turnoff request from local, request is {:?}",
-                                    request
-                                );
                             }
+                            panic!(
+                                "should only receive turnoff request from local, request is {:?}",
+                                request
+                            );
                         } else {
                             let cache_clone = Arc::<GlobalCache>::clone(&cache);
                             let meta_clone = Arc::<S3MetaData<S>>::clone(&meta);
@@ -201,7 +200,7 @@ async fn dispatch<S: S3BackEnd + Send + Sync + 'static>(
             Ok(true)
         }
         DistRequest::GetInodeNum => {
-            get_inode_num(stream, meta).await?;
+            get_inode_num(stream, &meta)?;
             Ok(true)
         }
     }
@@ -257,7 +256,7 @@ async fn load_dir<S: S3BackEnd + Send + Sync + 'static>(
 ) -> anyhow::Result<()> {
     let inum_opt = {
         let path2inum = meta.path2inum.read().await;
-        path2inum.get(path).cloned()
+        path2inum.get(path).copied()
     };
 
     match inum_opt {
@@ -316,7 +315,7 @@ async fn remove_dir_entry<S: S3BackEnd + Send + Sync + 'static>(
 ) -> anyhow::Result<()> {
     let parent_inum_opt = {
         let path2inum = meta.path2inum.read().await;
-        path2inum.get(&args.parent_path).cloned()
+        path2inum.get(&args.parent_path).copied()
     };
     if let Some(parent_inum) = parent_inum_opt {
         if let Some(parent_node) = meta.cache.write().await.get_mut(&parent_inum) {
@@ -335,7 +334,7 @@ async fn get_attr<S: S3BackEnd + Send + Sync + 'static>(
 ) -> anyhow::Result<()> {
     let inum_opt = {
         let path2inum = meta.path2inum.read().await;
-        path2inum.get(path).cloned()
+        path2inum.get(path).copied()
     };
     if let Some(inum) = inum_opt {
         let cache = meta.cache.read().await;
@@ -344,13 +343,12 @@ async fn get_attr<S: S3BackEnd + Send + Sync + 'static>(
             debug!("Success get attr for path {} .", path);
             tcp::write_message(stream, &response::get_attr(&attr))?;
             return Ok(());
-        } else {
-            debug!(
-                "inum {} is not find in meta.cache, inode collection {:?}.",
-                inum,
-                cache.keys()
-            );
         }
+        debug!(
+            "inum {} is not find in meta.cache, inode collection {:?}.",
+            inum,
+            cache.keys()
+        );
     } else {
         debug!("path {} is not find in path2inum.", path,);
     }
@@ -368,7 +366,7 @@ async fn push_attr<S: S3BackEnd + Send + Sync + 'static>(
 ) -> anyhow::Result<()> {
     let inum_opt = {
         let path2inum = meta.path2inum.read().await;
-        path2inum.get(path).cloned()
+        path2inum.get(path).copied()
     };
     if let Some(inum) = inum_opt {
         if let Some(node) = meta.cache.write().await.get_mut(&inum) {
@@ -421,9 +419,9 @@ async fn remove<S: S3BackEnd + Send + Sync + 'static>(
 }
 
 /// Handle `GetInodeNum` request
-async fn get_inode_num<S: S3BackEnd + Send + Sync + 'static>(
+fn get_inode_num<S: S3BackEnd + Send + Sync + 'static>(
     stream: &mut TcpStream,
-    meta: Arc<S3MetaData<S>>,
+    meta: &Arc<S3MetaData<S>>,
 ) -> anyhow::Result<()> {
     let inum = meta.cur_inum();
     tcp::write_u32(stream, inum)?;

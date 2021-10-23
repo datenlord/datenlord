@@ -38,8 +38,11 @@
     clippy::multiple_crate_versions, // multi-version dependency crates is not able to fix
     clippy::panic, // allow debug_assert, panic in production code
     // clippy::panic_in_result_fn,
-    clippy::unknown_clippy_lints,  // allow rustc and clippy verison mismatch
-    clippy::clippy::missing_errors_doc, // TODO: add error docs
+    clippy::missing_errors_doc, // TODO: add error docs
+    clippy::exhaustive_structs,
+    clippy::exhaustive_enums,
+    clippy::missing_panics_doc, // TODO: add panic docs
+    clippy::panic_in_result_fn,
 )]
 
 pub mod common;

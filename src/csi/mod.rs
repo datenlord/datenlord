@@ -122,7 +122,7 @@ pub fn build_grpc_node_server(
     remove_socket_file(end_point);
 
     let identity_service = csi_grpc::create_identity(IdentityImpl::new(
-        driver_name.to_string(),
+        driver_name.to_owned(),
         util::CSI_PLUGIN_VERSION.to_owned(),
     ));
     let node_service = csi_grpc::create_node(NodeImpl::new(meta_data));
@@ -147,7 +147,7 @@ pub fn build_grpc_controller_server(
     remove_socket_file(end_point);
 
     let identity_service = csi_grpc::create_identity(IdentityImpl::new(
-        driver_name.to_string(),
+        driver_name.to_owned(),
         util::CSI_PLUGIN_VERSION.to_owned(),
     ));
     let controller_service = csi_grpc::create_controller(ControllerImpl::new(meta_data));
@@ -192,9 +192,9 @@ fn run_single_server_helper(srv: &mut Server) {
 fn run_async_grpc_servers(servers: &mut [Server]) {
     /// The future to run `gRPC` servers
     async fn run_servers(servers: &mut [Server]) {
-        servers.iter_mut().for_each(|mut server| {
+        for mut server in servers.iter_mut() {
             run_single_server_helper(&mut server);
-        });
+        }
         let f = futures::future::pending::<()>();
         f.await;
     }
@@ -205,9 +205,9 @@ fn run_async_grpc_servers(servers: &mut [Server]) {
 
 /// Run `gRPC` servers synchronuously
 fn run_sync_grpc_servers(servers: &mut [Server]) {
-    servers.iter_mut().for_each(|mut server| {
+    for mut server in servers.iter_mut() {
         run_single_server_helper(&mut server);
-    });
+    }
     loop {
         std::thread::park();
     }
@@ -325,13 +325,13 @@ mod test {
         let ephemeral = false;
         let node = DatenLordNode::new(
             node_id.to_owned(),
-            ip_address.to_owned(),
+            ip_address,
             worker_port,
             util::MAX_VOLUME_STORAGE_CAPACITY,
             util::MAX_VOLUMES_PER_NODE,
         );
         // Register Node metadata to etcd, but return Controller metadata for test
-        let _ = MetaData::new(
+        let _metadata = MetaData::new(
             data_dir.to_owned(),
             ephemeral,
             RunAsRole::Node,
@@ -457,7 +457,7 @@ mod test {
         let node_end_point = NODE_END_POINT.to_owned();
         let worker_port = 0;
         let node_id = DEFAULT_NODE_NAME.to_owned();
-        let ip_address = DEFAULT_NODE_IP.to_owned();
+        let ip_address = DEFAULT_NODE_IP;
         let driver_name = util::CSI_PLUGIN_NAME.to_owned();
         let data_dir = DATA_DIR.to_owned();
         let etcd_address_vec = get_etcd_address_vec();
@@ -699,7 +699,7 @@ mod test {
     }
 
     fn test_list_volumes(client: &ControllerClient) -> DatenLordResult<()> {
-        let vol_names = (1..5)
+        let vol_names = (1_i32..5_i32)
             .map(|idx| format!("tmp_volume_name_{}", idx))
             .collect::<Vec<_>>();
 
@@ -714,7 +714,7 @@ mod test {
 
         let mut volumes = Vec::new();
         for vol_name in &vol_names {
-            creat_vol_req.set_name((*vol_name).to_owned());
+            creat_vol_req.set_name((*vol_name).clone());
             let creat_resp = create_volume(client, &creat_vol_req)
                 .add_context("failed to get CreateVolumeResponse")?;
             let vol = creat_resp.get_volume();
@@ -744,7 +744,7 @@ mod test {
 
         // List volume from starting position as 1 and max entries as 1
         let starting_pos: usize = 1;
-        let max_entries = 2;
+        let max_entries = 2_i32;
         list_vol_req.set_starting_token(starting_pos.to_string());
         list_vol_req.set_max_entries(max_entries);
         let list_vol_resp2 = list_volumes(client, &list_vol_req)
@@ -772,7 +772,7 @@ mod test {
         // Delete remaining volumes
         let mut del_vol_req = DeleteVolumeRequest::new();
         for vol_id in volumes {
-            del_vol_req.set_volume_id(vol_id.to_owned());
+            del_vol_req.set_volume_id(vol_id.clone());
             let _del_vol_resp3 = delete_volume(client, &del_vol_req).with_context(|| {
                 format!(
                     "failed to get DeleteVolumeResponse when delete volume ID={}",
@@ -924,9 +924,8 @@ mod test {
             .add_context("failed to get CreateSnapshotResponse")?;
 
         let snapshot = creat_snap_resp.get_snapshot();
-        assert_eq!(
+        assert!(
             snapshot.get_ready_to_use(),
-            true,
             "snapshot should be ready to use",
         );
         assert_eq!(
@@ -1026,9 +1025,8 @@ mod test {
             .add_context("failed to get CreateSnapshotResponse")?;
 
         let snapshot1 = creat_snap_resp1.get_snapshot();
-        assert_eq!(
+        assert!(
             snapshot1.get_ready_to_use(),
-            true,
             "snapshot should be ready to use",
         );
         assert_eq!(
@@ -1042,9 +1040,8 @@ mod test {
             .add_context("failed to get CreateSnapshotResponse when create twice")?;
 
         let snapshot2 = creat_snap_resp2.get_snapshot();
-        assert_eq!(
+        assert!(
             snapshot2.get_ready_to_use(),
-            true,
             "snapshot should be ready to use",
         );
         assert_eq!(
@@ -1111,9 +1108,8 @@ mod test {
             util::MAX_VOLUME_STORAGE_CAPACITY,
             "volume capacity not match after expend",
         );
-        assert_eq!(
+        assert!(
             exp_resp.get_node_expansion_required(),
-            true,
             "CO should call node expand volume after controller expand volume",
         );
 
@@ -1152,9 +1148,8 @@ mod test {
             .add_context("failed to get CreateSnapshotResponse")?;
 
         let snapshot1 = creat_snap_resp1.get_snapshot();
-        assert_eq!(
+        assert!(
             snapshot1.get_ready_to_use(),
-            true,
             "snapshot should be ready to use",
         );
         assert_eq!(

@@ -333,7 +333,7 @@ mod tests {
                 de.fetch_all_as_slice::<u32>().unwrap_err(),
                 DeserializeError::NotEnough
             );
-            assert_eq!(de.bytes.len(), 5)
+            assert_eq!(de.bytes.len(), 5);
         }
     }
 

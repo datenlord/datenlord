@@ -204,7 +204,7 @@ impl DefaultNode {
     ) -> Self {
         Self {
             parent,
-            name: name.to_string(),
+            name: name.to_owned(),
             full_path,
             attr,
             data,
@@ -321,7 +321,7 @@ impl DefaultNode {
             }
         };
 
-        let child_symlink_name_string = child_symlink_name.to_string();
+        let child_symlink_name_string = child_symlink_name.to_owned();
         smol::unblock(move || {
             fcntl::openat(
                 dir_fd,
@@ -506,7 +506,7 @@ impl Node for DefaultNode {
     /// Set node name
     #[inline]
     fn set_name(&mut self, name: &str) {
-        self.name = name.to_string();
+        self.name = name.to_owned();
     }
 
     /// Get node type, directory or file
@@ -710,7 +710,7 @@ impl Node for DefaultNode {
             "create_child_symlink() cannot create duplicated symlink name={:?}",
             child_symlink_name,
         );
-        let child_symlink_name_string = child_symlink_name.to_string();
+        let child_symlink_name_string = child_symlink_name.to_owned();
         let target_path_clone = target_path.clone();
         smol::unblock(move || {
             unistd::symlinkat(
@@ -746,10 +746,10 @@ impl Node for DefaultNode {
             // insert new entry to parent directory
             // TODO: support thread-safe
             let previous_value = dir_data.insert(
-                child_symlink_name.to_string(),
+                child_symlink_name.to_owned(),
                 DirEntry::new(
                     child_attr.ino,
-                    child_symlink_name.to_string(),
+                    child_symlink_name.to_owned(),
                     SFlag::S_IFLNK,
                 ),
             );
@@ -798,7 +798,7 @@ impl Node for DefaultNode {
         debug_assert_eq!(SFlag::S_IFLNK, child_attr.kind);
 
         let target_path = {
-            let child_symlink_name_string = child_symlink_name.to_string();
+            let child_symlink_name_string = child_symlink_name.to_owned();
             let target_path_osstr =
                 smol::unblock(move || fcntl::readlinkat(fd, child_symlink_name_string.as_str()))
                     .await
@@ -877,7 +877,7 @@ impl Node for DefaultNode {
             "open_child_dir_helper() cannot create duplicated directory name={:?}",
             child_dir_name
         );
-        let child_dir_name_string = child_dir_name.to_string();
+        let child_dir_name_string = child_dir_name.to_owned();
         smol::unblock(move || stat::mkdirat(fd, child_dir_name_string.as_str(), mode))
             .await
             .context(format!(
@@ -904,8 +904,8 @@ impl Node for DefaultNode {
         // insert new entry to parent directory
         // TODO: support thread-safe
         let previous_value = dir_data.insert(
-            child_dir_name.to_string(),
-            DirEntry::new(child_attr.ino, child_dir_name.to_string(), SFlag::S_IFDIR),
+            child_dir_name.to_owned(),
+            DirEntry::new(child_attr.ino, child_dir_name.to_owned(), SFlag::S_IFDIR),
         );
         debug_assert!(previous_value.is_none()); // double check creation race
 
@@ -938,7 +938,7 @@ impl Node for DefaultNode {
     ) -> anyhow::Result<Self> {
         let ino = self.get_ino();
         let fd = self.fd;
-        let child_file_name_string = child_file_name.to_string();
+        let child_file_name_string = child_file_name.to_owned();
         let mode = Mode::empty();
         let child_fd =
             smol::unblock(move || fcntl::openat(fd, child_file_name_string.as_str(), oflags, mode))
@@ -986,7 +986,7 @@ impl Node for DefaultNode {
             child_file_name
         );
         debug_assert!(oflags.contains(OFlag::O_CREAT));
-        let child_file_name_string = child_file_name.to_string();
+        let child_file_name_string = child_file_name.to_owned();
         let child_fd =
             smol::unblock(move || fcntl::openat(fd, child_file_name_string.as_str(), oflags, mode))
                 .await
@@ -1005,8 +1005,8 @@ impl Node for DefaultNode {
         // insert new entry to parent directory
         // TODO: support thread-safe
         let previous_value = dir_data.insert(
-            child_file_name.to_string(),
-            DirEntry::new(child_attr.ino, child_file_name.to_string(), SFlag::S_IFREG),
+            child_file_name.to_owned(),
+            DirEntry::new(child_attr.ino, child_file_name.to_owned(), SFlag::S_IFREG),
         );
         debug_assert!(previous_value.is_none()); // double check creation race
 
@@ -1062,15 +1062,13 @@ impl Node for DefaultNode {
                     read_size
                 );
 
-                if let Err(e) = global_cache.write_or_update(
+                global_cache.write_or_update(
                     self.full_path.as_bytes(),
                     aligned_offset,
                     read_size,
                     &file_data_vec,
                     false,
-                ) {
-                    panic!("writing data error while loading data: {}", e);
-                }
+                );
 
                 Ok(read_size)
             }
@@ -1127,7 +1125,7 @@ impl Node for DefaultNode {
                 self.get_ino(),
             );
         });
-        let child_name_string = child_name.to_string();
+        let child_name_string = child_name.to_owned();
         let fd = self.fd;
         // delete from disk and close the handler
         match removed_entry.entry_type() {
@@ -1254,15 +1252,13 @@ impl Node for DefaultNode {
             DefaultNodeData::RegFile(ref file_data) => file_data,
         };
 
-        if let Err(e) = cache.write_or_update(
+        cache.write_or_update(
             self.full_path.as_bytes(),
             offset.cast(),
             data.len(),
             data.as_slice(),
             true,
-        ) {
-            panic!("writing cache error while writing data: {}", e);
-        }
+        );
 
         let fcntl_oflags = fcntl::FcntlArg::F_SETFL(oflags);
         let fd = fh.cast();
@@ -1527,12 +1523,7 @@ pub async fn rename_fullpath_recursive(
             };
 
             if let DefaultNodeData::RegFile(ref global_cache) = child_node.data {
-                if let Err(e) = global_cache.rename(old_path.as_bytes(), new_path.as_bytes()) {
-                    panic!(
-                        "rename {:?} to {:?} in cache should not fail, error: {}",
-                        old_path, new_path, e
-                    );
-                }
+                global_cache.rename(old_path.as_bytes(), new_path.as_bytes());
             }
             child_node.set_full_path(new_path);
         }

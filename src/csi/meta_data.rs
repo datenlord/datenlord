@@ -134,7 +134,7 @@ impl MetaData {
                 RunAsRole::Controller => md.register_to_etcd(CONTROLLER_PREFIX).await?,
                 RunAsRole::Node => md.register_to_etcd(NODE_PREFIX).await?,
                 RunAsRole::SchedulerExtender => {
-                    md.register_to_etcd(SCHEDULER_EXTENDER_PREFIX).await?
+                    md.register_to_etcd(SCHEDULER_EXTENDER_PREFIX).await?;
                 }
                 RunAsRole::AsyncFuse => (),
             }
@@ -163,7 +163,7 @@ impl MetaData {
         // TODO: increase concurrent queue size
         let env = Arc::new(Environment::new(1));
         let work_address = if node.worker_port == 0 {
-            util::LOCAL_WORKER_SOCKET.to_string()
+            util::LOCAL_WORKER_SOCKET.to_owned()
         } else {
             format!("{}:{}", node.ip_address, node.worker_port)
         };
@@ -242,7 +242,7 @@ impl MetaData {
                     .unwrap_or_else(|| {
                         panic!("volume ID={} has an empty node id vector", volume_id)
                     })
-                    .to_owned()
+                    .clone()
             } else {
                 panic!("failed to find snapshot and volume from content source");
             };
@@ -340,7 +340,7 @@ impl MetaData {
             .etcd_delegate
             .get_list(&format!("{}/", NODE_PREFIX))
             .await?;
-        Ok(nodes.iter().map(|node| node.node_id.to_owned()).collect())
+        Ok(nodes.iter().map(|node| node.node_id.clone()).collect())
     }
 
     /// Is volume data ephemeral or not
@@ -361,7 +361,7 @@ impl MetaData {
             .await;
         match get_res {
             Ok(val) => val.ok_or(NodeNotFound {
-                node_id: node_id.to_string(),
+                node_id: node_id.to_owned(),
                 context: vec![format!("Node ID={} is not found in etcd", node_id)],
             }),
             Err(e) => {
@@ -379,7 +379,7 @@ impl MetaData {
             .await;
         match get_res {
             Ok(val) => val.ok_or(SnapshotNotFound {
-                snapshot_id: snap_id.to_string(),
+                snapshot_id: snap_id.to_owned(),
                 context: vec![format!("Snapshot ID={} is not found in etcd", snap_id)],
             }),
             Err(e) => {
@@ -406,7 +406,7 @@ impl MetaData {
                 } else {
                     debug!("failed to find snapshot name={} from etcd", snap_name);
                     return Err(SnapshotNotFound {
-                        snapshot_id: snap_name.to_string(),
+                        snapshot_id: snap_name.to_owned(),
                         context: vec![format!("Snapshot name={} is not found in etcd", snap_name)],
                     });
                 }
@@ -445,7 +445,7 @@ impl MetaData {
                         src_volume_id
                     );
                     return Err(SnapshotNotFound {
-                        snapshot_id: "".to_string(),
+                        snapshot_id: "".to_owned(),
                         context: vec![format!(
                             "failed to find snapshot by source volume ID={} from etcd",
                             src_volume_id
@@ -491,13 +491,13 @@ impl MetaData {
             i
         } else {
             return Err(StartingTokenInvalid {
-                starting_token: starting_token.to_string(),
+                starting_token: starting_token.to_owned(),
                 context: vec![format!("invalid starting position {}", starting_token)],
             });
         };
         if starting_pos > 0 && starting_pos >= total_num {
             return Err(StartingTokenInvalid {
-                starting_token: starting_token.to_string(),
+                starting_token: starting_token.to_owned(),
                 context: vec![format!(
                     "invalid starting token={}, larger than or equal to the list size={} of volumes",
                     starting_token,
@@ -512,7 +512,7 @@ impl MetaData {
             total_num, starting_pos,
         );
 
-        let num_to_list = if max_entries > 0 {
+        let num_to_list = if max_entries > 0_i32 {
             if remaining < max_entries.cast() {
                 remaining
             } else {
@@ -536,8 +536,8 @@ impl MetaData {
                     return None;
                 }
                 let (end_idx_not_list, ofen) = starting_pos.overflowing_add(num_to_list);
-                debug_assert_eq!(
-                    ofen, false,
+                debug_assert!(
+                    !ofen,
                     "starting_pos={} add num_to_list={} overflowed",
                     starting_pos, num_to_list,
                 );
@@ -626,7 +626,7 @@ impl MetaData {
             .await
         {
             Ok(val) => val.ok_or(VolumeNotFound {
-                volume_id: vol_id.to_string(),
+                volume_id: vol_id.to_owned(),
                 context: vec![format!("Volume ID={} is not found in etcd", vol_id)],
             }),
             Err(e) => {
@@ -649,7 +649,7 @@ impl MetaData {
                 } else {
                     debug!("volume with name={} is not found in etcd", vol_name,);
                     return Err(VolumeNotFound {
-                        volume_id: vol_name.to_string(),
+                        volume_id: vol_name.to_owned(),
                         context: vec![format!(
                             "Volume with name={} is not found in etcd",
                             vol_name
@@ -958,7 +958,7 @@ impl MetaData {
                 src_snapshot.snap_id, src_snapshot.snap_name
             );
             return Err(SnapshotNotReady {
-                snapshot_id: src_snapshot.snap_id.to_owned(),
+                snapshot_id: src_snapshot.snap_id.clone(),
                 context: vec![],
             });
         }
@@ -983,8 +983,8 @@ impl MetaData {
             "the volume of mount access type should have a directory path: {:?}",
             dst_path,
         );
-        let snap_path_owned = src_snapshot.snap_path.to_owned();
-        let dst_path_owned = dst_path.to_owned();
+        let snap_path_owned = src_snapshot.snap_path.clone();
+        let dst_path_owned = dst_path.clone();
         smol::unblock(move || Self::decompress_snapshot(&snap_path_owned, &dst_path_owned)).await?;
 
         Ok(())
@@ -1022,8 +1022,8 @@ impl MetaData {
             });
         }
 
-        let vol_path_owned = src_volume.vol_path.to_owned();
-        let dst_path_owned = dst_path.to_owned();
+        let vol_path_owned = src_volume.vol_path.clone();
+        let dst_path_owned = dst_path.clone();
         let copy_res = smol::unblock(move || {
             util::copy_directory_recursively(
                 &vol_path_owned,
@@ -1296,7 +1296,7 @@ impl MetaData {
                 vol_id, e,
             ),
         };
-        let vol_path_owned = vol_path.to_owned();
+        let vol_path_owned = vol_path.clone();
         let target_path_owned = target_path.to_owned();
         let fs_type_owned = fs_type.to_owned();
         let mount_options_owned = mount_options.to_owned();
@@ -1335,14 +1335,13 @@ impl MetaData {
                 }
             }
             return Err(bind_err);
-        } else {
-            info!(
-                "successfully bind mounted volume path={:?} to target path={:?}",
-                vol_path, target_dir,
-            );
-            self.save_volume_bind_mount_path(vol_id, target_dir, bind_mount_mode)
-                .await?;
         }
+        info!(
+            "successfully bind mounted volume path={:?} to target path={:?}",
+            vol_path, target_dir,
+        );
+        self.save_volume_bind_mount_path(vol_id, target_dir, bind_mount_mode)
+            .await?;
 
         Ok(())
     }
@@ -1420,15 +1419,15 @@ impl MetaData {
         };
 
         let snap_path = self.get_snapshot_path(snap_id);
-        let snap_path_owned = snap_path.to_owned();
-        let src_vol_owned = src_vol.to_owned();
+        let snap_path_owned = snap_path.clone();
+        let src_vol_owned = src_vol.clone();
 
         smol::unblock(move || Self::compress_volume(&src_vol_owned, &snap_path_owned)).await?;
 
         let now = smol::unblock(std::time::SystemTime::now).await;
         let snapshot = DatenLordSnapshot::new(
             snap_name.to_owned(),
-            snap_id.to_string(),
+            snap_id.to_owned(),
             src_vol_id.to_owned(),
             self.get_node_id().to_owned(),
             snap_path,
@@ -1524,21 +1523,17 @@ impl From<VolumeContentSource_oneof_type> for VolumeSource {
     }
 }
 
-impl Into<VolumeContentSource_oneof_type> for VolumeSource {
-    fn into(self) -> VolumeContentSource_oneof_type {
-        match self {
-            Self::Snapshot(snap_id) => {
-                VolumeContentSource_oneof_type::snapshot(VolumeContentSource_SnapshotSource {
-                    snapshot_id: snap_id,
-                    ..VolumeContentSource_SnapshotSource::default()
-                })
-            }
-            Self::Volume(vol_id) => {
-                VolumeContentSource_oneof_type::volume(VolumeContentSource_VolumeSource {
-                    volume_id: vol_id,
-                    ..VolumeContentSource_VolumeSource::default()
-                })
-            }
+impl From<VolumeSource> for VolumeContentSource_oneof_type {
+    fn from(vs: VolumeSource) -> Self {
+        match vs {
+            VolumeSource::Snapshot(s) => Self::snapshot(VolumeContentSource_SnapshotSource {
+                snapshot_id: s,
+                ..VolumeContentSource_SnapshotSource::default()
+            }),
+            VolumeSource::Volume(v) => Self::volume(VolumeContentSource_VolumeSource {
+                volume_id: v,
+                ..VolumeContentSource_VolumeSource::default()
+            }),
         }
     }
 }

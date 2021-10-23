@@ -4,7 +4,7 @@ on:
     branches: [master]
 
 env:
-  CI_RUST_TOOLCHAIN: 1.47.0
+  CI_RUST_TOOLCHAIN: 1.56.1
   CONTROLLER_SOCKET_FILE: /tmp/controller.sock
   BIND_MOUNTER: target/debug/bind_mounter
   ETCD_CONTAINER_NAME: etcd
@@ -87,7 +87,7 @@ jobs:
           export ETCD_END_POINT=127.0.0.1:2379
           export BIND_MOUNTER=`realpath $BIND_MOUNTER`
           cargo test |& tee datenlord_cargo_test.log
-          export TEST_CMD=`grep Running datenlord_cargo_test.log | grep datenlord | awk '{print $2}'`
+          export TEST_CMD=`grep Running datenlord_cargo_test.log | grep datenlord | awk -F"[()]" '{print $2}'`
           sudo $TEST_CMD
 
   csi-sanity-test:

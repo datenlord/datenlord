@@ -27,6 +27,7 @@ lazy_static! {
 ///
 /// # Errors
 /// Returns [`hyper::Error`]
+#[allow(clippy::unused_async)] // Hyper requires an async function
 pub async fn serve_req(_req: Request<Body>) -> Result<Response<Body>, hyper::Error> {
     let encoder = TextEncoder::new();
 

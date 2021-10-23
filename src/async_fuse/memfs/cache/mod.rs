@@ -1,7 +1,6 @@
 //! This is the cache implementation for the memfs
 
 use crate::async_fuse::fuse::fuse_reply::{AsIoVec, CouldBeAsIoVecList};
-use crate::common::error::DatenLordResult;
 use aligned_utils::bytes::AlignedBytes;
 use lockfree_cuckoohash::{pin, LockFreeCuckooHash as HashMap};
 use log::debug;
@@ -132,16 +131,11 @@ impl GlobalCache {
     }
 
     /// Currently just remove the `old_key` cache
-    #[allow(dead_code)]
-    pub(crate) fn rename(&self, old_key: &[u8], _new_key: &[u8]) -> DatenLordResult<()> {
+    pub(crate) fn rename(&self, old_key: &[u8], _new_key: &[u8]) {
         let guard = pin();
 
-        match self.inner.get(old_key, &guard) {
-            None => Ok(()),
-            Some(_) => {
-                let _ = self.inner.remove(old_key);
-                Ok(())
-            }
+        if self.inner.get(old_key, &guard).is_some() {
+            let _ = self.inner.remove(old_key);
         }
     }
 
@@ -259,7 +253,7 @@ impl GlobalCache {
                 }
                 None => {
                     for _ in start_index..end_index {
-                        result.push(IoMemBlock::new(None, 0, 0))
+                        result.push(IoMemBlock::new(None, 0, 0));
                     }
                 }
             }
@@ -384,7 +378,7 @@ impl GlobalCache {
             match i {
                 Index::Point(p) => {
                     if let Some(index) = check_fn(p) {
-                        result.push(Index::Point(index))
+                        result.push(Index::Point(index));
                     } else {
                         all_hit = false;
                     }
@@ -487,7 +481,7 @@ impl GlobalCache {
     ///
     /// 1. `offset` be `MemoryBlock` aligned.
     /// 2. `len` should be multiple times of `MemoryBlock` Size unless it contains the file's last `MemoryBlock`.
-    #[allow(dead_code, clippy::too_many_lines)]
+    #[allow(clippy::too_many_lines)]
     pub(crate) fn write_or_update(
         &self,
         file_name: &[u8],
@@ -495,7 +489,7 @@ impl GlobalCache {
         len: usize,
         buf: &[u8],
         overwrite: bool,
-    ) -> DatenLordResult<()> {
+    ) {
         let guard = pin();
         let file_cache = if let Some(cache) = self.inner.get(file_name, &guard) {
             cache
@@ -530,7 +524,7 @@ impl GlobalCache {
         };
 
         if len == 0 {
-            return Ok(());
+            return;
         }
 
         let bucket_size = self.bucket_size_in_block.overflow_mul(self.block_size);
@@ -584,13 +578,12 @@ impl GlobalCache {
                             panic!("should not reach here, buf out of range in cache write")
                         }),
                     );
-                    have_read = end;
                 } else {
                     block.overwrite((*buf).get(have_read..end).unwrap_or_else(|| {
                         panic!("should not reach here, buf out of range in cache write")
                     }));
-                    have_read = end;
                 }
+                have_read = end;
             }
         };
 
@@ -680,8 +673,6 @@ impl GlobalCache {
             self.size
                 .fetch_sub(dealloc_cnt.overflow_mul(self.block_size), Ordering::Relaxed);
         }
-
-        Ok(())
     }
 
     /// Remove file cache
@@ -725,7 +716,7 @@ fn now_monotonic() -> i64 {
         tv_nsec: 0,
     };
     let ret = unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC_COARSE, &mut time) };
-    assert!(ret == 0);
+    assert!(ret == 0_i32);
     time.tv_sec
         .overflow_mul(1000)
         .overflow_add(time.tv_nsec.overflow_div(1_000_000))
@@ -743,7 +734,7 @@ impl Hash for MemBlockBucket {
     }
 }
 
-impl PartialEq<MemBlockBucket> for MemBlockBucket {
+impl PartialEq<Self> for MemBlockBucket {
     fn eq(&self, other: &Self) -> bool {
         (*self.inner).data_ptr() == (*other.inner).data_ptr()
     }
@@ -961,7 +952,7 @@ mod test {
     fn test_get_empty_cache() {
         let global = GlobalCache::new();
         let cache = global.get_file_cache(b"test_file", 0, 1024);
-        assert!(cache.is_empty())
+        assert!(cache.is_empty());
     }
 
     #[test]
@@ -969,9 +960,7 @@ mod test {
         let global = GlobalCache::new();
         let file_name = "test_file";
         let content = AlignedBytes::new_from_slice(&[b'a'], 1);
-        let result = global.write_or_update(file_name.as_bytes(), 0, 1, &content, true);
-
-        assert!(result.is_ok());
+        global.write_or_update(file_name.as_bytes(), 0, 1, &content, true);
 
         let cache = global.get_file_cache(file_name.as_bytes(), 0, 1);
         assert_eq!(cache.len(), 1);
@@ -997,14 +986,13 @@ mod test {
         let global = GlobalCache::new();
         let file_name = "test_file";
         let content = AlignedBytes::new_from_slice(&[b'a'], 1);
-        let result = global.write_or_update(
+        global.write_or_update(
             file_name.as_bytes(),
             MEMORY_BLOCK_SIZE_IN_BYTE,
             1,
             &content,
             true,
         );
-        assert!(result.is_ok());
 
         let cache = global.get_file_cache(file_name.as_bytes(), 0, MEMORY_BLOCK_SIZE_IN_BYTE + 1);
         assert_eq!(cache.len(), 2);
@@ -1034,8 +1022,7 @@ mod test {
         let global = GlobalCache::new();
         let file_name = "test_file";
         let content = AlignedBytes::new_from_slice(&[b'a'], 1);
-        let result = global.write_or_update(file_name.as_bytes(), 1, 1, &content, true);
-        assert!(result.is_ok());
+        global.write_or_update(file_name.as_bytes(), 1, 1, &content, true);
 
         let cache = global.get_file_cache(file_name.as_bytes(), 0, 2);
         assert_eq!(cache.len(), 1);
@@ -1061,18 +1048,16 @@ mod test {
         let global = GlobalCache::new_with_capacity(MEMORY_BLOCK_SIZE_IN_BYTE);
         let file_name = "test_file";
         let block_one = AlignedBytes::new_from_slice(&[b'a'], 1);
-        let result = global.write_or_update(file_name.as_bytes(), 0, 1, &block_one, true);
-        assert!(result.is_ok());
+        global.write_or_update(file_name.as_bytes(), 0, 1, &block_one, true);
 
         let block_two = AlignedBytes::new_from_slice(&[b'b'], 1);
-        let result = global.write_or_update(
+        global.write_or_update(
             file_name.as_bytes(),
             MEMORY_BUCKET_SIZE_IN_BYTE,
             1,
             &block_two,
             true,
         );
-        assert!(result.is_ok());
 
         // First cache should be evicted
         let cache = global.get_file_cache(file_name.as_bytes(), 0, MEMORY_BUCKET_SIZE_IN_BYTE + 1);

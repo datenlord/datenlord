@@ -88,9 +88,9 @@ fn test_dir_manipulation_nix_way(mount_dir: &Path) -> anyhow::Result<()> {
     }
     unistd::mkdir(&dir_path, dir_mode)?;
 
-    let repeat_times = 100;
+    let repeat_times = 100_i32;
     let mut sub_dirs = HashSet::new();
-    for i in 0..repeat_times {
+    for i in 0_i32..repeat_times {
         let sub_dir_name = format!("test_sub_dir_{}", i);
         let sub_dir_path = dir_path.join(&sub_dir_name);
         unistd::mkdir(&sub_dir_path, dir_mode)?;
@@ -170,7 +170,7 @@ fn test_deferred_deletion(mount_dir: &Path) -> anyhow::Result<()> {
         read_size,
         FILE_CONTENT.len().overflow_mul(repeat_times),
     );
-    let str_content: String = iter::repeat(FILE_CONTENT).take(repeat_times).collect();
+    let str_content: String = FILE_CONTENT.repeat(repeat_times);
     assert_eq!(
         content, str_content,
         "the file read result is not the same as the expected content",

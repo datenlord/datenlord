@@ -97,7 +97,7 @@ pub fn dir_entry_to_serial(entry: &DirEntry) -> SerialDirEntry {
 pub fn serial_to_dir_entry(entry: &SerialDirEntry) -> DirEntry {
     DirEntry::new(
         entry.ino,
-        entry.name.to_owned(),
+        entry.name.clone(),
         serial_to_entry_type(&entry.entry_type),
     )
 }

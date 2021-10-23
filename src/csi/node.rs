@@ -94,10 +94,9 @@ impl NodeImplInner {
         let add_ephemeral_res = self.meta_data.add_volume_meta_data(vol_id, &volume).await;
         debug_assert!(
             add_ephemeral_res.is_ok(),
-            format!(
-                "ephemeral volume ID={} and name={} is duplicated",
-                vol_id, vol_name,
-            )
+            "ephemeral volume ID={} and name={} is duplicated",
+            vol_id,
+            vol_name,
         );
         Ok(())
     }
@@ -146,19 +145,19 @@ impl NodeImplInner {
     fn node_publish_volume_pre_check(req: &NodePublishVolumeRequest) -> DatenLordResult<()> {
         if !req.has_volume_capability() {
             return Err(ArgumentInvalid {
-                context: vec!["volume capability missing in request".to_string()],
+                context: vec!["volume capability missing in request".to_owned()],
             });
         }
         let vol_id = req.get_volume_id();
         if vol_id.is_empty() {
             return Err(ArgumentInvalid {
-                context: vec!["volume ID missing in request".to_string()],
+                context: vec!["volume ID missing in request".to_owned()],
             });
         }
         let target_dir = req.get_target_path();
         if target_dir.is_empty() {
             return Err(ArgumentInvalid {
-                context: vec!["target path missing in request".to_string()],
+                context: vec!["target path missing in request".to_owned()],
             });
         }
         Ok(())
@@ -187,17 +186,17 @@ impl Node for NodeImpl {
             let vol_id = req.get_volume_id();
             if vol_id.is_empty() {
                 return Err(ArgumentInvalid {
-                    context: vec!["volume ID missing in request".to_string()],
+                    context: vec!["volume ID missing in request".to_owned()],
                 });
             }
             if req.get_staging_target_path().is_empty() {
                 return Err(ArgumentInvalid {
-                    context: vec!["target path missing in request".to_string()],
+                    context: vec!["target path missing in request".to_owned()],
                 });
             }
             if !req.has_volume_capability() {
                 return Err(ArgumentInvalid {
-                    context: vec!["volume capability missing in request".to_string()],
+                    context: vec!["volume capability missing in request".to_owned()],
                 });
             }
 
@@ -227,12 +226,12 @@ impl Node for NodeImpl {
             // Check arguments
             if req.get_volume_id().is_empty() {
                 return Err(ArgumentInvalid {
-                    context: vec!["volume ID missing in request".to_string()],
+                    context: vec!["volume ID missing in request".to_owned()],
                 });
             }
             if req.get_staging_target_path().is_empty() {
                 return Err(ArgumentInvalid {
-                    context: vec!["target path missing in request".to_string()],
+                    context: vec!["target path missing in request".to_owned()],
                 });
             }
             let r = NodeUnstageVolumeResponse::new();
@@ -323,7 +322,7 @@ impl Node for NodeImpl {
             match req.get_volume_capability().access_type {
                 None => {
                     return Err(ArgumentInvalid {
-                        context: vec!["access_type missing in request".to_string()],
+                        context: vec!["access_type missing in request".to_owned()],
                     });
                 }
                 Some(ref access_type) => {
@@ -384,13 +383,13 @@ impl Node for NodeImpl {
             let vol_id = req.get_volume_id();
             if vol_id.is_empty() {
                 return Err(ArgumentInvalid {
-                    context: vec!["volume ID missing in request".to_string()],
+                    context: vec!["volume ID missing in request".to_owned()],
                 });
             }
             let target_path = req.get_target_path();
             if target_path.is_empty() {
                 return Err(ArgumentInvalid {
-                    context: vec!["target path missing in request".to_string()],
+                    context: vec!["target path missing in request".to_owned()],
                 });
             }
 
@@ -478,7 +477,7 @@ impl Node for NodeImpl {
         debug!("node_get_volume_stats request: {:?}", req);
         util::spawn_grpc_task(sink, async {
             Err(Unimplemented {
-                context: vec!["unimplemented".to_string()],
+                context: vec!["unimplemented".to_owned()],
             })
         });
     }
@@ -500,14 +499,14 @@ impl Node for NodeImpl {
             let vol_id = req.get_volume_id();
             if vol_id.is_empty() {
                 return Err(ArgumentInvalid {
-                    context: vec!["volume ID missing in request".to_string()],
+                    context: vec!["volume ID missing in request".to_owned()],
                 });
             }
 
             let vol_path = req.get_volume_path();
             if vol_path.is_empty() {
                 return Err(ArgumentInvalid {
-                    context: vec!["volume path missing in request".to_string()],
+                    context: vec!["volume path missing in request".to_owned()],
                 });
             }
 
@@ -519,7 +518,7 @@ impl Node for NodeImpl {
 
             if !req.has_capacity_range() {
                 return Err(ArgumentInvalid {
-                    context: vec!["volume expand capacity missing in request".to_string()],
+                    context: vec!["volume expand capacity missing in request".to_owned()],
                 });
             }
 

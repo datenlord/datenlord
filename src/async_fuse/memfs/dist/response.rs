@@ -23,7 +23,7 @@ fn serialize_direntry_map(map: &BTreeMap<String, DirEntry>) -> Vec<u8> {
 
     // Checked before
     for (name, entry) in map {
-        target.insert(name.to_owned(), types::dir_entry_to_serial(entry));
+        target.insert(name.clone(), types::dir_entry_to_serial(entry));
     }
 
     let target = Some(target);
@@ -42,7 +42,7 @@ fn deserialize_direntry_map(bin: &[u8]) -> Option<BTreeMap<String, DirEntry>> {
 
         // Checked before
         for (ref name, ref entry) in map {
-            target.insert(name.to_owned(), types::serial_to_dir_entry(entry));
+            target.insert(name.clone(), types::serial_to_dir_entry(entry));
         }
 
         Some(target)

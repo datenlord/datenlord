@@ -168,7 +168,7 @@ pub fn update_dir(
         parent_path: parent.to_owned(),
         child_name: child.to_owned(),
         child_attr: types::file_attr_to_serial(child_attr),
-        target_path: target_path.to_owned().map(std::borrow::ToOwned::to_owned),
+        target_path: target_path.map(std::borrow::ToOwned::to_owned),
     };
 
     bincode::serialize(&DistRequest::UpdateDir(args)).unwrap_or_else(|e| {

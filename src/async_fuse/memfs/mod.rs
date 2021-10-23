@@ -157,7 +157,7 @@ impl<M: MetaData + Send + Sync + 'static> MemFs<M> {
         if content.iter().filter(|c| !c.can_convert()).count() > 0 {
             return super::util::build_error_result_from_errno(
                 Errno::EINVAL,
-                "The content is out of scope".to_string(),
+                "The content is out of scope".to_owned(),
             );
         }
         let content_total_len: usize = content.iter().map(|s| s.len()).sum();

@@ -244,6 +244,7 @@ impl ReplyRaw {
     }
 }
 
+/// Impl fuse reply new
 macro_rules! impl_fuse_reply_new_for{
     {$($t:ty,)+} => {
         $(impl $t {
@@ -278,6 +279,7 @@ impl_fuse_reply_new_for! {
     ReplyXTimes,
 }
 
+/// Impl fuse reply error
 macro_rules! impl_fuse_reply_error_for{
     {$($t:ty,)+} => {
         $(impl $t {
@@ -312,6 +314,7 @@ impl_fuse_reply_error_for! {
     ReplyXAttr,
 }
 
+/// Impl `AsIoVec` trait
 macro_rules! impl_as_iovec_for {
     {$($t:ty,)+} => {
         $(impl AsIoVec for $t {
@@ -747,15 +750,15 @@ mod test {
 
     #[test]
     fn test_slice() {
-        let s = [1, 2, 3, 4, 5, 6];
+        let s = [1_i32, 2_i32, 3_i32, 4_i32, 5_i32, 6_i32];
         let v = s.to_owned();
         println!("{:?}", v);
         let v1 = s.to_vec();
         println!("{:?}", v1);
 
-        let s1 = [1, 2, 3];
-        let s2 = [4, 5, 6];
-        let s3 = [7, 8, 9];
+        let s1 = [1_i32, 2_i32, 3_i32];
+        let s2 = [4_i32, 5_i32, 6_i32];
+        let s3 = [7_i32, 8_i32, 9_i32];
         let l1 = [&s1];
         let l2 = [&s2, &s3];
         let mut v1 = l1.to_vec();
