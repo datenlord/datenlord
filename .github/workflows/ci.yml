@@ -29,9 +29,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v2
-    - uses: actions-rs/audit-check@v1.2.0
+    #- uses: actions-rs/audit-check@v1.2.0
+    #  with:
+    #    token: ${{ secrets.GITHUB_TOKEN }}
+    - uses: actions-rs/install@v0.1
       with:
-        token: ${{ secrets.GITHUB_TOKEN }}
+        crate: cargo-audit
+        version: latest
+    # Temporarily ignore the time/chrono segfault since there are no known
+    # good wordarounds and they are used by dependent libraries also.
+    - run: cargo audit --ignore RUSTSEC-2020-0159 --ignore RUSTSEC-2020-0071
 
   check:
     name: Check
