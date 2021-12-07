@@ -20,7 +20,7 @@ use std::collections::BTreeMap;
 use std::collections::VecDeque;
 use std::os::unix::io::{FromRawFd, IntoRawFd, RawFd};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{self, AtomicI64};
+use std::sync::atomic::{self, AtomicBool, AtomicI64, Ordering};
 use std::sync::Arc;
 use std::time::SystemTime;
 use utilities::{Cast, OverflowArithmetic};
@@ -141,6 +141,10 @@ pub trait Node: Sized {
     async fn closedir(&self, ino: INum, fh: u64);
     /// Precheck before set attr
     async fn setattr_precheck(&self, param: SetAttrParam) -> anyhow::Result<(bool, FileAttr)>;
+    /// Mark as deferred deletion
+    fn mark_deferred_deletion(&self);
+    /// If node is marked as deferred deletion
+    fn is_deferred_deletion(&self) -> bool;
 }
 
 /// A file node data or a directory node data
@@ -174,6 +178,8 @@ pub struct DefaultNode {
     open_count: AtomicI64,
     /// DefaultNode lookup counter
     lookup_count: AtomicI64,
+    /// If DefaultNode has been marked as deferred deletion
+    deferred_deletion: AtomicBool,
     /// Shared metadata
     meta: Arc<DefaultMetaData>,
 }
@@ -209,10 +215,11 @@ impl DefaultNode {
             attr,
             data,
             fd,
-            // lookup count set to 1 by creation
-            open_count: AtomicI64::new(1),
+            // open count set to 0 by creation
+            open_count: AtomicI64::new(0),
             // open count set to 1 by creation
             lookup_count: AtomicI64::new(1),
+            deferred_deletion: AtomicBool::new(false),
             meta,
         }
     }
@@ -565,6 +572,16 @@ impl Node for DefaultNode {
             .fetch_sub(nlookup.cast(), atomic::Ordering::Relaxed)
     }
 
+    /// Mark node as deferred deletion
+    fn mark_deferred_deletion(&self) {
+        self.deferred_deletion.store(true, Ordering::Relaxed);
+    }
+
+    /// If node is marked as deferred deletion
+    fn is_deferred_deletion(&self) -> bool {
+        self.deferred_deletion.load(Ordering::Relaxed)
+    }
+
     /// Load attribute
     async fn load_attribute(&mut self) -> anyhow::Result<FileAttr> {
         let attr = fs_util::load_attr(self.fd).await.context(format!(
@@ -581,6 +598,9 @@ impl Node for DefaultNode {
 
     /// flush node data
     async fn flush(&mut self, ino: INum, fh: u64) {
+        if self.is_deferred_deletion() {
+            return;
+        }
         let new_fd = smol::unblock(move || unistd::dup(fh.cast()))
             .await
             .context(format!(
@@ -1289,7 +1309,7 @@ impl Node for DefaultNode {
     /// Close file
     async fn close(&mut self, ino: INum, fh: u64, flush: bool) {
         let fd = fh.cast();
-        if flush {
+        if flush && !self.is_deferred_deletion() {
             // TODO: double check the meaning of the flush flag
             smol::unblock(move || unistd::fsync(fd))
                 .await

@@ -142,6 +142,7 @@ impl Session {
         let fuse_fd = mount::mount(mount_path)
             .await
             .context("failed to mount fuse device")?;
+        fs.set_fuse_fd(fuse_fd).await;
         Ok(Self {
             fuse_fd: Arc::new(FuseFd(fuse_fd)),
             proto_version: AtomicCell::new(ProtoVersion::UNSPECIFIED),

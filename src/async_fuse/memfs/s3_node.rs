@@ -21,15 +21,11 @@ use nix::sys::stat::SFlag;
 use smol::lock::RwLock;
 use std::collections::BTreeMap;
 use std::collections::VecDeque;
+use std::os::unix::io::RawFd;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{self, AtomicBool, AtomicI64, Ordering};
+use std::sync::Arc;
 use std::time::SystemTime;
-use std::{
-    os::unix::io::RawFd,
-    path::{Path, PathBuf},
-    sync::{
-        atomic::{self, AtomicI64},
-        Arc,
-    },
-};
 use utilities::{Cast, OverflowArithmetic};
 
 /// Block size constant
@@ -66,6 +62,8 @@ pub struct S3Node<S: S3BackEnd + Sync + Send + 'static> {
     open_count: AtomicI64,
     /// S3Node lookup counter
     lookup_count: AtomicI64,
+    /// If S3Node has been marked as deferred deletion
+    deferred_deletion: AtomicBool,
     /// Shared metadata
     meta: Arc<S3MetaData<S>>,
 }
@@ -88,10 +86,11 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
             name: name.to_owned(),
             attr,
             data,
+            // open count set to 0 by creation
+            open_count: AtomicI64::new(0),
             // lookup count set to 1 by creation
-            open_count: AtomicI64::new(1),
-            // open count set to 1 by creation
             lookup_count: AtomicI64::new(1),
+            deferred_deletion: AtomicBool::new(false),
             meta,
         }
     }
@@ -129,6 +128,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
             open_count: AtomicI64::new(0),
             // open count set to 0 for sync
             lookup_count: AtomicI64::new(0),
+            deferred_deletion: AtomicBool::new(false),
             meta: Arc::clone(&parent.meta),
         }
     }
@@ -338,6 +338,9 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
 
     /// flush all data of a node
     async fn flush_all_data(&mut self) -> anyhow::Result<()> {
+        if self.is_deferred_deletion() {
+            return Ok(());
+        }
         let data_cache = match self.data {
             S3NodeData::RegFile(ref data_cache) => Arc::<GlobalCache>::clone(data_cache),
             // Do nothing for Directory.
@@ -540,6 +543,16 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
         debug_assert!(nlookup < std::i64::MAX.cast());
         self.lookup_count
             .fetch_sub(nlookup.cast(), atomic::Ordering::Relaxed)
+    }
+
+    /// Mark node as deferred deletion
+    fn mark_deferred_deletion(&self) {
+        self.deferred_deletion.store(true, Ordering::Relaxed);
+    }
+
+    /// If node is marked as deferred deletion
+    fn is_deferred_deletion(&self) -> bool {
+        self.deferred_deletion.load(Ordering::Relaxed)
     }
 
     /// Load attribute

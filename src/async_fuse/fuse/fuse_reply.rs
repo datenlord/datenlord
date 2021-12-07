@@ -20,6 +20,10 @@ use super::protocol::{
     FuseAttr, FuseAttrOut, FuseBMapOut, FuseDirEnt, FuseEntryOut, FuseFileLock, FuseGetXAttrOut,
     FuseInitOut, FuseKStatFs, FuseLockOut, FuseOpenOut, FuseOutHeader, FuseStatFsOut, FuseWriteOut,
 };
+#[cfg(feature = "abi-7-18")]
+use super::protocol::{FuseNotifyCode::FUSE_NOTIFY_DELETE, FuseNotifyDeleteOut};
+#[cfg(feature = "abi-7-18")]
+use std::ffi::CString;
 
 /// This trait describes a type that can be converted to Vec<IoVec<&[u8]>>
 pub trait AsIoVecList {
@@ -160,15 +164,19 @@ impl ReplyRaw {
         Self { unique, fd }
     }
 
-    /// Send response to FUSE kernel
-    async fn send(self, data: impl AsIoVecList + Send + Sync + 'static) -> nix::Result<usize> {
+    /// Send raw message to FUSE kernel
+    async fn send_raw_message(
+        self,
+        error: i32,
+        data: impl AsIoVecList + Send + Sync + 'static,
+    ) -> nix::Result<usize> {
         let fd = self.fd;
         let wsize = smol::unblock(move || {
             let header_len = mem::size_of::<FuseOutHeader>();
 
             let header = FuseOutHeader {
                 len: (header_len.overflow_add(data.len())).cast(),
-                error: 0, // FUSE requires the error number to be negative
+                error,
                 unique: self.unique,
             };
 
@@ -192,27 +200,19 @@ impl ReplyRaw {
         Ok(wsize)
     }
 
+    /// Send response to FUSE kernel
+    async fn send(self, data: impl AsIoVecList + Send + Sync + 'static) -> nix::Result<usize> {
+        self.send_raw_message(0_i32, data).await
+    }
+
     /// Send error code response to FUSE kernel
     async fn send_error_code(self, error_code: Errno) -> nix::Result<usize> {
-        let fd = self.fd;
-        let wsize = smol::unblock(move || {
-            let header_len = mem::size_of::<FuseOutHeader>();
-
-            let header = FuseOutHeader {
-                len: (header_len).cast(),
-                error: crate::async_fuse::util::convert_nix_errno_to_cint(error_code)
-                    .overflow_neg(), // FUSE requires the error number to be negative
-                unique: self.unique,
-            };
-
-            let header_bytes = abi_marker::as_abi_bytes(&header);
-            let iovecs = [IoVec::from_slice(header_bytes)];
-
-            uio::writev(fd, &iovecs)
-        })
-        .await?;
-        debug!("sent {} bytes to fuse device successfully", wsize);
-        Ok(wsize)
+        // FUSE requires the error number to be negative
+        self.send_raw_message(
+            crate::async_fuse::util::convert_nix_errno_to_cint(error_code).overflow_neg(),
+            (),
+        )
+        .await
     }
 
     /// Send error response to FUSE kernel
@@ -354,6 +354,10 @@ impl_as_iovec_for! {
     FuseStatFsOut,
     FuseWriteOut,
     FuseGetXAttrOut,
+}
+#[cfg(feature = "abi-7-18")]
+impl_as_iovec_for! {
+    FuseNotifyDeleteOut,
 }
 
 /// FUSE init response
@@ -728,6 +732,57 @@ impl ReplyXAttr {
     #[allow(dead_code)]
     pub async fn data(self, bytes: FuseGetXAttrOut) -> nix::Result<usize> {
         self.reply.send(bytes).await
+    }
+}
+
+#[cfg(feature = "abi-7-18")]
+impl AsIoVec for CString {
+    fn as_io_vec(&self) -> IoVec<&[u8]> {
+        IoVec::from_slice(self.as_bytes_with_nul())
+    }
+    fn can_convert(&self) -> bool {
+        true
+    }
+    fn len(&self) -> usize {
+        self.as_bytes_with_nul().len()
+    }
+    // CString cannot be empty
+    fn is_empty(&self) -> bool {
+        false
+    }
+}
+/// Fuse delete notification
+#[cfg(feature = "abi-7-18")]
+#[derive(Debug)]
+pub struct FuseDeleteNotification {
+    /// The inner raw reply
+    reply: ReplyRaw,
+}
+
+#[cfg(feature = "abi-7-18")]
+impl FuseDeleteNotification {
+    /// Create `FuseDeleteNotification`
+    #[must_use]
+    pub const fn new(fd: RawFd) -> Self {
+        Self {
+            reply: ReplyRaw::new(0, fd),
+        }
+    }
+
+    /// Notify kernel
+    pub async fn notify(self, parent: u64, child: u64, name: String) -> nix::Result<usize> {
+        let notify_delete = FuseNotifyDeleteOut {
+            parent,
+            child,
+            namelen: name.len().cast(),
+            padding: 0,
+        };
+        let file_name = CString::new(name.clone())
+            .unwrap_or_else(|e| panic!("failed to create CString for {}, error is {:?}", name, e));
+        #[allow(clippy::as_conversions)] // allow this for enum
+        self.reply
+            .send_raw_message(FUSE_NOTIFY_DELETE as i32, (notify_delete, file_name))
+            .await
     }
 }
 
