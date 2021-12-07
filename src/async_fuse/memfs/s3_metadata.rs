@@ -8,6 +8,8 @@ use super::node::Node;
 use super::s3_node::{self, S3Node};
 use super::s3_wrapper::S3BackEnd;
 use super::RenameParam;
+#[cfg(feature = "abi-7-18")]
+use crate::async_fuse::fuse::fuse_reply::FuseDeleteNotification;
 use crate::async_fuse::fuse::protocol::{FuseAttr, INum, FUSE_ROOT_ID};
 use crate::async_fuse::util;
 use crate::common::etcd_delegate::EtcdDelegate;
@@ -18,8 +20,8 @@ use log::debug;
 use nix::errno::Errno;
 use nix::fcntl::OFlag;
 use nix::sys::stat::SFlag;
-use smol::lock::{RwLock, RwLockWriteGuard};
-use std::collections::{BTreeMap, BTreeSet};
+use smol::lock::{Mutex, RwLock, RwLockWriteGuard};
+use std::collections::BTreeMap;
 use std::os::unix::io::RawFd;
 use std::path::Path;
 use std::sync::atomic::Ordering;
@@ -44,8 +46,6 @@ pub struct S3MetaData<S: S3BackEnd + Send + Sync + 'static> {
     pub(crate) etcd_client: Arc<EtcdDelegate>,
     /// The cache to hold opened directories and files
     pub(crate) cache: RwLock<BTreeMap<INum, S3Node<S>>>,
-    /// The trash to hold deferred deleted directories and files
-    trash: RwLock<BTreeSet<INum>>,
     /// Global data cache
     pub(crate) data_cache: Arc<GlobalCache>,
     /// Current available node number, it'll increase after using
@@ -58,6 +58,8 @@ pub struct S3MetaData<S: S3BackEnd + Send + Sync + 'static> {
     pub(crate) volume_info: String,
     /// Full path and node mapping
     pub(crate) path2inum: RwLock<BTreeMap<String, INum>>,
+    /// Fuse fd
+    fuse_fd: Mutex<RawFd>,
 }
 
 /// Parse S3 info
@@ -99,13 +101,13 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
             s3_backend: Arc::clone(&s3_backend),
             cache: RwLock::new(BTreeMap::new()),
             etcd_client: etcd_arc,
-            trash: RwLock::new(BTreeSet::new()),
             data_cache: Arc::<GlobalCache>::clone(&data_cache),
             cur_inum: AtomicU32::new(2),
             cur_fd: AtomicU32::new(4),
             node_id: node_id.to_owned(),
             volume_info: volume_info.to_owned(),
             path2inum: RwLock::new(BTreeMap::new()),
+            fuse_fd: Mutex::new(-1_i32),
         });
 
         let server = CacheServer::new(
@@ -134,30 +136,44 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         &self.cache
     }
 
-    /// Delete node from trash
-    async fn delete_trash(&self, ino: INum) -> bool {
-        let contains = {
-            let mut trash = self.trash.write().await;
-            trash.remove(&ino)
-        };
-        if contains {
-            // deferred deletion
-            let mut cache = self.cache.write().await;
-            let deleted_node = cache.remove(&ino).unwrap_or_else(|| {
-                panic!(
-                    "forget() found fs is inconsistent, i-node of ino={} \
-                                found in trash, but no i-node found for deferred deletion",
-                    ino,
-                );
-            });
-            debug_assert_eq!(deleted_node.get_lookup_count(), 0);
-            debug!(
-                "forget() deferred deleted i-node of ino={} and name={:?}",
+    /// Set fuse fd into `MetaData`
+    async fn set_fuse_fd(&self, fuse_fd: RawFd) {
+        *self.fuse_fd.lock().await = fuse_fd;
+    }
+
+    /// Try to delete node that is marked as deferred deletion
+    async fn try_delete_node(&self, ino: INum) -> bool {
+        let mut cache = self.cache.write().await;
+        let node = cache.get(&ino).unwrap_or_else(|| {
+            panic!(
+                "try_delete_node() found fs is inconsistent, \
+                    the i-node of ino={} is not in cache",
                 ino,
-                deleted_node.get_name(),
             );
+        });
+
+        if node.get_open_count() == 0 && node.get_lookup_count() == 0 {
+            debug!(
+                "try_delete_node() deleted i-node of ino={} and name={:?}",
+                ino,
+                node.get_name(),
+            );
+            if let Some(node) = cache.remove(&ino) {
+                if let SFlag::S_IFREG = node.get_type() {
+                    self.data_cache
+                        .remove_file_cache(node.get_full_path().as_bytes());
+                }
+            }
             true
         } else {
+            debug!(
+                "try_delete_node() cannot deleted i-node of ino={} and name={:?},\
+                     open_count={}, lookup_count={}",
+                ino,
+                node.get_name(),
+                node.get_open_count(),
+                node.get_lookup_count()
+            );
             false
         }
     }
@@ -295,7 +311,8 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
             child_name={:?}, child_type={:?}",
             parent, node_name, node_type
         );
-        self.remove_node_local(parent, node_name, node_type).await?;
+        self.remove_node_local(parent, node_name, node_type, false)
+            .await?;
         self.remove_remote(parent, node_name, node_type).await;
         Ok(())
     }
@@ -441,7 +458,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
 
     /// Rename helper to move on disk, it may replace destination entry
     async fn rename_may_replace_helper(&self, param: RenameParam) -> anyhow::Result<()> {
-        self.rename_may_replace_local(&param).await?;
+        self.rename_may_replace_local(&param, false).await?;
         self.rename_remote(param).await;
         Ok(())
     }
@@ -454,12 +471,12 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         _datasync: bool,
         // reply: ReplyEmpty,
     ) -> anyhow::Result<()> {
-        let mut cache = self.cache.write().await;
+        let mut cache = self.cache().write().await;
         let inode = cache.get_mut(&ino).unwrap_or_else(|| {
             panic!(
-                "release() found fs is inconsistent, \
-                    the i-node of ino={} should be in cache",
-                ino,
+                "fsync_helper() found fs is inconsistent, \
+                 the inode ino={} is not in cache",
+                ino
             );
         });
 
@@ -483,8 +500,8 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
             let inode = cache.get_mut(&ino).unwrap_or_else(|| {
                 panic!(
                     "write() found fs is inconsistent, \
-                        the i-node of ino={} should be in cache",
-                    ino,
+                     the inode ino={} is not in cache",
+                    ino
                 );
             });
             debug!(
@@ -553,48 +570,53 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
         Ok(parent_node)
     }
 
-    /// Helper function to delete or deferred delete node
-    async fn may_deferred_delete_node_helper(&self, ino: INum) -> anyhow::Result<()> {
-        let parent_ino: INum;
-        let node_name: String;
-        let mut deferred_deletion = false;
-        {
-            // pre-check whether deferred delete or not
-            let cache = self.cache.read().await;
-            let node = cache.get(&ino).unwrap_or_else(|| {
-                panic!(
-                    "may_deferred_delete_node_helper() failed to \
-                        find the i-node of ino={} to remove",
-                    ino,
-                );
-            });
-            parent_ino = node.get_parent_ino();
-            node_name = node.get_name().to_owned();
+    /// Helper function to pre-check if node can be deferred deleted.
+    async fn deferred_delete_pre_check(&self, ino: INum) -> (bool, INum, String) {
+        // pre-check whether deferred delete or not
+        let cache = self.cache.read().await;
+        let inode = cache.get(&ino).unwrap_or_else(|| {
+            panic!(
+                "may_deferred_delete_node_helper() failed to \
+                         find the i-node of ino={} to remove",
+                ino,
+            );
+        });
 
-            debug_assert!(node.get_lookup_count() >= 0); // lookup count cannot be negative
-            if node.get_lookup_count() > 0 {
-                // TODO: support thread-safe to avoid race condition
-                deferred_deletion = true;
-            }
-        }
+        debug_assert!(inode.get_lookup_count() >= 0); // lookup count cannot be negative
+        debug_assert!(inode.get_open_count() >= 0); // open count cannot be negative
+        (
+            inode.get_lookup_count() > 0 || inode.get_open_count() > 0,
+            inode.get_parent_ino(),
+            inode.get_name().to_owned(),
+        )
+    }
+
+    /// Helper function to delete or deferred delete node
+    async fn may_deferred_delete_node_helper(
+        &self,
+        ino: INum,
+        from_remote: bool,
+    ) -> anyhow::Result<()> {
+        // TODO: support thread-safe to avoid race condition
+        let (deferred_deletion, parent_ino, node_name) = self.deferred_delete_pre_check(ino).await;
         {
             // remove entry from parent i-node
             let mut cache = self.cache.write().await;
             let parent_node = cache.get_mut(&parent_ino).unwrap_or_else(|| {
                 panic!(
                     "may_deferred_delete_node_helper() failed to \
-                        find the parent of ino={} for i-node of ino={}",
+                     find the parent of ino={} for i-node of ino={}",
                     parent_ino, ino,
                 );
             });
             let deleted_entry = parent_node.unlink_entry(&node_name).await.context(format!(
                 "may_deferred_delete_node_helper() failed to remove entry name={:?} \
-                            and ino={} from parent directory ino={}",
+                 and ino={} from parent directory ino={}",
                 node_name, ino, parent_ino,
             ))?;
             debug!(
                 "may_deferred_delete_node_helper() successfully remove entry name={:?} \
-                    ino={} from parent directory ino={}",
+                 ino={} from parent directory ino={}",
                 node_name, ino, parent_ino
             );
             debug_assert_eq!(node_name, deleted_entry.entry_name());
@@ -602,48 +624,50 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
         }
 
         if deferred_deletion {
-            // deferred deletion
+            // Deferred deletion
             // TODO: support thread-safe
-            let (node_name, node_open_count, node_lookup_count) = {
-                let cache = self.cache.read().await;
-                let node = cache.get(&ino).unwrap_or_else(|| {
-                    panic!(
-                        "impossible case, may_deferred_delete_node_helper() \
-                        should already find the i-node of ino={} to remove",
-                        ino,
-                    );
-                });
-                (
-                    node.get_name().to_owned(),
-                    node.get_open_count(),
-                    node.get_lookup_count(),
-                )
-            };
-            {
-                let mut trash = self.trash.write().await;
-                let insert_result = trash.insert(ino); // check thread-safe in case of deferred deletion race
-                debug_assert!(
-                    insert_result,
-                    "failed to insert i-node of ino={} into trash for deferred deletion",
+            let cache = self.cache.read().await;
+            let inode = cache.get(&ino).unwrap_or_else(|| {
+                panic!(
+                    "impossible case, may_deferred_delete_node_helper() \
+                     i-node of ino={} is not in cache",
                     ino,
                 );
-            }
+            });
             debug!(
                 "may_deferred_delete_node_helper() defered removed \
                     the i-node name={:?} of ino={} under parent ino={}, \
                     open count={}, lookup count={}",
-                node_name, ino, parent_ino, node_open_count, node_lookup_count,
+                inode.get_name(),
+                ino,
+                parent_ino,
+                inode.get_open_count(),
+                inode.get_lookup_count(),
             );
+            inode.mark_deferred_deletion();
+            // Notify kernel to drop cache
+            if from_remote && inode.get_lookup_count() > 0 {
+                let fuse_fd = *self.fuse_fd.lock().await;
+                // fuse_fd must be set
+                assert!(fuse_fd > 0_i32);
+                #[cfg(feature = "abi-7-18")]
+                {
+                    let fuse_delete_notification = FuseDeleteNotification::new(fuse_fd);
+                    fuse_delete_notification
+                        .notify(parent_ino, ino, inode.get_name().to_owned())
+                        .await?;
+                }
+            }
         } else {
             // immediate deletion
             let mut cache = self.cache.write().await;
             let inode = cache.remove(&ino).unwrap_or_else(|| {
                 panic!(
                     "impossible case, may_deferred_delete_node_helper() \
-                    should remove the i-node of ino={} immediately",
+                     i-node of ino={} is not in cache",
                     ino,
-                );
-            }); // TODO: support thread-safe
+                )
+            });
             debug!(
                 "may_deferred_delete_node_helper() immediately removed \
                     the i-node name={:?} of ino={} under parent ino={}, \
@@ -819,7 +843,9 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
             }
         };
 
-        s3_node::rename_fullpath_recursive(entry_to_move.ino(), new_parent, &self.cache).await;
+        {
+            s3_node::rename_fullpath_recursive(entry_to_move.ino(), new_parent, &self.cache).await;
+        }
 
         {
             let mut cache = self.cache.write().await;
@@ -937,7 +963,11 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
     }
 
     /// Rename to move on disk locally, it may replace destination entry
-    async fn rename_may_replace_local(&self, param: &RenameParam) -> anyhow::Result<()> {
+    async fn rename_may_replace_local(
+        &self,
+        param: &RenameParam,
+        from_remote: bool,
+    ) -> anyhow::Result<()> {
         let old_parent = param.old_parent;
         let old_name = &param.old_name;
         let new_parent = param.new_parent;
@@ -967,7 +997,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
 
         // Just replace new entry, may deferred delete
         if let Some(new_ino) = new_entry_ino {
-            self.may_deferred_delete_node_helper(new_ino)
+            self.may_deferred_delete_node_helper(new_ino, from_remote)
                 .await
                 .context(format!(
                     "rename_may_replace_local() failed to \
@@ -1006,12 +1036,12 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
     }
 
     /// Helper function to rename file locally
-    pub(crate) async fn rename_local(&self, param: &RenameParam) {
+    pub(crate) async fn rename_local(&self, param: &RenameParam, from_remote: bool) {
         if param.flags == 2 {
             if let Err(e) = self.rename_exchange_local(param).await {
                 panic!("failed to rename local param={:?}, error is {:?}", param, e);
             }
-        } else if let Err(e) = self.rename_may_replace_local(param).await {
+        } else if let Err(e) = self.rename_may_replace_local(param, from_remote).await {
             panic!("failed to rename local param={:?}, error is {:?}", param, e);
         } else {
         }
@@ -1023,6 +1053,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
         parent: INum,
         node_name: &str,
         node_type: SFlag,
+        from_remote: bool,
     ) -> anyhow::Result<()> {
         debug!(
             "remove_node_local() about to remove parent ino={:?}, \
@@ -1097,11 +1128,6 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
                         )
                     });
 
-                    if let SFlag::S_IFREG = node_type {
-                        self.data_cache
-                            .remove_file_cache(child_node.full_path().as_bytes());
-                    }
-
                     debug_assert_eq!(node_ino, child_node.get_ino());
                     debug_assert_eq!(node_name, child_node.get_name());
                     debug_assert_eq!(parent, child_node.get_parent_ino());
@@ -1113,7 +1139,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
         {
             // all checks passed, ready to remove,
             // when deferred deletion, remove entry from directory first
-            self.may_deferred_delete_node_helper(node_ino)
+            self.may_deferred_delete_node_helper(node_ino, from_remote)
                 .await
                 .context(format!(
                     "remove_node_local() failed to maybe deferred delete child i-node of ino={}, \

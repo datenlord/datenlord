@@ -15,6 +15,7 @@ pub mod s3_wrapper;
 
 use std::collections::BTreeMap;
 use std::os::unix::ffi::OsStringExt;
+use std::os::unix::prelude::RawFd;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -156,7 +157,7 @@ impl<M: MetaData + Send + Sync + 'static> MemFs<M> {
     fn read_helper(content: Vec<IoMemBlock>, size: usize) -> anyhow::Result<Vec<IoMemBlock>> {
         if content.iter().filter(|c| !c.can_convert()).count() > 0 {
             return super::util::build_error_result_from_errno(
-                Errno::EINVAL,
+                Errno::EIO,
                 "The content is out of scope".to_owned(),
             );
         }
@@ -223,25 +224,25 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         debug!("getattr(ino={}, req={:?})", ino, req);
 
         let cache = self.metadata.cache().read().await;
-        let node = cache.get(&ino).unwrap_or_else(|| {
+        let inode = cache.get(&ino).unwrap_or_else(|| {
             panic!(
                 "getattr() found fs is inconsistent, \
-                    the i-node of ino={} should be in cache",
-                ino,
+                 the inode ino={} is not in cache",
+                ino
             );
         });
-        let attr = node.get_attr();
+        let attr = inode.get_attr();
         debug!(
             "getattr() cache hit when searching the attribute of ino={} and name={:?}",
             ino,
-            node.get_name(),
+            inode.get_name(),
         );
         let ttl = Duration::new(MY_TTL_SEC, 0);
         let fuse_attr = fs_util::convert_to_fuse_attr(attr);
         debug!(
             "getattr() successfully got the attribute of ino={}, name={:?} and attr={:?}",
             ino,
-            node.get_name(),
+            inode.get_name(),
             attr,
         );
         reply.attr(ttl, fuse_attr).await
@@ -313,15 +314,16 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         let current_count: i64;
         {
             let cache = self.metadata.cache().read().await;
-            let node = cache.get(&ino).unwrap_or_else(|| {
+            let inode = cache.get(&ino).unwrap_or_else(|| {
                 panic!(
                     "forget() found fs is inconsistent, \
-                        the i-node of ino={} should be in cache",
-                    ino,
+                     the inode ino={} is not in cache",
+                    ino
                 );
             });
-            let previous_count = node.dec_lookup_count_by(nlookup);
-            current_count = node.get_lookup_count();
+
+            let previous_count = inode.dec_lookup_count_by(nlookup);
+            current_count = inode.get_lookup_count();
             debug_assert!(current_count >= 0);
             debug_assert_eq!(
                 previous_count.overflow_sub(current_count),
@@ -330,16 +332,12 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
             debug!(
                 "forget() successfully reduced lookup count of ino={} and name={:?} from {} to {}",
                 ino,
-                node.get_name(),
+                inode.get_name(),
                 previous_count,
                 current_count,
             );
         }
-        {
-            if current_count == 0 && !self.metadata.delete_trash(ino).await {
-                warn!("ino={:?} doesn't exist in trash", ino);
-            }
-        }
+        self.metadata.try_delete_node(ino).await;
     }
 
     /// Set file attributes.
@@ -660,8 +658,8 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         let inode = cache.get_mut(&ino).unwrap_or_else(|| {
             panic!(
                 "read() found fs is inconsistent, \
-                    the i-node of ino={} should be in cache",
-                ino,
+                 the inode ino={} is not in cache",
+                ino
             );
         });
 
@@ -793,9 +791,9 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         let mut cache = self.metadata.cache().write().await;
         let inode = cache.get_mut(&ino).unwrap_or_else(|| {
             panic!(
-                "release() found fs is inconsistent, \
-                    the i-node of ino={} should be in cache",
-                ino,
+                "flush() found fs is inconsistent, \
+                 the inode ino={} is not in cache",
+                ino
             );
         });
         inode.flush(ino, fh).await;
@@ -824,22 +822,25 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
             "release(ino={}, fh={}, flags={}, lock_owner={}, flush={}, req={:?})",
             ino, fh, flags, lock_owner, flush, req,
         );
-        // TODO: handle lock_owner
-        let mut cache = self.metadata.cache().write().await;
-        let inode = cache.get_mut(&ino).unwrap_or_else(|| {
-            panic!(
-                "release() found fs is inconsistent, \
-                    the i-node of ino={} should be in cache",
+        {
+            // TODO: handle lock_owner
+            let mut cache = self.metadata.cache().write().await;
+            let inode = cache.get_mut(&ino).unwrap_or_else(|| {
+                panic!(
+                    "relese() found fs is inconsistent, \
+                     the inode ino={} is not in cache",
+                    ino
+                );
+            });
+            inode.close(ino, fh, flush).await;
+            debug!(
+                "release() successfully closed the file handler={} of ino={} and name={:?}",
+                fh,
                 ino,
+                inode.get_name(),
             );
-        });
-        inode.close(ino, fh, flush).await;
-        debug!(
-            "release() successfully closed the file handler={} of ino={} and name={:?}",
-            fh,
-            ino,
-            inode.get_name(),
-        );
+        }
+        self.metadata.try_delete_node(ino).await;
         reply.ok().await
     }
 
@@ -957,12 +958,13 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
             }
             num_child_entries
         };
+
         let mut cache = self.metadata.cache().write().await;
         let inode = cache.get_mut(&ino).unwrap_or_else(|| {
             panic!(
-                "readdir() found fs is inconsistent, \
-                    the i-node of ino={} should be in cache",
-                ino,
+                "relese() found fs is inconsistent, \
+                 the inode ino={} is not in cache",
+                ino
             );
         });
         if inode.need_load_dir_data() {
@@ -1006,15 +1008,18 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
             ino, fh, flags, req,
         );
         // TODO: handle flags
-        let cache = self.metadata.cache().read().await;
-        let inode = cache.get(&ino).unwrap_or_else(|| {
-            panic!(
-                "releasedir() found fs is inconsistent, \
-                    the i-node of ino={} should be in cache",
-                ino,
-            );
-        });
-        inode.closedir(ino, fh).await;
+        {
+            let cache = self.metadata.cache().read().await;
+            let inode = cache.get(&ino).unwrap_or_else(|| {
+                panic!(
+                    "releasedir() found fs is inconsistent, \
+                     the inode ino={} is not in cache",
+                    ino
+                );
+            });
+            inode.closedir(ino, fh).await;
+        }
+        self.metadata.try_delete_node(ino).await;
         reply.ok().await
     }
 
@@ -1098,8 +1103,8 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         let symlink_node = cache.get(&ino).unwrap_or_else(|| {
             panic!(
                 "readlink() found fs is inconsistent, \
-                    the symlink i-node of ino={} should be in cache",
-                ino,
+                 the inode ino={} is not in cache",
+                ino
             );
         });
         let target_path = symlink_node.get_symlink_target();
@@ -1302,6 +1307,11 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         reply: ReplyBMap,
     ) -> nix::Result<usize> {
         reply.error_code(Errno::ENOSYS).await
+    }
+
+    /// Set fuse fd into `FileSystem`
+    async fn set_fuse_fd(&self, fuse_fd: RawFd) {
+        self.metadata.set_fuse_fd(fuse_fd).await;
     }
 }
 

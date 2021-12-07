@@ -389,7 +389,7 @@ async fn rename<S: S3BackEnd + Send + Sync + 'static>(
     meta: Arc<S3MetaData<S>>,
     args: RenameParam,
 ) -> anyhow::Result<()> {
-    meta.rename_local(&args).await;
+    meta.rename_local(&args, true).await;
     tcp::write_message(stream, &response::rename())?;
     Ok(())
 }
@@ -406,6 +406,7 @@ async fn remove<S: S3BackEnd + Send + Sync + 'static>(
             args.parent,
             &args.child_name,
             types::serial_to_entry_type(&args.child_type),
+            true,
         )
         .await
     {
