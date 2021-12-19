@@ -15,7 +15,7 @@ use nix::fcntl::{self, FcntlArg, OFlag};
 use nix::sys::stat::SFlag;
 use nix::sys::stat::{self, Mode};
 use nix::{sys::time::TimeSpec, unistd};
-use smol::lock::RwLock;
+use smol::lock::RwLockWriteGuard;
 use std::collections::BTreeMap;
 use std::collections::VecDeque;
 use std::os::unix::io::{FromRawFd, IntoRawFd, RawFd};
@@ -1493,60 +1493,50 @@ impl Node for DefaultNode {
 }
 
 /// Rename all the files
-pub async fn rename_fullpath_recursive(
+pub fn rename_fullpath_recursive(
     ino: INum,
     parent: INum,
-    cache: &RwLock<BTreeMap<INum, DefaultNode>>,
+    cache: &mut RwLockWriteGuard<'_, BTreeMap<INum, DefaultNode>>,
 ) {
     let mut node_pool: VecDeque<(INum, INum)> = VecDeque::new();
     node_pool.push_back((ino, parent));
 
-    while !node_pool.is_empty() {
-        let (child, parent) = node_pool
-            .pop_front()
-            .unwrap_or_else(|| panic!("Should not be None, just checked before"));
-
-        let mut parent_path = {
-            let r_cache = cache.read().await;
-            let parent_node = r_cache.get(&parent).unwrap_or_else(|| {
-                panic!(
+    while let Some((child, parent)) = node_pool.pop_front() {
+        let parent_node = cache.get(&parent).unwrap_or_else(|| {
+            panic!(
                 "impossible case when rename, the parent i-node of ino={} should be in the cache",
                 parent
             )
-            });
-            parent_node.full_path().to_owned()
-        };
+        });
+        let mut parent_path = parent_node.full_path().to_owned();
 
-        {
-            let mut w_cache = cache.write().await;
-            let child_node = w_cache.get_mut(&child).unwrap_or_else(|| {
-                panic!(
+        let child_node = cache.get_mut(&child).unwrap_or_else(|| {
+            panic!(
                 "impossible case when rename, the child i-node of ino={} should be in the cache",
                 child
             )
-            });
-            child_node.set_parent_ino(parent);
-            let old_path = child_node.full_path();
-            let new_path = match child_node.data {
-                DefaultNodeData::Directory(ref dir_data) => {
-                    dir_data.values().into_iter().for_each(|grandchild_node| {
-                        node_pool.push_back((grandchild_node.ino(), child));
-                    });
-                    parent_path.push_str(child_node.get_name());
-                    parent_path.push('/');
-                    parent_path
-                }
-                DefaultNodeData::SymLink(..) | DefaultNodeData::RegFile(..) => {
-                    parent_path.push_str(child_node.get_name());
-                    parent_path
-                }
-            };
-
-            if let DefaultNodeData::RegFile(ref global_cache) = child_node.data {
-                global_cache.rename(old_path.as_bytes(), new_path.as_bytes());
+        });
+        child_node.set_parent_ino(parent);
+        let old_path = child_node.full_path();
+        let new_path = match child_node.data {
+            DefaultNodeData::Directory(ref dir_data) => {
+                dir_data.values().into_iter().for_each(|grandchild_node| {
+                    node_pool.push_back((grandchild_node.ino(), child));
+                });
+                parent_path.push_str(child_node.get_name());
+                parent_path.push('/');
+                parent_path
             }
-            child_node.set_full_path(new_path);
+            DefaultNodeData::SymLink(..) | DefaultNodeData::RegFile(..) => {
+                parent_path.push_str(child_node.get_name());
+                parent_path
+            }
+        };
+
+        if let DefaultNodeData::RegFile(ref global_cache) = child_node.data {
+            global_cache.rename(old_path.as_bytes(), new_path.as_bytes());
         }
+        child_node.set_full_path(new_path);
     }
 }
 
