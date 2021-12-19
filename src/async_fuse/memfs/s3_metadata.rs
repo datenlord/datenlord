@@ -571,17 +571,8 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
     }
 
     /// Helper function to pre-check if node can be deferred deleted.
-    async fn deferred_delete_pre_check(&self, ino: INum) -> (bool, INum, String) {
+    async fn deferred_delete_pre_check(&self, inode: &S3Node<S>) -> (bool, INum, String) {
         // pre-check whether deferred delete or not
-        let cache = self.cache.read().await;
-        let inode = cache.get(&ino).unwrap_or_else(|| {
-            panic!(
-                "may_deferred_delete_node_helper() failed to \
-                         find the i-node of ino={} to remove",
-                ino,
-            );
-        });
-
         debug_assert!(inode.get_lookup_count() >= 0); // lookup count cannot be negative
         debug_assert!(inode.get_open_count() >= 0); // open count cannot be negative
         (
@@ -597,36 +588,39 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
         ino: INum,
         from_remote: bool,
     ) -> anyhow::Result<()> {
-        // TODO: support thread-safe to avoid race condition
-        let (deferred_deletion, parent_ino, node_name) = self.deferred_delete_pre_check(ino).await;
-        {
-            // remove entry from parent i-node
-            let mut cache = self.cache.write().await;
-            let parent_node = cache.get_mut(&parent_ino).unwrap_or_else(|| {
-                panic!(
-                    "may_deferred_delete_node_helper() failed to \
-                     find the parent of ino={} for i-node of ino={}",
-                    parent_ino, ino,
-                );
-            });
-            let deleted_entry = parent_node.unlink_entry(&node_name).await.context(format!(
-                "may_deferred_delete_node_helper() failed to remove entry name={:?} \
-                 and ino={} from parent directory ino={}",
-                node_name, ino, parent_ino,
-            ))?;
-            debug!(
-                "may_deferred_delete_node_helper() successfully remove entry name={:?} \
-                 ino={} from parent directory ino={}",
-                node_name, ino, parent_ino
+        // remove entry from parent i-node
+        let mut cache = self.cache.write().await;
+        let inode = cache.get(&ino).unwrap_or_else(|| {
+            panic!(
+                "may_deferred_delete_node_helper() failed to \
+                         find the i-node of ino={} to remove",
+                ino,
             );
-            debug_assert_eq!(node_name, deleted_entry.entry_name());
-            debug_assert_eq!(deleted_entry.ino(), ino);
-        }
+        });
+        let (deferred_deletion, parent_ino, node_name) =
+            self.deferred_delete_pre_check(inode).await;
+        let parent_node = cache.get_mut(&parent_ino).unwrap_or_else(|| {
+            panic!(
+                "may_deferred_delete_node_helper() failed to \
+                     find the parent of ino={} for i-node of ino={}",
+                parent_ino, ino,
+            );
+        });
+        let deleted_entry = parent_node.unlink_entry(&node_name).await.context(format!(
+            "may_deferred_delete_node_helper() failed to remove entry name={:?} \
+                 and ino={} from parent directory ino={}",
+            node_name, ino, parent_ino,
+        ))?;
+        debug!(
+            "may_deferred_delete_node_helper() successfully remove entry name={:?} \
+                 ino={} from parent directory ino={}",
+            node_name, ino, parent_ino
+        );
+        debug_assert_eq!(node_name, deleted_entry.entry_name());
+        debug_assert_eq!(deleted_entry.ino(), ino);
 
         if deferred_deletion {
             // Deferred deletion
-            // TODO: support thread-safe
-            let cache = self.cache.read().await;
             let inode = cache.get(&ino).unwrap_or_else(|| {
                 panic!(
                     "impossible case, may_deferred_delete_node_helper() \
@@ -660,7 +654,6 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
             }
         } else {
             // immediate deletion
-            let mut cache = self.cache.write().await;
             let inode = cache.remove(&ino).unwrap_or_else(|| {
                 panic!(
                     "impossible case, may_deferred_delete_node_helper() \
@@ -820,43 +813,35 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
         new_parent: INum,
         new_name: &str,
     ) -> Option<DirEntry> {
-        let entry_to_move = {
-            // TODO: support thread-safe
-            let mut cache = self.cache.write().await;
-            let old_parent_node = cache.get_mut(&old_parent).unwrap_or_else(|| {
-                panic!(
-                    "impossible case when rename, the from parent i-node of ino={} should be in cache",
-                    old_parent,
-                )
-            });
-            match old_parent_node.remove_entry_for_rename(old_name).await {
-                None => panic!(
-                    "impossible case when rename, the from entry of name={:?} \
+        let mut cache = self.cache.write().await;
+        let old_parent_node = cache.get_mut(&old_parent).unwrap_or_else(|| {
+            panic!(
+                "impossible case when rename, the from parent i-node of ino={} should be in cache",
+                old_parent,
+            )
+        });
+        let entry_to_move = match old_parent_node.remove_entry_for_rename(old_name).await {
+            None => panic!(
+                "impossible case when rename, the from entry of name={:?} \
                         should be under from directory ino={} and name={:?}",
-                    old_name,
-                    old_parent,
-                    old_parent_node.get_name(),
-                ),
-                Some(old_entry) => {
-                    DirEntry::new(old_entry.ino(), new_name.to_owned(), old_entry.entry_type())
-                }
+                old_name,
+                old_parent,
+                old_parent_node.get_name(),
+            ),
+            Some(old_entry) => {
+                DirEntry::new(old_entry.ino(), new_name.to_owned(), old_entry.entry_type())
             }
         };
 
-        {
-            s3_node::rename_fullpath_recursive(entry_to_move.ino(), new_parent, &self.cache).await;
-        }
+        s3_node::rename_fullpath_recursive(entry_to_move.ino(), new_parent, &mut cache).await;
 
-        {
-            let mut cache = self.cache.write().await;
-            let new_parent_node = cache.get_mut(&new_parent).unwrap_or_else(|| {
-                panic!(
-                    "impossible case when rename, the to parent i-node of ino={} should be in cache",
-                    new_parent
-                )
-            });
-            new_parent_node.insert_entry_for_rename(entry_to_move).await
-        }
+        let new_parent_node = cache.get_mut(&new_parent).unwrap_or_else(|| {
+            panic!(
+                "impossible case when rename, the to parent i-node of ino={} should be in cache",
+                new_parent
+            )
+        });
+        new_parent_node.insert_entry_for_rename(entry_to_move).await
     }
 
     /// Rename exchange on local node
