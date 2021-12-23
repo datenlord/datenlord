@@ -28,8 +28,8 @@ env:
   K8S_CONFIG: k8s.e2e.config
   K8S_VERSION: v1.21.1
   KIBANA_LABEL: kibana
-  KIND_NODE_VERSION: kindest/node:v1.21.1@sha256:fae9a58f17f18f06aeac9772ca8b5ac680ebbed985e266f711d936e91d113bad
-  KIND_VERSION: v0.11.0
+  KIND_NODE_VERSION: kindest/node:v1.21.1@sha256:69860bda5563ac81e3c0057d654b5253219618a22ec3a346306239bba8cfa1a6
+  KIND_VERSION: v0.11.1
   # MINIKUBE_VERSION: v1.13.0
   NODE_APP_LABEL: csi-nodeplugin-datenlord
   NODE_CONTAINER_NAME: datenlord
