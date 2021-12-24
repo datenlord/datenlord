@@ -278,6 +278,8 @@ jobs:
       - name: Print DatenLord logs
         if: ${{ failure() }}
         run: |
+          kubectl get pods -A -o wide
+          kubectl cluster-info dump
           CONTROLLER_POD_NAME=`kubectl get pod -l app=$CONTROLLER_APP_LABEL -n $DATENLORD_NAMESPACE -o jsonpath="{.items[0].metadata.name}"`
           echo "SHOW LOGS OF $CONTROLLER_CONTAINER_NAME IN $CONTROLLER_POD_NAME"
           kubectl logs $CONTROLLER_POD_NAME -n $DATENLORD_NAMESPACE -c $CONTROLLER_CONTAINER_NAME
