@@ -270,18 +270,15 @@ jobs:
           kubernetes/test/bin/ginkgo -v -failFast -failOnPending -debug -focus='External.Storage.*(\[Feature:|\[Disruptive\]|\[Serial\])' kubernetes/test/bin/e2e.test -- -v=5 -kubectl-path=`which kubectl` -kubeconfig=`realpath $K8S_CONFIG` -storage.testdriver=`realpath $E2E_TEST_CONFIG`
       - name: DatenLord Perf Test
         run: |
-          kubectl delete -f $CONFIG_KIND
-          NODES="$(kubectl get nodes -A -o wide | awk 'FNR > 2 {print $1}')"
-          for node in $NODES; do
-            docker exec -it ${node} umount /var/opt/datenlord-data || true
-            docker exec -it ${node} rm -rf /var/lib/etcd || true
-          done
+          kind delete cluster
+          kind create cluster --config ./kind-config.yaml
+          kind load docker-image ${DATENLORD_IMAGE}
           sh scripts/datenlord_perf_test.sh
       - name: Archive Perf Result
         uses: actions/upload-artifact@v2
         with:
           name: perf-report
-          path: /tmp/perf_log.txt
+          path: /tmp/output/*
       #- name: Quick Start Test
       #  run: |
       #    kubectl delete -f $CONFIG_KIND
