@@ -119,6 +119,26 @@ To use `Helm` method, run
 sh ./scripts/datenlord-monitor-deploy.sh helm
 ```
 
+## Performance Test
+
+Performance test is done by [fio](https://github.com/axboe/fio) and [fio-plot](https://github.com/louwrentius/fio-plot) is used to plot performance histograms. 
+
+To run performance test,
+```
+sudo apt-get update
+sudo apt-get install -y fio python3-pip
+sudo pip3 install matplotlib numpy fio-plot
+sh ./scripts/fio_perf_test.sh TEST_DIR
+```
+
+Four histograms will be generated.
+- Random read IOPS and latency for different block sizes
+- Random write IOPS and latency for different block sizes
+- Random read IOPS and latency for different read thread numbers with 4k block size
+- Random write IOPS and latency for different write thread numbers with 4k block size
+
+Performance test is added to GitHub Action([cron.yml](.github/workflows/cron.yml)) and performance report is generated and archived as artifacts([Example](https://github.com/datenlord/datenlord/actions/runs/1650821578)) for every four hours.
+
 ## How to Contribute
 
 Anyone interested in DatenLord is welcomed to contribute.
@@ -129,7 +149,7 @@ Please follow the [code style](docs/coding_style.md). Meanwhile, DatenLord adopt
 
 ### Continuous Integration (CI)
 
-The CI of DatenLord leverages GitHut Action. There are two CI flows for DatenLord, [One](.github/workflows/ci.yml) is for Rust cargo test, clippy lints, and standard filesystem E2E checks; [The other](.github/workflows/cron.yml) is for CSI related tests, such as CSI sanity test and CSI E2E test.
+The CI of DatenLord leverages GitHub Action. There are two CI flows for DatenLord, [One](.github/workflows/ci.yml) is for Rust cargo test, clippy lints, and standard filesystem E2E checks; [The other](.github/workflows/cron.yml) is for CSI related tests, such as CSI sanity test and CSI E2E test.
 
 The CSI E2E test setup is a bit complex, its action script [cron.yml](.github/workflows/cron.yml) is quite long, so let's explain it in detail:
 * First, it sets up a test K8S cluster with one master node and three slave nodes, using Kubernetes in Docker (KinD);
