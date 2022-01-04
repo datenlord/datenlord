@@ -34,7 +34,7 @@ env:
   NODE_APP_LABEL: csi-nodeplugin-datenlord
   NODE_CONTAINER_NAME: datenlord
   PROMETHEUS_LABEL: prometheus-server
-  SNAPSHOTTER_VERSION: v4.2.1
+  SNAPSHOTTER_VERSION: v5.0.0
 
 jobs:
   #minikube-csi-e2e:
