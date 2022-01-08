@@ -1,53 +1,10 @@
 //! K8S CSI `gRPC` service
-
-// Ignore format and lint to generated code
-#[rustfmt::skip]
-#[allow(
-    variant_size_differences,
-    unreachable_pub,
-    clippy::all,
-    clippy::restriction,
-    clippy::pedantic,
-    clippy::nursery,
-    clippy::cargo
-)]
-mod csi;
-// Ignore format and lint to generated code
-#[rustfmt::skip]
-#[allow(
-    unreachable_pub,
-    clippy::all,
-    clippy::restriction,
-    clippy::pedantic,
-    clippy::nursery,
-    clippy::cargo
-)]
-mod csi_grpc;
-#[rustfmt::skip]
-#[allow(
-    unreachable_pub,
-    clippy::all,
-    clippy::restriction,
-    clippy::pedantic,
-    clippy::nursery,
-    clippy::cargo
-)]
-mod datenlord_worker;
-#[rustfmt::skip]
-#[allow(
-    unreachable_pub,
-    clippy::all,
-    clippy::restriction,
-    clippy::pedantic,
-    clippy::nursery,
-    clippy::cargo
-)]
-mod datenlord_worker_grpc;
-
 mod controller;
 mod identity;
 pub mod meta_data;
 mod node;
+/// Proto definition
+mod proto;
 pub mod scheduler_extender;
 pub mod util;
 mod worker;
@@ -101,7 +58,7 @@ pub fn build_grpc_worker_server(meta_data: Arc<MetaData>) -> DatenLordResult<Ser
         (ip_address, node.worker_port) // Public worker service
     };
 
-    let worker_service = datenlord_worker_grpc::create_worker(WorkerImpl::new(meta_data));
+    let worker_service = proto::datenlord_worker_grpc::create_worker(WorkerImpl::new(meta_data));
     // TODO: increase concurrent queue size
     let worker_server = grpcio::ServerBuilder::new(Arc::new(Environment::new(1)))
         .register_service(worker_service)
@@ -121,11 +78,11 @@ pub fn build_grpc_node_server(
 ) -> DatenLordResult<Server> {
     remove_socket_file(end_point);
 
-    let identity_service = csi_grpc::create_identity(IdentityImpl::new(
+    let identity_service = proto::csi_grpc::create_identity(IdentityImpl::new(
         driver_name.to_owned(),
         util::CSI_PLUGIN_VERSION.to_owned(),
     ));
-    let node_service = csi_grpc::create_node(NodeImpl::new(meta_data));
+    let node_service = proto::csi_grpc::create_node(NodeImpl::new(meta_data));
     // TODO: increase concurrent queue size
     let node_server = grpcio::ServerBuilder::new(Arc::new(Environment::new(1)))
         .register_service(identity_service)
@@ -146,11 +103,11 @@ pub fn build_grpc_controller_server(
 ) -> DatenLordResult<Server> {
     remove_socket_file(end_point);
 
-    let identity_service = csi_grpc::create_identity(IdentityImpl::new(
+    let identity_service = proto::csi_grpc::create_identity(IdentityImpl::new(
         driver_name.to_owned(),
         util::CSI_PLUGIN_VERSION.to_owned(),
     ));
-    let controller_service = csi_grpc::create_controller(ControllerImpl::new(meta_data));
+    let controller_service = proto::csi_grpc::create_controller(ControllerImpl::new(meta_data));
 
     // let (mem_size, overflow) = 1024_usize.overflowing_mul(1024);
     // debug_assert!(!overflow, "computing memory size overflowed");
@@ -227,7 +184,8 @@ mod test {
     use super::util;
     use super::*;
     use crate::common::error::Context;
-    use csi::{
+    use log::debug;
+    use proto::csi::{
         ControllerExpandVolumeRequest, ControllerExpandVolumeResponse, CreateSnapshotRequest,
         CreateSnapshotResponse, CreateVolumeRequest, CreateVolumeResponse, DeleteSnapshotRequest,
         DeleteSnapshotResponse, DeleteVolumeRequest, DeleteVolumeResponse,
@@ -238,8 +196,7 @@ mod test {
         ProbeRequest, VolumeCapability, VolumeCapability_AccessMode_Mode,
         VolumeCapability_MountVolume,
     };
-    use csi_grpc::{ControllerClient, IdentityClient, NodeClient};
-    use log::debug;
+    use proto::csi_grpc::{ControllerClient, IdentityClient, NodeClient};
 
     use grpcio::{ChannelBuilder, EnvBuilder};
     use mock_etcd::MockEtcdServer;
