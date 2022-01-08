@@ -3,12 +3,12 @@
 use grpcio::{RpcContext, UnarySink};
 use log::debug;
 
-use super::csi::{
+use super::proto::csi::{
     GetPluginCapabilitiesRequest, GetPluginCapabilitiesResponse, GetPluginInfoRequest,
     GetPluginInfoResponse, PluginCapability, PluginCapability_Service_Type, ProbeRequest,
     ProbeResponse,
 };
-use super::csi_grpc::Identity;
+use super::proto::csi_grpc::Identity;
 use super::util;
 
 /// for `IdentityService` implmentation
