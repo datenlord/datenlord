@@ -50,7 +50,7 @@ mod common;
 mod csi;
 
 use crate::common::etcd_delegate::EtcdDelegate;
-use clap::{App, Arg, ArgMatches, SubCommand};
+use clap::{App, AppSettings, Arg, ArgMatches, SubCommand};
 use csi::meta_data::MetaData;
 use csi::scheduler_extender::SchdulerExtender;
 use csi::util;
@@ -516,6 +516,7 @@ fn get_map<'a>(map: &HashMap<String, Arg<'a, 'a>>, name: &str) -> Arg<'a, 'a> {
 fn parse_args<'a>() -> ArgMatches<'a> {
     let arg_map = get_default_arg_map();
     let matches = App::new("datenlord")
+        .global_setting(AppSettings::ArgRequiredElseHelp)
         .subcommand(
             gen_metadata(START_CONTROLLER)
                 .arg(get_map(&arg_map, DRIVER_NAME_ARG_NAME))
