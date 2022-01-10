@@ -198,23 +198,25 @@ spec:
       serviceAccount: csi-nodeplugin-sa
       priorityClassName: csi-datenlord-critical
       containers:
-        - name: datenlord-fuse
+        - name: datenlord
           securityContext:
             privileged: true
             allowPrivilegeEscalation: true
           image: datenlord/datenlord:e2e_test
-          ports:
-            - containerPort: 9897
           imagePullPolicy: "IfNotPresent"
           args:
+            - "start_node"
             - "--mountpoint=$(FUSE_MOUNT_DIR)"
             - "--volume_info=$(FUSE_VOLUME_INFO)"
+            - "--endpoint=$(CSI_NODE_ENDPOINT)"
+            - "--drivername=csi.datenlord.io"
             - "--etcd=$(ETCD_ENDPOINT)"
             - "--nodeid=$(NODE_ID)"
             - "--nodeip=$(NODE_IP)"
             - "--capacity=$(CACHE_CAPACITY)"
-            - "--port=8800"
+            - "--serverport=8800"
             - "--volume_type=none"
+            - "--workerport=50051"
           lifecycle:
             #postStart:
             #  exec:
@@ -238,6 +240,8 @@ spec:
               value: debug
             - name: RUST_BACKTRACE
               value: full
+            - name: CSI_NODE_ENDPOINT
+              value: unix:///plugin/node.sock
             - name: NODE_ID
               valueFrom:
                 fieldRef:
@@ -246,6 +250,11 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: status.podIP
+          ports:
+            - containerPort: 9897
+            - containerPort: 50051
+              hostPort: 50051
+              name: workerport
           volumeMounts:
             - name: datenlord-data-dir
               # This mount path must be the same inside and outside container
@@ -255,69 +264,12 @@ spec:
             - name: fuse-device
               mountPath: /dev/fuse
               mountPropagation: Bidirectional
-        - name: datenlord-node-plugin
-          securityContext:
-            privileged: true
-            capabilities:
-              add: ["SYS_ADMIN"]
-            allowPrivilegeEscalation: true
-          image: datenlord/csiplugin:e2e_test
-          imagePullPolicy: "IfNotPresent"
-          args:
-            - "--endpoint=$(CSI_NODE_ENDPOINT)"
-            - "--drivername=csi.datenlord.io"
-            - "--nodeid=$(NODE_ID)"
-            - "--nodeip=$(NODE_IP)"
-            - "--workerport=50051"
-            - "--runas=node"
-            - "--datadir=$(DATA_DIR)"
-            - "--etcd=csi-etcd-svc:2379"
-          env:
-            - name: NODE_ID
-              valueFrom:
-                fieldRef:
-                  fieldPath: spec.nodeName
-            - name: NODE_IP
-              valueFrom:
-                fieldRef:
-                  fieldPath: status.podIP
-            - name: CSI_NODE_ENDPOINT
-              value: unix:///plugin/node.sock
-            - name: RUST_LOG
-              value: csi=debug
-            - name: RUST_BACKTRACE
-              value: full
-            - name: DATA_DIR
-              value: /var/opt/datenlord-data
-          ports:
-            - containerPort: 50051
-              hostPort: 50051
-              name: workerport
-            #- containerPort: 9898
-            #  name: healthz
-            #  protocol: TCP
-          #livenessProbe:
-          #  failureThreshold: 20
-          #  httpGet:
-          #    path: /healthz
-          #    port: healthz
-          #  initialDelaySeconds: 10
-          #  timeoutSeconds: 3
-          #  periodSeconds: 2
-          volumeMounts:
             - name: socket-dir
               mountPath: /plugin
             - name: mountpoint-dir
               # This mount path must be the same inside and outside container
               # since DatenLord use bind mount to publish volume here
               mountPath: /var/lib/kubelet/pods
-              mountPropagation: Bidirectional
-            #- name: plugins-dir
-            #  mountPath: /var/lib/kubelet/plugins
-            #  mountPropagation: Bidirectional
-            - name: datenlord-data-dir
-              # This mount path must be the same inside and outside container
-              mountPath: /var/opt/datenlord-data
               mountPropagation: Bidirectional
         - name: csi-node-driver-registrar
           securityContext:
@@ -519,16 +471,16 @@ spec:
             # non-privileged sidecar containers cannot access unix domain socket
             # created by privileged CSI driver container.
             privileged: true
-          image: datenlord/csiplugin:e2e_test
+          image: datenlord/datenlord:e2e_test
           imagePullPolicy: "IfNotPresent"
           args :
+            - "start_csi_controller"
             - "--endpoint=$(CSI_CONTROLLER_ENDPOINT)"
             - "--drivername=csi.datenlord.io"
             - "--nodeid=$(NODE_ID)"
             - "--nodeip=$(NODE_IP)"
             - "--workerport=50051"
-            - "--runas=controller"
-            - "--datadir=$(DATA_DIR)"
+            - "--mountpoint=$(DATA_DIR)"
             - "--etcd=csi-etcd-svc:2379"
           env:
             - name: NODE_ID
@@ -542,7 +494,7 @@ spec:
             - name: CSI_CONTROLLER_ENDPOINT
               value: unix:///plugin/controller.sock
             - name: RUST_LOG
-              value: csi=debug
+              value: debug
             - name: RUST_BACKTRACE
               value: full
             - name: DATA_DIR
@@ -743,16 +695,16 @@ spec:
           - name: datenlord-scheduler-config
             mountPath: /datenlord-scheduler
         - name: datenlord-scheduler-extender
-          image: datenlord/csiplugin:e2e_test
+          image: datenlord/datenlord:e2e_test
           imagePullPolicy: "IfNotPresent"
           args:
-            - "--endpoint=$(CSI_CONTROLLER_ENDPOINT)"
+            - "start_scheduler_extender"
             - "--nodeid=$(NODE_ID)"
             - "--nodeip=127.0.0.1"
             - "--workerport=12345"
-            - "--runas=scheduler-extender"
             - "--etcd=csi-etcd-svc:2379"
             - "--scheduler-extender-port=12345"
+            - "--mountpoint=$(FUSE_MOUNT_DIR)"
           env:
             - name: NODE_ID
               valueFrom:
@@ -768,6 +720,10 @@ spec:
               value: csi=debug
             - name: RUST_BACKTRACE
               value: full
+            - name: FUSE_MOUNT_DIR
+              value: /var/opt/datenlord-data 
+            - name: FUSE_VOLUME_INFO
+              value: fuse-test-bucket\;http://127.0.0.1:9000\;test\;test1234
           ports:
             - containerPort: 12345
               hostPort: 12345

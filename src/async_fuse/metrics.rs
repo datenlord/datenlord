@@ -1,0 +1,60 @@
+use async_compat::Compat;
+use hyper::{header::CONTENT_TYPE, Body, Request, Response};
+use hyper::{
+    service::{make_service_fn, service_fn},
+    Server,
+};
+use lazy_static::lazy_static;
+use log::debug;
+use prometheus::{opts, register_counter, Counter, Encoder, TextEncoder};
+
+lazy_static! {
+    /// Datenlord cache hit metrics
+    pub static ref CACHE_HITS: Counter = register_counter!(opts!(
+        "datenlord_cache_hits",
+        "Approximate number of Cache hits since last server start"
+    ))
+    .unwrap();
+    /// Datenlord cache miss metrics
+    pub static ref CACHE_MISSES: Counter = register_counter!(opts!(
+        "datenlord_cache_misses",
+        "Approximate number of Cache misses since last server start"
+    ))
+    .unwrap();
+}
+
+/// Serve promethues requests, return metrics response
+///
+/// # Errors
+/// Returns [`hyper::Error`]
+#[allow(clippy::unused_async)] // Hyper requires an async function
+pub async fn serve_req(_req: Request<Body>) -> Result<Response<Body>, hyper::Error> {
+    let encoder = TextEncoder::new();
+
+    let metric_families = prometheus::gather();
+    let mut buffer = vec![];
+    encoder
+        .encode(&metric_families, &mut buffer)
+        .unwrap_or_else(|_| panic!("Fail to encode metrics"));
+
+    let response = Response::builder()
+        .status(200)
+        .header(CONTENT_TYPE, encoder.format_type())
+        .body(Body::from(buffer))
+        .unwrap_or_else(|_| panic!("Fail to build promethues response"));
+    Ok(response)
+}
+
+/// Start a server to process promethues request
+pub fn start_metrics_server() {
+    smol::spawn(Compat::new(async move {
+        let addr = ([0, 0, 0, 0], 9897).into();
+        let serve_future = Server::bind(&addr).serve(make_service_fn(|_| async {
+            Ok::<_, hyper::Error>(service_fn(serve_req))
+        }));
+        if let Err(err) = serve_future.await {
+            debug!("Metric server error: {}", err);
+        }
+    }))
+    .detach();
+}

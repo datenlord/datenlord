@@ -24,15 +24,11 @@ else
     sed -i "s/KUBE_STATE_METRICS_ADDRESS/['kube-state-metrics.datenlord-monitoring.svc.cluster.local:8080']/g" scripts/datenlord-monitor.yaml
     sed -i "s/NODE_EXPORTER_NAME/'node_exporter'/g" scripts/datenlord-monitor.yaml
     kubectl create namespace datenlord-monitoring 
-    docker pull quay.io/coreos/kube-state-metrics:v1.8.0
-    docker pull prom/alertmanager:v0.19.0
-    docker pull prom/prometheus
-    docker pull grafana/grafana:latest
     kubectl apply -f scripts/alertmanager_alerts.yaml
     kubectl apply -f scripts/datenlord-logging.yaml
     kubectl apply -f scripts/datenlord-monitor.yaml
-    kubectl wait --for=condition=Ready pod -l app=prometheus-server -n datenlord-monitoring --timeout=60s
-    kubectl wait --for=condition=Ready pod -l app=grafana -n datenlord-monitoring --timeout=60s
+    kubectl wait --for=condition=Ready pod -l app=prometheus-server -n datenlord-monitoring --timeout=10s
+    kubectl wait --for=condition=Ready pod -l app=grafana -n datenlord-monitoring --timeout=10s
     kubectl wait --for=condition=Ready pod -l app=kibana -n datenlord-logging --timeout=120s
     kubectl wait --for=condition=Ready pod -l app=elasticsearch -n datenlord-logging --timeout=120s
     POD_NAME=`kubectl get pods -l app=grafana -n datenlord-monitoring | grep grafana | awk '{print $1}'`

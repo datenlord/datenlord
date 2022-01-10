@@ -5,16 +5,17 @@ on:
   schedule: [cron: "0 */4 * * *"]
 
 env:
-  RUST_VERSION: 1.47.0
+  RUST_VERSION: 1.56.1
+  CONFIG_DOCKERHUB: datenlord-deploy.yaml
   CONFIG_MINIKUBE: scripts/datenlord_minikube.yaml
   CONFIG_KIND: scripts/datenlord.yaml
-  CONFIG_DOCKERHUB: datenlord-deploy.yaml
   CONTROLLER_APP_LABEL: csi-controller-datenlord
   CONTROLLER_CONTAINER_NAME: datenlord-controller-plugin
   DATENLORD_CSI_IMAGE: datenlord/csiplugin:e2e_test
   DATENLORD_IMAGE: datenlord/datenlord:e2e_test
   DATENLORD_LOGGING: scripts/datenlord-logging.yaml
   DATENLORD_LOGGING_NAMESPACE: datenlord-logging
+  DATENLORD_METRICS_TEST: scripts/datenlord-metrics-test.yaml
   DATENLORD_MONITORING: scripts/datenlord-monitor.yaml
   DATENLORD_MONITORING_NAMESPACE: datenlord-monitoring
   DATENLORD_NAMESPACE: csi-datenlord
@@ -27,12 +28,13 @@ env:
   K8S_CONFIG: k8s.e2e.config
   K8S_VERSION: v1.21.1
   KIBANA_LABEL: kibana
-  KIND_NODE_VERSION: kindest/node:v1.21.1@sha256:fae9a58f17f18f06aeac9772ca8b5ac680ebbed985e266f711d936e91d113bad
-  KIND_VERSION: v0.11.0
+  KIND_NODE_VERSION: kindest/node:v1.21.1@sha256:69860bda5563ac81e3c0057d654b5253219618a22ec3a346306239bba8cfa1a6
+  KIND_VERSION: v0.11.1
   # MINIKUBE_VERSION: v1.13.0
   NODE_APP_LABEL: csi-nodeplugin-datenlord
-  NODE_CONTAINER_NAME: datenlord-node-plugin
+  NODE_CONTAINER_NAME: datenlord
   PROMETHEUS_LABEL: prometheus-server
+  SNAPSHOTTER_VERSION: v5.0.0
 
 jobs:
   #minikube-csi-e2e:
@@ -213,33 +215,20 @@ jobs:
           rm -rf $HOME/.ssh/
           ssh-keygen -N '' -f ~/.ssh/id_rsa
           /bin/bash /tmp/setup.sh
-      - name: Datenlord Monitoring Test
+      - name: Datenlord Monitoring and Alerting Test
         run: |
-          sudo chmod 755 scripts/datenlord-monitor-deploy.sh
-          cat scripts/alertmanager_test_alert.yaml >> scripts/alertmanager_alerts.yaml
-          sh scripts/datenlord-monitor-deploy.sh deploy
-          NODE_IP=`kubectl get nodes -A -o wide | awk 'FNR == 2 {print $6}'`
-          FOUND_PATH=`curl --silent $NODE_IP:30000 | grep Found`
-          test -n "$FOUND_PATH" || (echo "FAILED TO FIND PROMETHEUS SERVICE" && /bin/false)
-      - name: Datenlord Alerting Test
-        run: |
-          sleep 60
-          NODE_IP=`kubectl get nodes -A -o wide | awk 'FNR == 2 {print $6}'`
-          ALERTS=`curl --silent $NODE_IP:31000/api/v2/alerts | grep 'High Memory Usage'`
-          test -n "$ALERTS" || (echo "FAILED TO FIND ALERTS" && /bin/false)
+          sh scripts/datenlord_monitor_test.sh
       - name: Docker build fuse and csi
         run: |
-          docker build . --build-arg RUST_IMAGE_VERSION=$RUST_VERSION --file ./Dockerfile --target fuse --tag $DATENLORD_IMAGE
-          docker build . --build-arg RUST_IMAGE_VERSION=$RUST_VERSION --file ./Dockerfile --target csi --tag $DATENLORD_CSI_IMAGE
+          docker build . --build-arg RUST_IMAGE_VERSION=$RUST_VERSION --file ./Dockerfile --target datenlord --tag $DATENLORD_IMAGE
           kind load docker-image $DATENLORD_IMAGE
-          kind load docker-image $DATENLORD_CSI_IMAGE
       - name: Deploy DatenLord to K8S
         run: |
           kubectl cluster-info
           kubectl get pods -A
-          kubectl apply -f https://raw.githubusercontent.com/kubernetes-csi/external-snapshotter/master/client/config/crd/snapshot.storage.k8s.io_volumesnapshots.yaml
-          kubectl apply -f https://raw.githubusercontent.com/kubernetes-csi/external-snapshotter/master/client/config/crd/snapshot.storage.k8s.io_volumesnapshotcontents.yaml
-          kubectl apply -f https://raw.githubusercontent.com/kubernetes-csi/external-snapshotter/master/client/config/crd/snapshot.storage.k8s.io_volumesnapshotclasses.yaml
+          kubectl apply -f https://raw.githubusercontent.com/kubernetes-csi/external-snapshotter/${SNAPSHOTTER_VERSION}/client/config/crd/snapshot.storage.k8s.io_volumesnapshots.yaml
+          kubectl apply -f https://raw.githubusercontent.com/kubernetes-csi/external-snapshotter/${SNAPSHOTTER_VERSION}/client/config/crd/snapshot.storage.k8s.io_volumesnapshotcontents.yaml
+          kubectl apply -f https://raw.githubusercontent.com/kubernetes-csi/external-snapshotter/${SNAPSHOTTER_VERSION}/client/config/crd/snapshot.storage.k8s.io_volumesnapshotclasses.yaml
           kubectl apply -f $CONFIG_KIND
           kubectl wait --for=condition=Ready pod -l app=$CONTROLLER_APP_LABEL -n $DATENLORD_NAMESPACE --timeout=60s
           kubectl wait --for=condition=Ready pod -l app=$NODE_APP_LABEL -n $DATENLORD_NAMESPACE --timeout=60s
@@ -255,8 +244,8 @@ jobs:
           kubectl get volumesnapshotclass
           kubectl wait --for=condition=Ready pod -l app=$CONTROLLER_APP_LABEL -n $DATENLORD_NAMESPACE --timeout=60s
           kubectl wait --for=condition=Ready pod -l app=$NODE_APP_LABEL -n $DATENLORD_NAMESPACE --timeout=60s
-          wget https://raw.githubusercontent.com/kubernetes-csi/external-snapshotter/master/deploy/kubernetes/snapshot-controller/rbac-snapshot-controller.yaml
-          wget https://raw.githubusercontent.com/kubernetes-csi/external-snapshotter/master/deploy/kubernetes/snapshot-controller/setup-snapshot-controller.yaml
+          wget https://raw.githubusercontent.com/kubernetes-csi/external-snapshotter/${SNAPSHOTTER_VERSION}/deploy/kubernetes/snapshot-controller/rbac-snapshot-controller.yaml
+          wget https://raw.githubusercontent.com/kubernetes-csi/external-snapshotter/${SNAPSHOTTER_VERSION}/deploy/kubernetes/snapshot-controller/setup-snapshot-controller.yaml
           sed -e 's/namespace\:\ default/namespace\:\ kube\-system/g' rbac-snapshot-controller.yaml > datenlord-rbac-snapshot-controller.yaml
           sed -e 's/namespace\:\ default/namespace\:\ kube\-system/g' setup-snapshot-controller.yaml > datenlord-setup-snapshot-controller.yaml
           kubectl apply -f datenlord-rbac-snapshot-controller.yaml
@@ -267,6 +256,9 @@ jobs:
           sleep 60
           kubectl get pods -A -o wide
           # sudo netstat -lntp && ls -lsh
+      - name: Datenlord metric and logging test
+        run: |
+          sh scripts/datenlord_metrics_logging_test.sh
       - name: CSI E2E Test
         run: |
           wget --quiet https://dl.k8s.io/$K8S_VERSION/kubernetes-test-linux-amd64.tar.gz
@@ -276,6 +268,17 @@ jobs:
           kubernetes/test/bin/ginkgo -v -failFast -failOnPending -debug -focus='External.Storage' -skip='\[Feature:|\[Disruptive\]|\[Serial\]' kubernetes/test/bin/e2e.test -- -v=5 -kubectl-path=`which kubectl` -kubeconfig=`realpath $K8S_CONFIG` -storage.testdriver=`realpath $E2E_TEST_CONFIG`
           # Run [Disruptive] test in serial and separately
           kubernetes/test/bin/ginkgo -v -failFast -failOnPending -debug -focus='External.Storage.*(\[Feature:|\[Disruptive\]|\[Serial\])' kubernetes/test/bin/e2e.test -- -v=5 -kubectl-path=`which kubectl` -kubeconfig=`realpath $K8S_CONFIG` -storage.testdriver=`realpath $E2E_TEST_CONFIG`
+      - name: DatenLord Perf Test
+        run: |
+          kind delete cluster
+          kind create cluster --config ./kind-config.yaml
+          kind load docker-image ${DATENLORD_IMAGE}
+          sh scripts/datenlord_perf_test.sh
+      - name: Archive Perf Result
+        uses: actions/upload-artifact@v2
+        with:
+          name: perf-report
+          path: /tmp/output/*
       #- name: Quick Start Test
       #  run: |
       #    kubectl delete -f $CONFIG_KIND
@@ -287,14 +290,16 @@ jobs:
       - name: Print DatenLord logs
         if: ${{ failure() }}
         run: |
+          kubectl get pods -A -o wide
           CONTROLLER_POD_NAME=`kubectl get pod -l app=$CONTROLLER_APP_LABEL -n $DATENLORD_NAMESPACE -o jsonpath="{.items[0].metadata.name}"`
           echo "SHOW LOGS OF $CONTROLLER_CONTAINER_NAME IN $CONTROLLER_POD_NAME"
           kubectl logs $CONTROLLER_POD_NAME -n $DATENLORD_NAMESPACE -c $CONTROLLER_CONTAINER_NAME
-          NODE_POD_NAME=`kubectl get pod -l app=$NODE_APP_LABEL -n $DATENLORD_NAMESPACE -o jsonpath="{.items[0].metadata.name}"`
-          echo "SHOW LOGS OF $NODE_CONTAINER_NAME IN $NODE_POD_NAME"
-          kubectl logs $NODE_POD_NAME -n $DATENLORD_NAMESPACE -c $NODE_CONTAINER_NAME
-          echo "SHOW LOGS OF $FUSE_CONTAINER_NAME IN $NODE_POD_NAME"
-          kubectl logs $NODE_POD_NAME -n $DATENLORD_NAMESPACE -c $FUSE_CONTAINER_NAME
+          NODE_POD_NAMES=`kubectl get pods --selector=app=${NODE_APP_LABEL} --namespace ${DATENLORD_NAMESPACE} --output=custom-columns="NAME:.metadata.name" | tail -n +2`
+          for pod in ${NODE_POD_NAMES}; do
+            echo "SHOW LOGS OF $NODE_CONTAINER_NAME IN ${pod}"
+            kubectl logs ${pod} -n ${DATENLORD_NAMESPACE} -c ${NODE_CONTAINER_NAME}
+          done
+          kubectl cluster-info dump
       - name: Setup tmate session
         if: ${{ failure() }}
         uses: mxschmitt/action-tmate@v3
