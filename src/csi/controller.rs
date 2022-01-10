@@ -6,7 +6,8 @@ use protobuf::RepeatedField;
 use std::cmp::Ordering;
 use std::sync::Arc;
 
-use super::csi::{
+use super::meta_data::{DatenLordSnapshot, MetaData, VolumeSource};
+use super::proto::csi::{
     ControllerExpandVolumeRequest, ControllerExpandVolumeResponse,
     ControllerGetCapabilitiesRequest, ControllerGetCapabilitiesResponse,
     ControllerGetVolumeRequest, ControllerGetVolumeResponse, ControllerPublishVolumeRequest,
@@ -19,8 +20,7 @@ use super::csi::{
     ListVolumesResponse, ValidateVolumeCapabilitiesRequest, ValidateVolumeCapabilitiesResponse,
     VolumeCapability, VolumeCapability_AccessMode_Mode, VolumeContentSource_oneof_type,
 };
-use super::csi_grpc::Controller;
-use super::meta_data::{DatenLordSnapshot, MetaData, VolumeSource};
+use super::proto::csi_grpc::Controller;
 use super::util;
 use crate::common::error::{
     Context,
