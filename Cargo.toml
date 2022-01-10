@@ -32,7 +32,7 @@ futures = "0.3.5"
 grpcio = { version = "0.9.1", default-features = false, features = ["protobuf-codec"] }
 hyper = { version = "^0.14", features = ["server", "http1", "tcp"] }
 itertools = "0.10.0"
-k8s-openapi = { version = "0.11.0", default-features = false, features = ["v1_19"] }
+k8s-openapi = { version = "0.13.1", default-features = false, features = ["v1_19"] }
 lazy_static = "^1.4"
 libc = "0.2.79"
 lockfree-cuckoohash = {git = "https://github.com/datenlord/lockfree-cuckoohash", rev = "e5849f18"}
@@ -48,7 +48,7 @@ protobuf = "2.16.2"
 rand = "0.8.3"
 ring-io = { git = "https://github.com/datenlord/ring-io", rev = "2f0506c" }
 rust-s3 = {git="https://github.com/rogercloud/rust-s3", rev = "c1fa1b9", features = ["with-async-std"], default-features = false}
-serde-xml-rs = "0.4" 
+serde-xml-rs = "0.5" 
 serde = "1.0.126"
 serde_json = "1.0.64"
 smol = { version = "1.2.5" }

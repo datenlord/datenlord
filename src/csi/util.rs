@@ -15,7 +15,7 @@ use std::process::Command;
 use utilities::Cast;
 use walkdir::WalkDir;
 
-use super::csi::{
+use super::proto::csi::{
     CreateSnapshotRequest, CreateSnapshotResponse, CreateVolumeRequest, CreateVolumeResponse,
     Snapshot, Topology, Volume,
 };

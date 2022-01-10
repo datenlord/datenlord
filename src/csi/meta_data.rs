@@ -13,13 +13,13 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use utilities::Cast;
 
-use super::csi::{
+use super::proto::csi::{
     CreateVolumeRequest, ListSnapshotsResponse_Entry, ListVolumesResponse_Entry, Topology,
     TopologyRequirement, VolumeCapability_AccessMode_Mode, VolumeContentSource,
     VolumeContentSource_SnapshotSource, VolumeContentSource_VolumeSource,
     VolumeContentSource_oneof_type,
 };
-use super::datenlord_worker_grpc::WorkerClient;
+use super::proto::datenlord_worker_grpc::WorkerClient;
 use super::util::{self, BindMountMode};
 use crate::common::error::{
     Context,

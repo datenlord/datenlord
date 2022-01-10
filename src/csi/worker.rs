@@ -5,13 +5,13 @@ use log::{debug, info};
 use std::sync::Arc;
 use uuid::Uuid;
 
-use super::csi::{
+use super::meta_data::{DatenLordVolume, MetaData, VolumeSource};
+use super::proto::csi::{
     CreateSnapshotRequest, CreateSnapshotResponse, CreateVolumeRequest, CreateVolumeResponse,
     DeleteSnapshotRequest, DeleteSnapshotResponse, DeleteVolumeRequest, DeleteVolumeResponse,
     Topology,
 };
-use super::datenlord_worker_grpc::Worker;
-use super::meta_data::{DatenLordVolume, MetaData, VolumeSource};
+use super::proto::datenlord_worker_grpc::Worker;
 use super::util;
 use crate::common::error::{Context, DatenLordResult};
 
