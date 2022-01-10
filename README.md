@@ -163,7 +163,7 @@ The CSI E2E test setup is a bit complex, its action script [cron.yml](.github/wo
 ### Sub-Projects
 
 DatenLord has several related sub-projects, mostly working in progress, listed alphabetically:
-* [async-fuse](./async_fuse) Native async Rust library for FUSE;
+* [async-fuse](./src/async_fuse) Native async Rust library for FUSE;
 * [async-rdma](https://github.com/datenlord/async-rdma) Async and safe Rust library for RDMA;
 * [etcd-client](https://github.com/datenlord/etcd-client) Async etcd client SDK in Rust;
 * [lockfree-cuckoohash](https://github.com/datenlord/lockfree-cuckoohash) Lock-free hashmap in Rust;
