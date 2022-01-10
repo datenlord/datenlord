@@ -6,7 +6,8 @@ use nix::sys::stat::{self, SFlag};
 use protobuf::RepeatedField;
 use std::sync::Arc;
 
-use super::csi::{
+use super::meta_data::{DatenLordVolume, MetaData};
+use super::proto::csi::{
     NodeExpandVolumeRequest, NodeExpandVolumeResponse, NodeGetCapabilitiesRequest,
     NodeGetCapabilitiesResponse, NodeGetInfoRequest, NodeGetInfoResponse,
     NodeGetVolumeStatsRequest, NodeGetVolumeStatsResponse, NodePublishVolumeRequest,
@@ -15,8 +16,7 @@ use super::csi::{
     NodeUnpublishVolumeResponse, NodeUnstageVolumeRequest, NodeUnstageVolumeResponse, Topology,
     VolumeCapability_oneof_access_type,
 };
-use super::csi_grpc::Node;
-use super::meta_data::{DatenLordVolume, MetaData};
+use super::proto::csi_grpc::Node;
 use super::util;
 use crate::common::error::{
     Context,
