@@ -48,7 +48,7 @@ protobuf = "2.16.2"
 rand = "0.8.3"
 ring-io = { git = "https://github.com/datenlord/ring-io", rev = "2f0506c" }
 rust-s3 = {git="https://github.com/rogercloud/rust-s3", rev = "c1fa1b9", features = ["with-async-std"], default-features = false}
-serde-xml-rs = "0.4" 
+serde-xml-rs = "0.5" 
 serde = "1.0.126"
 serde_json = "1.0.64"
 smol = { version = "1.2.5" }
