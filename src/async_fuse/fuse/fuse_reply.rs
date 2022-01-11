@@ -218,21 +218,14 @@ impl ReplyRaw {
     /// Send error response to FUSE kernel
     async fn send_error(self, err: anyhow::Error) -> nix::Result<usize> {
         let error_code = if let Some(nix_err) = err.root_cause().downcast_ref::<nix::Error>() {
-            if let Some(error_code) = nix_err.as_errno() {
-                if let nix::errno::Errno::UnknownErrno = error_code {
-                    panic!(
-                        "should not send nix::errno::Errno::UnknownErrno to FUSE kernel, \
-                            the error is: {}",
-                        crate::common::util::format_anyhow_error(&err),
-                    );
-                } else {
-                    error_code
-                }
-            } else {
+            if *nix_err == nix::errno::Errno::UnknownErrno {
                 panic!(
-                    "should not send non-nix::Error::Sys to FUSE kernel, the error is: {}",
+                    "should not send nix::errno::Errno::UnknownErrno to FUSE kernel, \
+                            the error is: {}",
                     crate::common::util::format_anyhow_error(&err),
-                )
+                );
+            } else {
+                nix_err
             }
         } else {
             panic!(
@@ -240,7 +233,7 @@ impl ReplyRaw {
                 crate::common::util::format_anyhow_error(&err),
             );
         };
-        self.send_error_code(error_code).await
+        self.send_error_code(*error_code).await
     }
 }
 
