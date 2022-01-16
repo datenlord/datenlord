@@ -26,5 +26,5 @@ jobs:
         docker tag datenlord/datenlord:$(date '+%Y-%m-%d') datenlord/datenlord:latest
     - name: Docker Push
       run: |
-        docker push ${{secrets.DOCKER_USER}}/datenlord/datenlord:$(date '+%Y-%m-%d')
-        docker push ${{secrets.DOCKER_USER}}/datenlord/datenlord:latest
+        docker push datenlord/datenlord:$(date '+%Y-%m-%d')
+        docker push datenlord/datenlord:latest
