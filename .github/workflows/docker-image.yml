@@ -23,7 +23,7 @@ jobs:
     - name: Build the Docker image
       run: |
         docker build . --build-arg RUST_IMAGE_VERSION=$RUST_VERSION --file Dockerfile --target datenlord --tag datenlord/datenlord:$(date '+%Y-%m-%d')
-        docker tag datenlord/datenlord:latest datenlord/datenlord:$(date '+%Y-%m-%d')
+        docker tag datenlord/datenlord:$(date '+%Y-%m-%d') datenlord/datenlord:latest
     - name: Docker Push
       run: |
         docker push ${{secrets.DOCKER_USER}}/datenlord/datenlord:$(date '+%Y-%m-%d')
