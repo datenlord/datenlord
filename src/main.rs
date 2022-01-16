@@ -50,7 +50,7 @@ mod common;
 mod csi;
 
 use crate::common::etcd_delegate::EtcdDelegate;
-use clap::{App, AppSettings, Arg, ArgMatches, SubCommand};
+use clap::{App, AppSettings, Arg, ArgMatches};
 use csi::meta_data::MetaData;
 use csi::scheduler_extender::SchdulerExtender;
 use csi::util;
@@ -145,7 +145,7 @@ struct ArgParam<'a> {
     /// Arg name
     name: &'a str,
     /// In short
-    short: Option<&'a str>,
+    short: Option<char>,
     /// In long
     long: Option<&'a str>,
     /// The value name
@@ -167,9 +167,9 @@ impl<'a> ArgParam<'a> {
 
     /// Generate the arg with short&long or not
     #[must_use]
-    fn new_arg(&self) -> Arg<'a, 'a> {
+    fn new_arg(&self) -> Arg<'a> {
         let self_clone = self.clone();
-        let mut arg = Arg::with_name(self_clone.name)
+        let mut arg = Arg::new(self_clone.name)
             .value_name(self_clone.value_name)
             .takes_value(self_clone.take_value)
             .required(self_clone.required)
@@ -191,11 +191,11 @@ impl<'a> ArgParam<'a> {
 #[allow(clippy::too_many_lines)]
 //allow for this function as there is no other logic in this function
 #[must_use]
-fn get_default_arg_map<'a>() -> HashMap<String, Arg<'a, 'a>> {
+fn get_default_arg_map<'a>() -> HashMap<String, Arg<'a>> {
     let vec = vec![
         ArgParam {
             name: MOUNT_POINT_ARG_NAME,
-            short: Some("m"),
+            short: Some('m'),
             long: Some(MOUNT_POINT_ARG_NAME),
             value_name: "MOUNT_DIR",
             take_value: true,
@@ -205,7 +205,7 @@ fn get_default_arg_map<'a>() -> HashMap<String, Arg<'a, 'a>> {
         },
         ArgParam {
             name: CACHE_CAPACITY_ARG_NAME,
-            short: Some("c"),
+            short: Some('c'),
             long: Some(CACHE_CAPACITY_ARG_NAME),
             value_name: "CACHE_CAPACITY",
             take_value: true,
@@ -215,7 +215,7 @@ fn get_default_arg_map<'a>() -> HashMap<String, Arg<'a, 'a>> {
         },
         ArgParam {
             name: END_POINT_ARG_NAME,
-            short: Some("s"),
+            short: Some('s'),
             long: Some(END_POINT_ARG_NAME),
             value_name: "SOCKET_FILE",
             take_value: true,
@@ -225,7 +225,7 @@ fn get_default_arg_map<'a>() -> HashMap<String, Arg<'a, 'a>> {
         },
         ArgParam {
             name: WORKER_PORT_ARG_NAME,
-            short: Some("p"),
+            short: Some('p'),
             long: Some(WORKER_PORT_ARG_NAME),
             value_name: "PORT",
             take_value: true,
@@ -235,7 +235,7 @@ fn get_default_arg_map<'a>() -> HashMap<String, Arg<'a, 'a>> {
         },
         ArgParam {
             name: NODE_ID_ARG_NAME,
-            short: Some("n"),
+            short: Some('n'),
             long: Some(NODE_ID_ARG_NAME),
             value_name: "NODE ID",
             take_value: true,
@@ -246,7 +246,7 @@ fn get_default_arg_map<'a>() -> HashMap<String, Arg<'a, 'a>> {
         },
         ArgParam {
             name: NODE_IP_ARG_NAME,
-            short: Some("i"),
+            short: Some('i'),
             long: Some(NODE_IP_ARG_NAME),
             value_name: "NODE IP",
             take_value: true,
@@ -255,7 +255,7 @@ fn get_default_arg_map<'a>() -> HashMap<String, Arg<'a, 'a>> {
         },
         ArgParam {
             name: DRIVER_NAME_ARG_NAME,
-            short: Some("d"),
+            short: Some('d'),
             long: Some(DRIVER_NAME_ARG_NAME),
             value_name: "DRIVER NAME",
             take_value: true,
@@ -264,7 +264,7 @@ fn get_default_arg_map<'a>() -> HashMap<String, Arg<'a, 'a>> {
         },
         ArgParam {
             name: ETCD_ADDRESS_ARG_NAME,
-            short: Some("e"),
+            short: Some('e'),
             long: Some(ETCD_ADDRESS_ARG_NAME),
             value_name: "ETCD IP:PORT,ETCD IP:PORT",
             take_value: true,
@@ -275,7 +275,7 @@ fn get_default_arg_map<'a>() -> HashMap<String, Arg<'a, 'a>> {
         },
         ArgParam {
             name: SCHEDULER_EXTENDER_PORT_ARG_NAME,
-            short: Some("S"),
+            short: Some('S'),
             long: Some(SCHEDULER_EXTENDER_PORT_ARG_NAME),
             value_name: "SCHEDULER EXTENDER PORT",
             take_value: true,
@@ -284,7 +284,7 @@ fn get_default_arg_map<'a>() -> HashMap<String, Arg<'a, 'a>> {
         },
         ArgParam {
             name: VOLUME_INFO_ARG_NAME,
-            short: Some("v"),
+            short: Some('v'),
             long: Some(VOLUME_INFO_ARG_NAME),
             value_name: "VOLUME_INFO",
             take_value: true,
@@ -294,7 +294,7 @@ fn get_default_arg_map<'a>() -> HashMap<String, Arg<'a, 'a>> {
         },
         ArgParam {
             name: VOLUME_TYPE_ARG_NAME,
-            short: Some("V"),
+            short: Some('V'),
             long: Some(VOLUME_TYPE_ARG_NAME),
             value_name: "VOLUME_TYPE",
             take_value: true,
@@ -304,7 +304,7 @@ fn get_default_arg_map<'a>() -> HashMap<String, Arg<'a, 'a>> {
         },
         ArgParam {
             name: SERVER_PORT_NUM_ARG_NAME,
-            short: Some("P"),
+            short: Some('P'),
             long: Some(SERVER_PORT_NUM_ARG_NAME),
             value_name: "PORT_NUM",
             take_value: true,
@@ -380,7 +380,7 @@ fn get_driver_name(matches: &ArgMatches) -> String {
 
 /// Get mount dir
 #[must_use]
-fn get_mount_dir<'a>(matches: &'a ArgMatches) -> &'a str {
+fn get_mount_dir(matches: &ArgMatches) -> &str {
     let mount_dir = match matches.value_of(MOUNT_POINT_ARG_NAME) {
         Some(mp) => mp,
         None => panic!("No mount point input"),
@@ -434,7 +434,7 @@ fn get_cache_capacity(matches: &ArgMatches) -> usize {
 
 /// Get volume info
 #[must_use]
-fn get_volume_info<'a>(matches: &'a ArgMatches) -> &'a str {
+fn get_volume_info(matches: &ArgMatches) -> &str {
     let volume_info = match matches.value_of(VOLUME_INFO_ARG_NAME) {
         Some(vi) => vi,
         None => panic!("No volume information input"),
@@ -444,7 +444,7 @@ fn get_volume_info<'a>(matches: &'a ArgMatches) -> &'a str {
 
 /// Get server port
 #[must_use]
-fn get_server_port<'a>(matches: &'a ArgMatches) -> &'a str {
+fn get_server_port(matches: &ArgMatches) -> &str {
     let server_port = match matches.value_of(SERVER_PORT_NUM_ARG_NAME) {
         Some(p) => p,
         None => DEFAULT_PORT_NUM,
@@ -472,10 +472,9 @@ fn get_volume_type(matches: &ArgMatches) -> VolumeType {
 
 /// Generate the metadata
 #[must_use]
-fn gen_metadata<'a>(name: &str) -> App<'a, 'a> {
+fn add_metadata_args(app: App) -> App {
     let arg_map = get_default_arg_map();
-    SubCommand::with_name(name)
-        .arg(get_map(&arg_map, MOUNT_POINT_ARG_NAME))
+    app.arg(get_map(&arg_map, MOUNT_POINT_ARG_NAME))
         .arg(get_map(&arg_map, WORKER_PORT_ARG_NAME))
         .arg(get_map(&arg_map, NODE_ID_ARG_NAME))
         .arg(get_map(&arg_map, NODE_IP_ARG_NAME))
@@ -504,7 +503,7 @@ fn parse_metadata(
 }
 
 /// Get command from default map
-fn get_map<'a>(map: &HashMap<String, Arg<'a, 'a>>, name: &str) -> Arg<'a, 'a> {
+fn get_map<'a>(map: &HashMap<String, Arg<'a>>, name: &str) -> Arg<'a> {
     if let Some(res) = map.get(name) {
         res.clone()
     } else {
@@ -513,17 +512,17 @@ fn get_map<'a>(map: &HashMap<String, Arg<'a, 'a>>, name: &str) -> Arg<'a, 'a> {
 }
 
 /// Parse the args in subcommand
-fn parse_args<'a>() -> ArgMatches<'a> {
+fn parse_args() -> ArgMatches {
     let arg_map = get_default_arg_map();
     let matches = App::new("datenlord")
         .global_setting(AppSettings::ArgRequiredElseHelp)
         .subcommand(
-            gen_metadata(START_CONTROLLER)
+            add_metadata_args(App::new(START_CONTROLLER))
                 .arg(get_map(&arg_map, DRIVER_NAME_ARG_NAME))
                 .arg(get_map(&arg_map, END_POINT_ARG_NAME)),
         )
         .subcommand(
-            gen_metadata(START_NODE)
+            add_metadata_args(App::new(START_NODE))
                 .arg(get_map(&arg_map, DRIVER_NAME_ARG_NAME))
                 .arg(get_map(&arg_map, END_POINT_ARG_NAME))
                 .arg(get_map(&arg_map, SERVER_PORT_NUM_ARG_NAME))
@@ -532,11 +531,11 @@ fn parse_args<'a>() -> ArgMatches<'a> {
                 .arg(get_map(&arg_map, VOLUME_INFO_ARG_NAME)),
         )
         .subcommand(
-            gen_metadata(START_SCHEDULER_EXTENDER)
+            add_metadata_args(App::new(START_SCHEDULER_EXTENDER))
                 .arg(get_map(&arg_map, SCHEDULER_EXTENDER_PORT_ARG_NAME)),
         )
         .subcommand(
-            SubCommand::with_name(START_ASYNC_FUSE)
+            App::new(START_ASYNC_FUSE)
                 .arg(get_map(&arg_map, SERVER_PORT_NUM_ARG_NAME))
                 .arg(get_map(&arg_map, VOLUME_TYPE_ARG_NAME))
                 .arg(get_map(&arg_map, CACHE_CAPACITY_ARG_NAME))
@@ -560,7 +559,7 @@ fn main() -> anyhow::Result<()> {
     // issue link: `https://github.com/rust-lang/rust-clippy/issues/7946`
     #[allow(clippy::pattern_type_mismatch)]
     match matches.subcommand() {
-        (START_CONTROLLER, Some(matches)) => {
+        Some((START_CONTROLLER, matches)) => {
             let metadata = parse_metadata(matches, RunAsRole::Controller)?;
             let md = Arc::new(metadata);
             let async_server = true;
@@ -574,7 +573,7 @@ fn main() -> anyhow::Result<()> {
             )?;
             csi::run_grpc_servers(&mut [controller_server], async_server);
         }
-        (START_NODE, Some(matches)) => {
+        Some((START_NODE, matches)) => {
             let metadata = parse_metadata(matches, RunAsRole::Node)?;
 
             let md = Arc::new(metadata);
@@ -614,7 +613,7 @@ fn main() -> anyhow::Result<()> {
                 .join()
                 .unwrap_or_else(|e| panic!("csi thread error: {:?}", e));
         }
-        (START_SCHEDULER_EXTENDER, Some(matches)) => {
+        Some((START_SCHEDULER_EXTENDER, matches)) => {
             let metadata = parse_metadata(matches, RunAsRole::SchedulerExtender)?;
             let md = Arc::new(metadata);
             let port = get_scheduler_port(matches);
@@ -632,7 +631,7 @@ fn main() -> anyhow::Result<()> {
                 .join()
                 .unwrap_or_else(|e| panic!("scheduler extender error: {:?}", e));
         }
-        (START_ASYNC_FUSE, Some(matches)) => {
+        Some((START_ASYNC_FUSE, matches)) => {
             let etcd_delegate = EtcdDelegate::new(get_etcd_address_vec(matches))?;
             let node_id = get_node_id(matches);
             let ip_address = get_ip_address(matches, &node_id);
