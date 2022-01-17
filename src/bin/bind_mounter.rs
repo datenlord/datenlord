@@ -29,56 +29,56 @@ fn main() -> DatenLordResult<()> {
     let matches = App::new("BindMounter")
         .about("Helper command to bind mount for non-root user")
         .arg(
-            Arg::with_name(UMOUNT_ARG_NAME)
-                .short("u")
+            Arg::new(UMOUNT_ARG_NAME)
+                .short('u')
                 .long(UMOUNT_ARG_NAME)
                 .value_name("DIRECTORY")
                 .takes_value(true)
                 .help("Set umount directory, default empty"),
         )
         .arg(
-            Arg::with_name(FROM_DIR_ARG_NAME)
-                .short("f")
+            Arg::new(FROM_DIR_ARG_NAME)
+                .short('f')
                 .long(FROM_DIR_ARG_NAME)
                 .value_name("FROM DIRECTORY")
                 .takes_value(true)
                 .help("Set read only true or false, default false"),
         )
         .arg(
-            Arg::with_name(TO_DIR_ARG_NAME)
-                .short("t")
+            Arg::new(TO_DIR_ARG_NAME)
+                .short('t')
                 .long(TO_DIR_ARG_NAME)
                 .value_name("TO DIRECTORY")
                 .takes_value(true)
                 .help("Set read only true or false, default false"),
         )
         .arg(
-            Arg::with_name(FS_TYPE_ARG_NAME)
-                .short("s")
+            Arg::new(FS_TYPE_ARG_NAME)
+                .short('s')
                 .long(FS_TYPE_ARG_NAME)
                 .value_name("FS TYPE")
                 .takes_value(true)
                 .help("Set mount filesystem, default empty"),
         )
         .arg(
-            Arg::with_name(MOUNT_OPTIONS_ARG_NAME)
-                .short("o")
+            Arg::new(MOUNT_OPTIONS_ARG_NAME)
+                .short('o')
                 .long(MOUNT_OPTIONS_ARG_NAME)
                 .value_name("OPTION,OPTION...")
                 .takes_value(true)
                 .help("Set mount flags, default empty"),
         )
         .arg(
-            Arg::with_name(READ_ONLY_ARG_NAME)
-                .short("r")
+            Arg::new(READ_ONLY_ARG_NAME)
+                .short('r')
                 .long(READ_ONLY_ARG_NAME)
                 .value_name("TRUE|FALSE")
                 .takes_value(false)
                 .help("Set read only true or false, default false"),
         )
         .arg(
-            Arg::with_name(REMOUNT_ARG_NAME)
-                .short("m")
+            Arg::new(REMOUNT_ARG_NAME)
+                .short('m')
                 .long(REMOUNT_ARG_NAME)
                 .value_name("TRUE|FALSE")
                 .takes_value(false)
