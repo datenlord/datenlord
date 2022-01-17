@@ -205,6 +205,7 @@ spec:
           image: datenlord/datenlord:e2e_test
           imagePullPolicy: "IfNotPresent"
           args:
+            - "start_node"
             - "--mountpoint=$(FUSE_MOUNT_DIR)"
             - "--volume_info=$(FUSE_VOLUME_INFO)"
             - "--endpoint=$(CSI_NODE_ENDPOINT)"
@@ -216,7 +217,6 @@ spec:
             - "--serverport=8800"
             - "--volume_type=none"
             - "--workerport=50051"
-            - "--runas=node"
           lifecycle:
             #postStart:
             #  exec:
@@ -474,15 +474,14 @@ spec:
           image: datenlord/datenlord:e2e_test
           imagePullPolicy: "IfNotPresent"
           args :
+            - "start_csi_controller"
             - "--endpoint=$(CSI_CONTROLLER_ENDPOINT)"
             - "--drivername=csi.datenlord.io"
             - "--nodeid=$(NODE_ID)"
             - "--nodeip=$(NODE_IP)"
             - "--workerport=50051"
-            - "--runas=controller"
             - "--mountpoint=$(DATA_DIR)"
             - "--etcd=csi-etcd-svc:2379"
-            - "--volume_info=$(FUSE_VOLUME_INFO)"
           env:
             - name: NODE_ID
               valueFrom:
@@ -699,15 +698,13 @@ spec:
           image: datenlord/datenlord:e2e_test
           imagePullPolicy: "IfNotPresent"
           args:
-            - "--endpoint=$(CSI_CONTROLLER_ENDPOINT)"
+            - "start_scheduler_extender"
             - "--nodeid=$(NODE_ID)"
             - "--nodeip=127.0.0.1"
             - "--workerport=12345"
-            - "--runas=scheduler-extender"
             - "--etcd=csi-etcd-svc:2379"
             - "--scheduler-extender-port=12345"
             - "--mountpoint=$(FUSE_MOUNT_DIR)"
-            - "--volume_info=$(FUSE_VOLUME_INFO)"
           env:
             - name: NODE_ID
               valueFrom:

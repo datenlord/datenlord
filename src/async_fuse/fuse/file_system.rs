@@ -8,6 +8,7 @@ use super::fuse_request::Request;
 use super::protocol::INum;
 
 use crate::async_fuse::memfs::{FileLockParam, RenameParam, SetAttrParam};
+use std::os::unix::io::RawFd;
 
 use std::path::Path;
 
@@ -279,4 +280,7 @@ pub trait FileSystem {
         _idx: u64,
         reply: ReplyBMap,
     ) -> nix::Result<usize>;
+
+    /// Set fuse fd into `FileSystem`
+    async fn set_fuse_fd(&self, fuse_fd: RawFd);
 }

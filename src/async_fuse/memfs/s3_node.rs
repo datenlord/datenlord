@@ -18,18 +18,14 @@ use log::{debug, warn};
 use nix::fcntl::OFlag;
 use nix::sys::stat::Mode;
 use nix::sys::stat::SFlag;
-use smol::lock::RwLock;
+use smol::lock::RwLockWriteGuard;
 use std::collections::BTreeMap;
 use std::collections::VecDeque;
+use std::os::unix::io::RawFd;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{self, AtomicBool, AtomicI64, Ordering};
+use std::sync::Arc;
 use std::time::SystemTime;
-use std::{
-    os::unix::io::RawFd,
-    path::{Path, PathBuf},
-    sync::{
-        atomic::{self, AtomicI64},
-        Arc,
-    },
-};
 use utilities::{Cast, OverflowArithmetic};
 
 /// Block size constant
@@ -66,6 +62,8 @@ pub struct S3Node<S: S3BackEnd + Sync + Send + 'static> {
     open_count: AtomicI64,
     /// S3Node lookup counter
     lookup_count: AtomicI64,
+    /// If S3Node has been marked as deferred deletion
+    deferred_deletion: AtomicBool,
     /// Shared metadata
     meta: Arc<S3MetaData<S>>,
 }
@@ -88,10 +86,11 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
             name: name.to_owned(),
             attr,
             data,
+            // open count set to 0 by creation
+            open_count: AtomicI64::new(0),
             // lookup count set to 1 by creation
-            open_count: AtomicI64::new(1),
-            // open count set to 1 by creation
             lookup_count: AtomicI64::new(1),
+            deferred_deletion: AtomicBool::new(false),
             meta,
         }
     }
@@ -129,6 +128,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
             open_count: AtomicI64::new(0),
             // open count set to 0 for sync
             lookup_count: AtomicI64::new(0),
+            deferred_deletion: AtomicBool::new(false),
             meta: Arc::clone(&parent.meta),
         }
     }
@@ -338,6 +338,9 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
 
     /// flush all data of a node
     async fn flush_all_data(&mut self) -> anyhow::Result<()> {
+        if self.is_deferred_deletion() {
+            return Ok(());
+        }
         let data_cache = match self.data {
             S3NodeData::RegFile(ref data_cache) => Arc::<GlobalCache>::clone(data_cache),
             // Do nothing for Directory.
@@ -374,72 +377,66 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
 pub async fn rename_fullpath_recursive<S: S3BackEnd + Send + Sync + 'static>(
     ino: INum,
     parent: INum,
-    cache: &RwLock<BTreeMap<INum, S3Node<S>>>,
+    cache: &mut RwLockWriteGuard<'_, BTreeMap<INum, S3Node<S>>>,
 ) {
     let mut node_pool: VecDeque<(INum, INum)> = VecDeque::new();
     node_pool.push_back((ino, parent));
 
     while let Some((child, parent)) = node_pool.pop_front() {
-        let parent_path = {
-            let read_cache = cache.read().await;
-            let parent_node = read_cache.get(&parent).unwrap_or_else(|| {
-                panic!(
+        let parent_node = cache.get(&parent).unwrap_or_else(|| {
+            panic!(
                 "impossible case when rename, the parent i-node of ino={} should be in the cache",
                 parent
             )
-            });
-            parent_node.full_path.clone()
-        };
+        });
+        let parent_path = parent_node.full_path.clone();
 
-        {
-            let mut write_cache = cache.write().await;
-            let child_node = write_cache.get_mut(&child).unwrap_or_else(|| {
-                panic!(
+        let child_node = cache.get_mut(&child).unwrap_or_else(|| {
+            panic!(
                 "impossible case when rename, the child i-node of ino={} should be in the cache",
                 child
             )
-            });
-            child_node.set_parent_ino(parent);
-            let old_path = child_node.full_path.clone();
-            let new_path = match child_node.data {
-                S3NodeData::Directory(ref dir_data) => {
-                    dir_data.values().into_iter().for_each(|grandchild_node| {
-                        node_pool.push_back((grandchild_node.ino(), child));
-                    });
-                    format!("{}{}/", parent_path, child_node.get_name())
-                }
-                S3NodeData::SymLink(..) | S3NodeData::RegFile(..) => {
-                    format!("{}{}", parent_path, child_node.get_name())
-                }
-            };
-
-            let is_reg = if let S3NodeData::RegFile(ref global_cache) = child_node.data {
-                global_cache.rename(old_path.as_str().as_bytes(), new_path.as_str().as_bytes());
-                true
-            } else {
-                false
-            };
-
-            if is_reg {
-                // TODO: Should not flush data, remove this once the "real" cache rename is available
-                if let Err(e) = child_node.flush_all_data().await {
-                    panic!(
-                        "failed to flush all data of node {:?}, error is {:?}",
-                        child_node.get_full_path(),
-                        e
-                    );
-                }
+        });
+        child_node.set_parent_ino(parent);
+        let old_path = child_node.full_path.clone();
+        let new_path = match child_node.data {
+            S3NodeData::Directory(ref dir_data) => {
+                dir_data.values().into_iter().for_each(|grandchild_node| {
+                    node_pool.push_back((grandchild_node.ino(), child));
+                });
+                format!("{}{}/", parent_path, child_node.get_name())
             }
+            S3NodeData::SymLink(..) | S3NodeData::RegFile(..) => {
+                format!("{}{}", parent_path, child_node.get_name())
+            }
+        };
 
-            if let Err(e) = child_node.s3_backend.rename(&old_path, &new_path).await {
+        let is_reg = if let S3NodeData::RegFile(ref global_cache) = child_node.data {
+            global_cache.rename(old_path.as_str().as_bytes(), new_path.as_str().as_bytes());
+            true
+        } else {
+            false
+        };
+
+        if is_reg {
+            // TODO: Should not flush data, remove this once the "real" cache rename is available
+            if let Err(e) = child_node.flush_all_data().await {
                 panic!(
-                    "failed to rename from {:?} to {:?} in s3 backend, error is {:?}",
-                    old_path, new_path, e
+                    "failed to flush all data of node {:?}, error is {:?}",
+                    child_node.get_full_path(),
+                    e
                 );
             }
-
-            child_node.set_full_path(new_path);
         }
+
+        if let Err(e) = child_node.s3_backend.rename(&old_path, &new_path).await {
+            panic!(
+                "failed to rename from {:?} to {:?} in s3 backend, error is {:?}",
+                old_path, new_path, e
+            );
+        }
+
+        child_node.set_full_path(new_path);
     }
 }
 
@@ -540,6 +537,16 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
         debug_assert!(nlookup < std::i64::MAX.cast());
         self.lookup_count
             .fetch_sub(nlookup.cast(), atomic::Ordering::Relaxed)
+    }
+
+    /// Mark node as deferred deletion
+    fn mark_deferred_deletion(&self) {
+        self.deferred_deletion.store(true, Ordering::Relaxed);
+    }
+
+    /// If node is marked as deferred deletion
+    fn is_deferred_deletion(&self) -> bool {
+        self.deferred_deletion.load(Ordering::Relaxed)
     }
 
     /// Load attribute

@@ -1,0 +1,213 @@
+# The YAML script to deploy DatenLord Async Fuse to K8S
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: csi-datenlord
+  labels:
+    name: csi-datenlord
+
+---
+kind: DaemonSet
+apiVersion: apps/v1
+metadata:
+  name: datenlord-async-fuse
+  namespace: csi-datenlord
+spec:
+  selector:
+    matchLabels:
+      app: datenlord-async-fuse
+  template:
+    metadata:
+      labels:
+        app: datenlord-async-fuse
+    spec:
+      hostNetwork: false # TODO: should use k8s network?
+      containers:
+        - name: datenlord
+          securityContext:
+            privileged: true
+            allowPrivilegeEscalation: true
+          image: datenlord/datenlord:e2e_test
+          imagePullPolicy: "IfNotPresent"
+          args:
+            - "start_async_fuse"
+            - "--capacity=$(CACHE_CAPACITY)"
+            - "--etcd=$(ETCD_ENDPOINT)"
+            - "--mountpoint=$(FUSE_MOUNT_DIR)"
+            - "--volume_info=$(FUSE_VOLUME_INFO)"
+            - "--volume_type=none"
+            - "--nodeid=$(NODE_ID)"
+            - "--nodeip=$(NODE_IP)"
+            - "--serverport=8800"
+          lifecycle:
+            #postStart:
+            #  exec:
+            #    command: ["/bin/sh", "-c", "\"umount -f /var/opt/datenlord-data && echo un-mounted || echo not-mounted\""]
+            preStop:
+              exec:
+                command: ["/bin/sh", "/usr/local/bin/umount-in-container.sh", "/var/opt/datenlord-data"]
+          env:
+            - name: FUSE_MOUNT_DIR
+              value: /var/opt/datenlord-data
+            - name: ETCD_ENDPOINT
+              value: csi-etcd-svc:2379
+            - name: FUSE_VOLUME_INFO
+              value: fuse-test-bucket\;http://127.0.0.1:9000\;test\;test1234
+              # The capacity for the cache in memfs, 1GB
+            - name: CACHE_CAPACITY
+              value: "1073741824"
+            - name: SMOL_THREADS
+              value: "10"
+            - name: RUST_LOG
+              value: debug
+            - name: RUST_BACKTRACE
+              value: full
+            - name: NODE_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: NODE_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+          ports:
+            - containerPort: 9897
+            - containerPort: 50051
+              hostPort: 50051
+              name: workerport
+          volumeMounts:
+            - name: datenlord-data-dir
+              # This mount path must be the same inside and outside container
+              # since DatenLord use bind mount to publish volume from here
+              mountPath: /var/opt/datenlord-data
+              mountPropagation: Bidirectional
+            - name: fuse-device
+              mountPath: /dev/fuse
+              mountPropagation: Bidirectional
+            - name: mountpoint-dir
+              # This mount path must be the same inside and outside container
+              # since DatenLord use bind mount to publish volume here
+              mountPath: /var/lib/kubelet/pods
+              mountPropagation: Bidirectional
+      volumes:
+        - name: datenlord-data-dir
+          hostPath:
+            path: /var/opt/datenlord-data
+            type: DirectoryOrCreate
+        - name: fuse-device
+          hostPath:
+            path: /dev/fuse
+            type: CharDevice
+        - name: mountpoint-dir
+          hostPath:
+            path: /var/lib/kubelet/pods
+            type: Directory
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: datenlord-metric-exporter-service
+  namespace: csi-datenlord
+  annotations:
+      prometheus.io/scrape: 'true'
+      prometheus.io/port:   '9897'
+spec:
+  selector: 
+    app: datenlord-async-fuse
+  type: NodePort  
+  ports:
+    - port: 8088
+      targetPort: 9897
+      nodePort: 30001
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: csi-etcd-svc
+  namespace: csi-datenlord
+spec:
+  selector:
+    app: csi-etcd
+  ports:
+    - protocol: TCP
+      port: 2379
+      targetPort: 2379
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: csi-etcd
+  namespace: csi-datenlord
+spec:
+  clusterIP: None
+  ports:
+    - port: 2379
+      name: client
+    - port: 2380
+      name: peer
+  selector:
+    app: csi-etcd
+
+---
+kind: StatefulSet
+apiVersion: apps/v1
+metadata:
+  name: csi-etcd
+  namespace: csi-datenlord
+spec:
+  selector:
+    matchLabels:
+      app: csi-etcd
+  serviceName: "csi-etcd"
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: csi-etcd
+    spec:
+      containers:
+        - name: etcd
+          image: gcr.io/etcd-development/etcd:v3.4.13
+          imagePullPolicy: "IfNotPresent"
+          ports:
+          - containerPort: 2379
+            name: client
+          - containerPort: 2380
+            name: peer
+          command:
+            - "/usr/local/bin/etcd"
+          args:
+            - "--name=$(NODE_ID)"
+            - "--initial-advertise-peer-urls=http://$(NODE_ID).csi-etcd:2380"
+            - "--listen-peer-urls=http://0.0.0.0:2380"
+            - "--advertise-client-urls=http://$(NODE_ID).csi-etcd:2379"
+            - "--listen-client-urls=http://0.0.0.0:2379"
+           #- "--initial-cluster=$(PEER)"
+            - "--listen-metrics-urls=http://0.0.0.0:2381"
+            - "--data-dir=/var/lib/etcd/default.etcd"
+          env:
+            - name: NODE_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: PEER
+              value: "csi-etcd-0=http://csi-etcd-0.csi-etcd:2380,csi-etcd-1=http://csi-etcd-1.csi-etcd:2380,csi-etcd-2=http://csi-etcd-2.csi-etcd:2380"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 2381
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          volumeMounts:
+            - name: etcd-data-dir
+              mountPath: /var/lib/etcd
+      volumes:
+        - name: etcd-data-dir
+          hostPath:
+            path: /var/lib/etcd
+            type: DirectoryOrCreate
+---
