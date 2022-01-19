@@ -19,19 +19,12 @@ pub fn format_nix_error(error: nix::Error) -> String {
     format!("{}, root cause: {:?}", error, error.source())
 }
 
-/// Build `nix::Error::Sys(..)` from `libc` error code
-#[must_use]
-#[inline]
-pub fn build_sys_error_from_errno(error_code: Errno) -> nix::Error {
-    nix::Error::from_errno(error_code)
-}
-
 /// Build error result from `nix` error code
 /// # Errors
 ///
 /// Return the built `Err(anyhow::Error(..))`
 pub fn build_error_result_from_errno<T>(error_code: Errno, err_msg: String) -> anyhow::Result<T> {
-    Err(build_sys_error_from_errno(error_code)).context(err_msg)
+    Err(error_code).context(err_msg)
 }
 
 /// Convert `nix::errno::Errno` to `c_int`
@@ -136,12 +129,7 @@ pub fn clear_errno() {
 /// Converts [`nix::Error`] to [`io::Error`]
 #[must_use]
 pub fn nix_to_io_error(err: nix::Error) -> io::Error {
-    match err {
-        nix::Error::Sys(errno) => errno.into(),
-        nix::Error::InvalidPath | nix::Error::InvalidUtf8 | nix::Error::UnsupportedOperation => {
-            io::Error::new(io::ErrorKind::Other, err)
-        }
-    }
+    err.into()
 }
 
 /// Converts [`u32`] to [`usize`]
