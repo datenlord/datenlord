@@ -153,6 +153,7 @@ impl Session {
     }
 
     /// Run the FUSE session
+    #[allow(clippy::wildcard_enum_match_arm)] // nix::Errno is marked as non_exhaustive
     pub async fn run(mut self) -> anyhow::Result<()> {
         let (pool_sender, pool_receiver) = self
             .setup_buffer_pool()
@@ -193,24 +194,24 @@ impl Session {
                         "failed to receive from FUSE kernel, the error is: {}",
                         err_msg
                     );
-                    match err.as_errno() {
+                    match err {
                         // Operation interrupted. Accordingly to FUSE, this is safe to retry
-                        Some(Errno::ENOENT) => {
+                        Errno::ENOENT => {
                             info!("operation interrupted, retry.");
                         }
                         // Interrupted system call, retry
-                        Some(Errno::EINTR) => {
+                        Errno::EINTR => {
                             info!("interrupted system call, retry");
                         }
                         // Explicitly try again
-                        Some(Errno::EAGAIN) => info!("Explicitly retry"),
+                        Errno::EAGAIN => info!("Explicitly retry"),
                         // Filesystem was unmounted, quit the loop
-                        Some(Errno::ENODEV) => {
+                        Errno::ENODEV => {
                             info!("filesystem destroyed, quit the run loop");
                             break;
                         }
                         // Unhandled error
-                        Some(..) | None => {
+                        _ => {
                             panic!(
                                 "non-recoverable io error when read FUSE device, \
                                     the error is: {}",
