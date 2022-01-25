@@ -6,8 +6,11 @@ set -o xtrace
 
 # Need to wait for some time before metrics are collected by Promethues
 PROMETHUES_WAIT_TIME=5 
+NGINX_VERSION="1.21.5"
 
 # Datanlord metrics test
+docker pull nginx:${NGINX_VERSION}
+kind load docker-image nginx:${NGINX_VERSION}
 kubectl apply -f $DATENLORD_METRICS_TEST
 kubectl wait --for=condition=Ready pod metrics-datenlord-test --timeout=60s
 kubectl exec -i metrics-datenlord-test -- bash -c "echo test > /usr/share/nginx/html/testfile"
