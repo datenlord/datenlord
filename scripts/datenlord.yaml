@@ -17,7 +17,7 @@ metadata:
   namespace: csi-datenlord
 
 ---
-apiVersion: scheduling.k8s.io/v1beta1
+apiVersion: scheduling.k8s.io/v1
 kind: PriorityClass
 metadata:
   name: csi-datenlord-critical
@@ -338,6 +338,12 @@ spec:
         #    path: /var/lib/kubelet/plugins
         #    type: Directory
 
+      # Wait for etcd service
+      initContainers:
+        - name: wait-for-etcd-service
+          image: busybox:1.35.0
+          command: ['sh', '-c', "until nslookup csi-etcd-svc; do echo waiting for csi-etcd-svc; sleep 2; done"]
+
 ---
 apiVersion: v1
 kind: Service
@@ -608,6 +614,12 @@ spec:
           hostPath:
             path: /var/lib/kubelet/plugins/csi.datenlord.io
             type: DirectoryOrCreate
+
+      # Wait for etcd service
+      initContainers:
+        - name: wait-for-etcd-service
+          image: busybox:1.35.0
+          command: ['sh', '-c', "until nslookup csi-etcd-svc; do echo waiting for csi-etcd-svc; sleep 2; done"]
 ---
 apiVersion: v1
 kind: ServiceAccount
@@ -740,6 +752,12 @@ spec:
       - key: node-role.kubernetes.io/master
         operator: "Exists"
         effect: NoSchedule
+
+      # Wait for etcd service
+      initContainers:
+        - name: wait-for-etcd-service
+          image: busybox:1.35.0
+          command: ['sh', '-c', "until nslookup csi-etcd-svc; do echo waiting for csi-etcd-svc; sleep 2; done"]
 ---
 apiVersion: storage.k8s.io/v1
 kind: CSIDriver
@@ -768,7 +786,7 @@ volumeBindingMode: Immediate # WaitForFirstConsumer
 allowVolumeExpansion: true
 
 ---
-apiVersion: snapshot.storage.k8s.io/v1beta1
+apiVersion: snapshot.storage.k8s.io/v1
 kind: VolumeSnapshotClass
 metadata:
   name: csi-datenlord-snapclass
