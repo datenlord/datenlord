@@ -1062,13 +1062,15 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
                     "load_data() successfully load {} byte file content data",
                     read_size
                 );
-                global_cache.write_or_update(
-                    self.full_path.as_bytes(),
-                    aligned_offset,
-                    read_size,
-                    &file_data_vec,
-                    false,
-                );
+                global_cache
+                    .write_or_update(
+                        self.full_path.as_bytes(),
+                        aligned_offset,
+                        read_size,
+                        &file_data_vec,
+                        false,
+                    )
+                    .await;
                 Ok(read_size)
             }
             S3NodeData::SymLink(..) => {
@@ -1218,13 +1220,15 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
             S3NodeData::RegFile(ref file_data) => file_data,
         };
 
-        cache.write_or_update(
-            self.full_path.as_bytes(),
-            offset.cast(),
-            data.len(),
-            data.as_slice(),
-            true,
-        );
+        cache
+            .write_or_update(
+                self.full_path.as_bytes(),
+                offset.cast(),
+                data.len(),
+                data.as_slice(),
+                true,
+            )
+            .await;
 
         let written_size = data.len();
 

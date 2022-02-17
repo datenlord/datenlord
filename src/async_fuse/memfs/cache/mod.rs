@@ -481,8 +481,7 @@ impl GlobalCache {
     ///
     /// 1. `offset` be `MemoryBlock` aligned.
     /// 2. `len` should be multiple times of `MemoryBlock` Size unless it contains the file's last `MemoryBlock`.
-    #[allow(clippy::too_many_lines)]
-    pub(crate) fn write_or_update(
+    pub(crate) async fn write_or_update(
         &self,
         file_name: &[u8],
         offset: usize,
@@ -490,9 +489,37 @@ impl GlobalCache {
         buf: &[u8],
         overwrite: bool,
     ) {
+        let exist = self.write_or_update_helper(file_name, offset, len, buf, overwrite);
+        if !exist {
+            if let Some(ref etcd) = self.etcd_client {
+                if let Some(ref id) = self.node_id {
+                    if let Err(e) = etcd::add_node_to_file_list(etcd, id, file_name).await {
+                        panic!(
+                            "Cannot add node {} to file {:?} node list, error: {}",
+                            id, file_name, e
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Update the Cache Helper
+    ///
+    /// 1. `offset` be `MemoryBlock` aligned.
+    /// 2. `len` should be multiple times of `MemoryBlock` Size unless it contains the file's last `MemoryBlock`.
+    #[allow(clippy::too_many_lines)]
+    fn write_or_update_helper(
+        &self,
+        file_name: &[u8],
+        offset: usize,
+        len: usize,
+        buf: &[u8],
+        overwrite: bool,
+    ) -> bool {
         let guard = pin();
-        let file_cache = if let Some(cache) = self.inner.get(file_name, &guard) {
-            cache
+        let (exist, file_cache) = if let Some(cache) = self.inner.get(file_name, &guard) {
+            (true, cache)
         } else {
             debug!(
                 "cache for {:?} is empty, create one",
@@ -507,24 +534,11 @@ impl GlobalCache {
                 )
             });
 
-            if let Some(ref etcd) = self.etcd_client {
-                if let Some(ref id) = self.node_id {
-                    smol::block_on(async {
-                        if let Err(e) = etcd::add_node_to_file_list(etcd, id, file_name).await {
-                            panic!(
-                                "Cannot add node {} to file {:?} node list, error: {}",
-                                id, file_name, e
-                            );
-                        }
-                    });
-                }
-            }
-
-            file_cache
+            (false, file_cache)
         };
 
         if len == 0 {
-            return;
+            return exist;
         }
 
         let bucket_size = self.bucket_size_in_block.overflow_mul(self.block_size);
@@ -673,20 +687,19 @@ impl GlobalCache {
             self.size
                 .fetch_sub(dealloc_cnt.overflow_mul(self.block_size), Ordering::Relaxed);
         }
+        exist
     }
 
     /// Remove file cache
-    pub(crate) fn remove_file_cache(&self, file_name: &[u8]) -> bool {
+    pub(crate) async fn remove_file_cache(&self, file_name: &[u8]) -> bool {
         if let Some(ref etcd) = self.etcd_client {
             if let Some(ref id) = self.node_id {
-                smol::block_on(async {
-                    if let Err(e) = etcd::remove_node_from_file_list(etcd, id, file_name).await {
-                        panic!(
-                            "Cannot remove node {} to file {:?} node list, error: {}",
-                            id, file_name, e
-                        );
-                    }
-                });
+                if let Err(e) = etcd::remove_node_from_file_list(etcd, id, file_name).await {
+                    panic!(
+                        "Cannot remove node {} to file {:?} node list, error: {}",
+                        id, file_name, e
+                    );
+                }
             }
         }
         self.inner.remove(file_name)
@@ -960,7 +973,7 @@ mod test {
         let global = GlobalCache::new();
         let file_name = "test_file";
         let content = AlignedBytes::new_from_slice(&[b'a'], 1);
-        global.write_or_update(file_name.as_bytes(), 0, 1, &content, true);
+        smol::block_on(global.write_or_update(file_name.as_bytes(), 0, 1, &content, true));
 
         let cache = global.get_file_cache(file_name.as_bytes(), 0, 1);
         assert_eq!(cache.len(), 1);
@@ -986,13 +999,13 @@ mod test {
         let global = GlobalCache::new();
         let file_name = "test_file";
         let content = AlignedBytes::new_from_slice(&[b'a'], 1);
-        global.write_or_update(
+        smol::block_on(global.write_or_update(
             file_name.as_bytes(),
             MEMORY_BLOCK_SIZE_IN_BYTE,
             1,
             &content,
             true,
-        );
+        ));
 
         let cache = global.get_file_cache(file_name.as_bytes(), 0, MEMORY_BLOCK_SIZE_IN_BYTE + 1);
         assert_eq!(cache.len(), 2);
@@ -1022,7 +1035,7 @@ mod test {
         let global = GlobalCache::new();
         let file_name = "test_file";
         let content = AlignedBytes::new_from_slice(&[b'a'], 1);
-        global.write_or_update(file_name.as_bytes(), 1, 1, &content, true);
+        smol::block_on(global.write_or_update(file_name.as_bytes(), 1, 1, &content, true));
 
         let cache = global.get_file_cache(file_name.as_bytes(), 0, 2);
         assert_eq!(cache.len(), 1);
@@ -1048,16 +1061,16 @@ mod test {
         let global = GlobalCache::new_with_capacity(MEMORY_BLOCK_SIZE_IN_BYTE);
         let file_name = "test_file";
         let block_one = AlignedBytes::new_from_slice(&[b'a'], 1);
-        global.write_or_update(file_name.as_bytes(), 0, 1, &block_one, true);
+        smol::block_on(global.write_or_update(file_name.as_bytes(), 0, 1, &block_one, true));
 
         let block_two = AlignedBytes::new_from_slice(&[b'b'], 1);
-        global.write_or_update(
+        smol::block_on(global.write_or_update(
             file_name.as_bytes(),
             MEMORY_BUCKET_SIZE_IN_BYTE,
             1,
             &block_two,
             true,
-        );
+        ));
 
         // First cache should be evicted
         let cache = global.get_file_cache(file_name.as_bytes(), 0, MEMORY_BUCKET_SIZE_IN_BYTE + 1);
