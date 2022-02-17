@@ -161,7 +161,8 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
             if let Some(node) = cache.remove(&ino) {
                 if let SFlag::S_IFREG = node.get_type() {
                     self.data_cache
-                        .remove_file_cache(node.get_full_path().as_bytes());
+                        .remove_file_cache(node.get_full_path().as_bytes())
+                        .await;
                 }
             }
             true

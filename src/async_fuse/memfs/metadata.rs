@@ -187,7 +187,8 @@ impl MetaData for DefaultMetaData {
             if let Some(inode) = cache.remove(&ino) {
                 if let SFlag::S_IFREG = inode.get_type() {
                     self.data_cache
-                        .remove_file_cache(inode.get_full_path().as_bytes());
+                        .remove_file_cache(inode.get_full_path().as_bytes())
+                        .await;
                 }
             }
 

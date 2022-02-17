@@ -1082,13 +1082,15 @@ impl Node for DefaultNode {
                     read_size
                 );
 
-                global_cache.write_or_update(
-                    self.full_path.as_bytes(),
-                    aligned_offset,
-                    read_size,
-                    &file_data_vec,
-                    false,
-                );
+                global_cache
+                    .write_or_update(
+                        self.full_path.as_bytes(),
+                        aligned_offset,
+                        read_size,
+                        &file_data_vec,
+                        false,
+                    )
+                    .await;
 
                 Ok(read_size)
             }
@@ -1272,13 +1274,15 @@ impl Node for DefaultNode {
             DefaultNodeData::RegFile(ref file_data) => file_data,
         };
 
-        cache.write_or_update(
-            self.full_path.as_bytes(),
-            offset.cast(),
-            data.len(),
-            data.as_slice(),
-            true,
-        );
+        cache
+            .write_or_update(
+                self.full_path.as_bytes(),
+                offset.cast(),
+                data.len(),
+                data.as_slice(),
+                true,
+            )
+            .await;
 
         let fcntl_oflags = fcntl::FcntlArg::F_SETFL(oflags);
         let fd = fh.cast();
