@@ -1,6 +1,6 @@
 //! The helper command to bind mount for non-root user
 
-use clap::{App, Arg};
+use clap::{Arg, Command};
 use log::debug;
 use nix::mount::{self, MsFlags};
 use std::ffi::OsStr;
@@ -26,7 +26,7 @@ const UMOUNT_ARG_NAME: &str = "umount";
 fn main() -> DatenLordResult<()> {
     env_logger::init();
 
-    let matches = App::new("BindMounter")
+    let matches = Command::new("BindMounter")
         .about("Helper command to bind mount for non-root user")
         .arg(
             Arg::new(UMOUNT_ARG_NAME)
