@@ -50,7 +50,7 @@ mod common;
 mod csi;
 
 use crate::common::etcd_delegate::EtcdDelegate;
-use clap::{App, AppSettings, Arg, ArgMatches};
+use clap::{Arg, ArgMatches, Command};
 use csi::meta_data::MetaData;
 use csi::scheduler_extender::SchdulerExtender;
 use csi::util;
@@ -472,7 +472,7 @@ fn get_volume_type(matches: &ArgMatches) -> VolumeType {
 
 /// Generate the metadata
 #[must_use]
-fn add_metadata_args(app: App) -> App {
+fn add_metadata_args(app: Command) -> Command {
     let arg_map = get_default_arg_map();
     app.arg(get_map(&arg_map, MOUNT_POINT_ARG_NAME))
         .arg(get_map(&arg_map, WORKER_PORT_ARG_NAME))
@@ -514,15 +514,15 @@ fn get_map<'a>(map: &HashMap<String, Arg<'a>>, name: &str) -> Arg<'a> {
 /// Parse the args in subcommand
 fn parse_args() -> ArgMatches {
     let arg_map = get_default_arg_map();
-    let matches = App::new("datenlord")
-        .global_setting(AppSettings::ArgRequiredElseHelp)
+    let matches = Command::new("datenlord")
+        .arg_required_else_help(true)
         .subcommand(
-            add_metadata_args(App::new(START_CONTROLLER))
+            add_metadata_args(Command::new(START_CONTROLLER))
                 .arg(get_map(&arg_map, DRIVER_NAME_ARG_NAME))
                 .arg(get_map(&arg_map, END_POINT_ARG_NAME)),
         )
         .subcommand(
-            add_metadata_args(App::new(START_NODE))
+            add_metadata_args(Command::new(START_NODE))
                 .arg(get_map(&arg_map, DRIVER_NAME_ARG_NAME))
                 .arg(get_map(&arg_map, END_POINT_ARG_NAME))
                 .arg(get_map(&arg_map, SERVER_PORT_NUM_ARG_NAME))
@@ -531,11 +531,11 @@ fn parse_args() -> ArgMatches {
                 .arg(get_map(&arg_map, VOLUME_INFO_ARG_NAME)),
         )
         .subcommand(
-            add_metadata_args(App::new(START_SCHEDULER_EXTENDER))
+            add_metadata_args(Command::new(START_SCHEDULER_EXTENDER))
                 .arg(get_map(&arg_map, SCHEDULER_EXTENDER_PORT_ARG_NAME)),
         )
         .subcommand(
-            App::new(START_ASYNC_FUSE)
+            Command::new(START_ASYNC_FUSE)
                 .arg(get_map(&arg_map, SERVER_PORT_NUM_ARG_NAME))
                 .arg(get_map(&arg_map, VOLUME_TYPE_ARG_NAME))
                 .arg(get_map(&arg_map, CACHE_CAPACITY_ARG_NAME))
