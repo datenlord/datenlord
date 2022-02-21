@@ -28,7 +28,7 @@ use std::sync::atomic::Ordering;
 use std::sync::{atomic::AtomicU32, Arc};
 use std::time::Duration;
 
-use utilities::{Cast, OverflowArithmetic};
+use clippy_utilities::{Cast, OverflowArithmetic};
 
 /// The time-to-live seconds of FUSE attributes
 const MY_TTL_SEC: u64 = 3600; // TODO: should be a long value, say 1 hour

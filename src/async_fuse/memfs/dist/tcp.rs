@@ -1,8 +1,8 @@
 use crate::async_fuse::fuse::fuse_reply::AsIoVec;
 use crate::async_fuse::memfs::cache::IoMemBlock;
+use clippy_utilities::Cast;
 use std::io::{Read, Write};
 use std::net::TcpStream;
-use utilities::Cast;
 
 /// Read message from tcp stream
 pub fn read_message(stream: &mut TcpStream, buf: &mut Vec<u8>) -> anyhow::Result<usize> {

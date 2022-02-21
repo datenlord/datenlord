@@ -198,6 +198,7 @@ mod test {
     };
     use proto::csi_grpc::{ControllerClient, IdentityClient, NodeClient};
 
+    use clippy_utilities::{Cast, OverflowArithmetic};
     use grpcio::{ChannelBuilder, EnvBuilder};
     use mock_etcd::MockEtcdServer;
     use protobuf::RepeatedField;
@@ -207,7 +208,6 @@ mod test {
     use std::path::{Path, PathBuf};
     use std::sync::Once;
     use std::thread;
-    use utilities::{Cast, OverflowArithmetic};
 
     const NODE_PUBLISH_VOLUME_TARGET_PATH: &str = "/tmp/target_volume_path";
     const NODE_PUBLISH_VOLUME_TARGET_PATH_1: &str = "/tmp/target_volume_path_1";

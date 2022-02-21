@@ -1,5 +1,6 @@
 //! Utility functions and const variables
 
+use clippy_utilities::Cast;
 use futures::prelude::*;
 use grpcio::{RpcStatus, UnarySink};
 use log::{debug, info};
@@ -12,7 +13,6 @@ use std::fs;
 use std::net::{IpAddr, ToSocketAddrs};
 use std::path::Path;
 use std::process::Command;
-use utilities::Cast;
 use walkdir::WalkDir;
 
 use super::proto::csi::{

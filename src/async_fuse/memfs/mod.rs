@@ -22,10 +22,10 @@ use std::time::{Duration, SystemTime};
 
 use anyhow::Context;
 use async_trait::async_trait;
+use clippy_utilities::{Cast, OverflowArithmetic};
 use log::{debug, warn};
 use nix::errno::Errno;
 use nix::sys::stat::SFlag;
-use utilities::{Cast, OverflowArithmetic};
 
 use crate::async_fuse::fuse::file_system::FileSystem;
 use crate::async_fuse::fuse::fuse_reply::AsIoVec;

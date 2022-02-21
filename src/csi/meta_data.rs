@@ -1,5 +1,6 @@
 //! The utilities of meta data management
 
+use clippy_utilities::Cast;
 use grpcio::{ChannelBuilder, Environment};
 use log::{debug, error, info, warn};
 use rand::{seq::IteratorRandom, Rng};
@@ -11,7 +12,6 @@ use std::fs::{self, File};
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use utilities::Cast;
 
 use super::proto::csi::{
     CreateVolumeRequest, ListSnapshotsResponse_Entry, ListVolumesResponse_Entry, Topology,
