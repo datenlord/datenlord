@@ -10,6 +10,7 @@ use crate::async_fuse::fuse::protocol::INum;
 use crate::async_fuse::metrics;
 use anyhow::Context;
 use async_trait::async_trait;
+use clippy_utilities::{Cast, OverflowArithmetic};
 use log::debug;
 use nix::fcntl::{self, FcntlArg, OFlag};
 use nix::sys::stat::SFlag;
@@ -23,7 +24,6 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{self, AtomicBool, AtomicI64, Ordering};
 use std::sync::Arc;
 use std::time::SystemTime;
-use utilities::{Cast, OverflowArithmetic};
 
 /// Fs node trait
 #[async_trait]

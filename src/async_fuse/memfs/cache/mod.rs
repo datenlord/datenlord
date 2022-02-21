@@ -8,6 +8,7 @@ use nix::sys::uio::IoVec;
 // TODO: use smol RwLock
 use super::dist::{etcd, request::Index};
 use crate::common::etcd_delegate::EtcdDelegate;
+use clippy_utilities::{Cast, OverflowArithmetic};
 use parking_lot::{Mutex, RwLock};
 use priority_queue::PriorityQueue;
 use std::ffi::OsStr;
@@ -17,7 +18,6 @@ use std::ops::Deref;
 use std::os::unix::ffi::OsStrExt;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use utilities::{Cast, OverflowArithmetic};
 
 /// Page Size
 const PAGE_SIZE: usize = 4096;

@@ -1,5 +1,6 @@
 use super::cache::IoMemBlock;
 use async_trait::async_trait;
+use clippy_utilities::{Cast, OverflowArithmetic};
 use s3::{
     bucket::Bucket,
     bucket_ops::BucketConfiguration,
@@ -12,7 +13,6 @@ use s3::{
 };
 use serde_xml_rs as serde_xml;
 use std::time::SystemTime;
-use utilities::{Cast, OverflowArithmetic};
 
 /// S3 backend error
 #[derive(thiserror::Error, Debug)]

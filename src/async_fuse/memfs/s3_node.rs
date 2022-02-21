@@ -14,6 +14,7 @@ use crate::async_fuse::fuse::protocol::INum;
 use crate::async_fuse::metrics;
 use crate::common::etcd_delegate::EtcdDelegate;
 use async_trait::async_trait;
+use clippy_utilities::{Cast, OverflowArithmetic};
 use log::{debug, warn};
 use nix::fcntl::OFlag;
 use nix::sys::stat::Mode;
@@ -26,7 +27,6 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{self, AtomicBool, AtomicI64, Ordering};
 use std::sync::Arc;
 use std::time::SystemTime;
-use utilities::{Cast, OverflowArithmetic};
 
 /// Block size constant
 const BLOCK_SIZE: usize = 1024;
