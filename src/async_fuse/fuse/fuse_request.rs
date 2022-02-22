@@ -1,8 +1,8 @@
 //! The implementation fo FUSE request
 
+use clippy_utilities::Cast;
 use log::warn;
 use std::fmt;
-use utilities::Cast;
 
 use super::context::ProtoVersion;
 use super::de::Deserializer;

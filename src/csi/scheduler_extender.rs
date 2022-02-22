@@ -6,6 +6,7 @@ use k8s_openapi::apimachinery::pkg::apis::meta::v1::ListMeta;
 
 use super::meta_data::MetaData;
 use crate::common::error::DatenLordResult;
+use clippy_utilities::OverflowArithmetic;
 use log::{error, info};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -13,7 +14,6 @@ use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tiny_http::{Method, Request, Response, Server, StatusCode};
-use utilities::OverflowArithmetic;
 
 /// Node List
 #[derive(Clone, Debug, Serialize, Deserialize)]

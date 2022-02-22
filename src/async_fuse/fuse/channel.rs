@@ -1,6 +1,7 @@
 //! The implementation of FUSE channel
 
 use anyhow::{anyhow, Context};
+use clippy_utilities::Cast;
 use nix::{
     fcntl::{self, FcntlArg, FdFlag, OFlag},
     ioctl_read,
@@ -8,7 +9,6 @@ use nix::{
     unistd::close,
 };
 use std::os::unix::io::RawFd;
-use utilities::Cast;
 
 use super::session::Session;
 

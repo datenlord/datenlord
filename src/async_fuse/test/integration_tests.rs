@@ -8,7 +8,7 @@ use std::collections::HashSet;
 use std::fs;
 use std::iter;
 use std::path::Path;
-use utilities::OverflowArithmetic;
+use clippy_utilities::OverflowArithmetic;
 
 use super::test_util;
 

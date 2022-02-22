@@ -9,6 +9,7 @@ use crate::async_fuse::util;
 use crate::common::etcd_delegate::EtcdDelegate;
 use anyhow::Context;
 use async_trait::async_trait;
+use clippy_utilities::Cast;
 use log::debug;
 use nix::errno::Errno;
 use nix::fcntl::OFlag;
@@ -20,7 +21,6 @@ use std::os::unix::io::RawFd;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
-use utilities::Cast;
 
 /// The time-to-live seconds of FUSE attributes
 const MY_TTL_SEC: u64 = 3600; // TODO: should be a long value, say 1 hour

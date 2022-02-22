@@ -1,5 +1,6 @@
 //! The implementation of FUSE response
 
+use clippy_utilities::{Cast, OverflowArithmetic};
 use log::debug;
 use nix::errno::Errno;
 use nix::sys::stat::SFlag;
@@ -11,7 +12,6 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::io::RawFd;
 use std::time::Duration;
 use std::{mem, ptr, slice};
-use utilities::{Cast, OverflowArithmetic};
 
 use super::abi_marker;
 #[cfg(target_os = "macos")]

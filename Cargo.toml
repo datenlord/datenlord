@@ -20,12 +20,13 @@ async-trait = "0.1.48"
 better-as = "0.2.0"
 bincode = "1.3.3"
 chrono = "0.4.19"
-clap = "3.0.7"
+clap = "3.1.0"
+clippy-utilities = "0.1.0"
 crossbeam-channel = "0.5.0"
 crossbeam-queue = "0.3.1"
 crossbeam-utils = "0.8.1"
 env_logger = "0.8.1"
-etcd-client = { git="https://github.com/datenlord/etcd-client", rev = "9b2b0a8"}
+etcd-client = { git="https://github.com/datenlord/etcd-client", rev = "7ae1f4f"}
 event-listener = "2.5.1"
 flate2 = "1.0.16"
 futures = "0.3.5"
@@ -35,7 +36,7 @@ itertools = "0.10.0"
 k8s-openapi = { version = "0.14.0", default-features = false, features = ["v1_19"] }
 lazy_static = "^1.4"
 libc = "0.2.79"
-lockfree-cuckoohash = {git = "https://github.com/datenlord/lockfree-cuckoohash", rev = "e5849f18"}
+lockfree-cuckoohash = "0.1.0"
 log = "0.4.11"
 memchr = "2.3.4"
 nix = "0.23.1"
@@ -55,7 +56,6 @@ smol = { version = "1.2.5" }
 tar = "0.4.29"
 thiserror = "1.0.22"
 tiny_http = "0.10.0"
-utilities = { git = "https://github.com/datenlord/utilities", rev = "4ef408d" }
 uuid = { version = "0.8.1", features = ["v4"] }
 walkdir = "2.3.1"
 

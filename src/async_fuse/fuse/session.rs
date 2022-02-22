@@ -34,12 +34,12 @@ use std::time::{Duration, UNIX_EPOCH};
 
 use aligned_utils::bytes::AlignedBytes;
 use anyhow::{anyhow, Context};
+use clippy_utilities::Cast;
 use crossbeam_channel::{Receiver, Sender};
 use crossbeam_utils::atomic::AtomicCell;
 use log::{debug, error, info};
 use nix::errno::Errno;
 use nix::unistd;
-use utilities::Cast;
 
 // #[cfg(target_os = "macos")]
 // use std::time::SystemTime;
