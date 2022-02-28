@@ -55,7 +55,7 @@ serde_json = "1.0.64"
 smol = { version = "1.2.5" }
 tar = "0.4.29"
 thiserror = "1.0.22"
-tiny_http = "0.10.0"
+tiny_http = "0.11.0"
 uuid = { version = "0.8.1", features = ["v4"] }
 walkdir = "2.3.1"
 
