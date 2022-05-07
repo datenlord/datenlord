@@ -252,6 +252,12 @@ jobs:
           kind load docker-image gcr.io/k8s-staging-sig-storage/snapshot-controller:${SNAPSHOTTER_VERSION}
           kubectl apply -f datenlord-rbac-snapshot-controller.yaml
           kubectl apply -f datenlord-setup-snapshot-controller.yaml
+          for i in $(seq 1 30); do
+            if kubectl get deployment snapshot-controller -n kube-system; then
+                break
+            fi 
+            sleep 1
+          done
           kubectl wait --for=condition=Ready pod -l app=snapshot-controller -n kube-system --timeout=60s
           kubectl get pods -A -o wide
           # Sleep 60 to wait cluster become stable
