@@ -44,7 +44,7 @@ parking_lot = "0.12.0"
 pin-project-lite ="0.2.0"
 priority-queue = "1.1.0"
 prometheus = "0.13.0"
-protobuf = "2.16.2"
+protobuf = "3.0.3"
 rand = "0.8.3"
 ring-io = { git = "https://github.com/datenlord/ring-io", rev = "2f0506c" }
 rust-s3 = {git="https://github.com/rogercloud/rust-s3", rev = "c1fa1b9", features = ["with-async-std"], default-features = false}
