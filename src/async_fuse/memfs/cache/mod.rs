@@ -826,9 +826,7 @@ impl IoMemBlock {
     /// Turn `IoMemBlock` into slice
     #[allow(dead_code)]
     pub(crate) unsafe fn as_slice(&self) -> &[u8] {
-        if self.inner.is_none() {
-            panic!("IoMemBlock inner is None, cannot as_slice");
-        }
+        assert!(self.inner.is_some(), "IoMemBlock inner is None, cannot as_slice");
 
         if let Some(ref block) = self.inner {
             let ptr = block.as_ptr_from_offset(self.offset);
@@ -843,9 +841,7 @@ impl CouldBeAsIoVecList for IoMemBlock {}
 
 impl AsIoVec for IoMemBlock {
     fn as_io_vec(&self) -> IoVec<&[u8]> {
-        if !self.can_convert() {
-            panic!("Please check before convert to IoVec")
-        }
+        assert!(self.can_convert(), "Please check before convert to IoVec");
         IoVec::from_slice(unsafe { self.as_slice() })
     }
 
@@ -1050,7 +1046,7 @@ mod test {
                     .unwrap_or_else(|| panic!("index error"))
                     .as_slice()
                     .get(..2)
-                    .unwrap()
+                    .unwrap_or_else(||  panic!("index error"))
             },
             [b'\0', b'a']
         );

@@ -13,6 +13,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::io::Error;
 use tiny_http::{Method, Request, Response, Server, StatusCode};
 
 /// Node List
@@ -256,7 +257,7 @@ impl SchdulerExtender {
             },
             Method::Get => request
                 .respond(Response::from_string("hello"))
-                .map_err(|e| e.into()),
+                .map_err(Error::into),
             Method::Head
             | Method::Put
             | Method::Delete

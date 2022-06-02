@@ -851,14 +851,8 @@ impl MetaData {
             .await
             .with_context(|| format!("failed to lock {}", etcd_vol_lock))?;
         let volume = self.get_volume_by_id(vol_id).await?;
-        if volume.get_primary_node_id() != node_id {
-            panic!(
-                "Should only delete volume on primary node ID={}
-                request node ID={}",
-                volume.get_primary_node_id(),
-                node_id
-            );
-        }
+        assert_ne!(volume.get_primary_node_id(), node_id, "Should only delete volume on primary node ID={}
+                request node ID={}", volume.get_primary_node_id(), node_id);
 
         // TODO: use etcd transancation?
         let vol_id_key = format!("{}/{}", VOLUME_ID_PREFIX, vol_id);
@@ -1001,14 +995,11 @@ impl MetaData {
 
         let src_volume = self.get_volume_by_id(src_volume_id).await?;
 
-        if !src_volume.check_exist_on_node_id(self.get_node_id()) {
-            panic!(
+        assert!(src_volume.check_exist_on_node_id(self.get_node_id()),
                 "volume ID={} is on node IDs={:?} not on local node ID={}",
                 src_volume_id,
                 src_volume.node_ids,
-                self.get_node_id()
-            )
-        };
+                self.get_node_id());
         if src_volume.get_size() > dst_volume_size {
             return Err(ArgumentInvalid {
                 context: vec![format!(
@@ -1409,14 +1400,11 @@ impl MetaData {
         snap_name: &str,
     ) -> DatenLordResult<DatenLordSnapshot> {
         let src_vol = self.get_volume_by_id(src_vol_id).await?;
-        if !src_vol.check_exist_on_node_id(self.get_node_id()) {
-            panic!(
+        assert!(src_vol.check_exist_on_node_id(self.get_node_id()),
                 "volume ID={} is on node IDs={:?} not on local node ID={}",
                 src_vol_id,
                 src_vol.node_ids,
-                self.get_node_id()
-            )
-        };
+                self.get_node_id());
 
         let snap_path = self.get_snapshot_path(snap_id);
         let snap_path_owned = snap_path.clone();

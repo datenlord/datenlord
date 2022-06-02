@@ -24,6 +24,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{self, AtomicBool, AtomicI64, Ordering};
 use std::sync::Arc;
 use std::time::SystemTime;
+use nix::errno::Errno;
 
 /// Fs node trait
 #[async_trait]
@@ -1227,7 +1228,7 @@ impl Node for DefaultNode {
                 frsize: statvfs.fragment_size().cast(),
             }
         })
-        .map_err(|e| e.into())
+        .map_err(Errno::into)
     }
 
     /// Get file data
