@@ -4,7 +4,7 @@ on:
     branches: [master]
 
 env:
-  CI_RUST_TOOLCHAIN: 1.56.1
+  CI_RUST_TOOLCHAIN: 1.61.0
   CONTROLLER_SOCKET_FILE: /tmp/controller.sock
   BIND_MOUNTER: target/debug/bind_mounter
   ETCD_CONTAINER_NAME: etcd

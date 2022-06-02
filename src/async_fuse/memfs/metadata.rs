@@ -101,6 +101,7 @@ pub trait MetaData {
 
 /// File system in-memory meta-data
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct DefaultMetaData {
     /// The root path and the mount point of the FUSE filesystem
     root_path: PathBuf,

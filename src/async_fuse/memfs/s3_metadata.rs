@@ -39,6 +39,7 @@ const S3_INFO_DELIMITER: char = ';';
 
 /// File system in-memory meta-data
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct S3MetaData<S: S3BackEnd + Send + Sync + 'static> {
     /// S3 backend
     s3_backend: Arc<S>,
