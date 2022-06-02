@@ -11,9 +11,9 @@ use log::{error, info};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::io::Error;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::io::Error;
 use tiny_http::{Method, Request, Response, Server, StatusCode};
 
 /// Node List

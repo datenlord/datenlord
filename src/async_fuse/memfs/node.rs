@@ -12,6 +12,7 @@ use anyhow::Context;
 use async_trait::async_trait;
 use clippy_utilities::{Cast, OverflowArithmetic};
 use log::debug;
+use nix::errno::Errno;
 use nix::fcntl::{self, FcntlArg, OFlag};
 use nix::sys::stat::SFlag;
 use nix::sys::stat::{self, Mode};
@@ -24,7 +25,6 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{self, AtomicBool, AtomicI64, Ordering};
 use std::sync::Arc;
 use std::time::SystemTime;
-use nix::errno::Errno;
 
 /// Fs node trait
 #[async_trait]

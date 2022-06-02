@@ -303,9 +303,11 @@ impl Node for NodeImpl {
                     .meta_data
                     .update_volume_meta_data(vol_id, &volume)
                     .await?;
-                assert!(volume.vol_path.exists(),
-                        "volume path {:?} doesn't exist on node ID={}",
-                        volume.vol_path, node_id
+                assert!(
+                    volume.vol_path.exists(),
+                    "volume path {:?} doesn't exist on node ID={}",
+                    volume.vol_path,
+                    node_id
                 );
                 /*
                 // TODO: (walkaround) need to list dir before access dir.

@@ -330,8 +330,11 @@ fn get_end_point(matches: &ArgMatches) -> String {
     let end_point = match matches.value_of(END_POINT_ARG_NAME) {
         Some(s) => {
             let sock = s.to_owned();
-            assert!(sock.starts_with("unix:///"), "invalid socket end point: {}, should start with unix:///",
-                    sock);
+            assert!(
+                sock.starts_with("unix:///"),
+                "invalid socket end point: {}, should start with unix:///",
+                sock
+            );
             sock
         }
         None => panic!("No valid socket end point"),

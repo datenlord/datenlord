@@ -826,7 +826,10 @@ impl IoMemBlock {
     /// Turn `IoMemBlock` into slice
     #[allow(dead_code)]
     pub(crate) unsafe fn as_slice(&self) -> &[u8] {
-        assert!(self.inner.is_some(), "IoMemBlock inner is None, cannot as_slice");
+        assert!(
+            self.inner.is_some(),
+            "IoMemBlock inner is None, cannot as_slice"
+        );
 
         if let Some(ref block) = self.inner {
             let ptr = block.as_ptr_from_offset(self.offset);
@@ -1046,7 +1049,7 @@ mod test {
                     .unwrap_or_else(|| panic!("index error"))
                     .as_slice()
                     .get(..2)
-                    .unwrap_or_else(||  panic!("index error"))
+                    .unwrap_or_else(|| panic!("index error"))
             },
             [b'\0', b'a']
         );
