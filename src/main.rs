@@ -49,7 +49,7 @@
     clippy::shadow_unrelated, //it’s a common pattern in Rust code
     clippy::shadow_reuse, //it’s a common pattern in Rust code
     clippy::shadow_same, //it’s a common pattern in Rust code
-    //clippy::same_name_method,
+    clippy::same_name_method,
 
 )]
 
