@@ -11,6 +11,7 @@ use log::{error, info};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::io::Error;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tiny_http::{Method, Request, Response, Server, StatusCode};
@@ -256,7 +257,7 @@ impl SchdulerExtender {
             },
             Method::Get => request
                 .respond(Response::from_string("hello"))
-                .map_err(|e| e.into()),
+                .map_err(Error::into),
             Method::Head
             | Method::Put
             | Method::Delete

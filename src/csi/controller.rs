@@ -1,5 +1,6 @@
 //! The implementation for CSI controller service
 
+use grpcio::Error;
 use grpcio::{RpcContext, UnarySink};
 use log::{debug, error, info, warn};
 use protobuf::RepeatedField;
@@ -270,7 +271,7 @@ impl ControllerImplInner {
         let client = MetaData::build_worker_client(&worker_node);
         let create_res = client.worker_create_volume_async(req)?;
 
-        create_res.await.map_err(|e| e.into())
+        create_res.await.map_err(Error::into)
     }
 
     /// The pre-check helper function for `create_volume`

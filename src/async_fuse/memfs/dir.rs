@@ -210,13 +210,11 @@ unsafe fn next_entry(dirp: *mut libc::DIR, eos: &mut bool) -> Option<io::Result<
         }
         let dirent = &*p_dirent;
         let name_bytes = cstr_to_bytes(&dirent.d_name);
-        match name_bytes {
-            [b'.', 0, ..] | [b'.', b'.', 0, ..] => continue,
-            _ => {
-                *eos = false;
-                return Some(Ok(DirEntry::from_dirent(dirent)));
-            }
+        if let &([b'.', 0_u8, ..] | [b'.', b'.', 0_u8, ..]) = name_bytes {
+            continue;
         }
+        *eos = false;
+        return Some(Ok(DirEntry::from_dirent(dirent)));
     }
 }
 
