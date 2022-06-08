@@ -27,7 +27,6 @@
     clippy::all,
     clippy::restriction,
     clippy::pedantic,
-    clippy::nursery,
     clippy::cargo
 )]
 #![allow(
@@ -43,6 +42,15 @@
     clippy::exhaustive_enums,
     clippy::missing_panics_doc, // TODO: add panic docs
     clippy::panic_in_result_fn,
+    clippy::single_char_lifetime_names,
+    clippy::separated_literal_suffix, // conflict with unseparated_literal_suffix
+    clippy::undocumented_unsafe_blocks, // TODO: add safety comment
+    clippy::missing_safety_doc, // TODO: add safety comment
+    clippy::shadow_unrelated, //it’s a common pattern in Rust code
+    clippy::shadow_reuse, //it’s a common pattern in Rust code
+    clippy::shadow_same, //it’s a common pattern in Rust code
+    clippy::same_name_method, // Skip for protobuf generated code
+
 )]
 
 pub mod async_fuse;
@@ -322,12 +330,11 @@ fn get_end_point(matches: &ArgMatches) -> String {
     let end_point = match matches.value_of(END_POINT_ARG_NAME) {
         Some(s) => {
             let sock = s.to_owned();
-            if !sock.starts_with("unix:///") {
-                panic!(
-                    "invalid socket end point: {}, should start with unix:///",
-                    sock
-                );
-            }
+            assert!(
+                sock.starts_with("unix:///"),
+                "invalid socket end point: {}, should start with unix:///",
+                sock
+            );
             sock
         }
         None => panic!("No valid socket end point"),
