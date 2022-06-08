@@ -39,6 +39,7 @@ const S3_INFO_DELIMITER: char = ';';
 
 /// File system in-memory meta-data
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct S3MetaData<S: S3BackEnd + Send + Sync + 'static> {
     /// S3 backend
     s3_backend: Arc<S>,
@@ -199,7 +200,6 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
             let parent_name = parent_node.get_name().to_owned();
             // all checks are passed, ready to create new node
             let m_flags = fs_util::parse_mode(mode);
-            let new_ino: u64;
             let new_node = match node_type {
                 SFlag::S_IFDIR => {
                     debug!(
@@ -270,7 +270,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
                 );
                 }
             };
-            new_ino = new_node.get_ino();
+            let new_ino = new_node.get_ino();
             let new_node_attr = new_node.get_attr();
             let new_node_full_path = new_node.full_path().to_owned();
             cache.insert(new_ino, new_node);
@@ -750,14 +750,9 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
             }
             Some(old_entry) => {
                 debug_assert_eq!(&old_name, &old_entry.entry_name());
-                if cache.get(&old_entry.ino()).is_none() {
-                    panic!(
-                        "rename() found fs is inconsistent, the i-node of ino={} and name={:?} \
+                assert!(cache.get(&old_entry.ino()).is_some(), "rename() found fs is inconsistent, the i-node of ino={} and name={:?} \
                             under parent directory of ino={} and name={:?} to rename should be in cache",
-                        old_entry.ino(), old_name, old_parent, old_parent_node.get_name(),
-                    );
-                    // return;
-                }
+                        old_entry.ino(), old_name, old_parent, old_parent_node.get_name(),);
                 old_entry.ino()
             }
         };
@@ -773,13 +768,9 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
         let new_entry_ino = if let Some(new_entry) = new_parent_node.get_entry(new_name) {
             debug_assert_eq!(&new_name, &new_entry.entry_name());
             let new_ino = new_entry.ino();
-            if cache.get(&new_ino).is_none() {
-                panic!(
-                    "rename() found fs is inconsistent, the i-node of ino={} and name={:?} \
+            assert!(cache.get(&new_ino).is_some(), "rename() found fs is inconsistent, the i-node of ino={} and name={:?} \
                         under parent directory of ino={} and name={:?} to replace should be in cache",
-                    new_ino, new_name, new_parent, new_parent_node.get_name(),
-                );
-            }
+                    new_ino, new_name, new_parent, new_parent_node.get_name(),);
             if no_replace {
                 debug!(
                     "rename() found i-node of ino={} and name={:?} under new parent ino={} and name={:?}, \
