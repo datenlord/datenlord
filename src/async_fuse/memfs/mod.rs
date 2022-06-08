@@ -161,7 +161,7 @@ impl<M: MetaData + Send + Sync + 'static> MemFs<M> {
                 "The content is out of scope".to_owned(),
             );
         }
-        let content_total_len: usize = content.iter().map(|s| s.len()).sum();
+        let content_total_len: usize = content.iter().map(IoMemBlock::len).sum();
         debug!("read {} data, expected size {}", content_total_len, size);
         Ok(content)
     }
@@ -690,7 +690,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
             Ok(content) => {
                 debug!(
                     "read() successfully read {} bytes from the file of ino={} and name={:?}",
-                    content.iter().map(|s| AsIoVec::len(s)).sum::<usize>(),
+                    content.iter().map(AsIoVec::len).sum::<usize>(),
                     ino,
                     inode.get_name(),
                 );

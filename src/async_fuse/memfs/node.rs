@@ -12,6 +12,7 @@ use anyhow::Context;
 use async_trait::async_trait;
 use clippy_utilities::{Cast, OverflowArithmetic};
 use log::debug;
+use nix::errno::Errno;
 use nix::fcntl::{self, FcntlArg, OFlag};
 use nix::sys::stat::SFlag;
 use nix::sys::stat::{self, Mode};
@@ -1227,7 +1228,7 @@ impl Node for DefaultNode {
                 frsize: statvfs.fragment_size().cast(),
             }
         })
-        .map_err(|e| e.into())
+        .map_err(Errno::into)
     }
 
     /// Get file data
