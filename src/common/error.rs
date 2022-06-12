@@ -232,6 +232,7 @@ where
 impl DatenLordError {
     /// Add context for `DatenLordError`
     #[inline]
+    #[must_use]
     pub fn add_context<C>(mut self, ctx: C) -> Self
     where
         C: Into<String>,
@@ -276,6 +277,7 @@ impl DatenLordError {
     }
     /// Add context for `DatenLordError` lazily
     #[inline]
+    #[must_use]
     pub fn with_context<C, F>(self, f: F) -> Self
     where
         C: Into<String>,

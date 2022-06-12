@@ -1,5 +1,7 @@
 # DatenLord
 
+[![Join the chat at https://gitter.im/datenlord/datenlord](https://badges.gitter.im/datenlord/datenlord.svg)](https://gitter.im/datenlord/datenlord?utm_source=badge&utm_medium=badge&utm_campaign=pr-badge&utm_content=badge)
+
 ----
 *DatenLord* is a next-generation cloud-native distributed storage platform, which aims to meet the performance-critical storage needs from next-generation cloud-native applications, such as microservice, serverless, AI, etc. On one hand, DatenLord is designed to be a cloud-native storage system, which itself is distributed, fault-tolerant, and graceful upgrade. These cloud-native features make DatenLord easy to use and easy to maintain. On the other hand, DatenLord is designed as an application-orientated storage system, in that DatenLord is optimized for many performance-critical scenarios, such as databases, AI machine learning, big data. Meanwhile, DatenLord provides high-performance storage service for containers, which facilitates stateful applications running on top of Kubernetes (K8S). The high performance of DatenLord is achieved by leveraging the most recent technology revolution in hardware and software, such as NVMe, non-volatile memory, asynchronous programming, and the native Linux asynchronous IO support. 
 
@@ -24,8 +26,15 @@ DatenLord can alleviate data unavailable of cloud or data center failure by cach
 
 ## Architecture
 
-![DatenLord Architecture](docs/images/Computing%20Defined%20Storage%402x.png "DatenLord Overall Architecture")
+### Single Data Center
+![DatenLord Single Data Center](docs/images/datenlord_architecture_single_data_center.svg "DatenLord Signle Data Center")
 
+### Multiple Data Centers and Hybrid Cloud
+![DatenLord Multiple Data Centers and Hybrid Cloud](docs/images/datenlord_architecture_multi_data_center.svg "DatenLord Multiple Data Centers and Hybrid Cloud")
+
+DatenLord provides 3 kinds of user interfaces: KV interface, S3 interface and file interface. The backend storage is supported by the underlying distributed cache layer which is strong consistent. The strong consistency is guaranteed by the metadata management module which is built on high performance consensus protocol. The persistence storage layer can be local disk or S3 storage. For the network, RDMA is used to provide high throughput and low latency networks. If RDMA is not supported, TCP is an alternative option. For the multiple data center and hybrid clouds scenario, there will be a dedicated metadata server which supports metadata requests within the same data center. While in the same data center scenario, the metadata module can run on the same machine as the cache node. The network between data centers and public clouds are managed by a private network to guarantee high quality data transfer. 
+
+<!---
 DatenLord is of master-slave architecture. To achieve better storage performance, DatenLord has a coupled architecture with K8S, that DatenLord can be deployed within a K8S cluster, in order to leverage data locality to speed up data access. The above figure is the overall DatenLord architecture, the green parts are DatenLord components, the blue parts are K8S components, the yellow part represents containerized applications. There are several major components of DatenLord: master node (marked as DatenLord), slave node (marked as Daten Sklavin), and K8S plugins.
 
 The master node has three parts: S3 compatible interface (S3I), Lord, and Meta Storage Engine (MSE). S3I provides a convenient way to read and write data in DatenLord via S3 protocol, especially for bulk upload and download scenarios, e.g. uploading large amounts of data for big data batch jobs or AI machine learning training jobs. Lord is the overall controller of DatenLord, which controls all the internal behaviors of DatenLord, such as where and how to write data, synchronize data, etc. MSE stores all the meta information of DatenLord, such as the file paths of all the data stored in each slave node, the user-defined labels of each data file, etc. MSE is similar to HDFS namenode.
@@ -33,6 +42,7 @@ The master node has three parts: S3 compatible interface (S3I), Lord, and Meta S
 The slave node has four parts: Data Storage Engine (DSE), Sklavin, Meta Storage Engine (MSE), S3/P2P interface. DSE is the distributed cache layer, which is in charge of local IO and network IO, that it not only reads/writes data from/to memory or local disks, but also queries neighbor nodes to read neighbor cached data, further if local and neighbor cache missed, it reads data from remote persistent storage, and it can write data back to remote storage if necessary. More specifically, DatenLord sets up a filesystem in userspace (FUSE) in a slave node. DSE implements the FUSE API's, executing all the underlying FUSE operations, such as open, create, read, and write, etc. DSE also functions as a distributed cache, every DSE of slave nodes can communicate with each other via TCP/IP or RDMA to exchange cached data. Sklavin is to communicate with the Lord of the master node and handle the requests from the Lord and CSI driver, such as health check report, data synchronization, data consistency inspection, Lord election, etc. The MSE of the slave node is a local copy of the MSE from the master node. S3 interface provides a convenient way to read, write and synchronize data in a slave node.
 
 The K8S plugins include a container storage interface (CSI) driver and a customer filter. The CSI driver is for DatenLord to work with K8S to manage volumes for container tasks, such as loading a read-only volume, creating a read-write volume. The customer filter is to help K8S to schedule tasks to data nearby based on the meta-information in MSE of the master node.
+-->
 <!---
 ## DatenLord Optimization Strategy
 
