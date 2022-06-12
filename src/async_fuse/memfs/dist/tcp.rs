@@ -30,7 +30,7 @@ pub fn write_message(stream: &mut TcpStream, buf: &[u8]) -> anyhow::Result<usize
 
 /// Write message vector to tcp stream
 pub fn write_message_vector(stream: &mut TcpStream, buf: Vec<IoMemBlock>) -> anyhow::Result<usize> {
-    let len: u64 = buf.iter().map(|b| b.len()).sum::<usize>().cast();
+    let len: u64 = buf.iter().map(IoMemBlock::len).sum::<usize>().cast();
     let len_buf = len.to_be_bytes();
     stream.write_all(&len_buf)?;
 

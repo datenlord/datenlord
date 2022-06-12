@@ -1,4 +1,5 @@
 use anyhow::Context;
+use clippy_utilities::OverflowArithmetic;
 use log::info;
 use nix::dir::Dir;
 use nix::fcntl::{self, OFlag};
@@ -8,7 +9,6 @@ use std::collections::HashSet;
 use std::fs;
 use std::iter;
 use std::path::Path;
-use clippy_utilities::OverflowArithmetic;
 
 use super::test_util;
 
