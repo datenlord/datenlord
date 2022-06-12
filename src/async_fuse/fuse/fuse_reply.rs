@@ -41,11 +41,11 @@ where
     T: AsIoVec,
 {
     fn as_io_vec_list(&self) -> Vec<IoVec<&[u8]>> {
-        self.iter().map(|a| a.as_io_vec()).collect()
+        self.iter().map(T::as_io_vec).collect()
     }
 
     fn len(&self) -> usize {
-        self.iter().map(|a| a.len()).sum()
+        self.iter().map(T::len).sum()
     }
 
     fn is_empty(&self) -> bool {
@@ -124,7 +124,7 @@ where
 
 /// The trait indicates the ability to be converted to `IoVec`
 pub trait AsIoVec {
-    /// Convert the type to IoVec<&[u8]>
+    /// Convert the type to `IoVec`<&[u8]>
     fn as_io_vec(&self) -> IoVec<&[u8]>;
     /// Tell if the type is ready to be converted, please call it before calling `as_io_vec`
     fn can_convert(&self) -> bool;

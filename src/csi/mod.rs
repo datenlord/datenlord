@@ -149,8 +149,8 @@ fn run_single_server_helper(srv: &mut Server) {
 fn run_async_grpc_servers(servers: &mut [Server]) {
     /// The future to run `gRPC` servers
     async fn run_servers(servers: &mut [Server]) {
-        for mut server in servers.iter_mut() {
-            run_single_server_helper(&mut server);
+        for server in servers.iter_mut() {
+            run_single_server_helper(server);
         }
         let f = futures::future::pending::<()>();
         f.await;
@@ -162,8 +162,8 @@ fn run_async_grpc_servers(servers: &mut [Server]) {
 
 /// Run `gRPC` servers synchronuously
 fn run_sync_grpc_servers(servers: &mut [Server]) {
-    for mut server in servers.iter_mut() {
-        run_single_server_helper(&mut server);
+    for server in servers.iter_mut() {
+        run_single_server_helper(server);
     }
     loop {
         std::thread::park();
