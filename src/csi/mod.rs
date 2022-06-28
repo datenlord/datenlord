@@ -24,7 +24,7 @@ use std::net::IpAddr;
 use std::sync::Arc;
 
 /// Build meta data
-pub fn build_meta_data(
+pub async fn build_meta_data(
     worker_port: u16,
     node_id: String,
     ip_address: IpAddr,
@@ -40,7 +40,7 @@ pub fn build_meta_data(
         util::MAX_VOLUME_STORAGE_CAPACITY,
         util::MAX_VOLUMES_PER_NODE,
     );
-    MetaData::new(data_dir, ephemeral, run_as, etcd_delegate, node)
+    MetaData::new(data_dir, ephemeral, run_as, etcd_delegate, node).await
 }
 
 /// Build worker service
@@ -145,8 +145,8 @@ fn run_single_server_helper(srv: &mut Server) {
     }
 }
 
-/// Run `gRPC` servers asynchronuously
-fn run_async_grpc_servers(servers: &mut [Server]) {
+/// Run `gRPC` servers
+pub async fn run_grpc_servers(servers: &mut [Server]) {
     /// The future to run `gRPC` servers
     async fn run_servers(servers: &mut [Server]) {
         for server in servers.iter_mut() {
@@ -155,28 +155,7 @@ fn run_async_grpc_servers(servers: &mut [Server]) {
         let f = futures::future::pending::<()>();
         f.await;
     }
-    smol::block_on(async move {
-        run_servers(servers).await;
-    });
-}
-
-/// Run `gRPC` servers synchronuously
-fn run_sync_grpc_servers(servers: &mut [Server]) {
-    for server in servers.iter_mut() {
-        run_single_server_helper(server);
-    }
-    loop {
-        std::thread::park();
-    }
-}
-
-/// Run `gRPC` servers
-pub fn run_grpc_servers(servers: &mut [Server], async_server: bool) {
-    if async_server {
-        run_async_grpc_servers(servers);
-    } else {
-        run_sync_grpc_servers(servers);
-    }
+    run_servers(servers).await;
 }
 
 #[cfg(test)]
@@ -207,7 +186,6 @@ mod test {
     use std::net::Ipv4Addr;
     use std::path::{Path, PathBuf};
     use std::sync::Once;
-    use std::thread;
 
     const NODE_PUBLISH_VOLUME_TARGET_PATH: &str = "/tmp/target_volume_path";
     const NODE_PUBLISH_VOLUME_TARGET_PATH_1: &str = "/tmp/target_volume_path_1";
@@ -228,13 +206,15 @@ mod test {
     const DATA_DIR: &str = "/tmp/csi-data-dir";
     static GRPC_SERVER: Once = Once::new();
 
-    #[test]
-    fn test_all() -> DatenLordResult<()> {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_all() -> DatenLordResult<()> {
         // TODO: run test case in parallel
         // Because they all depend on etcd, so cannot run in parallel now
         let mut etcd_server = MockEtcdServer::new();
         etcd_server.start();
-        test_meta_data().add_context("test meta data failed")?;
+        test_meta_data()
+            .await
+            .add_context("test meta data failed")?;
         test_identity_server().add_context("test identity server failed")?;
         test_controller_server().add_context("test controller server failed")?;
         test_node_server().add_context("test node server failed")?;
@@ -251,7 +231,7 @@ mod test {
         }
     }
 
-    fn clear_test_data(etcd_delegate: &EtcdDelegate) -> DatenLordResult<()> {
+    async fn clear_test_data(etcd_delegate: &EtcdDelegate) -> DatenLordResult<()> {
         let dir_path = Path::new(DATA_DIR);
         if dir_path.exists() {
             fs::remove_dir_all(dir_path)?;
@@ -266,14 +246,14 @@ mod test {
             fs::remove_dir_all(NODE_PUBLISH_VOLUME_TARGET_PATH)?;
         }
 
-        smol::block_on(async { etcd_delegate.delete_all().await })?;
+        etcd_delegate.delete_all().await?;
         Ok(())
     }
 
-    fn build_test_meta_data() -> DatenLordResult<MetaData> {
+    async fn build_test_meta_data() -> DatenLordResult<MetaData> {
         let etcd_address_vec = get_etcd_address_vec();
-        let etcd_delegate = EtcdDelegate::new(etcd_address_vec)?;
-        clear_test_data(&etcd_delegate)?;
+        let etcd_delegate = EtcdDelegate::new(etcd_address_vec).await?;
+        clear_test_data(&etcd_delegate).await?;
 
         let worker_port = 50051;
         let node_id = DEFAULT_NODE_NAME;
@@ -294,7 +274,8 @@ mod test {
             RunAsRole::Node,
             etcd_delegate.clone(),
             node.clone(),
-        )?;
+        )
+        .await?;
         MetaData::new(
             data_dir.to_owned(),
             ephemeral,
@@ -302,113 +283,111 @@ mod test {
             etcd_delegate,
             node,
         )
+        .await
     }
 
-    fn test_meta_data() -> DatenLordResult<()> {
-        smol::block_on(async {
-            let meta_data = build_test_meta_data()?;
-            let vol_id = "the-fake-ephemeral-volume-id-for-meta-data-test";
-            let mut volume = meta_data::DatenLordVolume::build_ephemeral_volume(
-                vol_id,
-                "ephemeral-volume", // vol_name
-                DEFAULT_NODE_NAME,
-                meta_data.get_volume_path(NODE_PUBLISH_VOLUME_ID).as_path(), // vol_path
-            )?;
-            let add_vol_res = meta_data.add_volume_meta_data(vol_id, &volume).await;
-            assert!(
-                add_vol_res.is_ok(),
-                "failed to add new volume meta data to etcd"
-            );
-            let get_vol_res = meta_data
-                .get_volume_by_name(&volume.vol_name)
-                .await
-                .with_context(|| format!("failed to find volume by name={}", volume.vol_name,))?;
-            assert_eq!(
-                get_vol_res.vol_name, volume.vol_name,
-                "volume name not match"
-            );
+    async fn test_meta_data() -> DatenLordResult<()> {
+        let meta_data = build_test_meta_data().await?;
+        let vol_id = "the-fake-ephemeral-volume-id-for-meta-data-test";
+        let mut volume = meta_data::DatenLordVolume::build_ephemeral_volume(
+            vol_id,
+            "ephemeral-volume", // vol_name
+            DEFAULT_NODE_NAME,
+            meta_data.get_volume_path(NODE_PUBLISH_VOLUME_ID).as_path(), // vol_path
+        )?;
+        let add_vol_res = meta_data.add_volume_meta_data(vol_id, &volume).await;
+        assert!(
+            add_vol_res.is_ok(),
+            "failed to add new volume meta data to etcd"
+        );
+        let get_vol_res = meta_data
+            .get_volume_by_name(&volume.vol_name)
+            .await
+            .with_context(|| format!("failed to find volume by name={}", volume.vol_name,))?;
+        assert_eq!(
+            get_vol_res.vol_name, volume.vol_name,
+            "volume name not match"
+        );
 
-            let new_size_bytes = 2.overflow_mul(util::EPHEMERAL_VOLUME_STORAGE_CAPACITY);
-            let exp_vol_res = meta_data.expand(&mut volume, new_size_bytes).await?;
-            assert_eq!(
-                exp_vol_res,
-                util::EPHEMERAL_VOLUME_STORAGE_CAPACITY,
-                "the old size before expand not match"
-            );
+        let new_size_bytes = 2.overflow_mul(util::EPHEMERAL_VOLUME_STORAGE_CAPACITY);
+        let exp_vol_res = meta_data.expand(&mut volume, new_size_bytes).await?;
+        assert_eq!(
+            exp_vol_res,
+            util::EPHEMERAL_VOLUME_STORAGE_CAPACITY,
+            "the old size before expand not match"
+        );
 
-            let expanded_vol = meta_data
-                .get_volume_by_id(vol_id)
-                .await
-                .with_context(|| format!("failed to find volume ID={}", vol_id))?;
-            assert_eq!(
-                expanded_vol.size_bytes, new_size_bytes,
-                "the expanded volume size not match"
-            );
+        let expanded_vol = meta_data
+            .get_volume_by_id(vol_id)
+            .await
+            .with_context(|| format!("failed to find volume ID={}", vol_id))?;
+        assert_eq!(
+            expanded_vol.size_bytes, new_size_bytes,
+            "the expanded volume size not match"
+        );
 
-            let request = CreateVolumeRequest::new();
-            let selected_node = meta_data.select_node(&request).await?;
-            assert_eq!(
-                selected_node.node_id, DEFAULT_NODE_NAME,
-                "selected node ID not match"
-            );
+        let request = CreateVolumeRequest::new();
+        let selected_node = meta_data.select_node(&request).await?;
+        assert_eq!(
+            selected_node.node_id, DEFAULT_NODE_NAME,
+            "selected node ID not match"
+        );
 
-            let snap_id = "the-fake-snapshot-id-for-meta-data-test";
-            let snapshot = meta_data::DatenLordSnapshot::new(
-                "test-snapshot-name".to_owned(), //snap_name,
-                snap_id.to_owned(),              //snap_id,
-                vol_id.to_owned(),
-                meta_data.get_node_id().to_owned(),
-                meta_data.get_snapshot_path(snap_id),
-                std::time::SystemTime::now(),
-                0, // size_bytes,
-            );
-            let add_snap_res = meta_data.add_snapshot_meta_data(snap_id, &snapshot).await;
-            assert!(
-                add_snap_res.is_ok(),
-                "failed to add new snapshot meta data to etcd"
-            );
-            let get_snap_by_name_res = meta_data
-                .get_snapshot_by_name(&snapshot.snap_name)
-                .await
-                .with_context(|| {
-                    format!("failed to find snapshot by name={}", snapshot.snap_name,)
-                })?;
-            assert_eq!(
-                get_snap_by_name_res.snap_name, snapshot.snap_name,
-                "snapshot name not match"
-            );
+        let snap_id = "the-fake-snapshot-id-for-meta-data-test";
+        let snapshot = meta_data::DatenLordSnapshot::new(
+            "test-snapshot-name".to_owned(), //snap_name,
+            snap_id.to_owned(),              //snap_id,
+            vol_id.to_owned(),
+            meta_data.get_node_id().to_owned(),
+            meta_data.get_snapshot_path(snap_id),
+            std::time::SystemTime::now(),
+            0, // size_bytes,
+        );
+        let add_snap_res = meta_data.add_snapshot_meta_data(snap_id, &snapshot).await;
+        assert!(
+            add_snap_res.is_ok(),
+            "failed to add new snapshot meta data to etcd"
+        );
+        let get_snap_by_name_res = meta_data
+            .get_snapshot_by_name(&snapshot.snap_name)
+            .await
+            .with_context(|| format!("failed to find snapshot by name={}", snapshot.snap_name,))?;
+        assert_eq!(
+            get_snap_by_name_res.snap_name, snapshot.snap_name,
+            "snapshot name not match"
+        );
 
-            let get_snap_by_src_vol_id_res = meta_data
-                .get_snapshot_by_src_volume_id(&snapshot.vol_id)
-                .await
-                .with_context(|| {
-                    format!(
-                        "failed to find snapshot by source volume ID={}",
-                        snapshot.vol_id,
-                    )
-                })?;
-            assert_eq!(
-                get_snap_by_src_vol_id_res.vol_id, snapshot.vol_id,
-                "snapshot source volume ID not match"
-            );
+        let get_snap_by_src_vol_id_res = meta_data
+            .get_snapshot_by_src_volume_id(&snapshot.vol_id)
+            .await
+            .with_context(|| {
+                format!(
+                    "failed to find snapshot by source volume ID={}",
+                    snapshot.vol_id,
+                )
+            })?;
+        assert_eq!(
+            get_snap_by_src_vol_id_res.vol_id, snapshot.vol_id,
+            "snapshot source volume ID not match"
+        );
 
-            let del_snap_res = meta_data.delete_snapshot_meta_data(snap_id).await?;
-            assert_eq!(
-                del_snap_res.snap_id, snap_id,
-                "deleted snapshot ID not match"
-            );
-            let del_vol_res = meta_data
-                .delete_volume_meta_data(vol_id, meta_data.get_node_id())
-                .await?;
-            assert_eq!(del_vol_res.vol_id, vol_id, "deleted volume ID not match");
-            Ok(())
-        })
+        let del_snap_res = meta_data.delete_snapshot_meta_data(snap_id).await?;
+        assert_eq!(
+            del_snap_res.snap_id, snap_id,
+            "deleted snapshot ID not match"
+        );
+        let del_vol_res = meta_data
+            .delete_volume_meta_data(vol_id, meta_data.get_node_id())
+            .await?;
+        assert_eq!(del_vol_res.vol_id, vol_id, "deleted volume ID not match");
+        Ok(())
     }
 
     fn get_volume_path(vol_id: &str) -> PathBuf {
         Path::new(DATA_DIR).join(vol_id)
     }
 
+    #[allow(clippy::unnecessary_wraps)]
     fn run_test_server() -> DatenLordResult<()> {
         let controller_end_point = CONTROLLER_END_POINT.to_owned();
         let node_end_point = NODE_END_POINT.to_owned();
@@ -418,72 +397,80 @@ mod test {
         let driver_name = util::CSI_PLUGIN_NAME.to_owned();
         let data_dir = DATA_DIR.to_owned();
         let etcd_address_vec = get_etcd_address_vec();
-        let etcd_delegate = EtcdDelegate::new(etcd_address_vec)?;
 
-        let async_server = true;
         GRPC_SERVER.call_once(move || {
-            let clear_res = clear_test_data(&etcd_delegate);
-            assert!(
-                clear_res.is_ok(),
-                "failed to clear test data, the error is: {}",
-                clear_res.unwrap_err(),
-            );
-            let controller_meta_data = match build_meta_data(
-                worker_port,
-                node_id.clone(),
-                ip_address,
-                data_dir.clone(),
-                RunAsRole::Controller,
-                etcd_delegate.clone(),
-            ) {
-                Ok(md) => md,
-                Err(e) => panic!("failed to build meta data, the error is : {}", e,),
-            };
-            let controller_md = Arc::new(controller_meta_data);
-            let controller_server = match build_grpc_controller_server(
-                &controller_end_point,
-                &driver_name,
-                Arc::<MetaData>::clone(&controller_md),
-            ) {
-                Ok(server) => server,
-                Err(e) => panic!("failed to build CSI server, the error is : {}", e,),
-            };
-            let node_meta_data = match build_meta_data(
-                worker_port,
-                node_id.clone(),
-                ip_address,
-                data_dir.clone(),
-                RunAsRole::Node,
-                etcd_delegate.clone(),
-            ) {
-                Ok(md) => md,
-                Err(e) => panic!("failed to build meta data, the error is : {}", e,),
-            };
-            let node_worker_md = Arc::new(node_meta_data);
-            let node_server = match build_grpc_node_server(
-                &node_end_point,
-                &driver_name,
-                Arc::<MetaData>::clone(&node_worker_md),
-            ) {
-                Ok(server) => server,
-                Err(e) => panic!("failed to build Node server, the error is : {}", e,),
-            };
-            let worker_server = match build_grpc_worker_server(node_worker_md) {
-                Ok(server) => server,
-                Err(e) => panic!("failed to build Worker server, the error is : {}", e,),
-            };
+            futures::executor::block_on(async {
+                let etcd_delegate = EtcdDelegate::new(etcd_address_vec)
+                    .await
+                    .unwrap_or_else(|e| {
+                        panic!("failed to create new EtcdDelegate for error {}", e);
+                    });
+                let clear_res = clear_test_data(&etcd_delegate).await;
+                assert!(
+                    clear_res.is_ok(),
+                    "failed to clear test data, the error is: {}",
+                    clear_res.unwrap_err(),
+                );
+                let controller_meta_data = match build_meta_data(
+                    worker_port,
+                    node_id.clone(),
+                    ip_address,
+                    data_dir.clone(),
+                    RunAsRole::Controller,
+                    etcd_delegate.clone(),
+                )
+                .await
+                {
+                    Ok(md) => md,
+                    Err(e) => panic!("failed to build meta data, the error is : {}", e,),
+                };
+                let controller_md = Arc::new(controller_meta_data);
+                let controller_server = match build_grpc_controller_server(
+                    &controller_end_point,
+                    &driver_name,
+                    Arc::<MetaData>::clone(&controller_md),
+                ) {
+                    Ok(server) => server,
+                    Err(e) => panic!("failed to build CSI server, the error is : {}", e,),
+                };
+                let node_meta_data = match build_meta_data(
+                    worker_port,
+                    node_id.clone(),
+                    ip_address,
+                    data_dir.clone(),
+                    RunAsRole::Node,
+                    etcd_delegate.clone(),
+                )
+                .await
+                {
+                    Ok(md) => md,
+                    Err(e) => panic!("failed to build meta data, the error is : {}", e,),
+                };
+                let node_worker_md = Arc::new(node_meta_data);
+                let node_server = match build_grpc_node_server(
+                    &node_end_point,
+                    &driver_name,
+                    Arc::<MetaData>::clone(&node_worker_md),
+                ) {
+                    Ok(server) => server,
+                    Err(e) => panic!("failed to build Node server, the error is : {}", e,),
+                };
+                let worker_server = match build_grpc_worker_server(node_worker_md) {
+                    Ok(server) => server,
+                    Err(e) => panic!("failed to build Worker server, the error is : {}", e,),
+                };
 
-            // Keep running the task in the background
-            let _controller_thread = thread::spawn(move || {
-                run_grpc_servers(&mut [controller_server], async_server);
-            });
+                // Keep running the task in the background
+                let _controller_thread = tokio::spawn(async move {
+                    run_grpc_servers(&mut [controller_server]).await;
+                });
 
-            // Keep running the task in the background
-            let _node_thread = thread::spawn(move || {
-                run_grpc_servers(&mut [node_server, worker_server], async_server);
+                // Keep running the task in the background
+                let _node_thread = tokio::spawn(async move {
+                    run_grpc_servers(&mut [node_server, worker_server]).await;
+                });
             });
         });
-
         Ok(())
     }
 
@@ -491,8 +478,7 @@ mod test {
         run_test_server()?;
         let env = Arc::new(EnvBuilder::new().build());
         let ch = ChannelBuilder::new(env).connect(CONTROLLER_END_POINT);
-        let identity_client = IdentityClient::new(ch);
-        Ok(identity_client)
+        Ok(IdentityClient::new(ch))
     }
 
     fn test_identity_server() -> DatenLordResult<()> {
@@ -547,8 +533,7 @@ mod test {
         run_test_server()?;
         let env = Arc::new(EnvBuilder::new().build());
         let ch = ChannelBuilder::new(env).connect(CONTROLLER_END_POINT);
-        let controller_client = ControllerClient::new(ch);
-        Ok(controller_client)
+        Ok(ControllerClient::new(ch))
     }
 
     fn create_volume(
@@ -1197,8 +1182,7 @@ mod test {
         run_test_server()?;
         let env = Arc::new(EnvBuilder::new().build());
         let ch = ChannelBuilder::new(env).connect(NODE_END_POINT);
-        let node_client = NodeClient::new(ch);
-        Ok(node_client)
+        Ok(NodeClient::new(ch))
     }
 
     fn test_node_server() -> DatenLordResult<()> {

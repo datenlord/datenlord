@@ -155,9 +155,11 @@ pub async fn open_dir(path: &Path) -> anyhow::Result<RawFd> {
     let dir_path = path.to_path_buf();
     let oflags = get_dir_oflags();
     let path = path.to_path_buf();
-    let dfd = smol::unblock(move || fcntl::open(dir_path.as_os_str(), oflags, Mode::empty()))
-        .await
-        .context(format!("open_dir() failed to open directory={:?}", path))?;
+    let dfd = tokio::task::spawn_blocking(move || {
+        fcntl::open(dir_path.as_os_str(), oflags, Mode::empty())
+    })
+    .await?
+    .context(format!("open_dir() failed to open directory={:?}", path))?;
     Ok(dfd)
 }
 
@@ -165,13 +167,14 @@ pub async fn open_dir(path: &Path) -> anyhow::Result<RawFd> {
 pub async fn open_dir_at(dfd: RawFd, child_name: &str) -> anyhow::Result<RawFd> {
     let sub_dir_name = child_name.to_owned();
     let oflags = get_dir_oflags();
-    let dir_fd =
-        smol::unblock(move || fcntl::openat(dfd, sub_dir_name.as_str(), oflags, Mode::empty()))
-            .await
-            .context(format!(
-                "open_dir_at() failed to open sub-directory={:?} under parent fd={}",
-                child_name, dfd
-            ))?;
+    let dir_fd = tokio::task::spawn_blocking(move || {
+        fcntl::openat(dfd, sub_dir_name.as_str(), oflags, Mode::empty())
+    })
+    .await?
+    .context(format!(
+        "open_dir_at() failed to open sub-directory={:?} under parent fd={}",
+        child_name, dfd
+    ))?;
     Ok(dir_fd)
 }
 
@@ -248,8 +251,8 @@ fn convert_to_file_attr(st: FileStat) -> FileAttr {
 
 /// Load file attribute by fd
 pub async fn load_attr(fd: RawFd) -> anyhow::Result<FileAttr> {
-    let st = smol::unblock(move || stat::fstat(fd))
-        .await
+    let st = tokio::task::spawn_blocking(move || stat::fstat(fd))
+        .await?
         .context(format!(
             "load_attr() failed get the file attribute of fd={}",
             fd,
@@ -315,7 +318,7 @@ pub fn convert_to_fuse_attr(attr: FileAttr) -> FuseAttr {
 
 /// Helper funtion to load directory data
 pub async fn load_dir_data(dirfd: RawFd) -> anyhow::Result<BTreeMap<String, DirEntry>> {
-    smol::unblock(move || {
+    tokio::task::spawn_blocking(move || {
         let dir = Dir::opendirat(dirfd, ".", OFlag::empty())
             .with_context(|| format!("failed to build Dir from fd={}", dirfd))?;
         let mut dir_entry_map = BTreeMap::new();
@@ -328,12 +331,12 @@ pub async fn load_dir_data(dirfd: RawFd) -> anyhow::Result<BTreeMap<String, DirE
         }
         Ok(dir_entry_map)
     })
-    .await
+    .await?
 }
 
 /// Helper function to load file data
 pub async fn load_file_data(fd: RawFd, offset: usize, len: usize) -> anyhow::Result<Vec<u8>> {
-    let file_data_vec = smol::unblock(move || {
+    let file_data_vec = tokio::task::spawn_blocking(move || {
         let mut file_data_vec: Vec<u8> = Vec::with_capacity(len);
 
         let read_size = unsafe {
@@ -358,7 +361,7 @@ pub async fn load_file_data(fd: RawFd, offset: usize, len: usize) -> anyhow::Res
         // Should explicitly highlight the error type
         Ok::<Vec<u8>, anyhow::Error>(file_data_vec)
     })
-    .await?;
+    .await??;
     debug_assert_eq!(file_data_vec.len(), len);
     Ok(file_data_vec)
 }

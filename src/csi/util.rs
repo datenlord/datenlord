@@ -3,6 +3,7 @@
 use clippy_utilities::Cast;
 use futures::prelude::*;
 use grpcio::{RpcStatus, UnarySink};
+use lazy_static::lazy_static;
 use log::{debug, info};
 use nix::mount::{self, MntFlags, MsFlags};
 use nix::unistd;
@@ -50,6 +51,14 @@ pub const LOCAL_WORKER_SOCKET: &str = "unix:///tmp/worker.sock";
 pub const DEFAULT_BIND_MOUNT_HELPER_CMD_PATH: &str = "./target/debug/bind_mounter";
 /// The key of the bind mount helper command path environment variable
 pub const BIND_MOUNT_HELPER_CMD_ENV_KEY: &str = "BIND_MOUNTER";
+
+lazy_static! {
+    // Dedicated runtime for spawn grpc task
+    static ref TOKIO_RUNTIME: tokio::runtime::Runtime = tokio::runtime::Runtime::new()
+        .unwrap_or_else(|e| {
+            panic!("failed to spawn a runtime for error {}", e);
+        });
+}
 
 /// The bind mount mode of a volume
 #[derive(Clone, Copy, Debug)]
@@ -190,14 +199,14 @@ pub fn spawn_grpc_task<R: Send + 'static>(
     sink: UnarySink<R>,
     task: impl Future<Output = DatenLordResult<R>> + Send + 'static,
 ) {
-    smol::spawn(async move {
+    // grpcio library is running outside of tokio default runtime, so need a dedicated runtime for grpc task.
+    TOKIO_RUNTIME.spawn(async move {
         let result = task.await;
         match result {
             Ok(resp) => async_success(sink, resp).await,
             Err(e) => async_fail(sink, e).await,
         }
-    })
-    .detach();
+    });
 }
 
 /// Get the bind mount helper command path

@@ -171,7 +171,7 @@ impl ReplyRaw {
         data: impl AsIoVecList + Send + Sync + 'static,
     ) -> nix::Result<usize> {
         let fd = self.fd;
-        let wsize = smol::unblock(move || {
+        let wsize = tokio::task::spawn_blocking(move || {
             let header_len = mem::size_of::<FuseOutHeader>();
 
             let header = FuseOutHeader {
@@ -194,7 +194,10 @@ impl ReplyRaw {
 
             uio::writev(fd, iovecs)
         })
-        .await?;
+        .await
+        .unwrap_or_else(|e| {
+            panic!("failed to send bytes to fuse device for error {}", e);
+        })?;
 
         debug!("sent {} bytes to fuse device successfully", wsize);
         Ok(wsize)
@@ -793,8 +796,8 @@ mod test {
     use std::os::unix::io::FromRawFd;
     use std::time::Duration;
 
-    use futures::AsyncReadExt;
-    use futures::AsyncSeekExt;
+    use tokio::io::AsyncReadExt;
+    use tokio::io::AsyncSeekExt;
 
     #[test]
     fn test_slice() {
@@ -815,95 +818,95 @@ mod test {
         println!("{:?}", l1);
         println!("{:?}", v1);
     }
-    #[test]
-    fn test_reply_output() -> anyhow::Result<()> {
-        smol::block_on(async move {
-            let file_name = "fuse_reply.log";
-            let fd = smol::unblock(move || {
-                fcntl::open(
-                    file_name,
-                    OFlag::O_CREAT | OFlag::O_TRUNC | OFlag::O_RDWR,
-                    Mode::all(),
-                )
-            })
-            .await?;
-            smol::unblock(move || unistd::unlink(file_name)).await?;
-
-            let ino = 64;
-            let size = 64;
-            let blocks = 64;
-            let a_time = 64;
-            let m_time = 64;
-            let c_time = 64;
-            #[cfg(target_os = "macos")]
-            let creat_time = 64;
-            let a_timensec = 32;
-            let m_timensec = 32;
-            let c_timensec = 32;
-            #[cfg(target_os = "macos")]
-            let creat_timensec = 32;
-            let mode = 32;
-            let nlink = 32;
-            let uid = 32;
-            let g_id = 32;
-            let rdev = 32;
-            #[cfg(target_os = "macos")]
-            let flags = 32;
-            #[cfg(feature = "abi-7-9")]
-            let blksize = 32;
-            #[cfg(feature = "abi-7-9")]
-            let padding = 32;
-            let attr = FuseAttr {
-                ino,
-                size,
-                blocks,
-                atime: a_time,
-                mtime: m_time,
-                ctime: c_time,
-                #[cfg(target_os = "macos")]
-                crtime: creat_time,
-                atimensec: a_timensec,
-                mtimensec: m_timensec,
-                ctimensec: c_timensec,
-                #[cfg(target_os = "macos")]
-                crtimensec: creat_timensec,
-                mode,
-                nlink,
-                uid,
-                gid: g_id,
-                rdev,
-                #[cfg(target_os = "macos")]
-                flags,
-                #[cfg(feature = "abi-7-9")]
-                blksize,
-                #[cfg(feature = "abi-7-9")]
-                padding,
-            };
-
-            let unique = 12345;
-            let reply_attr = ReplyAttr::new(unique, fd);
-            reply_attr.attr(Duration::from_secs(1), attr).await?;
-
-            let mut file = smol::unblock(move || unsafe { smol::fs::File::from_raw_fd(fd) }).await;
-            file.seek(smol::io::SeekFrom::Start(0)).await?;
-            let mut bytes = Vec::new();
-            file.read_to_end(&mut bytes).await?;
-
-            let mut aligned_bytes = AlignedBytes::new_zeroed(bytes.len(), 4096);
-            aligned_bytes.copy_from_slice(&bytes);
-
-            let mut de = Deserializer::new(&aligned_bytes);
-            let foh: &FuseOutHeader = de.fetch_ref().context("failed to fetch FuseOutHeader")?;
-            let fao: &FuseAttrOut = de.fetch_ref().context("failed to fetch FuseAttrOut")?;
-
-            dbg!(foh, fao);
-            debug_assert_eq!(fao.attr.ino, ino);
-            debug_assert_eq!(fao.attr.size, size);
-            debug_assert_eq!(fao.attr.blocks, blocks);
-            debug_assert_eq!(fao.attr.mtime, m_time);
-            debug_assert_eq!(fao.attr.atime, a_time);
-            debug_assert_eq!(fao.attr.ctime, c_time);
-            Ok(())
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_reply_output() -> anyhow::Result<()> {
+        let file_name = "fuse_reply.log";
+        let fd = tokio::task::spawn_blocking(move || {
+            fcntl::open(
+                file_name,
+                OFlag::O_CREAT | OFlag::O_TRUNC | OFlag::O_RDWR,
+                Mode::all(),
+            )
         })
+        .await??;
+        tokio::task::spawn_blocking(move || unistd::unlink(file_name)).await??;
+
+        let ino = 64;
+        let size = 64;
+        let blocks = 64;
+        let a_time = 64;
+        let m_time = 64;
+        let c_time = 64;
+        #[cfg(target_os = "macos")]
+        let creat_time = 64;
+        let a_timensec = 32;
+        let m_timensec = 32;
+        let c_timensec = 32;
+        #[cfg(target_os = "macos")]
+        let creat_timensec = 32;
+        let mode = 32;
+        let nlink = 32;
+        let uid = 32;
+        let g_id = 32;
+        let rdev = 32;
+        #[cfg(target_os = "macos")]
+        let flags = 32;
+        #[cfg(feature = "abi-7-9")]
+        let blksize = 32;
+        #[cfg(feature = "abi-7-9")]
+        let padding = 32;
+        let attr = FuseAttr {
+            ino,
+            size,
+            blocks,
+            atime: a_time,
+            mtime: m_time,
+            ctime: c_time,
+            #[cfg(target_os = "macos")]
+            crtime: creat_time,
+            atimensec: a_timensec,
+            mtimensec: m_timensec,
+            ctimensec: c_timensec,
+            #[cfg(target_os = "macos")]
+            crtimensec: creat_timensec,
+            mode,
+            nlink,
+            uid,
+            gid: g_id,
+            rdev,
+            #[cfg(target_os = "macos")]
+            flags,
+            #[cfg(feature = "abi-7-9")]
+            blksize,
+            #[cfg(feature = "abi-7-9")]
+            padding,
+        };
+
+        let unique = 12345;
+        let reply_attr = ReplyAttr::new(unique, fd);
+        reply_attr.attr(Duration::from_secs(1), attr).await?;
+
+        let mut file =
+            tokio::task::spawn_blocking(move || unsafe { tokio::fs::File::from_raw_fd(fd) })
+                .await?;
+        file.seek(std::io::SeekFrom::Start(0)).await?;
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes).await?;
+
+        let mut aligned_bytes = AlignedBytes::new_zeroed(bytes.len(), 4096);
+        aligned_bytes.copy_from_slice(&bytes);
+
+        let mut de = Deserializer::new(&aligned_bytes);
+        let foh: &FuseOutHeader = de.fetch_ref().context("failed to fetch FuseOutHeader")?;
+        let fao: &FuseAttrOut = de.fetch_ref().context("failed to fetch FuseAttrOut")?;
+
+        dbg!(foh, fao);
+        debug_assert_eq!(fao.attr.ino, ino);
+        debug_assert_eq!(fao.attr.size, size);
+        debug_assert_eq!(fao.attr.blocks, blocks);
+        debug_assert_eq!(fao.attr.mtime, m_time);
+        debug_assert_eq!(fao.attr.atime, a_time);
+        debug_assert_eq!(fao.attr.ctime, c_time);
+        Ok(())
     }
 }

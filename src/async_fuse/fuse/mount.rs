@@ -95,7 +95,7 @@ pub async fn umount(short_path: &Path) -> anyhow::Result<()> {
     use std::process::Command;
 
     let mount_path = short_path.to_path_buf();
-    smol::unblock(move || {
+    tokio::task::spawn_blocking(move || {
         let mntpnt = mount_path.as_os_str();
 
         if unistd::geteuid().is_root() {
@@ -127,7 +127,7 @@ pub async fn umount(short_path: &Path) -> anyhow::Result<()> {
             }
         }
     })
-    .await
+    .await?
 }
 
 /// Linux mount
@@ -156,7 +156,7 @@ async fn fuser_mount(mount_point: &Path) -> anyhow::Result<RawFd> {
 
     let mount_path = mount_point.to_path_buf();
 
-    let (local, remote) = smol::unblock(|| {
+    let (local, remote) = tokio::task::spawn_blocking(|| {
         socket::socketpair(
             AddressFamily::Unix,
             SockType::Stream,
@@ -164,10 +164,10 @@ async fn fuser_mount(mount_point: &Path) -> anyhow::Result<RawFd> {
             SockFlag::empty(),
         )
     })
-    .await
+    .await?
     .context("failed to create socket pair")?;
 
-    let mount_handle = smol::unblock(move || {
+    let mount_handle = tokio::task::spawn_blocking(move || {
         Command::new("fusermount")
             .arg("-o")
             // fusermount option allow_other only allowed if user_allow_other is set in /etc/fuse.conf
@@ -176,7 +176,7 @@ async fn fuser_mount(mount_point: &Path) -> anyhow::Result<RawFd> {
             .env("_FUSE_COMMFD", remote.to_string())
             .output()
     })
-    .await
+    .await?
     .context("fusermount command failed to start")?;
 
     assert!(
@@ -189,7 +189,7 @@ async fn fuser_mount(mount_point: &Path) -> anyhow::Result<RawFd> {
         mount_point,
     );
 
-    smol::unblock(move || {
+    tokio::task::spawn_blocking(move || {
         let mut buf = [0_u8; 5];
         let iov = [IoVec::from_mut_slice(&mut buf[..])];
 
@@ -212,7 +212,7 @@ async fn fuser_mount(mount_point: &Path) -> anyhow::Result<RawFd> {
 
         Ok(mount_fd)
     })
-    .await
+    .await?
 }
 
 /// Linux directly mount
@@ -224,17 +224,18 @@ async fn direct_mount(mount_point: &Path) -> anyhow::Result<RawFd> {
 
     let devpath = Path::new("/dev/fuse");
 
-    let dev_fd = smol::unblock(move || fcntl::open(devpath, OFlag::O_RDWR, Mode::empty()))
-        .await
-        .context("failed to open fuse device")?;
+    let dev_fd =
+        tokio::task::spawn_blocking(move || fcntl::open(devpath, OFlag::O_RDWR, Mode::empty()))
+            .await?
+            .context("failed to open fuse device")?;
     let mount_path = mount_point.to_path_buf();
-    let full_path = smol::unblock(move || fs::canonicalize(&mount_path)).await?;
+    let full_path = tokio::task::spawn_blocking(move || fs::canonicalize(&mount_path)).await??;
     let target_path = full_path.clone();
     let fstype = "fuse";
     let fsname = "/dev/fuse";
 
-    let mnt_sb = smol::unblock(move || stat::stat(&full_path))
-        .await
+    let mnt_sb = tokio::task::spawn_blocking(move || stat::stat(&full_path))
+        .await?
         .context(format!(
             "failed to get the file stat of mount point={:?}",
             mount_point,
@@ -248,7 +249,7 @@ async fn direct_mount(mount_point: &Path) -> anyhow::Result<RawFd> {
     );
 
     debug!("direct mount opts={:?}", &opts);
-    smol::unblock(move || {
+    tokio::task::spawn_blocking(move || {
         nix::mount::mount(
             Some(fsname),
             &target_path,
@@ -257,7 +258,7 @@ async fn direct_mount(mount_point: &Path) -> anyhow::Result<RawFd> {
             Some(opts.as_str()),
         )
     })
-    .await
+    .await?
     .context(format!("failed to direct mount {:?}", mount_point))?;
 
     Ok(dev_fd)
@@ -267,7 +268,7 @@ async fn direct_mount(mount_point: &Path) -> anyhow::Result<RawFd> {
 #[cfg(target_os = "macos")]
 pub async fn umount(mount_path: &Path) -> anyhow::Result<()> {
     let mount_point = mount_path.to_path_buf();
-    smol::unblock(|| {
+    tokio::task::spawn_blocking(|| {
         let mntpnt = mount_point.as_os_str();
         let res = unsafe { libc::unmount(utilities::cast_to_ptr(mntpnt), param::MNT_FORCE) };
         if res < 0 {
@@ -276,7 +277,7 @@ pub async fn umount(mount_path: &Path) -> anyhow::Result<()> {
             Ok(())
         }
     })
-    .await
+    .await?
     .context(format!("failed to un-mount {:?}", mount_path))
 }
 
@@ -304,19 +305,20 @@ pub async fn mount(mount_path: &Path) -> anyhow::Result<RawFd> {
     let mount_point = mount_path.to_path_buf();
     let devpath = Path::new("/dev/osxfuse1");
 
-    let fd = smol::unblock(|| fcntl::open(devpath, OFlag::O_RDWR, Mode::empty()))
-        .await
+    let fd = tokio::task::spawn_blocking(|| fcntl::open(devpath, OFlag::O_RDWR, Mode::empty()))
+        .await?
         .context("failed to open fuse device")?;
 
-    let sb =
-        smol::unblock(|| stat::fstat(fd).context("failed to get the file stat of fuse device"))
-            .await?;
+    let sb = tokio::task::spawn_blocking(|| {
+        stat::fstat(fd).context("failed to get the file stat of fuse device")
+    })
+    .await??;
 
     // use ioctl to read device random secret
     // osxfuse/support/mount_osxfuse/mount_osxfuse.c#L1099
     // result = ioctl(fd, FUSEDEVIOCGETRANDOM, &drandom);
     // FUSEDEVIOCGETRANDOM // osxfuse/common/fuse_ioctl.h#L43
-    let drandom = smol::unblock(|| {
+    let drandom = tokio::task::spawn_blocking(|| {
         let mut drandom: u32 = 0;
         nix::ioctl_read!(fuse_read_random, FUSE_IOC_MAGIC, FUSE_IOC_TYPE_MODE, u32);
         let result = unsafe { fuse_read_random(fd, utilities::cast_to_mut_ptr(&mut drandom))? };
@@ -324,9 +326,9 @@ pub async fn mount(mount_path: &Path) -> anyhow::Result<RawFd> {
         debug!("successfully read drandom={}", drandom);
         Ok::<_, anyhow::Error>(drandom)
     })
-    .await?;
+    .await??;
 
-    let full_path = smol::unblock(|| fs::canonicalize(mount_point)).await?;
+    let full_path = tokio::task::spawn_blocking(|| fs::canonicalize(mount_point)).await??;
     let cstr_path = full_path.to_str().context(format!(
         "failed to convert full mount path={:?} to string",
         full_path
@@ -376,7 +378,7 @@ pub async fn mount(mount_path: &Path) -> anyhow::Result<RawFd> {
         rdev: sb.st_rdev.cast(),
     };
 
-    smol::unblock(|| {
+    tokio::task::spawn_blocking(|| {
         let result = unsafe {
             libc::mount(
                 fstype.as_ptr(),
@@ -402,5 +404,5 @@ pub async fn mount(mount_path: &Path) -> anyhow::Result<RawFd> {
             )
         }
     })
-    .await
+    .await?
 }

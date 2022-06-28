@@ -89,11 +89,11 @@ fn main() -> DatenLordResult<()> {
         )
         .get_matches();
 
-    let (umount_path, do_umount) = match matches.value_of(UMOUNT_ARG_NAME) {
+    let (umount_path, do_umount) = match matches.get_one::<String>(UMOUNT_ARG_NAME) {
         Some(s) => (Path::new(s), true),
         None => (Path::new(""), false),
     };
-    let from_path = match matches.value_of(FROM_DIR_ARG_NAME) {
+    let from_path = match matches.get_one::<String>(FROM_DIR_ARG_NAME) {
         Some(s) => Path::new(s),
         None => {
             if do_umount {
@@ -105,7 +105,7 @@ fn main() -> DatenLordResult<()> {
             }
         }
     };
-    let to_path = match matches.value_of(TO_DIR_ARG_NAME) {
+    let to_path = match matches.get_one::<String>(TO_DIR_ARG_NAME) {
         Some(s) => Path::new(s),
         None => {
             if do_umount {
@@ -117,16 +117,16 @@ fn main() -> DatenLordResult<()> {
             }
         }
     };
-    let fs_type = match matches.value_of(FS_TYPE_ARG_NAME) {
+    let fs_type = match matches.get_one::<String>(FS_TYPE_ARG_NAME) {
         Some(s) => s.to_owned(),
         None => "".to_owned(),
     };
-    let mount_options = match matches.value_of(MOUNT_OPTIONS_ARG_NAME) {
+    let mount_options = match matches.get_one::<String>(MOUNT_OPTIONS_ARG_NAME) {
         Some(s) => s.to_owned(),
         None => "".to_owned(),
     };
-    let read_only = matches.is_present(READ_ONLY_ARG_NAME);
-    let remount = matches.is_present(REMOUNT_ARG_NAME);
+    let read_only = matches.contains_id(READ_ONLY_ARG_NAME);
+    let remount = matches.contains_id(REMOUNT_ARG_NAME);
 
     debug!(
         "{}={:?}, {}={:?}, {}={:?}, {}={}, {}={}, {}={}, {}={}",

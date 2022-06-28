@@ -109,22 +109,22 @@ impl SchdulerExtender {
     }
 
     /// Start scheduler extender server
-    pub fn start(&self) {
+    pub async fn start(&self) {
         info!("listening on http://{}", self.address);
         for req in self.server.incoming_requests() {
-            if let Err(e) = self.scheduler(req) {
+            if let Err(e) = self.scheduler(req).await {
                 error!("Faild to send response, error is: {}", e);
             }
         }
     }
 
     /// Filter candidate nodes
-    fn filter(&self, args: ExtenderArgs) -> ExtenderFilterResult {
+    async fn filter(&self, args: ExtenderArgs) -> ExtenderFilterResult {
         let pod = args.Pod.clone();
         info!("Pod name is {:?}", pod.metadata.name);
 
         if let Some(volumes) = pod.spec.and_then(|pod_spec| pod_spec.volumes) {
-            let all_nodes_res = smol::block_on(async { self.meta_data.get_nodes().await });
+            let all_nodes_res = self.meta_data.get_nodes().await;
             match all_nodes_res {
                 Ok(all_nodes) => {
                     let mut nodes_map = HashMap::new();
@@ -132,9 +132,7 @@ impl SchdulerExtender {
                         nodes_map.insert(node, 1_usize);
                     }
                     for vol in &volumes {
-                        let vol_res = smol::block_on(async {
-                            self.meta_data.get_volume_by_name(&vol.name).await
-                        });
+                        let vol_res = self.meta_data.get_volume_by_name(&vol.name).await;
                         if let Ok(vol) = vol_res {
                             vol.accessible_nodes.iter().for_each(|node| {
                                 if let Some(count) = nodes_map.get_mut(node) {
@@ -222,7 +220,7 @@ impl SchdulerExtender {
     }
 
     /// Scheduler pod
-    fn scheduler(&self, mut request: Request) -> DatenLordResult<()> {
+    async fn scheduler(&self, mut request: Request) -> DatenLordResult<()> {
         info!("{:?}", request);
         match *request.method() {
             Method::Post => match request.url() {
@@ -236,7 +234,7 @@ impl SchdulerExtender {
 
                     let response = if request.url() == "/filter" {
                         info!("Receive filter");
-                        let result = self.filter(args);
+                        let result = self.filter(args).await;
                         try_or_return_err!(
                             request,
                             serde_json::to_string(&result),
