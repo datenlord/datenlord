@@ -13,8 +13,6 @@ use std::path::{Path, PathBuf};
 /// Distributed request
 #[derive(Serialize, Deserialize, Debug)]
 pub enum DistRequest {
-    /// Turn off server request
-    TurnOff,
     /// Invalidate cache request
     Invalidate(OpArgs),
     /// Check cache availibility request
@@ -88,18 +86,6 @@ pub struct OpArgs {
     pub file_name: Vec<u8>,
     /// Index of file
     pub index: Vec<Index>,
-}
-
-/// Serialize Turn off server request
-#[must_use]
-pub fn turnoff() -> Vec<u8> {
-    info!("dist turnoff");
-    bincode::serialize(&DistRequest::TurnOff).unwrap_or_else(|e| {
-        panic!(
-            "fail to serialize `Turnoff` distributed cache operation, {}",
-            e
-        )
-    })
 }
 
 /// Serialize Invalidate file cache request

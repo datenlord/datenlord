@@ -518,20 +518,20 @@ fn test_bind_mount(fuse_mount_dir: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-#[test]
-fn run_test() -> anyhow::Result<()> {
-    _run_test(DEFAULT_MOUNT_DIR, false)
+#[tokio::test(flavor = "multi_thread")]
+async fn run_test() -> anyhow::Result<()> {
+    _run_test(DEFAULT_MOUNT_DIR, false).await
 }
 
 #[ignore]
-#[test]
-fn run_s3_test() -> anyhow::Result<()> {
-    _run_test(S3_DEFAULT_MOUNT_DIR, true)
+#[tokio::test(flavor = "multi_thread")]
+async fn run_s3_test() -> anyhow::Result<()> {
+    _run_test(S3_DEFAULT_MOUNT_DIR, false).await
 }
 
-fn _run_test(mount_dir_str: &str, is_s3: bool) -> anyhow::Result<()> {
+async fn _run_test(mount_dir_str: &str, is_s3: bool) -> anyhow::Result<()> {
     let mount_dir = Path::new(mount_dir_str);
-    let th = test_util::setup(mount_dir, is_s3)?;
+    let th = test_util::setup(mount_dir, is_s3).await?;
     info!("begin integration test");
 
     test_symlink_dir(mount_dir).context("test_symlink_dir() failed")?;
@@ -547,24 +547,25 @@ fn _run_test(mount_dir_str: &str, is_s3: bool) -> anyhow::Result<()> {
     test_rename_file(mount_dir).context("test_rename_file() failed")?;
     test_rename_dir(mount_dir).context("test_rename_dir() failed")?;
 
-    test_util::teardown(mount_dir, th)?;
+    test_util::teardown(mount_dir, th).await?;
+
     Ok(())
 }
 
-#[test]
-fn run_bench() -> anyhow::Result<()> {
-    _run_bench(BENCH_MOUNT_DIR, false)
+#[tokio::test(flavor = "multi_thread")]
+async fn run_bench() -> anyhow::Result<()> {
+    _run_bench(BENCH_MOUNT_DIR, false).await
 }
 
 #[ignore]
-#[test]
-fn run_s3_bench() -> anyhow::Result<()> {
-    _run_bench(S3_BENCH_MOUNT_DIR, true)
+#[tokio::test(flavor = "multi_thread")]
+async fn run_s3_bench() -> anyhow::Result<()> {
+    _run_bench(S3_BENCH_MOUNT_DIR, true).await
 }
 
-fn _run_bench(mount_dir_str: &str, is_s3: bool) -> anyhow::Result<()> {
+async fn _run_bench(mount_dir_str: &str, is_s3: bool) -> anyhow::Result<()> {
     let mount_dir = Path::new(mount_dir_str);
-    let th = test_util::setup(mount_dir, is_s3)?;
+    let th = test_util::setup(mount_dir, is_s3).await?;
 
     let fio_handle = std::process::Command::new("fio")
         .arg("./scripts/fio_jobs.ini")
@@ -583,6 +584,6 @@ fn _run_bench(mount_dir_str: &str, is_s3: bool) -> anyhow::Result<()> {
         ))
     };
 
-    test_util::teardown(mount_dir, th)?;
+    test_util::teardown(mount_dir, th).await?;
     fio_res
 }

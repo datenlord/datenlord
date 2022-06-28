@@ -152,49 +152,41 @@ mod tests {
     use std::os::unix::io::AsRawFd;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    #[allow(clippy::unwrap_used)]
-    #[test]
-    fn proactor_v0_test() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn proactor_v0_test() -> anyhow::Result<()> {
         env_logger::try_init().ok();
 
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
+        let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
 
         let file_name = format!("/tmp/proactor_v0_test_{}", timestamp);
         let content = "helloworld";
         let reversed_content = "dlrowolleh";
 
-        fs::write(&file_name, content).unwrap();
+        fs::write(&file_name, content)?;
 
         let buf = vec![0; 64];
 
         let file = fs::OpenOptions::new()
             .read(true)
             .write(true)
-            .open(&file_name)
-            .unwrap();
+            .open(&file_name)?;
 
         let fd = file.as_raw_fd();
 
-        let mut buf = smol::block_on(async move {
-            let (ret, (_, mut buf)) = super::read(fd, buf, 64, 0).await;
-            let nread = ret.unwrap();
-            assert_eq!(buf.get(..nread), Some(content.as_bytes()));
-            buf.truncate(nread);
-            buf
-        });
+        let (ret, (_, mut buf)) = super::read(fd, buf, 64, 0).await;
+        let nread = ret?;
+        assert_eq!(buf.get(..nread), Some(content.as_bytes()));
+        buf.truncate(nread);
 
         buf.reverse();
 
-        smol::block_on(async move {
-            let len = buf.len();
-            let (ret, _) = super::write(fd, buf, len, 0).await;
-            let nwritten = ret.unwrap();
-            assert_eq!(nwritten, len);
-        });
+        let len = buf.len();
+        let (ret, _) = super::write(fd, buf, len, 0).await;
+        let nwritten = ret?;
+        assert_eq!(nwritten, len);
 
-        assert_eq!(fs::read_to_string(&file_name).unwrap(), reversed_content);
+        assert_eq!(fs::read_to_string(&file_name)?, reversed_content);
+
+        Ok(())
     }
 }

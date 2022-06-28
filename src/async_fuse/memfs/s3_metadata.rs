@@ -20,13 +20,13 @@ use log::debug;
 use nix::errno::Errno;
 use nix::fcntl::OFlag;
 use nix::sys::stat::SFlag;
-use smol::lock::{Mutex, RwLock, RwLockWriteGuard};
 use std::collections::BTreeMap;
 use std::os::unix::io::RawFd;
 use std::path::Path;
 use std::sync::atomic::Ordering;
 use std::sync::{atomic::AtomicU32, Arc};
 use std::time::Duration;
+use tokio::sync::{Mutex, RwLock, RwLockWriteGuard};
 
 use clippy_utilities::{Cast, OverflowArithmetic};
 

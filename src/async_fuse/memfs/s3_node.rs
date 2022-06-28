@@ -19,7 +19,6 @@ use log::{debug, warn};
 use nix::fcntl::OFlag;
 use nix::sys::stat::Mode;
 use nix::sys::stat::SFlag;
-use smol::lock::RwLockWriteGuard;
 use std::collections::BTreeMap;
 use std::collections::VecDeque;
 use std::os::unix::io::RawFd;
@@ -27,6 +26,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{self, AtomicBool, AtomicI64, Ordering};
 use std::sync::Arc;
 use std::time::SystemTime;
+use tokio::sync::RwLockWriteGuard;
 
 /// Block size constant
 const BLOCK_SIZE: usize = 1024;

@@ -1,4 +1,3 @@
-use async_compat::Compat;
 use hyper::{header::CONTENT_TYPE, Body, Request, Response};
 use hyper::{
     service::{make_service_fn, service_fn},
@@ -47,7 +46,7 @@ pub async fn serve_req(_req: Request<Body>) -> Result<Response<Body>, hyper::Err
 
 /// Start a server to process promethues request
 pub fn start_metrics_server() {
-    smol::spawn(Compat::new(async move {
+    tokio::task::spawn(async move {
         let addr = ([0, 0, 0, 0], 9897).into();
         let serve_future = Server::bind(&addr).serve(make_service_fn(|_| async {
             Ok::<_, hyper::Error>(service_fn(serve_req))
@@ -55,6 +54,5 @@ pub fn start_metrics_server() {
         if let Err(err) = serve_future.await {
             debug!("Metric server error: {}", err);
         }
-    }))
-    .detach();
+    });
 }

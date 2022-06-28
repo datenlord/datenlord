@@ -89,7 +89,7 @@ pub struct Session {
     /// The underlying FUSE file system
     filesystem: Arc<dyn FileSystem + Send + Sync + 'static>,
     /// All sub-tasks
-    tasks: Vec<smol::Task<()>>,
+    tasks: Vec<tokio::task::JoinHandle<()>>,
 }
 
 /// FUSE device fd
@@ -104,8 +104,10 @@ impl Drop for FuseFd {
 
 impl Drop for Session {
     fn drop(&mut self) {
-        smol::block_on(async {
-            futures::future::join_all(self.tasks.drain(..).map(smol::Task::cancel)).await;
+        futures::executor::block_on(async {
+            for join_handle in &self.tasks {
+                join_handle.abort();
+            }
             let mount_path = &self.mount_path;
             let res = mount::umount(mount_path).await;
             match res {
@@ -163,11 +165,11 @@ impl Session {
         loop {
             let (buffer_idx, mut byte_buffer) = pool_receiver.recv()?;
 
-            let (res, byte_buffer) = smol::unblock(move || {
+            let (res, byte_buffer) = tokio::task::spawn_blocking(move || {
                 let res = unistd::read(fuse_dev_fd, &mut *byte_buffer);
                 (res, byte_buffer)
             })
-            .await;
+            .await?;
 
             match res {
                 Ok(read_size) => {
@@ -178,15 +180,16 @@ impl Session {
                     let fs = Arc::clone(&self.filesystem);
                     let sender = pool_sender.clone();
                     let proto_version = self.proto_version.load();
-                    self.tasks.push(smol::spawn(Self::process_fuse_request(
-                        buffer_idx,
-                        byte_buffer,
-                        read_size,
-                        fuse_fd,
-                        fs,
-                        sender,
-                        proto_version,
-                    )));
+                    self.tasks
+                        .push(tokio::task::spawn(Self::process_fuse_request(
+                            buffer_idx,
+                            byte_buffer,
+                            read_size,
+                            fuse_fd,
+                            fs,
+                            sender,
+                            proto_version,
+                        )));
                 }
                 Err(err) => {
                     let err_msg = crate::async_fuse::util::format_nix_error(err); // TODO: refactor format_nix_error()
@@ -289,11 +292,11 @@ impl Session {
 
         let fuse_fd = self.dev_fd();
         let (idx, mut byte_buf) = pool_receiver.recv()?;
-        let read_result = smol::unblock(move || {
+        let read_result = tokio::task::spawn_blocking(move || {
             let res = unistd::read(fuse_fd, &mut *byte_buf);
             (res, byte_buf)
         })
-        .await;
+        .await?;
         byte_buf = read_result.1;
         if let Ok(read_size) = read_result.0 {
             debug!("read successfully {} byte data from FUSE device", read_size);
