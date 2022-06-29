@@ -299,10 +299,12 @@ impl Proactor {
 
         {
             let inner = Arc::clone(&inner);
-            smol::spawn(async move { Self::submitter(&mut sq, &mut rx, &*inner).await }).detach();
+            tokio::task::spawn(async move { Self::submitter(&mut sq, &mut rx, &*inner).await });
         }
         {
             let inner = Arc::clone(&inner);
+            // using tokio::task::spawn / spawn_blocking here would cause deadlock
+            // `Self::completer` is pure non-async routine
             thread::spawn(move || Self::completer(&mut cq, &*inner));
         }
 

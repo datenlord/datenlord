@@ -17,7 +17,6 @@ use nix::fcntl::{self, FcntlArg, OFlag};
 use nix::sys::stat::SFlag;
 use nix::sys::stat::{self, Mode};
 use nix::{sys::time::TimeSpec, unistd};
-use smol::lock::RwLockWriteGuard;
 use std::collections::BTreeMap;
 use std::collections::VecDeque;
 use std::os::unix::io::{FromRawFd, IntoRawFd, RawFd};
@@ -25,6 +24,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{self, AtomicBool, AtomicI64, Ordering};
 use std::sync::Arc;
 use std::time::SystemTime;
+use tokio::sync::RwLockWriteGuard;
 
 /// Fs node trait
 #[async_trait]
@@ -307,14 +307,17 @@ impl DefaultNode {
             use std::os::unix::ffi::OsStrExt;
             let symlink_name_cstr =
                 std::ffi::CString::new(child_symlink_name.as_os_str().as_bytes())?;
-            let fd_res = smol::unblock(|| unsafe {
+            let fd_res = tokio::task::spawn_blocking(|| unsafe {
                 libc::openat(
                     dir_fd,
                     symlink_name_cstr.as_ptr(),
                     libc::O_SYMLINK | libc::O_NOFOLLOW,
                 )
             })
-            .await;
+            .await
+            .unwrap_or_else(|e| {
+                panic!("failed to join libc::openat task for error {}", e);
+            });
             if 0 == fd_res {
                 debug!(
                     "create_or_load_child_symlink_helper() successfully opened symlink={:?} itselt",
@@ -330,7 +333,7 @@ impl DefaultNode {
         };
 
         let child_symlink_name_string = child_symlink_name.to_owned();
-        smol::unblock(move || {
+        tokio::task::spawn_blocking(move || {
             fcntl::openat(
                 dir_fd,
                 child_symlink_name_string.as_str(),
@@ -339,6 +342,9 @@ impl DefaultNode {
             )
         })
         .await
+        .unwrap_or_else(|e| {
+            panic!("failed to join fcntl::openat task for error {}", e);
+        })
     }
 
     /// Helper function to create or read symlink itself in a directory
@@ -359,14 +365,14 @@ impl DefaultNode {
             );
             let child_symlink_name_string = child_symlink_name.to_string();
             let target_path_clone = target_path.clone();
-            smol::unblock(move || {
+            tokio::task::spawn_blocking(move || {
                 unistd::symlinkat(
                     &target_path_clone,
                     Some(fd),
                     child_symlink_name_string.as_str(),
                 )
             })
-            .await
+            .await?
             .context(format!(
                 "create_or_load_child_symlink_helper() failed to create symlink \
                     name={:?} to target path={:?} under parent ino={}",
@@ -405,14 +411,15 @@ impl DefaultNode {
             target_path
         } else {
             let child_symlink_name_string = child_symlink_name.to_string();
-            let target_path_osstr =
-                smol::unblock(move || fcntl::readlinkat(fd, child_symlink_name_string.as_str()))
-                    .await
-                    .context(format!(
-                        "create_or_load_child_symlink_helper() failed to open \
+            let target_path_osstr = tokio::task::spawn_blocking(move || {
+                fcntl::readlinkat(fd, child_symlink_name_string.as_str())
+            })
+            .await?
+            .context(format!(
+                "create_or_load_child_symlink_helper() failed to open \
                             the new directory name={:?} under parent ino={}",
-                        child_symlink_name, ino,
-                    ))?;
+                child_symlink_name, ino,
+            ))?;
             Path::new(&target_path_osstr).to_owned()
         };
 
@@ -602,8 +609,11 @@ impl Node for DefaultNode {
         if self.is_deferred_deletion() {
             return;
         }
-        let new_fd = smol::unblock(move || unistd::dup(fh.cast()))
+        let new_fd = tokio::task::spawn_blocking(move || unistd::dup(fh.cast()))
             .await
+            .unwrap_or_else(|e| {
+                panic!("failed to join unistd::dup task for error {}", e);
+            })
             .context(format!(
                 "flush() failed to duplicate the handler ino={} fh={:?}",
                 ino, fh,
@@ -614,8 +624,11 @@ impl Node for DefaultNode {
                     crate::common::util::format_anyhow_error(&e)
                 )
             });
-        smol::unblock(move || unistd::close(new_fd))
+        tokio::task::spawn_blocking(move || unistd::close(new_fd))
             .await
+            .unwrap_or_else(|e| {
+                panic!("failed to join unistd::close task for error {}", e);
+            })
             .context(format!(
                 "flush() failed to close the duplicated file handler={} of ino={}",
                 new_fd, ino,
@@ -632,8 +645,8 @@ impl Node for DefaultNode {
     async fn dup_fd(&self, oflags: OFlag) -> anyhow::Result<RawFd> {
         let raw_fd = self.fd;
         let ino = self.get_ino();
-        let new_fd = smol::unblock(move || unistd::dup(raw_fd))
-            .await
+        let new_fd = tokio::task::spawn_blocking(move || unistd::dup(raw_fd))
+            .await?
             .context(format!(
                 "dup_fd() failed to duplicate the handler ino={} raw fd={:?}",
                 ino, raw_fd,
@@ -642,8 +655,8 @@ impl Node for DefaultNode {
         self.inc_open_count();
 
         let fcntl_oflags = FcntlArg::F_SETFL(oflags);
-        smol::unblock(move || fcntl::fcntl(new_fd, fcntl_oflags))
-            .await
+        tokio::task::spawn_blocking(move || fcntl::fcntl(new_fd, fcntl_oflags))
+            .await?
             .context(format!(
                 "dup_fd() failed to set the flags={:?} of duplicated handler of ino={}",
                 oflags, ino,
@@ -733,14 +746,14 @@ impl Node for DefaultNode {
         );
         let child_symlink_name_string = child_symlink_name.to_owned();
         let target_path_clone = target_path.clone();
-        smol::unblock(move || {
+        tokio::task::spawn_blocking(move || {
             unistd::symlinkat(
                 &target_path_clone,
                 Some(fd),
                 child_symlink_name_string.as_str(),
             )
         })
-        .await
+        .await?
         .context(format!(
             "create_child_symlink() failed to create symlink \
                     name={:?} to target path={:?} under parent ino={}",
@@ -820,14 +833,15 @@ impl Node for DefaultNode {
 
         let target_path = {
             let child_symlink_name_string = child_symlink_name.to_owned();
-            let target_path_osstr =
-                smol::unblock(move || fcntl::readlinkat(fd, child_symlink_name_string.as_str()))
-                    .await
-                    .context(format!(
-                        "load_child_symlink() failed to open \
+            let target_path_osstr = tokio::task::spawn_blocking(move || {
+                fcntl::readlinkat(fd, child_symlink_name_string.as_str())
+            })
+            .await?
+            .context(format!(
+                "load_child_symlink() failed to open \
                             the new directory name={:?} under parent ino={}",
-                        child_symlink_name, ino,
-                    ))?;
+                child_symlink_name, ino,
+            ))?;
             Path::new(&target_path_osstr).to_owned()
         };
 
@@ -899,13 +913,15 @@ impl Node for DefaultNode {
             child_dir_name
         );
         let child_dir_name_string = child_dir_name.to_owned();
-        smol::unblock(move || stat::mkdirat(fd, child_dir_name_string.as_str(), mode))
-            .await
-            .context(format!(
-                "open_child_dir_helper() failed to create directory \
+        tokio::task::spawn_blocking(move || {
+            stat::mkdirat(fd, child_dir_name_string.as_str(), mode)
+        })
+        .await?
+        .context(format!(
+            "open_child_dir_helper() failed to create directory \
                         name={:?} under parent ino={}",
-                child_dir_name, ino,
-            ))?;
+            child_dir_name, ino,
+        ))?;
 
         let child_raw_fd = fs_util::open_dir_at(fd, child_dir_name)
             .await
@@ -961,14 +977,15 @@ impl Node for DefaultNode {
         let fd = self.fd;
         let child_file_name_string = child_file_name.to_owned();
         let mode = Mode::empty();
-        let child_fd =
-            smol::unblock(move || fcntl::openat(fd, child_file_name_string.as_str(), oflags, mode))
-                .await
-                .context(format!(
-                    "open_child_file() failed to open a file name={:?} \
+        let child_fd = tokio::task::spawn_blocking(move || {
+            fcntl::openat(fd, child_file_name_string.as_str(), oflags, mode)
+        })
+        .await?
+        .context(format!(
+            "open_child_file() failed to open a file name={:?} \
                 under parent ino={} with oflags={:?} and mode={:?}",
-                    child_file_name, ino, oflags, mode,
-                ))?;
+            child_file_name, ino, oflags, mode,
+        ))?;
 
         // get new file attribute
         let child_attr = fs_util::load_attr(child_fd)
@@ -1008,14 +1025,15 @@ impl Node for DefaultNode {
         );
         debug_assert!(oflags.contains(OFlag::O_CREAT));
         let child_file_name_string = child_file_name.to_owned();
-        let child_fd =
-            smol::unblock(move || fcntl::openat(fd, child_file_name_string.as_str(), oflags, mode))
-                .await
-                .context(format!(
-                    "create_child_file() failed to open a file name={:?} \
+        let child_fd = tokio::task::spawn_blocking(move || {
+            fcntl::openat(fd, child_file_name_string.as_str(), oflags, mode)
+        })
+        .await?
+        .context(format!(
+            "create_child_file() failed to open a file name={:?} \
                 under parent ino={} with oflags={:?} and mode={:?}",
-                    child_file_name, ino, oflags, mode,
-                ))?;
+            child_file_name, ino, oflags, mode,
+        ))?;
 
         // get new file attribute
         let child_attr = fs_util::load_attr(child_fd)
@@ -1153,28 +1171,28 @@ impl Node for DefaultNode {
         // delete from disk and close the handler
         match removed_entry.entry_type() {
             SFlag::S_IFDIR => {
-                smol::unblock(move || {
+                tokio::task::spawn_blocking(move || {
                     unistd::unlinkat(
                         Some(fd),
                         child_name_string.as_str(),
                         unistd::UnlinkatFlags::RemoveDir,
                     )
                 })
-                .await
+                .await?
                 .context(format!(
                     "unlink_entry() failed to delete the file name={:?} from disk",
                     child_name,
                 ))?;
             }
             SFlag::S_IFREG | SFlag::S_IFLNK => {
-                smol::unblock(move || {
+                tokio::task::spawn_blocking(move || {
                     unistd::unlinkat(
                         Some(fd),
                         child_name_string.as_str(),
                         unistd::UnlinkatFlags::NoRemoveDir,
                     )
                 })
-                .await
+                .await?
                 .context(format!(
                     "unlink_entry() failed to delete the file name={:?} from disk",
                     child_name,
@@ -1209,13 +1227,13 @@ impl Node for DefaultNode {
     /// Get fs stat
     async fn statefs(&self) -> anyhow::Result<StatFsParam> {
         let fd = self.fd;
-        smol::unblock(move || {
+        tokio::task::spawn_blocking(move || {
             let file = unsafe { std::fs::File::from_raw_fd(fd) };
             let statvfs = nix::sys::statvfs::fstatvfs(&file); // statvfs is POSIX, whereas statfs is not
             let _fd = file.into_raw_fd(); // prevent fd to be closed by File
             statvfs
         })
-        .await
+        .await?
         .map(|statvfs| {
             StatFsParam {
                 blocks: statvfs.blocks().cast(),
@@ -1294,9 +1312,10 @@ impl Node for DefaultNode {
         let mut written_size = data.len();
         if write_to_disk {
             let data_len = data.len();
-            written_size = smol::unblock(move || nix::sys::uio::pwrite(fd, &data, offset))
-                .await
-                .context("write_file() failed to write to disk")?;
+            written_size =
+                tokio::task::spawn_blocking(move || nix::sys::uio::pwrite(fd, &data, offset))
+                    .await?
+                    .context("write_file() failed to write to disk")?;
             debug_assert_eq!(data_len, written_size);
         }
 
@@ -1316,8 +1335,11 @@ impl Node for DefaultNode {
         let fd = fh.cast();
         if flush && !self.is_deferred_deletion() {
             // TODO: double check the meaning of the flush flag
-            smol::unblock(move || unistd::fsync(fd))
+            tokio::task::spawn_blocking(move || unistd::fsync(fd))
                 .await
+                .unwrap_or_else(|e| {
+                    panic!("failed to join unistd::fsync task for error {}", e);
+                })
                 .context(format!(
                     "release() failed to flush the file of ino={} and name={:?}",
                     ino,
@@ -1330,8 +1352,11 @@ impl Node for DefaultNode {
                     );
                 });
         }
-        smol::unblock(move || unistd::close(fd))
+        tokio::task::spawn_blocking(move || unistd::close(fd))
             .await
+            .unwrap_or_else(|e| {
+                panic!("failed to join unistd::close task for error {}", e);
+            })
             .context(format!(
                 "release() failed to close the file handler={} of ino={} and name={:?}",
                 fh,
@@ -1349,8 +1374,11 @@ impl Node for DefaultNode {
 
     /// Close dir
     async fn closedir(&self, ino: INum, fh: u64) {
-        smol::unblock(move || unistd::close(fh.cast()))
+        tokio::task::spawn_blocking(move || unistd::close(fh.cast()))
             .await
+            .unwrap_or_else(|e| {
+                panic!("failed to join unistd::close task for error {}", e);
+            })
             .context(format!(
                 "releasedir() failed to close the file handler={} of ino={} and name={:?}",
                 fh,
@@ -1387,8 +1415,8 @@ impl Node for DefaultNode {
                 "setattr_helper() successfully parsed mode={:?} from bits={:#o}",
                 nix_mode, mode_bits,
             );
-            smol::unblock(move || stat::fchmod(fd, nix_mode))
-                .await
+            tokio::task::spawn_blocking(move || stat::fchmod(fd, nix_mode))
+                .await?
                 .context(format!(
                     "setattr_helper() failed to chmod with mode={}",
                     mode_bits,
@@ -1408,8 +1436,8 @@ impl Node for DefaultNode {
         if param.u_id.is_some() || param.g_id.is_some() {
             let nix_user_id = param.u_id.map(unistd::Uid::from_raw);
             let nix_group_id = param.g_id.map(unistd::Gid::from_raw);
-            smol::unblock(move || unistd::fchown(fd, nix_user_id, nix_group_id))
-                .await
+            tokio::task::spawn_blocking(move || unistd::fchown(fd, nix_user_id, nix_group_id))
+                .await?
                 .context(format!(
                     "setattr_helper() failed to set uid={:?} and gid={:?}",
                     nix_user_id, nix_group_id,
@@ -1425,8 +1453,8 @@ impl Node for DefaultNode {
             attr_changed = true;
         }
         if let Some(file_size) = param.size {
-            smol::unblock(move || unistd::ftruncate(fd, file_size.cast()))
-                .await
+            tokio::task::spawn_blocking(move || unistd::ftruncate(fd, file_size.cast()))
+                .await?
                 .context(format!(
                     "setattr_helper() failed to truncate file size to {}",
                     file_size
@@ -1467,12 +1495,14 @@ impl Node for DefaultNode {
                         })
                     },
                 );
-                smol::unblock(move || stat::futimens(fd, &nix_access_time, &nix_modify_time))
-                    .await
-                    .context(format!(
-                        "setattr_helper() failed to update atime={:?} or mtime={:?}",
-                        param.a_time, param.m_time
-                    ))?;
+                tokio::task::spawn_blocking(move || {
+                    stat::futimens(fd, &nix_access_time, &nix_modify_time)
+                })
+                .await?
+                .context(format!(
+                    "setattr_helper() failed to update atime={:?} or mtime={:?}",
+                    param.a_time, param.m_time
+                ))?;
                 if let Some(st_atime) = param.a_time {
                     attr.atime = st_atime;
                     // Change atime do not need to change ctime

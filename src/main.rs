@@ -327,9 +327,9 @@ fn get_default_arg_map<'a>() -> HashMap<String, Arg<'a>> {
 /// Get endpoint
 #[must_use]
 fn get_end_point(matches: &ArgMatches) -> String {
-    let end_point = match matches.value_of(END_POINT_ARG_NAME) {
+    let end_point = match matches.get_one::<String>(END_POINT_ARG_NAME) {
         Some(s) => {
-            let sock = s.to_owned();
+            let sock = s.clone();
             assert!(
                 sock.starts_with("unix:///"),
                 "invalid socket end point: {}, should start with unix:///",
@@ -345,7 +345,7 @@ fn get_end_point(matches: &ArgMatches) -> String {
 /// get worker port
 #[must_use]
 fn get_worker_port(matches: &ArgMatches) -> u16 {
-    let worker_port = match matches.value_of(WORKER_PORT_ARG_NAME) {
+    let worker_port = match matches.get_one::<String>(WORKER_PORT_ARG_NAME) {
         Some(p) => match p.parse::<u16>() {
             Ok(port) => port,
             Err(e) => panic!("failed to parse port, the error is: {}", e),
@@ -358,8 +358,8 @@ fn get_worker_port(matches: &ArgMatches) -> u16 {
 /// Get node id
 #[must_use]
 fn get_node_id(matches: &ArgMatches) -> String {
-    let node_id = match matches.value_of(NODE_ID_ARG_NAME) {
-        Some(n) => n.to_owned(),
+    let node_id = match matches.get_one::<String>(NODE_ID_ARG_NAME) {
+        Some(n) => n.clone(),
         None => panic!("No input node ID"),
     };
     node_id
@@ -368,7 +368,7 @@ fn get_node_id(matches: &ArgMatches) -> String {
 /// Get ip address
 #[must_use]
 fn get_ip_address(matches: &ArgMatches, node_id: &str) -> IpAddr {
-    let ip_address = match matches.value_of(NODE_IP_ARG_NAME) {
+    let ip_address = match matches.get_one::<String>(NODE_IP_ARG_NAME) {
         Some(n) => n.parse().unwrap_or_else(|_| panic!("Invalid IP address")),
         None => util::get_ip_of_node(node_id),
     };
@@ -378,8 +378,8 @@ fn get_ip_address(matches: &ArgMatches, node_id: &str) -> IpAddr {
 /// Get driver name
 #[must_use]
 fn get_driver_name(matches: &ArgMatches) -> String {
-    let driver_name = match matches.value_of(DRIVER_NAME_ARG_NAME) {
-        Some(d) => d.to_owned(),
+    let driver_name = match matches.get_one::<String>(DRIVER_NAME_ARG_NAME) {
+        Some(d) => d.clone(),
         None => util::CSI_PLUGIN_NAME.to_owned(),
     };
     driver_name
@@ -388,7 +388,7 @@ fn get_driver_name(matches: &ArgMatches) -> String {
 /// Get mount dir
 #[must_use]
 fn get_mount_dir(matches: &ArgMatches) -> &str {
-    let mount_dir = match matches.value_of(MOUNT_POINT_ARG_NAME) {
+    let mount_dir = match matches.get_one::<String>(MOUNT_POINT_ARG_NAME) {
         Some(mp) => mp,
         None => panic!("No mount point input"),
     };
@@ -398,7 +398,7 @@ fn get_mount_dir(matches: &ArgMatches) -> &str {
 /// Get etcd addresses
 #[must_use]
 fn get_etcd_address_vec(matches: &ArgMatches) -> Vec<String> {
-    let etcd_address_vec = match matches.value_of(ETCD_ADDRESS_ARG_NAME) {
+    let etcd_address_vec = match matches.get_one::<String>(ETCD_ADDRESS_ARG_NAME) {
         Some(a) => a
             .split(',')
             .map(|address| {
@@ -417,7 +417,8 @@ fn get_etcd_address_vec(matches: &ArgMatches) -> Vec<String> {
 /// Get scheduler port
 #[must_use]
 fn get_scheduler_port(matches: &ArgMatches) -> u16 {
-    let scheduler_extender_port = match matches.value_of(SCHEDULER_EXTENDER_PORT_ARG_NAME) {
+    let scheduler_extender_port = match matches.get_one::<String>(SCHEDULER_EXTENDER_PORT_ARG_NAME)
+    {
         Some(p) => match p.parse::<u16>() {
             Ok(port) => port,
             Err(e) => panic!("failed to parse port, the error is: {}", e),
@@ -430,7 +431,7 @@ fn get_scheduler_port(matches: &ArgMatches) -> u16 {
 /// Get cache capacity
 #[must_use]
 fn get_cache_capacity(matches: &ArgMatches) -> usize {
-    let cache_capacity = match matches.value_of(CACHE_CAPACITY_ARG_NAME) {
+    let cache_capacity = match matches.get_one::<String>(CACHE_CAPACITY_ARG_NAME) {
         Some(cc) => cc.parse::<usize>().unwrap_or_else(|_| {
             panic!("cannot parse cache capacity in usize, the input is: {}", cc)
         }),
@@ -442,7 +443,7 @@ fn get_cache_capacity(matches: &ArgMatches) -> usize {
 /// Get volume info
 #[must_use]
 fn get_volume_info(matches: &ArgMatches) -> &str {
-    let volume_info = match matches.value_of(VOLUME_INFO_ARG_NAME) {
+    let volume_info = match matches.get_one::<String>(VOLUME_INFO_ARG_NAME) {
         Some(vi) => vi,
         None => panic!("No volume information input"),
     };
@@ -452,7 +453,7 @@ fn get_volume_info(matches: &ArgMatches) -> &str {
 /// Get server port
 #[must_use]
 fn get_server_port(matches: &ArgMatches) -> &str {
-    let server_port = match matches.value_of(SERVER_PORT_NUM_ARG_NAME) {
+    let server_port = match matches.get_one::<String>(SERVER_PORT_NUM_ARG_NAME) {
         Some(p) => p,
         None => DEFAULT_PORT_NUM,
     };
@@ -462,7 +463,7 @@ fn get_server_port(matches: &ArgMatches) -> &str {
 /// Get volume type
 #[must_use]
 fn get_volume_type(matches: &ArgMatches) -> VolumeType {
-    let volume_type = match matches.value_of(VOLUME_TYPE_ARG_NAME) {
+    let volume_type = match matches.get_one::<String>(VOLUME_TYPE_ARG_NAME) {
         Some(vt) => {
             if vt == "s3" {
                 VolumeType::S3
@@ -489,11 +490,11 @@ fn add_metadata_args(app: Command) -> Command {
 }
 
 /// Parse the metadata
-fn parse_metadata(
+async fn parse_metadata(
     matches: &ArgMatches,
     role_name: RunAsRole,
 ) -> Result<MetaData, common::error::DatenLordError> {
-    let etcd_delegate = EtcdDelegate::new(get_etcd_address_vec(matches))?;
+    let etcd_delegate = EtcdDelegate::new(get_etcd_address_vec(matches)).await?;
     let worker_port = get_worker_port(matches);
     let node_id = get_node_id(matches);
     let ip_address = get_ip_address(matches, &node_id);
@@ -507,6 +508,7 @@ fn parse_metadata(
         role_name,
         etcd_delegate,
     )
+    .await
 }
 
 /// Get command from default map
@@ -557,7 +559,8 @@ fn parse_args() -> ArgMatches {
 }
 
 #[allow(clippy::too_many_lines)]
-fn main() -> anyhow::Result<()> {
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
     env_logger::init();
 
     let matches = parse_args();
@@ -567,9 +570,8 @@ fn main() -> anyhow::Result<()> {
     #[allow(clippy::pattern_type_mismatch)]
     match matches.subcommand() {
         Some((START_CONTROLLER, matches)) => {
-            let metadata = parse_metadata(matches, RunAsRole::Controller)?;
+            let metadata = parse_metadata(matches, RunAsRole::Controller).await?;
             let md = Arc::new(metadata);
-            let async_server = true;
 
             let end_point = get_end_point(matches);
             let driver_name = get_driver_name(matches);
@@ -578,15 +580,14 @@ fn main() -> anyhow::Result<()> {
                 &driver_name,
                 Arc::<MetaData>::clone(&md),
             )?;
-            csi::run_grpc_servers(&mut [controller_server], async_server);
+            csi::run_grpc_servers(&mut [controller_server]).await;
         }
         Some((START_NODE, matches)) => {
-            let metadata = parse_metadata(matches, RunAsRole::Node)?;
+            let metadata = parse_metadata(matches, RunAsRole::Node).await?;
 
             let md = Arc::new(metadata);
-            let async_server = true;
 
-            let etcd_delegate = EtcdDelegate::new(get_etcd_address_vec(matches))?;
+            let etcd_delegate = EtcdDelegate::new(get_etcd_address_vec(matches)).await?;
             let node_id = get_node_id(matches);
             let ip_address = get_ip_address(matches, &node_id);
             let mount_dir = get_mount_dir(matches);
@@ -595,8 +596,8 @@ fn main() -> anyhow::Result<()> {
 
             let worker_server = csi::build_grpc_worker_server(Arc::<MetaData>::clone(&md))?;
             let node_server = csi::build_grpc_node_server(&end_point, &driver_name, md)?;
-            let csi_thread = std::thread::spawn(move || {
-                csi::run_grpc_servers(&mut [node_server, worker_server], async_server);
+            let csi_thread = tokio::task::spawn(async move {
+                csi::run_grpc_servers(&mut [node_server, worker_server]).await;
             });
 
             let async_args = AsyncFuseArgs {
@@ -608,20 +609,23 @@ fn main() -> anyhow::Result<()> {
                 cache_capacity: get_cache_capacity(matches),
                 volume_info: get_volume_info(matches).to_owned(),
             };
-            let async_fuse_thread = std::thread::spawn(move || {
-                if let Err(e) = async_fuse::start_async_fuse(etcd_delegate.clone(), &async_args) {
+            let async_fuse_thread = tokio::task::spawn(async move {
+                if let Err(e) =
+                    async_fuse::start_async_fuse(etcd_delegate.clone(), &async_args).await
+                {
                     panic!("failed to start async fuse, error is {:?}", e);
                 }
             });
+
             csi_thread
-                .join()
+                .await
                 .unwrap_or_else(|e| panic!("csi thread error: {:?}", e));
             async_fuse_thread
-                .join()
+                .await
                 .unwrap_or_else(|e| panic!("csi thread error: {:?}", e));
         }
         Some((START_SCHEDULER_EXTENDER, matches)) => {
-            let metadata = parse_metadata(matches, RunAsRole::SchedulerExtender)?;
+            let metadata = parse_metadata(matches, RunAsRole::SchedulerExtender).await?;
             let md = Arc::new(metadata);
             let port = get_scheduler_port(matches);
             let node_id = get_node_id(matches);
@@ -631,15 +635,10 @@ fn main() -> anyhow::Result<()> {
                 Arc::<MetaData>::clone(&md),
                 SocketAddr::new(ip_address, port),
             );
-            let scheduler_extender_thread = std::thread::spawn(move || {
-                scheduler_extender.start();
-            });
-            scheduler_extender_thread
-                .join()
-                .unwrap_or_else(|e| panic!("scheduler extender error: {:?}", e));
+            scheduler_extender.start().await;
         }
         Some((START_ASYNC_FUSE, matches)) => {
-            let etcd_delegate = EtcdDelegate::new(get_etcd_address_vec(matches))?;
+            let etcd_delegate = EtcdDelegate::new(get_etcd_address_vec(matches)).await?;
             let node_id = get_node_id(matches);
             let ip_address = get_ip_address(matches, &node_id);
             let mount_dir = get_mount_dir(matches);
@@ -653,7 +652,7 @@ fn main() -> anyhow::Result<()> {
                 volume_info: get_volume_info(matches).to_owned(),
             };
 
-            if let Err(e) = async_fuse::start_async_fuse(etcd_delegate, &async_args) {
+            if let Err(e) = async_fuse::start_async_fuse(etcd_delegate, &async_args).await {
                 panic!("failed to start async fuse, error is {:?}", e);
             }
         }

@@ -115,32 +115,30 @@ const ETCD_VOLUME_BIND_MOUNT_PATH_LOCK_PREFIX: &str = "etcd_volume_bind_mount_pa
 
 impl MetaData {
     /// Create `MetaData`
-    pub fn new(
+    pub async fn new(
         data_dir: String,
         ephemeral: bool,
         run_as: RunAsRole,
         etcd_delegate: EtcdDelegate,
         node: DatenLordNode,
     ) -> DatenLordResult<Self> {
-        smol::block_on(async move {
-            let md = Self {
-                data_dir,
-                ephemeral,
-                run_as,
-                etcd_delegate,
-                node,
-            };
-            match md.run_as {
-                RunAsRole::Controller => md.register_to_etcd(CONTROLLER_PREFIX).await?,
-                RunAsRole::Node => md.register_to_etcd(NODE_PREFIX).await?,
-                RunAsRole::SchedulerExtender => {
-                    md.register_to_etcd(SCHEDULER_EXTENDER_PREFIX).await?;
-                }
-                RunAsRole::AsyncFuse => (),
+        let md = Self {
+            data_dir,
+            ephemeral,
+            run_as,
+            etcd_delegate,
+            node,
+        };
+        match md.run_as {
+            RunAsRole::Controller => md.register_to_etcd(CONTROLLER_PREFIX).await?,
+            RunAsRole::Node => md.register_to_etcd(NODE_PREFIX).await?,
+            RunAsRole::SchedulerExtender => {
+                md.register_to_etcd(SCHEDULER_EXTENDER_PREFIX).await?;
             }
+            RunAsRole::AsyncFuse => (),
+        }
 
-            Ok(md)
-        })
+        Ok(md)
     }
 
     /// Register this worker to etcd
@@ -889,7 +887,7 @@ impl MetaData {
             let pre_mount_path_vec_ref = Arc::new(pre_mount_path_vec);
             let pre_mount_path_vec_ref_clone =
                 Arc::<HashSet<String>>::clone(&pre_mount_path_vec_ref);
-            smol::unblock(move || {
+            tokio::task::spawn_blocking(move || {
                 pre_mount_path_vec_ref_clone
                     .iter()
                     .for_each(|pre_mount_path| {
@@ -903,7 +901,7 @@ impl MetaData {
                         }
                     });
             })
-            .await;
+            .await?;
             if !pre_mount_path_vec_ref.is_empty() {
                 let deleted_path_vec = self.delete_volume_all_bind_mount_path(vol_id).await?;
                 debug_assert_eq!(
@@ -984,7 +982,10 @@ impl MetaData {
         );
         let snap_path_owned = src_snapshot.snap_path.clone();
         let dst_path_owned = dst_path.clone();
-        smol::unblock(move || Self::decompress_snapshot(&snap_path_owned, &dst_path_owned)).await?;
+        tokio::task::spawn_blocking(move || {
+            Self::decompress_snapshot(&snap_path_owned, &dst_path_owned)
+        })
+        .await??;
 
         Ok(())
     }
@@ -1022,14 +1023,14 @@ impl MetaData {
 
         let vol_path_owned = src_volume.vol_path.clone();
         let dst_path_owned = dst_path.clone();
-        let copy_res = smol::unblock(move || {
+        let copy_res = tokio::task::spawn_blocking(move || {
             util::copy_directory_recursively(
                 &vol_path_owned,
                 &dst_path_owned,
                 false, // follow symlink or not
             )
         })
-        .await
+        .await?
         .with_context(|| {
             format!(
                 "failed to pre-populate data from source mount volume {} and name={}",
@@ -1298,7 +1299,7 @@ impl MetaData {
         let target_path_owned = target_path.to_owned();
         let fs_type_owned = fs_type.to_owned();
         let mount_options_owned = mount_options.to_owned();
-        let mount_res = smol::unblock(move || {
+        let mount_res = tokio::task::spawn_blocking(move || {
             util::mount_volume_bind_path(
                 &vol_path_owned,
                 &target_path_owned,
@@ -1308,7 +1309,7 @@ impl MetaData {
                 read_only,
             )
         })
-        .await
+        .await?
         .with_context(|| {
             format!(
                 "failed to bind mount from {:?} to {:?}",
@@ -1419,9 +1420,12 @@ impl MetaData {
         let snap_path_owned = snap_path.clone();
         let src_vol_owned = src_vol.clone();
 
-        smol::unblock(move || Self::compress_volume(&src_vol_owned, &snap_path_owned)).await?;
+        tokio::task::spawn_blocking(move || {
+            Self::compress_volume(&src_vol_owned, &snap_path_owned)
+        })
+        .await??;
 
-        let now = smol::unblock(std::time::SystemTime::now).await;
+        let now = tokio::task::spawn_blocking(std::time::SystemTime::now).await?;
         let snapshot = DatenLordSnapshot::new(
             snap_name.to_owned(),
             snap_id.to_owned(),

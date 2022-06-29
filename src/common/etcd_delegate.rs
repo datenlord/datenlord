@@ -2,7 +2,6 @@
 
 use super::error::{Context, DatenLordResult};
 use super::util;
-use async_compat::Compat;
 use log::debug;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -32,24 +31,22 @@ impl Debug for EtcdDelegate {
 impl EtcdDelegate {
     /// Build etcd client
     #[inline]
-    pub fn new(etcd_address_vec: Vec<String>) -> DatenLordResult<Self> {
+    pub async fn new(etcd_address_vec: Vec<String>) -> DatenLordResult<Self> {
         let end_point = etcd_address_vec.clone();
-        let etcd_rs_client = smol::block_on(Compat::new(async move {
-            etcd_client::Client::connect(etcd_client::ClientConfig::new(
-                etcd_address_vec.clone(),
-                None,
-                // TODO: cache size should come from parameter
-                64,
-                true,
-            ))
-            .await
-            .with_context(|| {
-                format!(
-                    "failed to build etcd client to addresses={:?}",
-                    etcd_address_vec,
-                )
-            })
-        }))?;
+        let etcd_rs_client = etcd_client::Client::connect(etcd_client::ClientConfig::new(
+            etcd_address_vec.clone(),
+            None,
+            // TODO: cache size should come from parameter
+            64,
+            true,
+        ))
+        .await
+        .with_context(|| {
+            format!(
+                "failed to build etcd client to addresses={:?}",
+                etcd_address_vec,
+            )
+        })?;
         Ok(Self {
             etcd_rs_client,
             end_point,
