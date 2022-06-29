@@ -57,7 +57,7 @@ impl<R: AsyncRead> Stream for FuseBufReadStream<R> {
 mod test {
     use futures::prelude::*;
     use futures::stream::StreamExt;
-    use smol::{self, blocking};
+    use tokio::{self, blocking};
     use std::fs::{self, File};
     use std::io;
 

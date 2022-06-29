@@ -15,12 +15,12 @@ use nix::errno::Errno;
 use nix::fcntl::OFlag;
 use nix::sys::stat::SFlag;
 use nix::unistd;
-use smol::lock::{Mutex, RwLock, RwLockWriteGuard};
 use std::collections::BTreeMap;
 use std::os::unix::io::RawFd;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::{Mutex, RwLock, RwLockWriteGuard};
 
 /// The time-to-live seconds of FUSE attributes
 const MY_TTL_SEC: u64 = 3600; // TODO: should be a long value, say 1 hour
@@ -664,7 +664,7 @@ impl MetaData for DefaultMetaData {
         let old_name_clone = old_name.clone();
         let new_name_clone = new_name.clone();
         // Rename on disk
-        smol::unblock(move || {
+        tokio::task::spawn_blocking(move || {
             nix::fcntl::renameat(
                 Some(old_parent_fd),
                 Path::new(&old_name_clone),
@@ -672,7 +672,7 @@ impl MetaData for DefaultMetaData {
                 Path::new(&new_name_clone),
             )
         })
-        .await
+        .await?
         .context(format!(
             "rename_may_replace_helper() failed to move the from i-node name={:?} under \
                 from parent ino={} to the to i-node name={:?} under new parent ino={}",
@@ -737,15 +737,15 @@ impl MetaData for DefaultMetaData {
         {
             // attributes are not allowed on if expressions
             if datasync {
-                smol::unblock(move || unistd::fdatasync(fh.cast()))
-                    .await
+                tokio::task::spawn_blocking(move || unistd::fdatasync(fh.cast()))
+                    .await?
                     .context(format!(
                         "fsync_helper() failed to flush the i-node of ino={}",
                         ino
                     ))?;
             } else {
-                smol::unblock(move || unistd::fsync(fh.cast()))
-                    .await
+                tokio::task::spawn_blocking(move || unistd::fsync(fh.cast()))
+                    .await?
                     .context(format!(
                         "fsync_helper() failed to flush the i-node of ino={}",
                         ino
@@ -754,8 +754,8 @@ impl MetaData for DefaultMetaData {
         }
         #[cfg(target_os = "macos")]
         {
-            smol::unblock(|| unistd::fsync(fh.cast()))
-                .await
+            tokio::task::spawn_blocking(|| unistd::fsync(fh.cast()))
+                .await?
                 .context(format!(
                     "fsync_helper() failed to flush the i-node of ino={}",
                     ino,

@@ -12,9 +12,9 @@ use crate::common::etcd_delegate::EtcdDelegate;
 use log::debug;
 use nix::sys::stat::SFlag;
 use std::collections::BTreeMap;
-use std::net::TcpStream;
 use std::path::Path;
 use std::sync::Arc;
+use tokio::net::TcpStream;
 
 /// Send message to all other nodes
 async fn send_to_others<F, T>(
@@ -44,9 +44,10 @@ where
             {
                 let mut one_result = Vec::new();
                 let mut stream = TcpStream::connect(ip_and_port)
+                    .await
                     .unwrap_or_else(|e| panic!("fail connect to {}, error: {}", ip_and_port, e));
-                tcp::write_message(&mut stream, data)?;
-                tcp::read_message(&mut stream, &mut one_result)?;
+                tcp::write_message(&mut stream, data).await?;
+                tcp::read_message(&mut stream, &mut one_result).await?;
 
                 let parsed = filter(one_result.as_slice());
 
@@ -237,12 +238,12 @@ pub async fn read_data(
             {
                 {
                     let mut result = Vec::new();
-                    let mut stream = TcpStream::connect(ip_and_port).unwrap_or_else(|e| {
+                    let mut stream = TcpStream::connect(ip_and_port).await.unwrap_or_else(|e| {
                         panic!("fail connect to {}, error: {}", ip_and_port, e)
                     });
 
-                    tcp::write_message(&mut stream, &check)?;
-                    tcp::read_message(&mut stream, &mut result)?;
+                    tcp::write_message(&mut stream, &check).await?;
+                    tcp::read_message(&mut stream, &mut result).await?;
                     if response::deserialize_check_available(&result).is_none() {
                         continue;
                     }
@@ -250,12 +251,12 @@ pub async fn read_data(
                 {
                     let mut result = Vec::new();
                     // FIXME: Should reuse the connection
-                    let mut stream = TcpStream::connect(ip_and_port).unwrap_or_else(|e| {
+                    let mut stream = TcpStream::connect(ip_and_port).await.unwrap_or_else(|e| {
                         panic!("fail connect to {}, error: {}", ip_and_port, e)
                     });
 
-                    tcp::write_message(&mut stream, &read_data)?;
-                    tcp::read_message(&mut stream, &mut result)?;
+                    tcp::write_message(&mut stream, &read_data).await?;
+                    tcp::read_message(&mut stream, &mut result).await?;
                     return Ok(Some(result));
                 }
             }
@@ -288,10 +289,11 @@ pub async fn get_ino_num(
                     .await
             {
                 let mut stream = TcpStream::connect(ip_and_port)
+                    .await
                     .unwrap_or_else(|e| panic!("fail connect to {}, error: {}", ip_and_port, e));
 
-                tcp::write_message(&mut stream, &get_inum)?;
-                let inum = tcp::read_u32(&mut stream)?;
+                tcp::write_message(&mut stream, &get_inum).await?;
+                let inum = tcp::read_u32(&mut stream).await?;
 
                 if inum > cur {
                     cur = inum;

@@ -396,17 +396,15 @@ mod test {
         .unwrap_or_else(|e| panic!("failed to create s3 backend, error is {:?}", e))
     }
 
-    #[test]
+    #[tokio::test(flavor = "multi_thread")]
     #[ignore]
-    fn test_get_meta() {
-        smol::block_on(async {
-            let s3_backend = create_backend().await;
-            if let Err(e) = s3_backend.create_dir("test_dir").await {
-                panic!("failed to create dir in s3 backend, error is {:?}", e);
-            }
-            if let Err(e) = s3_backend.get_meta("test_dir").await {
-                panic!("failed to get meta from s3 backend, error is {:?}", e);
-            }
-        });
+    async fn test_get_meta() {
+        let s3_backend = create_backend().await;
+        if let Err(e) = s3_backend.create_dir("test_dir").await {
+            panic!("failed to create dir in s3 backend, error is {:?}", e);
+        }
+        if let Err(e) = s3_backend.get_meta("test_dir").await {
+            panic!("failed to get meta from s3 backend, error is {:?}", e);
+        }
     }
 }

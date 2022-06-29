@@ -239,23 +239,21 @@ mod test {
 
     use futures::StreamExt;
 
-    #[test]
-    fn test_dir() -> io::Result<()> {
-        smol::block_on(async {
-            let dir = smol::unblock(|| Dir::opendir(".")).await?;
-            let mut stream = smol::stream::iter(dir.into_iter());
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_dir() -> io::Result<()> {
+        let dir = tokio::task::spawn_blocking(|| Dir::opendir(".")).await??;
+        let mut stream = futures::stream::iter(dir.into_iter());
 
-            while let Some(entry) = stream.next().await {
-                let entry = entry?;
-                println!(
-                    "read file name={:?}, ino={}, type:={:?}",
-                    entry.entry_name(),
-                    entry.ino(),
-                    entry.entry_type()
-                );
-            }
+        while let Some(entry) = stream.next().await {
+            let entry = entry?;
+            println!(
+                "read file name={:?}, ino={}, type:={:?}",
+                entry.entry_name(),
+                entry.ino(),
+                entry.entry_type()
+            );
+        }
 
-            Ok(())
-        })
+        Ok(())
     }
 }

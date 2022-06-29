@@ -967,12 +967,14 @@ mod test {
         assert!(cache.is_empty());
     }
 
-    #[test]
-    fn test_insert_one_byte_cache() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_insert_one_byte_cache() {
         let global = GlobalCache::new();
         let file_name = "test_file";
         let content = AlignedBytes::new_from_slice(&[b'a'], 1);
-        smol::block_on(global.write_or_update(file_name.as_bytes(), 0, 1, &content, true));
+        global
+            .write_or_update(file_name.as_bytes(), 0, 1, &content, true)
+            .await;
 
         let cache = global.get_file_cache(file_name.as_bytes(), 0, 1);
         assert_eq!(cache.len(), 1);
@@ -993,18 +995,20 @@ mod test {
         );
     }
 
-    #[test]
-    fn test_get_partial_result() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_get_partial_result() {
         let global = GlobalCache::new();
         let file_name = "test_file";
         let content = AlignedBytes::new_from_slice(&[b'a'], 1);
-        smol::block_on(global.write_or_update(
-            file_name.as_bytes(),
-            MEMORY_BLOCK_SIZE_IN_BYTE,
-            1,
-            &content,
-            true,
-        ));
+        global
+            .write_or_update(
+                file_name.as_bytes(),
+                MEMORY_BLOCK_SIZE_IN_BYTE,
+                1,
+                &content,
+                true,
+            )
+            .await;
 
         let cache = global.get_file_cache(file_name.as_bytes(), 0, MEMORY_BLOCK_SIZE_IN_BYTE + 1);
         assert_eq!(cache.len(), 2);
@@ -1029,12 +1033,14 @@ mod test {
         );
     }
 
-    #[test]
-    fn test_panic_write_unaligned_data() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_panic_write_unaligned_data() {
         let global = GlobalCache::new();
         let file_name = "test_file";
         let content = AlignedBytes::new_from_slice(&[b'a'], 1);
-        smol::block_on(global.write_or_update(file_name.as_bytes(), 1, 1, &content, true));
+        global
+            .write_or_update(file_name.as_bytes(), 1, 1, &content, true)
+            .await;
 
         let cache = global.get_file_cache(file_name.as_bytes(), 0, 2);
         assert_eq!(cache.len(), 1);
@@ -1055,21 +1061,25 @@ mod test {
         );
     }
 
-    #[test]
-    fn test_eviction() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_eviction() {
         let global = GlobalCache::new_with_capacity(MEMORY_BLOCK_SIZE_IN_BYTE);
         let file_name = "test_file";
         let block_one = AlignedBytes::new_from_slice(&[b'a'], 1);
-        smol::block_on(global.write_or_update(file_name.as_bytes(), 0, 1, &block_one, true));
+        global
+            .write_or_update(file_name.as_bytes(), 0, 1, &block_one, true)
+            .await;
 
         let block_two = AlignedBytes::new_from_slice(&[b'b'], 1);
-        smol::block_on(global.write_or_update(
-            file_name.as_bytes(),
-            MEMORY_BUCKET_SIZE_IN_BYTE,
-            1,
-            &block_two,
-            true,
-        ));
+        global
+            .write_or_update(
+                file_name.as_bytes(),
+                MEMORY_BUCKET_SIZE_IN_BYTE,
+                1,
+                &block_two,
+                true,
+            )
+            .await;
 
         // First cache should be evicted
         let cache = global.get_file_cache(file_name.as_bytes(), 0, MEMORY_BUCKET_SIZE_IN_BYTE + 1);

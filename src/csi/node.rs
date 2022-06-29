@@ -429,8 +429,10 @@ impl Node for NodeImpl {
                 true
             };
             let target_path_owned = target_path.to_owned();
-            if let Err(e) =
-                smol::unblock(move || util::umount_volume_bind_path(&target_path_owned)).await
+            if let Err(e) = tokio::task::spawn_blocking(move || {
+                util::umount_volume_bind_path(&target_path_owned)
+            })
+            .await?
             {
                 if tolerant_error {
                     // Try to un-mount the path not stored in etcd, if error just log it
