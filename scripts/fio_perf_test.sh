@@ -28,11 +28,11 @@ readonly THREAD_NUMS="1 2 4 8 16 32"
 rm -rf ${OUTPUT_DIR}
 mkdir ${OUTPUT_DIR}
 # Test different block sizes
-bench-fio --target ${TEST_DIR} --type directory --size 10M --output ${OUTPUT_DIR} --iodepth 1 --block-size ${BLOCK_SIZES} --numjobs 1 --engine sync --direct 1
+bench-fio --target ${TEST_DIR} --type directory --size 10M --output ${OUTPUT_DIR} --iodepth 1 --block-size ${BLOCK_SIZES} --numjobs 1 --engine sync --direct 1 --destructive
 fio-plot -i ${BLOCK_SIZES_DIRS} -T "Different Block Size Write" -C --rw randwrite --xlabel-parent 0 -o ${OUTPUT_DIR}/block_size_write.png
 fio-plot -i ${BLOCK_SIZES_DIRS} -T "Different Block Size Read" -C --rw randread --xlabel-parent 0 -o ${OUTPUT_DIR}/block_size_read.png
 
 # Test different thread numbers
-bench-fio --target ${TEST_DIR} --type directory --size 5M --output ${OUTPUT_DIR} --iodepth 1 --block-size 4k --numjobs ${THREAD_NUMS} --engine sync --direct 1
+bench-fio --target ${TEST_DIR} --type directory --size 5M --output ${OUTPUT_DIR} --iodepth 1 --block-size 4k --numjobs ${THREAD_NUMS} --engine sync --direct 1 --destructive
 fio-plot -i ${OUTPUT_SUBDIR}/4k/  -T "Different Thread Num Write" -N --rw randwrite -o ${OUTPUT_DIR}/4k_multithread_write.png
 fio-plot -i ${OUTPUT_SUBDIR}/4k/  -T "Different Thread Num Read" -N --rw randread -o ${OUTPUT_DIR}/4k_multithread_read.png
