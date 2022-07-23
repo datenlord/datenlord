@@ -21,7 +21,7 @@ env:
   DATENLORD_NAMESPACE: csi-datenlord
   E2E_TEST_CONFIG: scripts/datenlord-e2e-test.yaml
   ELASTICSEARCH_LABEL: elasticsearch
-  FUSE_CONTAINER_NAME: datenlord-fuse
+  FUSE_CONTAINER_NAME: datenlord-async
   FUSE_MOUNT_PATH: /var/opt/datenlord-data
   GRAFANA_LABEL: grafana
   GRAFANA_PORT: 3000
@@ -193,6 +193,7 @@ jobs:
           NODES="$(kubectl get nodes -A -o wide | awk 'FNR > 2 {print $1}')"
           for node in ${NODES}; do
             USER="$(whoami)"
+            docker cp /etc/apt/sources.list ${node}:/etc/apt/sources.list
             docker exec ${node} apt-get update
             docker exec ${node} apt-get install -y ssh sudo
             docker exec ${node} systemctl start sshd

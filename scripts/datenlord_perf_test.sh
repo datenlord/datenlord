@@ -19,6 +19,8 @@ kubectl wait --for=condition=Ready pod -l app=${ASYNC_FUSE_APP} -n ${NAMESPACE} 
 
 
 FIRST_NODE=$(kubectl get pods -A | grep "datenlord-async" | awk 'NR==1{print $2}')
+# Use apt sources file from host
+kubectl cp /etc/apt/sources.list ${FIRST_NODE}:/etc/apt/sources.list -n ${NAMESPACE}
 
 kubectl exec ${FIRST_NODE} -n ${NAMESPACE} -- apt-get update
 kubectl exec ${FIRST_NODE} -n ${NAMESPACE} -- apt-get install -y fio python3-pip
