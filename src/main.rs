@@ -50,7 +50,8 @@
     clippy::shadow_reuse, //it’s a common pattern in Rust code
     clippy::shadow_same, //it’s a common pattern in Rust code
     clippy::same_name_method, // Skip for protobuf generated code
-
+    clippy::mod_module_files, // TODO: fix code structure to pass this lint
+    clippy::std_instead_of_core, // Cause false positive in src/common/error.rs
 )]
 
 pub mod async_fuse;
