@@ -4,10 +4,11 @@ on:
     branches: [master]
 
 env:
-  CI_RUST_TOOLCHAIN: 1.61.0
+  CI_RUST_TOOLCHAIN: 1.67.1
   CONTROLLER_SOCKET_FILE: /tmp/controller.sock
   BIND_MOUNTER: target/debug/bind_mounter
   ETCD_CONTAINER_NAME: etcd
+  ETCD_IMAGE: gcr.io/etcd-development/etcd:v3.4.13
   NODE_SOCKET_FILE: /tmp/node.sock
   RUST_BACKTRACE: full
   RUST_LOG: debug
@@ -150,7 +151,8 @@ jobs:
           export BIND_MOUNTER=`realpath $BIND_MOUNTER`
       - name: Run etcd service
         run: |
-          docker run -d --rm --net host --name $ETCD_CONTAINER_NAME gcr.io/etcd-development/etcd:latest
+          docker pull $ETCD_IMAGE
+          docker run -d --rm --net host --name $ETCD_CONTAINER_NAME $ETCD_IMAGE
           docker ps
           docker logs $ETCD_CONTAINER_NAME
           # sudo netstat -lntp
@@ -160,12 +162,18 @@ jobs:
           repository: kubernetes-csi/csi-test
           path: ./csi-test
       - name: Build csi-sanity code
-        uses: cedrickring/golang-action@1.7.0
+        #uses: actions/setup-go@v3
+        #with:
+        #  go-version: 'stable'
         env:
           PROJECT_PATH: "./csi-test/cmd/csi-sanity"
+        run: |
+          cd $PROJECT_PATH
+          go build
       - name: Run csi plugin and csi-sanity test
         run: |
           export ETCD_END_POINT=127.0.0.1:2379
+          mkdir /tmp/datenlord_data_dir
           target/debug/datenlord start_node --endpoint=unix://$NODE_SOCKET_FILE --workerport=0 --nodeid=localhost --nodeip=127.0.0.1 --drivername=io.datenlord.csi.plugin --mountpoint=/tmp/datenlord_data_dir --etcd=$ETCD_END_POINT --volume_info="fuse-test-bucket;http://127.0.0.1:9000;test;test1234" --capacity=1073741824 --serverport=8800 --volume_type=none &
           target/debug/datenlord start_csi_controller --endpoint=unix://$CONTROLLER_SOCKET_FILE --workerport=0 --nodeid=localhost --nodeip=127.0.0.1 --drivername=io.datenlord.csi.plugin --mountpoint=/tmp/datenlord_data_dir --etcd=$ETCD_END_POINT &
           ./csi-test/cmd/csi-sanity/csi-sanity -csi.endpoint=$NODE_SOCKET_FILE -csi.controllerendpoint=$CONTROLLER_SOCKET_FILE
@@ -261,7 +269,8 @@ jobs:
       #    cd -
       - name: Run etcd service
         run: |
-          docker run -d --rm --net host --name $ETCD_CONTAINER_NAME gcr.io/etcd-development/etcd:latest
+          docker pull $ETCD_IMAGE
+          docker run -d --rm --net host --name $ETCD_CONTAINER_NAME $ETCD_IMAGE
           docker ps
           docker logs $ETCD_CONTAINER_NAME
       - name: Run ntfs-3g-pjd-fstest

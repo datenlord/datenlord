@@ -323,6 +323,7 @@ impl Session {
     }
 
     /// Initialize FUSE session
+    #[allow(single_use_lifetimes)] // false positive
     async fn init<'a>(
         &self,
         arg: &'_ FuseInitIn,

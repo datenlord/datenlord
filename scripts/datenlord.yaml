@@ -342,7 +342,7 @@ spec:
       initContainers:
         - name: wait-for-etcd-service
           image: busybox:1.35.0
-          command: ['sh', '-c', "until nslookup csi-etcd-svc; do echo waiting for csi-etcd-svc; sleep 2; done"]
+          command: ['sh', '-c', "until nslookup csi-etcd-svc.csi-datenlord.svc.cluster.local; do echo waiting for csi-etcd-svc; sleep 2; done"]
 
 ---
 apiVersion: v1
@@ -619,7 +619,7 @@ spec:
       initContainers:
         - name: wait-for-etcd-service
           image: busybox:1.35.0
-          command: ['sh', '-c', "until nslookup csi-etcd-svc; do echo waiting for csi-etcd-svc; sleep 2; done"]
+          command: ['sh', '-c', "until nslookup csi-etcd-svc.csi-datenlord.svc.cluster.local; do echo waiting for csi-etcd-svc; sleep 2; done"]
 ---
 apiVersion: v1
 kind: ServiceAccount
@@ -757,7 +757,7 @@ spec:
       initContainers:
         - name: wait-for-etcd-service
           image: busybox:1.35.0
-          command: ['sh', '-c', "until nslookup csi-etcd-svc; do echo waiting for csi-etcd-svc; sleep 2; done"]
+          command: ['sh', '-c', "until nslookup csi-etcd-svc.csi-datenlord.svc.cluster.local; do echo waiting for csi-etcd-svc; sleep 2; done"]
 ---
 apiVersion: storage.k8s.io/v1
 kind: CSIDriver

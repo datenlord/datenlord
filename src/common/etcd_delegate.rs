@@ -2,12 +2,12 @@
 
 use super::error::{Context, DatenLordResult};
 use super::util;
+use core::fmt;
+use core::fmt::Debug;
+use core::time::Duration;
 use log::debug;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
-use std::fmt;
-use std::fmt::Debug;
-use std::time::Duration;
 
 /// The client to communicate with etcd
 #[allow(missing_debug_implementations)] // etcd_client::Client doesn't impl Debug
@@ -42,10 +42,7 @@ impl EtcdDelegate {
         ))
         .await
         .with_context(|| {
-            format!(
-                "failed to build etcd client to addresses={:?}",
-                etcd_address_vec,
-            )
+            format!("failed to build etcd client to addresses={etcd_address_vec:?}")
         })?;
         Ok(Self {
             etcd_rs_client,
@@ -64,10 +61,7 @@ impl EtcdDelegate {
             ))
             .await
             .with_context(|| {
-                format!(
-                    "failed to get LeaseGrantResponse from etcd, the timeout={}",
-                    timeout
-                )
+                format!("failed to get LeaseGrantResponse from etcd, the timeout={timeout}")
             })?
             .id();
 
@@ -78,8 +72,7 @@ impl EtcdDelegate {
             .await
             .with_context(|| {
                 format!(
-                    "failed to get LockResponse from etcd, the lease id={}",
-                    lease_id
+                    "failed to get LockResponse from etcd, the lease id={lease_id}"
                 )
             })?
             .take_key();
@@ -114,8 +107,7 @@ impl EtcdDelegate {
         let req = etcd_client::EtcdRangeRequest::new(etcd_client::KeyRange::key(key));
         let mut resp = self.etcd_rs_client.kv().range(req).await.with_context(|| {
             format!(
-                "failed to get RangeResponse of one key-value pair from etcd, the key={:?}",
-                key_clone
+                "failed to get RangeResponse of one key-value pair from etcd, the key={key_clone:?}"
             )
         })?;
 
@@ -137,14 +129,11 @@ impl EtcdDelegate {
     ) -> DatenLordResult<Option<T>> {
         let key_clone = key.clone();
         let bin_value = bincode::serialize(value)
-            .with_context(|| format!("failed to encode {:?} to binary", value))?;
+            .with_context(|| format!("failed to encode {value:?} to binary"))?;
         let mut req = etcd_client::EtcdPutRequest::new(key, bin_value);
         req.set_prev_kv(true); // Return previous value
         let mut resp = self.etcd_rs_client.kv().put(req).await.with_context(|| {
-            format!(
-                "failed to get PutResponse from etcd for key={:?}, value={:?}",
-                key_clone, value,
-            )
+            format!("failed to get PutResponse from etcd for key={key_clone:?}, value={value:?}")
         })?;
         if let Some(pre_kv) = resp.take_prev_kv() {
             let decoded_value: T = util::decode_from_bytes(pre_kv.value())?;
@@ -166,9 +155,7 @@ impl EtcdDelegate {
             .kv()
             .delete(req)
             .await
-            .with_context(
-                || format!("failed to get DeleteResponse from etcd for key={:?}", key,),
-            )?;
+            .with_context(|| format!("failed to get DeleteResponse from etcd for key={key:?}"))?;
 
         if resp.has_prev_kvs() {
             let deleted_value_list = resp.take_prev_kvs();
@@ -188,9 +175,10 @@ impl EtcdDelegate {
     #[inline]
     pub async fn get_list<T: DeserializeOwned>(&self, prefix: &str) -> DatenLordResult<Vec<T>> {
         let req = etcd_client::EtcdRangeRequest::new(etcd_client::KeyRange::prefix(prefix));
-        let mut resp = self.etcd_rs_client.kv().range(req).await.with_context(|| {
-            format!("failed to get RangeResponse from etcd for key={:?}", prefix,)
-        })?;
+        let mut resp =
+            self.etcd_rs_client.kv().range(req).await.with_context(|| {
+                format!("failed to get RangeResponse from etcd for key={prefix:?}")
+            })?;
         let mut result_vec = Vec::with_capacity(resp.count());
         for kv in resp.take_kvs() {
             let decoded_value: T = util::decode_from_bytes(kv.value())?;
@@ -245,9 +233,8 @@ impl EtcdDelegate {
         let write_res = self.write_to_etcd(key, value).await?;
         if let Some(pre_value) = write_res {
             panic!(
-                "failed to write new key vaule pair, the key={} exists in etcd, \
-                    the previous value={:?}",
-                key, pre_value,
+                "failed to write new key vaule pair, the key={key} exists in etcd, \
+                    the previous value={pre_value:?}"
             );
         } else {
             Ok(())
@@ -292,9 +279,7 @@ impl EtcdDelegate {
             deleted_value_vec.len(),
             key,
         );
-        let deleted_kv = if let Some(kv) = deleted_value_vec.pop() {
-            kv
-        } else {
+        let Some(deleted_kv) = deleted_value_vec.pop() else {
             panic!("failed to get the exactly one deleted key value pair")
         };
         Ok(deleted_kv)
