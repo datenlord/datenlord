@@ -195,9 +195,10 @@ impl EtcdDelegate {
             assert_eq!(resp.len(), 1, "txn response length should be 1");
             let resp=&resp[0];
             match resp {
-                TxnOpResponse::Range(_) => {
+                TxnOpResponse::Range(mut resp) => {
+                    let kv=resp.take_kvs();
                     //key exists
-                    let decoded_value: T = util::decode_from_bytes(pre_kv.value())?;
+                    let decoded_value: T = util::decode_from_bytes(kv[0].value())?;
                     Ok(Some(decoded_value))
                 }
                 _ => {
