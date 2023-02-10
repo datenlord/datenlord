@@ -226,6 +226,7 @@ impl MetaData for DefaultMetaData {
         let parent_name = parent_node.get_name().to_owned();
         // all checks are passed, ready to create new node
         let m_flags = fs_util::parse_mode(mode);
+
         let new_node = match node_type {
             SFlag::S_IFDIR => {
                 debug!(
@@ -234,7 +235,8 @@ impl MetaData for DefaultMetaData {
                     node_name, m_flags, parent, parent_name,
                 );
                 parent_node
-                    .create_child_dir(node_name, m_flags)
+                    .create_child_dir(0/*local version doesn't have etcd currently*/,
+                                      node_name, m_flags)
                     .await
                     .context(format!(
                     "create_node_helper() failed to create directory with name={:?} and mode={:?} \
@@ -252,6 +254,7 @@ impl MetaData for DefaultMetaData {
                 );
                 parent_node
                     .create_child_file(
+                        0/*local version doesn't have etcd currently*/,
                         node_name,
                         o_flags,
                         m_flags,
@@ -273,6 +276,7 @@ impl MetaData for DefaultMetaData {
                 );
                 parent_node
                     .create_child_symlink(
+                        0/*local version doesn't have etcd currently*/,
                         node_name,
                         target_path.unwrap_or_else(|| panic!(
                             "create_node_helper() failed to \
@@ -469,7 +473,7 @@ impl MetaData for DefaultMetaData {
             let child_node = match child_type {
                 SFlag::S_IFDIR => {
                     parent_node
-                        .open_child_dir(child_name, None)
+                        .open_child_dir(0/*local version doesn't have etcd currently*/, child_name, None)
                         .await
                         .context(format!(
                             "lookup_helper() failed to open sub-directory name={:?} \
@@ -481,6 +485,7 @@ impl MetaData for DefaultMetaData {
                     let oflags = OFlag::O_RDWR;
                     parent_node
                         .open_child_file(
+                            0/*local version doesn't have etcd currently*/,
                             child_name,
                             None,
                             oflags,
@@ -494,7 +499,8 @@ impl MetaData for DefaultMetaData {
                         ))?
                 }
                 SFlag::S_IFLNK => parent_node
-                    .load_child_symlink(child_name, None)
+                    .load_child_symlink(0/*local version doesn't have etcd currently*/,
+                                        child_name, None)
                     .await
                     .context(format!(
                         "lookup_helper() failed to read child symlink name={:?} \

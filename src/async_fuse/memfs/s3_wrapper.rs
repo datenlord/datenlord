@@ -125,8 +125,7 @@ impl S3BackEnd for S3BackEndImpl {
                     Some((offset.overflow_add(len)).cast())
                 )
                 .await
-        )
-        .map(|(data, _)| data)
+        ).map(|(data, _)| data)
     }
 
     async fn put_data(&self, file: &str, data: &[u8], offset: usize, len: usize) -> S3Result<()> {

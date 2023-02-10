@@ -8,6 +8,7 @@ use serde::Serialize;
 use std::fmt;
 use std::fmt::Debug;
 use std::time::Duration;
+use etcd_client::{TxnCmp, TxnOpResponse};
 
 /// The client to communicate with etcd
 #[allow(missing_debug_implementations)] // etcd_client::Client doesn't impl Debug
@@ -154,6 +155,58 @@ impl EtcdDelegate {
         }
     }
 
+
+    /// if key exist, don't insert, return the old value
+    /// if key not exist, insert, return None
+    async fn write_to_etcd_if_none<
+        T: DeserializeOwned + Serialize + Clone + Debug + Send + Sync,
+        K: Into<Vec<u8>> + Debug + Clone + Send,
+    >(
+        &self,
+        key: K,
+        value: &T,
+    ) -> DatenLordResult<Option<T>> {
+
+        let bin_value = bincode::serialize(value)
+            .with_context(|| format!("failed to encode {:?} to binary", value))?;
+
+        let txn_req=etcd_client::EtcdTxnRequest::new()
+            // etcd：chack key exist in txn
+            //  https://github.com/etcd-io/etcd/issues/7115
+            //  https://github.com/etcd-io/etcd/issues/6740
+            //key does not exist when create revision is 0, check the links above
+            .when_create_revision(etcd_client::KeyRange::key(key.clone()), TxnCmp::Equal,0)
+            //key does not exist, insert kv
+            .and_then(etcd_client::EtcdPutRequest::new(key.clone(), bin_value))
+            //key exists, return old value
+            .or_else(etcd_client::EtcdRangeRequest::new(etcd_client::KeyRange::key(key)));
+        let txn_res=self.etcd_rs_client.kv().txn(txn_req).await.with_context(|| {
+            format!(
+                "failed to get PutResponse from etcd for key={:?}, value={:?}",
+                key, value,
+            )
+        })?;
+
+        if txn_res.is_success(){
+            //key does not exist, insert kv
+            Ok(None)
+        }else{
+            let resp=txn_res.get_responses();
+            assert_eq!(resp.len(), 1, "txn response length should be 1");
+            let resp=&resp[0];
+            match resp {
+                TxnOpResponse::Range(_) => {
+                    //key exists
+                    let decoded_value: T = util::decode_from_bytes(pre_kv.value())?;
+                    Ok(Some(decoded_value))
+                }
+                _ => {
+                    panic!("txn response should be RangeResponse");
+                }
+            }
+        }
+    }
+
     /// Delete a key value pair or nothing from etcd
     async fn delete_from_etcd<T: DeserializeOwned + Clone + Debug + Send + Sync>(
         &self,
@@ -253,6 +306,19 @@ impl EtcdDelegate {
             Ok(())
         }
     }
+
+    /// return exist value if key exists
+    /// return none if key does not exist
+    #[inline]
+    pub async fn write_new_kv_no_panic<T: DeserializeOwned + Serialize + Clone + Debug + Send + Sync>(
+        &self,
+        key: &str,
+        value: &T,
+    ) -> DatenLordResult<Option<T>> {
+
+        self.write_to_etcd_if_none(key, value).await
+    }
+
 
     /// Write key value pair to etcd, if key exists, update it
     #[inline]

@@ -29,6 +29,7 @@ use std::time::Duration;
 use tokio::sync::{Mutex, RwLock, RwLockWriteGuard};
 
 use clippy_utilities::{Cast, OverflowArithmetic};
+use crate::async_fuse::memfs::inode::InodeState;
 
 /// The time-to-live seconds of FUSE attributes
 const MY_TTL_SEC: u64 = 3600; // TODO: should be a long value, say 1 hour
@@ -49,8 +50,10 @@ pub struct S3MetaData<S: S3BackEnd + Send + Sync + 'static> {
     pub(crate) cache: RwLock<BTreeMap<INum, S3Node<S>>>,
     /// Global data cache
     pub(crate) data_cache: Arc<GlobalCache>,
-    /// Current available node number, it'll increase after using
-    pub(crate) cur_inum: AtomicU32,
+    // /// Current available node number, it'll increase after using
+    // pub(crate) cur_inum: AtomicU32,
+    /// inode related
+    pub(crate) inode_state: InodeState,
     /// Current available fd, it'll increase after using
     pub(crate) cur_fd: AtomicU32,
     /// Current service id
@@ -103,7 +106,8 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
             cache: RwLock::new(BTreeMap::new()),
             etcd_client: etcd_arc,
             data_cache: Arc::<GlobalCache>::clone(&data_cache),
-            cur_inum: AtomicU32::new(2),
+            // cur_inum: AtomicU32::new(2),
+            inode_state: InodeState::new(),
             cur_fd: AtomicU32::new(4),
             node_id: node_id.to_owned(),
             volume_info: volume_info.to_owned(),
@@ -197,18 +201,28 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
                 .create_node_pre_check(parent, node_name, &mut cache)
                 .await
                 .context("create_node_helper() failed to pre check")?;
+            let full_path=format!("{}{}",parent_node.full_path(),node_name);
+            // check cluster conflict creating by trying to alloc ino
+            let (inum,is_new)=self.inode_get_inum_by_fullpath(full_path.as_str()).await;
+            if !is_new{
+                // inum created by others or exist in remote cache
+                //todo delete parent node cache to update parent dir content
+                return Err(anyhow::anyhow!("create_node_helper() failed to create node, ino alloc failed, \
+                    the node of name={:?} already exists under parent directory of ino={} and name={:?}",
+                    node_name, parent, parent_node.get_name()));
+            }
             let parent_name = parent_node.get_name().to_owned();
             // all checks are passed, ready to create new node
             let m_flags = fs_util::parse_mode(mode);
-            let new_node = match node_type {
+            let mut new_node = match node_type {
                 SFlag::S_IFDIR => {
                     debug!(
-                    "create_node_helper() about to create a sub-directory with name={:?} and mode={:?} \
-                        under parent directory of ino={} and name={:?}",
-                    node_name, m_flags, parent, parent_name,
-                );
+                        "create_node_helper() about to create a sub-directory with name={:?} and mode={:?} \
+                            under parent directory of ino={} and name={:?}",
+                        node_name, m_flags, parent, parent_name,
+                    );
                     parent_node
-                    .create_child_dir(node_name, m_flags)
+                    .create_child_dir(inum,node_name, m_flags)
                     .await
                     .context(format!(
                         "create_node_helper() failed to create directory with name={:?} and mode={:?} \
@@ -226,6 +240,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
                     );
                     parent_node
                         .create_child_file(
+                            inum,
                             node_name,
                             o_flags,
                             m_flags,
@@ -247,6 +262,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
                     );
                     parent_node
                     .create_child_symlink(
+                        inum,
                         node_name,
                         target_path.unwrap_or_else(|| panic!(
                             "create_node_helper() failed to \
@@ -376,7 +392,9 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
                 parent_node.absolute_path_of_child(child_name, child_type)
             };
             let remote_attr = self.get_attr_remote(&child_path).await;
-
+            // we don't care whether the inum is new or not,
+            // we just need a unique one for unique path.
+            let (inum,_is_new)=self.inode_get_inum_by_fullpath(full_path.as_str()).await;
             let (mut child_node, parent_name) = {
                 let cache = self.cache.read().await;
                 let parent_node = cache.get(&parent).unwrap_or_else(|| {
@@ -389,7 +407,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
                 let parent_name = parent_node.get_name().to_owned();
                 let child_node = match child_type {
                     SFlag::S_IFDIR => parent_node
-                        .open_child_dir(child_name, remote_attr)
+                        .open_child_dir(inum, child_name, remote_attr)
                         .await
                         .context(format!(
                             "lookup_helper() failed to open sub-directory name={:?} \
@@ -400,6 +418,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
                         let oflags = OFlag::O_RDWR;
                         parent_node
                             .open_child_file(
+                                inum,
                                 child_name,
                                 remote_attr,
                                 oflags,
@@ -413,7 +432,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
                         ))?
                     }
                     SFlag::S_IFLNK => parent_node
-                        .load_child_symlink(child_name, remote_attr)
+                        .load_child_symlink(inum,child_name, remote_attr)
                         .await
                         .context(format!(
                             "lookup_helper() failed to read child symlink name={:?} \

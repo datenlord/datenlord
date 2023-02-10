@@ -161,42 +161,42 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
         old_attr
     }
 
-    /// Get a new inode number
-    async fn new_inode_num(&self) -> u64 {
-        let lock_key = etcd::lock_inode_number(Arc::<EtcdDelegate>::clone(&self.meta.etcd_client))
-            .await
-            .unwrap_or_else(|e| panic!("failed to get etcd inode number lock, error is {:?}", e));
-        let default = self.meta.cur_inum();
-        let cur_inum = dist_client::get_ino_num(
-            Arc::<EtcdDelegate>::clone(&self.meta.etcd_client),
-            &self.meta.node_id,
-            &self.meta.volume_info,
-            default,
-        )
-        .await
-        .unwrap_or_else(|e| {
-            warn!("Load inode num from other node error: {}", e);
-            default
-        });
-
-        let inum = if cur_inum > default {
-            self.meta
-                .cur_inum
-                .store(cur_inum.overflow_add(1), atomic::Ordering::Relaxed);
-            cur_inum.cast()
-        } else {
-            self.meta
-                .cur_inum
-                .fetch_add(1, atomic::Ordering::SeqCst)
-                .cast()
-        };
-        etcd::unlock_inode_number(Arc::<EtcdDelegate>::clone(&self.meta.etcd_client), lock_key)
-            .await
-            .unwrap_or_else(|e| {
-                panic!("failed to release etcd inode number lock, error is {:?}", e)
-            });
-        inum
-    }
+    // /// Get a new inode number
+    // async fn new_inode_num(&self) -> u64 {
+    //     let lock_key = etcd::lock_inode_number(Arc::<EtcdDelegate>::clone(&self.meta.etcd_client))
+    //         .await
+    //         .unwrap_or_else(|e| panic!("failed to get etcd inode number lock, error is {:?}", e));
+    //     let default = self.meta.cur_inum();
+    //     let cur_inum = dist_client::get_ino_num(
+    //         Arc::<EtcdDelegate>::clone(&self.meta.etcd_client),
+    //         &self.meta.node_id,
+    //         &self.meta.volume_info,
+    //         default,
+    //     )
+    //     .await
+    //     .unwrap_or_else(|e| {
+    //         warn!("Load inode num from other node error: {}", e);
+    //         default
+    //     });
+    //
+    //     let inum = if cur_inum > default {
+    //         self.meta
+    //             .cur_inum
+    //             .store(cur_inum.overflow_add(1), atomic::Ordering::Relaxed);
+    //         cur_inum.cast()
+    //     } else {
+    //         self.meta
+    //             .cur_inum
+    //             .fetch_add(1, atomic::Ordering::SeqCst)
+    //             .cast()
+    //     };
+    //     etcd::unlock_inode_number(Arc::<EtcdDelegate>::clone(&self.meta.etcd_client), lock_key)
+    //         .await
+    //         .unwrap_or_else(|e| {
+    //             panic!("failed to release etcd inode number lock, error is {:?}", e)
+    //         });
+    //     inum
+    // }
 
     /// Get fullpath of this node
     pub(crate) fn full_path(&self) -> &str {
@@ -652,6 +652,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
     /// Create symlink in a directory
     async fn create_child_symlink(
         &mut self,
+        inum:INum,
         child_symlink_name: &str,
         target_path: PathBuf,
     ) -> anyhow::Result<Self> {
@@ -683,7 +684,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
 
         // get symbol file attribute
         let child_attr = FileAttr {
-            ino: self.new_inode_num().await,
+            ino: inum,
             kind: SFlag::S_IFLNK,
             size: target_path
                 .to_str()
@@ -723,6 +724,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
     /// Read symlink itself in a directory, not follow symlink
     async fn load_child_symlink(
         &self,
+        inum:INum,
         child_symlink_name: &str,
         remote: Option<FileAttr>,
     ) -> anyhow::Result<Self> {
@@ -742,7 +744,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
                     });
                 // get symbol file attribute
                 FileAttr {
-                    ino: self.new_inode_num().await,
+                    ino: inum,
                     kind: SFlag::S_IFLNK,
                     size: len.cast(),
                     blocks: 0,
@@ -787,6 +789,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
     /// Open sub-directory in a directory
     async fn open_child_dir(
         &self,
+        inum: INum,
         child_dir_name: &str,
         remote: Option<FileAttr>,
     ) -> anyhow::Result<Self> {
@@ -801,7 +804,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
                     .await
                     .unwrap_or_else(|e| panic!("failed to get last modified of file {:?} from s3 backend, error is {:?}", absolute_path, e));
                 FileAttr {
-                    ino: self.new_inode_num().await,
+                    ino: inum,
                     kind: SFlag::S_IFDIR,
                     atime: last_modified,
                     mtime: last_modified,
@@ -832,7 +835,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
     }
 
     /// Create sub-directory in a directory
-    async fn create_child_dir(&mut self, child_dir_name: &str, mode: Mode) -> anyhow::Result<Self> {
+    async fn create_child_dir(&mut self, inum:INum,child_dir_name: &str, mode: Mode) -> anyhow::Result<Self> {
         let absolute_path = self.absolute_dir_with_child(child_dir_name);
         let dir_data = self.get_dir_data();
         // TODO return error
@@ -850,7 +853,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
 
         // get new directory attribute
         let child_attr = FileAttr {
-            ino: self.new_inode_num().await,
+            ino: inum,
             kind: SFlag::S_IFDIR,
             perm: fs_util::parse_mode_bits(mode.bits()),
             ..FileAttr::now()
@@ -884,6 +887,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
     /// Open file in a directory
     async fn open_child_file(
         &self,
+        inum:INum,
         child_file_name: &str,
         remote: Option<FileAttr>,
         _oflags: OFlag,
@@ -904,7 +908,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
                         )
                     });
                 FileAttr {
-                    ino: self.new_inode_num().await,
+                    ino: inum,
                     kind: SFlag::S_IFREG,
                     size: content_len.cast(),
                     blocks: content_len
@@ -937,6 +941,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
     /// Create file in a directory
     async fn create_child_file(
         &mut self,
+        inum:INum,
         child_file_name: &str,
         oflags: OFlag,
         mode: Mode,
@@ -963,7 +968,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
 
         // get new file attribute
         let child_attr = FileAttr {
-            ino: self.new_inode_num().await,
+            ino: inum,
             kind: SFlag::S_IFREG,
             perm: fs_util::parse_mode_bits(mode.bits()),
             size: 0,
