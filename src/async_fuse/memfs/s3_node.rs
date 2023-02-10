@@ -3,7 +3,6 @@
 use super::cache::{GlobalCache, IoMemBlock};
 use super::dir::DirEntry;
 use super::dist::client as dist_client;
-use super::dist::etcd;
 use super::fs_util::{self, FileAttr};
 use super::node::Node;
 use super::s3_metadata::S3MetaData;
@@ -15,7 +14,7 @@ use crate::async_fuse::metrics;
 use crate::common::etcd_delegate::EtcdDelegate;
 use async_trait::async_trait;
 use clippy_utilities::{Cast, OverflowArithmetic};
-use log::{debug, warn};
+use log::debug;
 use nix::fcntl::OFlag;
 use nix::sys::stat::Mode;
 use nix::sys::stat::SFlag;
@@ -1164,16 +1163,16 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
     /// Fake data for statefs
     /// TODO: handle some important data from S3 storage
     async fn statefs(&self) -> anyhow::Result<StatFsParam> {
-        let inode_num = self
-            .meta
-            .cur_inum
-            .load(atomic::Ordering::Relaxed)
-            .overflow_sub(1);
+        // let inode_num = self
+        //     .meta
+        //     .cur_inum
+        //     .load(atomic::Ordering::Relaxed)
+        //     .overflow_sub(1);
         Ok(StatFsParam {
             blocks: 10_000_000_000,
             bfree: 10_000_000_000,
             bavail: 10_000_000_000,
-            files: inode_num.cast(),
+            files: 0,
             f_free: 1_000_000,
             bsize: 4096, // TODO: consider use customized block size
             namelen: 1024,

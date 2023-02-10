@@ -8,8 +8,7 @@ use serde::Serialize;
 use std::fmt;
 use std::fmt::Debug;
 use std::time::Duration;
-use etcd_client::{TxnCmp, TxnOpResponse};
-
+use etcd_client::{TxnCmp,TxnOpResponse};
 /// The client to communicate with etcd
 #[allow(missing_debug_implementations)] // etcd_client::Client doesn't impl Debug
 #[derive(Clone)]
@@ -168,7 +167,7 @@ impl EtcdDelegate {
     ) -> DatenLordResult<Option<T>> {
 
         let bin_value = bincode::serialize(value)
-            .with_context(|| format!("failed to encode {:?} to binary", value))?;
+            .with_context(|| format!("failed to encode {value:?} to binary"))?;
 
         let txn_req=etcd_client::EtcdTxnRequest::new()
             // etcd：chack key exist in txn
@@ -179,7 +178,7 @@ impl EtcdDelegate {
             //key does not exist, insert kv
             .and_then(etcd_client::EtcdPutRequest::new(key.clone(), bin_value))
             //key exists, return old value
-            .or_else(etcd_client::EtcdRangeRequest::new(etcd_client::KeyRange::key(key)));
+            .or_else(etcd_client::EtcdRangeRequest::new(etcd_client::KeyRange::key(key.clone())));
         let txn_res=self.etcd_rs_client.kv().txn(txn_req).await.with_context(|| {
             format!(
                 "failed to get PutResponse from etcd for key={:?}, value={:?}",
@@ -191,10 +190,9 @@ impl EtcdDelegate {
             //key does not exist, insert kv
             Ok(None)
         }else{
-            let resp=txn_res.get_responses();
+            let mut resp=txn_res.get_responses();
             assert_eq!(resp.len(), 1, "txn response length should be 1");
-            let resp=&resp[0];
-            match resp {
+            match resp.pop().unwrap_or_else(|| {panic!("txn response length should be 1 and pop should not fail")}) {
                 TxnOpResponse::Range(mut resp) => {
                     let kv=resp.take_kvs();
                     //key exists

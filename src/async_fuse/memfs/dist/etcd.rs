@@ -1,8 +1,7 @@
-use crate::common::error::{Context, DatenLordResult};
+use crate::common::error::Context;
 use crate::common::etcd_delegate::EtcdDelegate;
 use log::debug;
 use std::collections::HashSet;
-use std::future::Future;
 use std::sync::Arc;
 use crate::async_fuse::fuse::protocol::INum;
 
@@ -336,17 +335,18 @@ pub async fn unlock_inode_number(
     Ok(())
 }
 
+/// increase the inode number range begin in global cluster
 pub async fn fetch_add_inode_next_range(etcd_client: Arc<EtcdDelegate>,range:u64) -> anyhow::Result<INum> {
     // Use cas to replace the lock
     // Lock before rewrite
     let lockkey=lock_inode_number(etcd_client.clone()).await?;
-    let inode_range_begin = etcd_client
+    let inode_range_begin: Option<Vec<u8>>  = etcd_client
         .get_at_most_one_value(ETCD_INODE_NEXT_RANGE.as_bytes())
         .await
-        .with_context(|| format!("get {} from etcd fail", ETCD_INODE_NUMBER_KEY))?;
+        .with_context(|| format!("get {} from etcd fail", ETCD_INODE_NEXT_RANGE))?;
 
     // Read inode range begin from etcd
-    let mut inode_range_begin = match inode_range_begin {
+    let inode_range_begin = match inode_range_begin {
         Some(number) => {
             let number: INum = bincode::deserialize(number.as_slice()).unwrap_or_else(|e| {
                 panic!(
@@ -359,7 +359,7 @@ pub async fn fetch_add_inode_next_range(etcd_client: Arc<EtcdDelegate>,range:u64
         None => 0,
     };
     // Add up and store data back to etcd
-    next=inode_range_begin.overflowing_add(range);
+    let next=inode_range_begin.overflowing_add(range);
     etcd_client.update_existing_kv(ETCD_INODE_NEXT_RANGE,
                                    &bincode::serialize(&next).unwrap()).await?;
     unlock_inode_number(etcd_client, lockkey).await?;

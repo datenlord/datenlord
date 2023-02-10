@@ -23,7 +23,6 @@ use nix::sys::stat::SFlag;
 use std::collections::BTreeMap;
 use std::os::unix::io::RawFd;
 use std::path::Path;
-use std::sync::atomic::Ordering;
 use std::sync::{atomic::AtomicU32, Arc};
 use std::time::Duration;
 use tokio::sync::{Mutex, RwLock, RwLockWriteGuard};
@@ -214,7 +213,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
             let parent_name = parent_node.get_name().to_owned();
             // all checks are passed, ready to create new node
             let m_flags = fs_util::parse_mode(mode);
-            let mut new_node = match node_type {
+            let new_node = match node_type {
                 SFlag::S_IFDIR => {
                     debug!(
                         "create_node_helper() about to create a sub-directory with name={:?} and mode={:?} \
@@ -394,7 +393,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
             let remote_attr = self.get_attr_remote(&child_path).await;
             // we don't care whether the inum is new or not,
             // we just need a unique one for unique path.
-            let (inum,_is_new)=self.inode_get_inum_by_fullpath(full_path.as_str()).await;
+            let (inum,_is_new)=self.inode_get_inum_by_fullpath(child_path.as_str()).await;
             let (mut child_node, parent_name) = {
                 let cache = self.cache.read().await;
                 let parent_node = cache.get(&parent).unwrap_or_else(|| {
@@ -546,10 +545,11 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
 }
 
 impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
-    /// Get current inode number
-    pub(crate) fn cur_inum(&self) -> u32 {
-        self.cur_inum.load(Ordering::Relaxed)
-    }
+    
+    // /// Get current inode number
+    // pub(crate) fn cur_inum(&self) -> u32 {
+    //     self.cur_inum.load(Ordering::Relaxed)
+    // }
 
     /// The pre-check before create node
     #[allow(single_use_lifetimes)]

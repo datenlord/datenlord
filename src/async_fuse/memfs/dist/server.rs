@@ -378,9 +378,9 @@ async fn remove<S: S3BackEnd + Send + Sync + 'static>(
 /// Handle `GetInodeNum` request
 async fn get_inode_num<S: S3BackEnd + Send + Sync + 'static>(
     stream: &mut TcpStream,
-    meta: &Arc<S3MetaData<S>>,
+    _meta: &Arc<S3MetaData<S>>,
 ) -> anyhow::Result<()> {
-    let inum = meta.cur_inum();
+    let inum = 0;//meta.cur_inum();
     tcp::write_u32(stream, inum).await?;
     Ok(())
 }

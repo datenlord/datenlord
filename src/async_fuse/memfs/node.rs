@@ -737,7 +737,7 @@ impl Node for DefaultNode {
 
     /// Create symlink in a directory
     async fn create_child_symlink(
-        &mut self,inum:INum,
+        &mut self,_inum:INum,
         child_symlink_name: &str,
         target_path: PathBuf,
     ) -> anyhow::Result<Self> {
@@ -813,7 +813,7 @@ impl Node for DefaultNode {
 
     /// Read symlink itself in a directory, not follow symlink
     async fn load_child_symlink(
-        &self,inum:INum,
+        &self,_inum:INum,
         child_symlink_name: &str,
         _remote: Option<FileAttr>,
     ) -> anyhow::Result<Self> {
@@ -868,9 +868,9 @@ impl Node for DefaultNode {
     /// Open sub-directory in a directory
     async fn open_child_dir(
         &self,
-        inum: INum,
+        _inum: INum,
         child_dir_name: &str,
-        remote: Option<FileAttr>,
+        _remote: Option<FileAttr>,
     ) -> anyhow::Result<Self> {
         let ino = self.get_ino();
         let fd = self.fd;
@@ -909,7 +909,7 @@ impl Node for DefaultNode {
     }
 
     /// Create sub-directory in a directory
-    async fn create_child_dir(&mut self, ino:INum,child_dir_name: &str, mode: Mode) -> anyhow::Result<Self> {
+    async fn create_child_dir(&mut self, _ino:INum,child_dir_name: &str, mode: Mode) -> anyhow::Result<Self> {
         let ino = self.get_ino();
         let fd = self.fd;
         let dir_data = self.get_dir_data_mut();
@@ -974,7 +974,7 @@ impl Node for DefaultNode {
     /// Open file in a directory
     async fn open_child_file(
         &self,
-        inum:INum,
+        _inum:INum,
         child_file_name: &str,
         _remote: Option<FileAttr>,
         oflags: OFlag,
@@ -1017,7 +1017,7 @@ impl Node for DefaultNode {
     /// Create file in a directory
     async fn create_child_file(
         &mut self,
-        ino:INum,
+        _ino:INum,
         child_file_name: &str,
         oflags: OFlag,
         mode: Mode,

@@ -323,10 +323,10 @@ impl Session {
     }
 
     /// Initialize FUSE session
-    async fn init<'a>(
+    async fn init(
         &self,
         arg: &'_ FuseInitIn,
-        req: &'_ Request<'a>,
+        req: &'_ Request<'_>,
         fs: &'_ (dyn FileSystem + Send + Sync + 'static),
         fd: RawFd,
     ) -> anyhow::Result<()> {
