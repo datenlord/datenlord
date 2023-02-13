@@ -6,7 +6,6 @@ use crate::async_fuse::memfs::{dist, S3MetaData};
 use crate::async_fuse::memfs::dist::etcd;
 use crate::async_fuse::memfs::s3_wrapper::S3BackEnd;
 use crate::common::etcd_delegate::EtcdDelegate;
-// use tokio::sync::RwLock;
 
 #[derive(Debug)]
 pub(crate) struct InodeState {
@@ -60,7 +59,7 @@ impl InodeState {
     //  2. communicate and found no inum;  lock;  communicate and found no inum;  alloc ino;  unlock
     //  3. communicate and found no inum;  lock;  communicate and found inum;  unlock;
     //
-    // Solution two: use a global inode number for path, like "inode"+path: inum
+    // (chosen) Solution two: use a global inode number for path, like "inode"+path: inum
     //  cases:
     //  1. communicate with other nodes, and got inum
     //  2. communicate and found no inum;  try write kv when there's none;  write success;
