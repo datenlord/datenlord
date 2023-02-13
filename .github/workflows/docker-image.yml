@@ -5,7 +5,7 @@ on:
     branches: [ master ]
 
 env:
-  RUST_VERSION: 1.56.1
+  RUST_VERSION: 1.59.0
 jobs:
 
   build:
