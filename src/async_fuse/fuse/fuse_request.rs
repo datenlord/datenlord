@@ -373,7 +373,7 @@ impl<'a> Operation<'a> {
             #[cfg(feature = "abi-7-11")]
             4096 => FuseOpCode::CUSE_INIT,
 
-            _ => panic!("unknown FUSE OpCode={}", n),
+            _ => panic!("unknown FUSE OpCode={n}"),
         };
 
         Ok(match opcode {
@@ -555,13 +555,13 @@ impl fmt::Display for Operation<'_> {
     #[allow(clippy::too_many_lines)]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
-            Operation::Lookup { name } => write!(f, "LOOKUP name={:?}", name),
+            Operation::Lookup { name } => write!(f, "LOOKUP name={name:?}"),
             Operation::Forget { arg } => write!(f, "FORGET nlookup={}", arg.nlookup),
             Operation::GetAttr => write!(f, "GETATTR"),
             Operation::SetAttr { arg } => write!(f, "SETATTR valid={:#x}", arg.valid),
             Operation::ReadLink => write!(f, "READLINK"),
             Operation::SymLink { name, link } => {
-                write!(f, "SYMLINK name={:?}, link={:?}", name, link)
+                write!(f, "SYMLINK name={name:?}, link={link:?}")
             }
             Operation::MkNod { arg, name } => write!(
                 f,
@@ -571,8 +571,8 @@ impl fmt::Display for Operation<'_> {
             Operation::MkDir { arg, name } => {
                 write!(f, "MKDIR name={:?}, mode={:#05o}", name, arg.mode)
             }
-            Operation::Unlink { name } => write!(f, "UNLINK name={:?}", name),
-            Operation::RmDir { name } => write!(f, "RMDIR name={:?}", name),
+            Operation::Unlink { name } => write!(f, "UNLINK name={name:?}"),
+            Operation::RmDir { name } => write!(f, "RMDIR name={name:?}"),
             Operation::Rename {
                 arg,
                 oldname,
@@ -614,7 +614,7 @@ impl fmt::Display for Operation<'_> {
                 write!(f, "GETXATTR name={:?}, size={}", name, arg.size)
             }
             Operation::ListXAttr { arg } => write!(f, "LISTXATTR size={}", arg.size),
-            Operation::RemoveXAttr { name } => write!(f, "REMOVEXATTR name={:?}", name),
+            Operation::RemoveXAttr { name } => write!(f, "REMOVEXATTR name={name:?}"),
             Operation::Flush { arg } => {
                 write!(f, "FLUSH fh={}, lock owner={}", arg.fh, arg.lock_owner)
             }
@@ -667,7 +667,7 @@ impl fmt::Display for Operation<'_> {
                 write!(f, "POLL fh={}, kh={}, flags={:#x} ", arg.fh, arg.kh, arg.flags)
             }
             // #[cfg(feature = "abi-7-15")]
-            Operation::NotifyReply { data } => write!(f, "NOTIFY REPLY data={:?}", data),
+            Operation::NotifyReply { data } => write!(f, "NOTIFY REPLY data={data:?}"),
             // #[cfg(feature = "abi-7-16")]
             Operation::BatchForget { arg, nodes } => {
                 write!(f, "BATCH FORGOT count={}, nodes={:?}", arg.count, nodes)
@@ -909,8 +909,9 @@ mod test {
         let idx = 20;
         let bytes = INIT_REQUEST
             .get(..idx)
-            .unwrap_or_else(|| panic!("faile to get the first {} elements from INIT_REQUEST", idx));
+            .unwrap_or_else(|| panic!("faile to get the first {idx} elements from INIT_REQUEST"));
 
+        #[allow(clippy::expect_used)]
         let err =
             Request::new(bytes, PROTO_VERSION).expect_err("Unexpected request parsing result");
         let mut chain = err.chain();
@@ -930,19 +931,19 @@ mod test {
     fn short_read() {
         let idx = 48;
         let req = Request::new(
-            INIT_REQUEST.get(..idx).unwrap_or_else(|| {
-                panic!("failed to get first {} elements from INIT_REQUEST", idx)
-            }),
+            INIT_REQUEST
+                .get(..idx)
+                .unwrap_or_else(|| panic!("failed to get first {idx} elements from INIT_REQUEST")),
             PROTO_VERSION,
         )
-        .unwrap_or_else(|err| panic!("failed to build FUSE request, the error is: {}", err));
+        .unwrap_or_else(|err| panic!("failed to build FUSE request, the error is: {err}"));
         debug!("short read request={:?}", req);
     }
 
     #[test]
     fn init() {
         let req = Request::new(&INIT_REQUEST[..], PROTO_VERSION)
-            .unwrap_or_else(|err| panic!("failed to build FUSE request, the error is: {}", err));
+            .unwrap_or_else(|err| panic!("failed to build FUSE request, the error is: {err}"));
         assert_eq!(req.header.len, 56);
         assert_eq!(req.header.opcode, 26);
         assert_eq!(req.unique(), 0xdead_beef_baad_f00d);
@@ -964,7 +965,7 @@ mod test {
     #[test]
     fn mknod() {
         let req = Request::new(&MKNOD_REQUEST[..], PROTO_VERSION)
-            .unwrap_or_else(|err| panic!("failed to build FUSE request, the error is: {}", err));
+            .unwrap_or_else(|err| panic!("failed to build FUSE request, the error is: {err}"));
         assert_eq!(req.header.len, 56);
         assert_eq!(req.header.opcode, 8);
         assert_eq!(req.unique(), 0xdead_beef_baad_f00d);

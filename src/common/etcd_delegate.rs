@@ -71,9 +71,7 @@ impl EtcdDelegate {
             .lock(etcd_client::EtcdLockRequest::new(name, lease_id))
             .await
             .with_context(|| {
-                format!(
-                    "failed to get LockResponse from etcd, the lease id={lease_id}"
-                )
+                format!("failed to get LockResponse from etcd, the lease id={lease_id}")
             })?
             .take_key();
 
@@ -265,7 +263,7 @@ impl EtcdDelegate {
     /// Delete an existing key value pair from etcd
     /// # Panics
     ///
-    /// Will panic if failed to get key from etcd
+    /// Will panic if it doesn't delete one value from etcd
     #[inline]
     pub async fn delete_exact_one_value<T: DeserializeOwned + Clone + Debug + Send + Sync>(
         &self,
@@ -283,6 +281,25 @@ impl EtcdDelegate {
             panic!("failed to get the exactly one deleted key value pair")
         };
         Ok(deleted_kv)
+    }
+
+    /// Delete an key value pair from etcd
+    /// # Panics
+    ///
+    /// Will panic if it deletes more than one value from etcd
+    #[inline]
+    pub async fn delete_one_value<T: DeserializeOwned + Clone + Debug + Send + Sync>(
+        &self,
+        key: &str,
+    ) -> DatenLordResult<Option<T>> {
+        let mut deleted_value_vec = self.delete_from_etcd(key).await?;
+        debug_assert!(
+            deleted_value_vec.len() <= 1,
+            "delete {} key value pairs for a single key={}, shouldn't delete more than one",
+            deleted_value_vec.len(),
+            key,
+        );
+        Ok(deleted_value_vec.pop())
     }
 
     /// Delete all key value pairs from etcd

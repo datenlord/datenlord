@@ -95,8 +95,7 @@ impl Default for FileAttr {
 pub fn parse_oflag(flags: u32) -> OFlag {
     debug_assert!(
         flags < std::i32::MAX.cast::<u32>(),
-        "helper_parse_oflag() found flags={} overflow, larger than u16::MAX",
-        flags,
+        "helper_parse_oflag() found flags={flags} overflow, larger than u16::MAX",
     );
     let o_flags = OFlag::from_bits_truncate(flags.cast());
     debug!("helper_parse_oflag() read file flags={:?}", o_flags);
@@ -107,8 +106,7 @@ pub fn parse_oflag(flags: u32) -> OFlag {
 pub fn parse_mode(mode: u32) -> Mode {
     debug_assert!(
         mode < std::u16::MAX.cast::<u32>(),
-        "helper_parse_mode() found mode={} overflow, larger than u16::MAX",
-        mode,
+        "helper_parse_mode() found mode={mode} overflow, larger than u16::MAX",
     );
 
     #[cfg(target_os = "linux")]
@@ -133,8 +131,7 @@ pub fn parse_mode_bits(mode: u32) -> u16 {
 pub fn parse_sflag(flags: u32) -> SFlag {
     debug_assert!(
         flags < std::u16::MAX.cast::<u32>(),
-        "parse_sflag() found flags={} overflow, larger than u16::MAX",
-        flags,
+        "parse_sflag() found flags={flags} overflow, larger than u16::MAX",
     );
 
     #[cfg(target_os = "linux")]
@@ -159,7 +156,7 @@ pub async fn open_dir(path: &Path) -> anyhow::Result<RawFd> {
         fcntl::open(dir_path.as_os_str(), oflags, Mode::empty())
     })
     .await?
-    .context(format!("open_dir() failed to open directory={:?}", path))?;
+    .context(format!("open_dir() failed to open directory={path:?}"))?;
     Ok(dfd)
 }
 
@@ -172,8 +169,7 @@ pub async fn open_dir_at(dfd: RawFd, child_name: &str) -> anyhow::Result<RawFd> 
     })
     .await?
     .context(format!(
-        "open_dir_at() failed to open sub-directory={:?} under parent fd={}",
-        child_name, dfd
+        "open_dir_at() failed to open sub-directory={child_name:?} under parent fd={dfd}"
     ))?;
     Ok(dir_fd)
 }
@@ -254,8 +250,7 @@ pub async fn load_attr(fd: RawFd) -> anyhow::Result<FileAttr> {
     let st = tokio::task::spawn_blocking(move || stat::fstat(fd))
         .await?
         .context(format!(
-            "load_attr() failed get the file attribute of fd={}",
-            fd,
+            "load_attr() failed get the file attribute of fd={fd}",
         ))?;
 
     Ok(convert_to_file_attr(st))
@@ -266,8 +261,7 @@ pub fn time_from_system_time(system_time: &SystemTime) -> (u64, u32) {
     let duration = system_time
         .duration_since(UNIX_EPOCH)
         .context(format!(
-            "failed to convert SystemTime={:?} to Duration",
-            system_time
+            "failed to convert SystemTime={system_time:?} to Duration"
         ))
         .unwrap_or_else(|e| {
             panic!(
@@ -320,7 +314,7 @@ pub fn convert_to_fuse_attr(attr: FileAttr) -> FuseAttr {
 pub async fn load_dir_data(dirfd: RawFd) -> anyhow::Result<BTreeMap<String, DirEntry>> {
     tokio::task::spawn_blocking(move || {
         let dir = Dir::opendirat(dirfd, ".", OFlag::empty())
-            .with_context(|| format!("failed to build Dir from fd={}", dirfd))?;
+            .with_context(|| format!("failed to build Dir from fd={dirfd}"))?;
         let mut dir_entry_map = BTreeMap::new();
         for entry in dir {
             let entry = entry?;
@@ -349,8 +343,7 @@ pub async fn load_file_data(fd: RawFd, offset: usize, len: usize) -> anyhow::Res
 
             if res < 0 {
                 return Err(anyhow::Error::msg(format!(
-                    "linux pread failed with Error code: {}",
-                    res
+                    "linux pread failed with Error code: {res}"
                 )));
             }
             res.cast::<usize>()
