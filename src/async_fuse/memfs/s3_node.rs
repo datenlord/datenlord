@@ -158,6 +158,41 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
         old_attr
     }
 
+    /// Get a new inode number
+    async fn new_inode_num(&self) -> u64 {
+        let lock_key = etcd::lock_inode_number(Arc::<EtcdDelegate>::clone(&self.meta.etcd_client))
+            .await
+            .unwrap_or_else(|e| panic!("failed to get etcd inode number lock, error is {e:?}"));
+        let default = self.meta.cur_inum();
+        let cur_inum = dist_client::get_ino_num(
+            Arc::<EtcdDelegate>::clone(&self.meta.etcd_client),
+            &self.meta.node_id,
+            &self.meta.volume_info,
+            default,
+        )
+        .await
+        .unwrap_or_else(|e| {
+            warn!("Load inode num from other node error: {}", e);
+            default
+        });
+
+        let inum = if cur_inum > default {
+            self.meta
+                .cur_inum
+                .store(cur_inum.overflow_add(1), atomic::Ordering::Relaxed);
+            cur_inum.cast()
+        } else {
+            self.meta
+                .cur_inum
+                .fetch_add(1, atomic::Ordering::SeqCst)
+                .cast()
+        };
+        etcd::unlock_inode_number(Arc::<EtcdDelegate>::clone(&self.meta.etcd_client), lock_key)
+            .await
+            .unwrap_or_else(|e| panic!("failed to release etcd inode number lock, error is {e:?}"));
+        inum
+    }
+
     /// Get fullpath of this node
     pub(crate) fn full_path(&self) -> &str {
         self.full_path.as_str()
@@ -681,6 +716,35 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
     ) -> anyhow::Result<Self> {
         let absolute_path = self.absolute_path_with_child(child_symlink_name);
 
+        let child_attr = match remote {
+            None => {
+                let (len, last_modified) = self
+                    .s3_backend
+                    .get_meta(absolute_path.as_str())
+                    .await
+                    .unwrap_or_else(|e| {
+                        panic!(
+                            "failed to get meta of {absolute_path:?} from s3 backend, error is {e:?}"
+                        )
+                    });
+                // get symbol file attribute
+                FileAttr {
+                    ino: self.new_inode_num().await,
+                    kind: SFlag::S_IFLNK,
+                    size: len.cast(),
+                    blocks: 0,
+                    perm: 0o777,
+                    atime: last_modified,
+                    mtime: last_modified,
+                    ctime: last_modified,
+                    crtime: last_modified,
+                    ..FileAttr::default()
+                }
+            }
+            Some(attr) => attr,
+        };
+        debug_assert_eq!(SFlag::S_IFLNK, child_attr.kind);
+
         let target_path = PathBuf::from(
             String::from_utf8(
                 self.s3_backend
@@ -712,6 +776,31 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
         child_dir_name: &str,
         child_attr: Arc<RwLock<FileAttr>>,
     ) -> anyhow::Result<Self> {
+        let absolute_path = self.absolute_dir_with_child(child_dir_name);
+
+        // get new directory attribute
+        let child_attr = match remote {
+            None => {
+                let last_modified = self
+                    .s3_backend
+                    .get_last_modified(absolute_path.as_str())
+                    .await
+                    .unwrap_or_else(|e| panic!("failed to get last modified of file {absolute_path:?} from s3 backend, error is {e:?}"));
+                FileAttr {
+                    ino: self.new_inode_num().await,
+                    kind: SFlag::S_IFDIR,
+                    atime: last_modified,
+                    mtime: last_modified,
+                    ctime: last_modified,
+                    crtime: last_modified,
+                    ..FileAttr::default()
+                }
+            }
+            Some(attr) => attr,
+        };
+
+        debug_assert_eq!(SFlag::S_IFDIR, child_attr.kind);
+
         // lookup count and open count are increased to 1 by creation
         let full_path = format!("{}{}/", self.full_path, child_dir_name);
 
@@ -787,6 +876,39 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
         _oflags: OFlag,
         global_cache: Arc<GlobalCache>,
     ) -> anyhow::Result<Self> {
+        // get new file attribute
+        let absolute_path = self.absolute_path_with_child(child_file_name);
+        let child_attr = match remote {
+            None => {
+                let (content_len, last_modified) = self
+                    .s3_backend
+                    .get_meta(absolute_path.as_str())
+                    .await
+                    .unwrap_or_else(|e| {
+                        panic!(
+                            "failed to get meta of {absolute_path:?} from s3 backend, error is {e:?}"
+                        )
+                    });
+                FileAttr {
+                    ino: self.new_inode_num().await,
+                    kind: SFlag::S_IFREG,
+                    size: content_len.cast(),
+                    blocks: content_len
+                        .overflow_add(BLOCK_SIZE)
+                        .overflow_sub(1)
+                        .overflow_div(BLOCK_SIZE)
+                        .cast(),
+                    atime: last_modified,
+                    mtime: last_modified,
+                    ctime: last_modified,
+                    crtime: last_modified,
+                    ..FileAttr::default()
+                }
+            }
+            Some(attr) => attr,
+        };
+        debug_assert_eq!(SFlag::S_IFREG, child_attr.kind);
+
         Ok(Self::new(
             self.get_ino(),
             child_file_name,
@@ -1102,7 +1224,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
             );
         }
 
-        debug!("file {:?} size = {:?}", self.name, self.attr.read().size);
+        debug!("file {:?} size = {:?}", self.name, self.attr.size);
         self.update_mtime_ctime_to_now();
 
         Ok(written_size)
