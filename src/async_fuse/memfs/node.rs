@@ -823,16 +823,13 @@ impl Node for DefaultNode {
             "load_child_symlink() failed to open symlink itself with name={child_symlink_name:?} \
                 under parent ino={ino}",
         ))?;
-        *child_attr.write() = {
-            let child_attr = fs_util::load_attr(child_fd)
-                // let child_attr = util::load_symlink_attr(fd, child_symlink_name.clone())
-                .await
-                .context(format!(
-                    "load_child_symlink() failed to get the attribute of the new symlink={child_symlink_name:?}",
-                ))?;
-            debug_assert_eq!(SFlag::S_IFLNK, child_attr.kind);
-            child_attr
-        };
+        let child_attr = fs_util::load_attr(child_fd)
+            // let child_attr = util::load_symlink_attr(fd, child_symlink_name.clone())
+            .await
+            .context(format!(
+                "load_child_symlink() failed to get the attribute of the new symlink={child_symlink_name:?}",
+            ))?;
+        debug_assert_eq!(SFlag::S_IFLNK, child_attr.kind);
 
         let target_path = {
             let child_symlink_name_string = child_symlink_name.to_owned();
@@ -878,14 +875,11 @@ impl Node for DefaultNode {
                     under parent ino={ino}",
             ))?;
 
-        *child_attr.write() = {
-            // get new directory attribute
-            let child_attr = fs_util::load_attr(child_raw_fd).await.context(format!(
-                "open_child_dir() failed to get the attribute of the new child directory={child_dir_name:?}",
-            ))?;
-            debug_assert_eq!(SFlag::S_IFDIR, child_attr.kind);
-            child_attr
-        };
+        // get new directory attribute
+        let child_attr = fs_util::load_attr(child_raw_fd).await.context(format!(
+            "open_child_dir() failed to get the attribute of the new child directory={child_dir_name:?}",
+        ))?;
+        debug_assert_eq!(SFlag::S_IFDIR, child_attr.kind);
 
         let mut full_path = self.full_path().to_owned();
         full_path.push_str(child_dir_name);
@@ -936,14 +930,11 @@ impl Node for DefaultNode {
                     under parent ino={ino}",
             ))?;
 
-        let child_attr = {
-            // get new directory attribute
-            let child_attr = fs_util::load_attr(child_raw_fd).await.context(format!(
-                "open_child_dir_helper() failed to get the attribute of the new child directory={child_dir_name:?}",
-            ))?;
-            debug_assert_eq!(SFlag::S_IFDIR, child_attr.kind);
-            Arc::new(RwLock::new(child_attr))
-        };
+        // get new directory attribute
+        let child_attr = fs_util::load_attr(child_raw_fd).await.context(format!(
+            "open_child_dir_helper() failed to get the attribute of the new child directory={child_dir_name:?}",
+        ))?;
+        debug_assert_eq!(SFlag::S_IFDIR, child_attr.kind);
 
         // insert new entry to parent directory
         // TODO: support thread-safe
@@ -1333,14 +1324,11 @@ impl Node for DefaultNode {
         }
 
         // update the attribute of the written file
-        {
-            let mut attr_write = self.attr.write();
-            attr_write.size = std::cmp::max(
-                attr_write.size,
-                (offset.cast::<u64>()).overflow_add(written_size.cast()),
-            );
-            debug!("file {:?} size = {:?}", self.name, attr_write.size);
-        }
+        self.attr.size = std::cmp::max(
+            self.attr.size,
+            (offset.cast::<u64>()).overflow_add(written_size.cast()),
+        );
+        debug!("file {:?} size = {:?}", self.name, self.attr.size);
         self.update_mtime_ctime_to_now();
 
         Ok(written_size)

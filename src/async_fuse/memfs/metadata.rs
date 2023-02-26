@@ -456,13 +456,15 @@ impl MetaData for DefaultMetaData {
             });
             let parent_name = parent_node.get_name().to_owned();
             let child_node = match child_type {
-                SFlag::S_IFDIR => parent_node
-                    .open_child_dir(child_name, child_attr)
-                    .await
-                    .context(format!(
-                        "lookup_helper() failed to open sub-directory name={child_name:?} \
+                SFlag::S_IFDIR => {
+                    parent_node
+                        .open_child_dir(child_name, None)
+                        .await
+                        .context(format!(
+                            "lookup_helper() failed to open sub-directory name={child_name:?} \
                             under parent directory of ino={parent} and name={parent_name:?}",
-                    ))?,
+                        ))?
+                }
                 SFlag::S_IFREG => {
                     let oflags = OFlag::O_RDWR;
                     parent_node
