@@ -21,9 +21,12 @@ pub fn format_anyhow_error(error: &anyhow::Error) -> String {
         .map(ToString::to_string)
         .collect::<Vec<_>>();
     let mut err_msg = String::new();
-    let _ignore = write!(err_msg, "{}, root cause: {}", err_msg_vec.as_slice().join(", caused by: "), error.root_cause());
+    let _ignore = write!(
+        err_msg,
+        "{}, root cause: {}",
+        err_msg_vec.as_slice().join(", caused by: "),
+        error.root_cause()
+    );
 
-    //let mut err_msg = err_msg_vec.as_slice().join(", caused by: ");
-    //err_msg.push_str(&format!(", root cause: {}", error.root_cause()));
     err_msg
 }

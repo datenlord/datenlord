@@ -67,7 +67,7 @@ pub struct S3MetaData<S: S3BackEnd + Send + Sync + 'static> {
 fn parse_s3_info(info: &str) -> (&str, &str, &str, &str) {
     info.split(S3_INFO_DELIMITER)
         .next_tuple()
-        .unwrap_or_else(|| panic!("parse s3 information failed. s3_info: {}", info))
+        .unwrap_or_else(|| panic!("parse s3 information failed. s3_info: {info}"))
 }
 
 #[async_trait]
@@ -87,7 +87,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         let s3_backend = Arc::new(
             match S::new(bucket_name, endpoint, access_key, secret_key).await {
                 Ok(s) => s,
-                Err(e) => panic!("{:?}", e),
+                Err(e) => panic!("{e:?}"),
             },
         );
 
@@ -119,7 +119,6 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         );
 
         let root_inode = S3Node::open_root_node(FUSE_ROOT_ID, "/", s3_backend, Arc::clone(&meta))
-            .await
             .context("failed to open FUSE root node")
             .unwrap_or_else(|e| {
                 panic!("{}", e);
@@ -148,8 +147,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         let node = cache.get(&ino).unwrap_or_else(|| {
             panic!(
                 "try_delete_node() found fs is inconsistent, \
-                    the i-node of ino={} is not in cache",
-                ino,
+                    the i-node of ino={ino} is not in cache",
             );
         });
 
@@ -193,9 +191,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         // pre-check
         let (parent_full_path, child_attr, fuse_attr) = {
             let mut cache = self.cache.write().await;
-            let parent_node = self
-                .create_node_pre_check(parent, node_name, &mut cache)
-                .await
+            let parent_node = Self::create_node_pre_check(parent, node_name, &mut cache)
                 .context("create_node_helper() failed to pre check")?;
             let parent_name = parent_node.get_name().to_owned();
             // all checks are passed, ready to create new node
@@ -211,9 +207,8 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
                     .create_child_dir(node_name, m_flags)
                     .await
                     .context(format!(
-                        "create_node_helper() failed to create directory with name={:?} and mode={:?} \
-                            under parent directory of ino={} and name={:?}",
-                        node_name, m_flags, parent, parent_name,
+                        "create_node_helper() failed to create directory with name={node_name:?} and mode={m_flags:?} \
+                            under parent directory of ino={parent} and name={parent_name:?}",
                     ))?
                 }
                 SFlag::S_IFREG => {
@@ -233,9 +228,8 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
                         )
                         .await
                         .context(format!(
-                        "create_node_helper() failed to create file with name={:?} and mode={:?} \
-                            under parent directory of ino={} and name={:?}",
-                        node_name, m_flags, parent, parent_name,
+                        "create_node_helper() failed to create file with name={node_name:?} and mode={m_flags:?} \
+                            under parent directory of ino={parent} and name={parent_name:?}",
                     ))?
                 }
                 SFlag::S_IFLNK => {
@@ -257,16 +251,14 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
                     )
                     .await
                     .context(format!(
-                        "create_node_helper() failed to create symlink with name={:?} to target path={:?} \
-                            under parent directory of ino={} and name={:?}",
-                        node_name, target_path, parent, parent_name,
+                        "create_node_helper() failed to create symlink with name={node_name:?} to target path={target_path:?} \
+                            under parent directory of ino={parent} and name={parent_name:?}",
                     ))?
                 }
                 _ => {
                     panic!(
-                    "create_node_helper() found unsupported i-node type={:?} with name={:?} to create \
-                        under parent directory of ino={} and name={:?}",
-                        node_type, node_name, parent, parent_name,
+                    "create_node_helper() found unsupported i-node type={node_type:?} with name={node_name:?} to create \
+                        under parent directory of ino={parent} and name={parent_name:?}",
                 );
                 }
             };
@@ -285,10 +277,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
                 node_name, new_ino, node_type, parent, parent_name,
             );
             let pnode = cache.get(&parent).unwrap_or_else(|| {
-                panic!(
-                    "failed to get parent inode {:?}, parent name {:?}",
-                    parent, parent_name
-                )
+                panic!("failed to get parent inode {parent:?}, parent name {parent_name:?}")
             });
             (pnode.full_path().to_owned(), new_node_attr, fuse_attr)
         };
@@ -369,8 +358,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
                 let parent_node = cache.get(&parent).unwrap_or_else(|| {
                     panic!(
                         "lookup_helper() found fs is inconsistent, \
-                        parent i-node of ino={} should be in cache",
-                        parent,
+                        parent i-node of ino={parent} should be in cache",
                     );
                 });
                 parent_node.absolute_path_of_child(child_name, child_type)
@@ -382,8 +370,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
                 let parent_node = cache.get(&parent).unwrap_or_else(|| {
                     panic!(
                         "lookup_helper() found fs is inconsistent, \
-                        parent i-node of ino={} should be in cache",
-                        parent,
+                        parent i-node of ino={parent} should be in cache",
                     );
                 });
                 let parent_name = parent_node.get_name().to_owned();
@@ -392,9 +379,8 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
                         .open_child_dir(child_name, remote_attr)
                         .await
                         .context(format!(
-                            "lookup_helper() failed to open sub-directory name={:?} \
-                            under parent directory of ino={} and name={:?}",
-                            child_name, parent, parent_name,
+                            "lookup_helper() failed to open sub-directory name={child_name:?} \
+                            under parent directory of ino={parent} and name={parent_name:?}",
                         ))?,
                     SFlag::S_IFREG => {
                         let oflags = OFlag::O_RDWR;
@@ -407,23 +393,18 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
                             )
                             .await
                             .context(format!(
-                            "lookup_helper() failed to open child file name={:?} with flags={:?} \
-                                under parent directory of ino={} and name={:?}",
-                            child_name, oflags, parent, parent_name,
+                            "lookup_helper() failed to open child file name={child_name:?} with flags={oflags:?} \
+                                under parent directory of ino={parent} and name={parent_name:?}",
                         ))?
                     }
                     SFlag::S_IFLNK => parent_node
                         .load_child_symlink(child_name, remote_attr)
                         .await
                         .context(format!(
-                            "lookup_helper() failed to read child symlink name={:?} \
-                                under parent directory of ino={} and name={:?}",
-                            child_name, parent, parent_name,
+                            "lookup_helper() failed to read child symlink name={child_name:?} \
+                                under parent directory of ino={parent} and name={parent_name:?}",
                         ))?,
-                    _ => panic!(
-                        "lookup_helper() found unsupported file type={:?}",
-                        child_type,
-                    ),
+                    _ => panic!("lookup_helper() found unsupported file type={child_type:?}",),
                 };
                 (child_node, parent_name)
             };
@@ -476,8 +457,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         let inode = cache.get_mut(&ino).unwrap_or_else(|| {
             panic!(
                 "fsync_helper() found fs is inconsistent, \
-                 the inode ino={} is not in cache",
-                ino
+                 the inode ino={ino} is not in cache"
             );
         });
 
@@ -501,8 +481,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
             let inode = cache.get_mut(&ino).unwrap_or_else(|| {
                 panic!(
                     "write() found fs is inconsistent, \
-                     the inode ino={} is not in cache",
-                    ino
+                     the inode ino={ino} is not in cache"
                 );
             });
             debug!(
@@ -534,17 +513,15 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
 
     /// The pre-check before create node
     #[allow(single_use_lifetimes)]
-    async fn create_node_pre_check<'a, 'b>(
-        &self,
+    fn create_node_pre_check<'b>(
         parent: INum,
         node_name: &str,
-        cache: &'b mut RwLockWriteGuard<'a, BTreeMap<INum, <Self as MetaData>::N>>,
+        cache: &'b mut RwLockWriteGuard<BTreeMap<INum, <Self as MetaData>::N>>,
     ) -> anyhow::Result<&'b mut <Self as MetaData>::N> {
         let parent_node = cache.get_mut(&parent).unwrap_or_else(|| {
             panic!(
                 "create_node_pre_check() found fs is inconsistent, \
-                    parent of ino={} should be in cache before create it new child",
-                parent,
+                    parent of ino={parent} should be in cache before create it new child",
             );
         });
         if let Some(occupied) = parent_node.get_entry(node_name) {
@@ -572,7 +549,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
     }
 
     /// Helper function to pre-check if node can be deferred deleted.
-    async fn deferred_delete_pre_check(&self, inode: &S3Node<S>) -> (bool, INum, String) {
+    fn deferred_delete_pre_check(inode: &S3Node<S>) -> (bool, INum, String) {
         // pre-check whether deferred delete or not
         debug_assert!(inode.get_lookup_count() >= 0); // lookup count cannot be negative
         debug_assert!(inode.get_open_count() >= 0); // open count cannot be negative
@@ -594,23 +571,19 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
         let inode = cache.get(&ino).unwrap_or_else(|| {
             panic!(
                 "may_deferred_delete_node_helper() failed to \
-                         find the i-node of ino={} to remove",
-                ino,
+                         find the i-node of ino={ino} to remove",
             );
         });
-        let (deferred_deletion, parent_ino, node_name) =
-            self.deferred_delete_pre_check(inode).await;
+        let (deferred_deletion, parent_ino, node_name) = Self::deferred_delete_pre_check(inode);
         let parent_node = cache.get_mut(&parent_ino).unwrap_or_else(|| {
             panic!(
                 "may_deferred_delete_node_helper() failed to \
-                     find the parent of ino={} for i-node of ino={}",
-                parent_ino, ino,
+                     find the parent of ino={parent_ino} for i-node of ino={ino}",
             );
         });
         let deleted_entry = parent_node.unlink_entry(&node_name).await.context(format!(
-            "may_deferred_delete_node_helper() failed to remove entry name={:?} \
-                 and ino={} from parent directory ino={}",
-            node_name, ino, parent_ino,
+            "may_deferred_delete_node_helper() failed to remove entry name={node_name:?} \
+                 and ino={ino} from parent directory ino={parent_ino}",
         ))?;
         debug!(
             "may_deferred_delete_node_helper() successfully remove entry name={:?} \
@@ -625,8 +598,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
             let inode = cache.get(&ino).unwrap_or_else(|| {
                 panic!(
                     "impossible case, may_deferred_delete_node_helper() \
-                     i-node of ino={} is not in cache",
-                    ino,
+                     i-node of ino={ino} is not in cache",
                 );
             });
             debug!(
@@ -658,8 +630,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
             let inode = cache.remove(&ino).unwrap_or_else(|| {
                 panic!(
                     "impossible case, may_deferred_delete_node_helper() \
-                     i-node of ino={} is not in cache",
-                    ino,
+                     i-node of ino={ino} is not in cache",
                 )
             });
             debug!(
@@ -683,8 +654,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
         let parent_node = cache.get(&parent).unwrap_or_else(|| {
             panic!(
                 "lookup_helper() found fs is inconsistent, \
-                        the parent i-node of ino={} should be in cache",
-                parent,
+                        the parent i-node of ino={parent} should be in cache",
             );
         });
         if let Some(child_entry) = parent_node.get_entry(name) {
@@ -726,8 +696,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
         let old_parent_node = cache.get(&old_parent).unwrap_or_else(|| {
             panic!(
                 "rename() found fs is inconsistent, \
-                    the parent i-node of ino={} should be in cache",
-                old_parent,
+                    the parent i-node of ino={old_parent} should be in cache",
             );
         });
         let old_parent_fd = old_parent_node.get_fd();
@@ -760,8 +729,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
         let new_parent_node = cache.get(&new_parent).unwrap_or_else(|| {
             panic!(
                 "rename() found fs is inconsistent, \
-                    the new parent i-node of ino={} should be in cache",
-                new_parent,
+                    the new parent i-node of ino={new_parent} should be in cache",
             );
         });
         let new_parent_fd = new_parent_node.get_fd();
@@ -808,11 +776,10 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
         let mut cache = self.cache.write().await;
         let old_parent_node = cache.get_mut(&old_parent).unwrap_or_else(|| {
             panic!(
-                "impossible case when rename, the from parent i-node of ino={} should be in cache",
-                old_parent,
+                "impossible case when rename, the from parent i-node of ino={old_parent} should be in cache",
             )
         });
-        let entry_to_move = match old_parent_node.remove_entry_for_rename(old_name).await {
+        let entry_to_move = match old_parent_node.remove_entry_for_rename(old_name) {
             None => panic!(
                 "impossible case when rename, the from entry of name={:?} \
                         should be under from directory ino={} and name={:?}",
@@ -829,11 +796,10 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
 
         let new_parent_node = cache.get_mut(&new_parent).unwrap_or_else(|| {
             panic!(
-                "impossible case when rename, the to parent i-node of ino={} should be in cache",
-                new_parent
+                "impossible case when rename, the to parent i-node of ino={new_parent} should be in cache"
             )
         });
-        new_parent_node.insert_entry_for_rename(entry_to_move).await
+        new_parent_node.insert_entry_for_rename(entry_to_move)
     }
 
     /// Rename exchange on local node
@@ -886,13 +852,10 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
             let mut cache = self.cache.write().await;
             let old_parent_node = cache.get_mut(&old_parent).unwrap_or_else(|| {
                 panic!(
-                    "impossible case when rename, the from parent i-node of ino={} should be in cache",
-                    old_parent,
+                    "impossible case when rename, the from parent i-node of ino={old_parent} should be in cache",
                 )
             });
-            let insert_res = old_parent_node
-                .insert_entry_for_rename(exchange_entry)
-                .await;
+            let insert_res = old_parent_node.insert_entry_for_rename(exchange_entry);
             debug_assert!(
                 insert_res.is_none(),
                 "impossible case when rename, the from i-node of name={:?} should have been \
@@ -905,8 +868,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
             // call rename2 here to exchange two nodes
             let exchanged_node = cache.get_mut(&new_entry_ino).unwrap_or_else(|| {
                 panic!(
-                    "impossible case when rename, the new entry i-node of ino={} should be in cache",
-                    new_entry_ino,
+                    "impossible case when rename, the new entry i-node of ino={new_entry_ino} should be in cache",
                 )
             });
             exchanged_node.set_parent_ino(old_parent);
@@ -916,8 +878,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
                 .await
                 .context(format!(
                     "rename_exchange_helper() failed to load attribute of \
-                        to i-node of ino={} and name={:?} under parent directory",
-                    new_entry_ino, new_name,
+                        to i-node of ino={new_entry_ino} and name={new_name:?} under parent directory",
                 ))
                 .unwrap_or_else(|e| {
                     panic!(
@@ -932,9 +893,8 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
             panic!("rename2 system call has not been supported in libc to exchange two nodes yet!");
         } else {
             panic!(
-                "impossible case, the child i-node of name={:?} to be exchanged \
-                    should be under to parent directory ino={}",
-                new_name, new_parent,
+                "impossible case, the child i-node of name={new_name:?} to be exchanged \
+                    should be under to parent directory ino={new_parent}",
             );
         }
     }
@@ -978,8 +938,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
                 .await
                 .context(format!(
                     "rename_may_replace_local() failed to \
-                        maybe deferred delete the replaced i-node ino={}",
-                    new_ino,
+                        maybe deferred delete the replaced i-node ino={new_ino}",
                 ))?;
         }
 
@@ -987,8 +946,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
             let mut cache = self.cache.write().await;
             let moved_node = cache.get_mut(&old_entry_ino).unwrap_or_else(|| {
                 panic!(
-                "impossible case when rename, the from entry i-node of ino={} should be in cache",
-                old_entry_ino,
+                "impossible case when rename, the from entry i-node of ino={old_entry_ino} should be in cache",
             )
             });
             moved_node.set_parent_ino(new_parent);
@@ -1016,10 +974,10 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
     pub(crate) async fn rename_local(&self, param: &RenameParam, from_remote: bool) {
         if param.flags == 2 {
             if let Err(e) = self.rename_exchange_local(param).await {
-                panic!("failed to rename local param={:?}, error is {:?}", param, e);
+                panic!("failed to rename local param={param:?}, error is {e:?}");
             }
         } else if let Err(e) = self.rename_may_replace_local(param, from_remote).await {
-            panic!("failed to rename local param={:?}, error is {:?}", param, e);
+            panic!("failed to rename local param={param:?}, error is {e:?}");
         } else {
         }
     }
@@ -1044,8 +1002,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
             let parent_node = cache.get(&parent).unwrap_or_else(|| {
                 panic!(
                     "remove_node_local() found fs is inconsistent, \
-                        parent of ino={} should be in cache before remove its child",
-                    parent,
+                        parent of ino={parent} should be in cache before remove its child",
                 );
             });
             match parent_node.get_entry(node_name) {
@@ -1058,9 +1015,8 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
                     return util::build_error_result_from_errno(
                         Errno::ENOENT,
                         format!(
-                            "remove_node_local() failed to find i-node name={:?} \
-                                under parent of ino={}",
-                            node_name, parent,
+                            "remove_node_local() failed to find i-node name={node_name:?} \
+                                under parent of ino={parent}",
                         ),
                     );
                 }
@@ -1071,10 +1027,9 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
                         let dir_node = cache.get(&node_ino).unwrap_or_else(|| {
                             panic!(
                                 "remove_node_local() found fs is inconsistent, \
-                                    directory name={:?} of ino={} \
-                                    found under the parent of ino={}, \
+                                    directory name={node_name:?} of ino={node_ino} \
+                                    found under the parent of ino={parent}, \
                                     but no i-node found for this directory",
-                                node_name, node_ino, parent,
                             );
                         });
                         if !dir_node.is_node_data_empty() {
@@ -1088,9 +1043,8 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
                                 Errno::ENOTEMPTY,
                                 format!(
                                     "remove_node_local() cannot remove \
-                                        the non-empty directory name={:?} of ino={} \
-                                        under the parent directory of ino={}",
-                                    node_name, node_ino, parent,
+                                        the non-empty directory name={node_name:?} of ino={node_ino} \
+                                        under the parent directory of ino={parent}",
                                 ),
                             );
                         }
@@ -1099,9 +1053,8 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
                     let child_node = cache.get(&node_ino).unwrap_or_else(|| {
                         panic!(
                             "remove_node_local() found fs is inconsistent, \
-                                i-node name={:?} of ino={} found under the parent of ino={}, \
-                                but no i-node found for this node",
-                            node_name, node_ino, parent
+                                i-node name={node_name:?} of ino={node_ino} found under the parent of ino={parent}, \
+                                but no i-node found for this node"
                         )
                     });
 
@@ -1119,9 +1072,8 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
             self.may_deferred_delete_node_helper(node_ino, from_remote)
                 .await
                 .context(format!(
-                    "remove_node_local() failed to maybe deferred delete child i-node of ino={}, \
-                        name={:?} and type={:?} under parent ino={}",
-                    node_ino, node_name, node_type, parent,
+                    "remove_node_local() failed to maybe deferred delete child i-node of ino={node_ino}, \
+                        name={node_name:?} and type={node_type:?} under parent ino={parent}",
                 ))?;
             // reply.ok().await?;
             debug!(
@@ -1139,7 +1091,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
             let path2inum = self.path2inum.read().await;
             path2inum
                 .get(full_path)
-                .unwrap_or_else(|| panic!("failed to find inum of {:?} from path2inum", full_path))
+                .unwrap_or_else(|| panic!("failed to find inum of {full_path:?} from path2inum"))
                 .to_owned()
         };
         let attr = self
@@ -1147,12 +1099,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
             .read()
             .await
             .get(&inum)
-            .unwrap_or_else(|| {
-                panic!(
-                    "failed to find inum={:?} path={:?} from cache",
-                    inum, full_path
-                )
-            })
+            .unwrap_or_else(|| panic!("failed to find inum={inum:?} path={full_path:?} from cache"))
             .get_attr();
         if let Err(e) = dist_client::push_attr(
             Arc::<EtcdDelegate>::clone(&self.etcd_client),
@@ -1163,7 +1110,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
         )
         .await
         {
-            panic!("failed to sync attribute to others, error: {}", e);
+            panic!("failed to sync attribute to others, error: {e}");
         }
     }
 
@@ -1186,7 +1133,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
         )
         .await
         {
-            panic!("failed to sync dir to others, error: {}", e);
+            panic!("failed to sync dir to others, error: {e}");
         }
     }
 
@@ -1200,7 +1147,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
         )
         .await
         {
-            Err(e) => panic!("failed to sync attribute to others, error: {}", e),
+            Err(e) => panic!("failed to sync attribute to others, error: {e}"),
             Ok(res) => res,
         }
     }
@@ -1215,7 +1162,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
         )
         .await
         {
-            panic!("failed to sync rename request to others, error: {}", e);
+            panic!("failed to sync rename request to others, error: {e}");
         }
     }
 
@@ -1231,7 +1178,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
         )
         .await
         {
-            panic!("failed to sync rename request to others, error: {}", e);
+            panic!("failed to sync rename request to others, error: {e}");
         }
     }
 
@@ -1253,7 +1200,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
         )
         .await
         {
-            panic!("failed to invlidate others' cache, error: {}", e);
+            panic!("failed to invlidate others' cache, error: {e}");
         }
     }
 }

@@ -1,7 +1,7 @@
 //! The implementation for `DatenLord` worker service
 
 use grpcio::{RpcContext, UnarySink};
-use log::{debug, info};
+use log::{debug, info, warn};
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -201,7 +201,7 @@ impl Worker for WorkerImpl {
                 Ok(volume) => {
                     let del_res = volume.delete_directory();
                     if let Err(e) = del_res {
-                        panic!(
+                        warn!(
                         "failed to delete volume ID={} directory on node ID={}, the error is: {}",
                         vol_id,
                         self_inner.meta_data.get_node_id(),
@@ -243,10 +243,7 @@ impl Worker for WorkerImpl {
                 .build_snapshot_from_volume(src_volume_id, &snap_id_str, snap_name)
                 .await
                 .with_context(|| {
-                    format!(
-                        "failed to create snapshot ID={} on node ID={}",
-                        snap_id_str, node_id,
-                    )
+                    format!("failed to create snapshot ID={snap_id_str} on node ID={node_id}",)
                 });
             match build_snap_res {
                 Ok(snapshot) => {
@@ -257,10 +254,7 @@ impl Worker for WorkerImpl {
                         snapshot.size_bytes,
                     )
                     .with_context(|| {
-                        format!(
-                            "failed to build CreateSnapshotResponse on node ID={}",
-                            node_id,
-                        )
+                        format!("failed to build CreateSnapshotResponse on node ID={node_id}",)
                     });
                     match build_resp_res {
                         Ok(r) => {
@@ -270,9 +264,7 @@ impl Worker for WorkerImpl {
                                 .await;
                             debug_assert!(
                                 add_res.is_ok(),
-                                "snapshot with the same ID={} exists on node ID={}, impossible case",
-                                snap_id,
-                                node_id,
+                                "snapshot with the same ID={snap_id} exists on node ID={node_id}, impossible case",
                             );
                             info!(
                                 "create snapshot ID={} and name={} on node ID={}",
@@ -314,21 +306,28 @@ impl Worker for WorkerImpl {
                     )
                 });
             match delete_res {
-                Ok(snapshot) => {
-                    let del_res = snapshot.delete_file();
-                    if let Err(e) = del_res {
-                        panic!(
+                Ok(snapshot_opt) => {
+                    if let Some(snapshot) = snapshot_opt {
+                        let del_res = snapshot.delete_file();
+                        if let Err(e) = del_res {
+                            panic!(
                             "failed to delete snapshot ID={} file on node ID={}, the error is: {}",
                             snap_id,
                             self_inner.meta_data.get_node_id(),
                             e,
                         );
+                        }
+                        debug!(
+                            "successfully delete snapshot ID={} on node ID={}",
+                            snap_id,
+                            self_inner.meta_data.get_node_id(),
+                        );
+                    } else {
+                        debug!(
+                            "Snapshot ID={snap_id} doesn't exist on node ID={}",
+                            self_inner.meta_data.get_node_id()
+                        );
                     }
-                    debug!(
-                        "successfully delete snapshot ID={} on node ID={}",
-                        snap_id,
-                        self_inner.meta_data.get_node_id(),
-                    );
                     let r = DeleteSnapshotResponse::new();
                     Ok(r)
                 }

@@ -47,7 +47,7 @@ pub fn mode_from_kind_and_perm(kind: SFlag, perm: u16) -> u32 {
         SFlag::S_IFREG => libc::S_IFREG,
         SFlag::S_IFLNK => libc::S_IFLNK,
         SFlag::S_IFSOCK => libc::S_IFSOCK,
-        _ => panic!("unknown SFlag type={:?}", kind),
+        _ => panic!("unknown SFlag type={kind:?}"),
     };
     let file_perm: u32 = perm.into();
 

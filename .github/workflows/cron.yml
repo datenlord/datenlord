@@ -35,7 +35,7 @@ env:
   K8S_CONFIG: k8s.e2e.config
   K8S_VERSION: v1.21.1
   KIBANA_LABEL: kibana
-  KIND_NODE_VERSION: kindest/node:v1.21.1@sha256:69860bda5563ac81e3c0057d654b5253219618a22ec3a346306239bba8cfa1a6
+  KIND_NODE_VERSION: kindest/node:v1.21.1
   KIND_VERSION: v0.11.1
   # MINIKUBE_VERSION: v1.13.0
   NODE_APP_LABEL: csi-nodeplugin-datenlord
@@ -169,6 +169,12 @@ jobs:
     # https://www.stackovercloud.com/2020/01/08/blog-testing-of-csi-drivers/
     runs-on: ubuntu-latest
     steps:
+      - name: Free Disk Space (Ubuntu)
+        uses: jlumbroso/free-disk-space@main
+        with:
+          # this might remove tools that are actually needed,
+          # when set to "true" but frees about 6 GB
+          tool-cache: true
       - name: Check out code
         uses: actions/checkout@v2
       - name: Install Kind
@@ -201,10 +207,9 @@ jobs:
           NODES="$(kubectl get nodes -A -o wide | awk 'FNR > 2 {print $1}')"
           for node in ${NODES}; do
             USER="$(whoami)"
-            docker cp /etc/apt/sources.list ${node}:/etc/apt/sources.list
+            #docker cp /etc/apt/sources.list ${node}:/etc/apt/sources.list
+            docker cp scripts/ubuntu20sources.list ${node}:/etc/apt/sources.list
             docker exec ${node} apt-get update
-            docker exec ${node} apt-get install -y ssh sudo
-            docker exec ${node} apt-get --yes --force-yes -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" upgrade
             docker exec ${node} apt-get install -y ssh sudo
             docker exec ${node} systemctl start sshd
             docker exec ${node} useradd -m ${USER}
