@@ -74,7 +74,7 @@ impl NodeImplInner {
 
     /// Create ephemeral volume
     async fn create_ephemeral_volume(&self, vol_id: &str) -> DatenLordResult<()> {
-        let vol_name = format!("ephemeral-{}", vol_id);
+        let vol_name = format!("ephemeral-{vol_id}");
         let volume = DatenLordVolume::build_ephemeral_volume(
             vol_id,
             &vol_name,
@@ -82,10 +82,7 @@ impl NodeImplInner {
             &self.meta_data.get_volume_path(vol_id),
         )
         .with_context(|| {
-            format!(
-                "failed to create ephemeral volume ID={} and name={}",
-                vol_id, vol_name,
-            )
+            format!("failed to create ephemeral volume ID={vol_id} and name={vol_name}",)
         })?;
         info!(
             "ephemeral mode: created volume ID={} and name={}",
@@ -94,9 +91,7 @@ impl NodeImplInner {
         let add_ephemeral_res = self.meta_data.add_volume_meta_data(vol_id, &volume).await;
         debug_assert!(
             add_ephemeral_res.is_ok(),
-            "ephemeral volume ID={} and name={} is duplicated",
-            vol_id,
-            vol_name,
+            "ephemeral volume ID={vol_id} and name={vol_name} is duplicated",
         );
         Ok(())
     }
@@ -178,7 +173,7 @@ impl Node for NodeImpl {
             let rpc_type = NodeServiceCapability_RPC_Type::STAGE_UNSTAGE_VOLUME;
             if !self_inner.validate_request_capability(rpc_type) {
                 return Err(ArgumentInvalid {
-                    context: vec![format!("unsupported capability {:?}", rpc_type)],
+                    context: vec![format!("unsupported capability {rpc_type:?}")],
                 });
             }
 
@@ -219,7 +214,7 @@ impl Node for NodeImpl {
             let rpc_type = NodeServiceCapability_RPC_Type::STAGE_UNSTAGE_VOLUME;
             if !self_inner.validate_request_capability(rpc_type) {
                 return Err(ArgumentInvalid {
-                    context: vec![format!("unsupported capability {:?}", rpc_type)],
+                    context: vec![format!("unsupported capability {rpc_type:?}")],
                 });
             }
 
@@ -292,8 +287,7 @@ impl Node for NodeImpl {
             if !volume.check_exist_in_accessible_nodes(node_id) {
                 return Err(ArgumentInvalid {
                     context: vec![format!(
-                        "volume ID={} is not accessible on node ID={}",
-                        vol_id, node_id
+                        "volume ID={vol_id} is not accessible on node ID={node_id}"
                     )],
                 });
             }
@@ -358,7 +352,7 @@ impl Node for NodeImpl {
                     } else {
                         // VolumeCapability_oneof_access_type::block(..) not supported
                         return Err(ArgumentInvalid {
-                            context: vec![format!("unsupported access type {:?}", access_type)],
+                            context: vec![format!("unsupported access type {access_type:?}")],
                         });
                     }
                 }
@@ -443,8 +437,7 @@ impl Node for NodeImpl {
                 } else {
                     // Un-mount the path stored in etcd, if error then panic
                     panic!(
-                        "failed to un-mount volume ID={} bind path={}, the error is: {}",
-                        vol_id, target_path, e,
+                        "failed to un-mount volume ID={vol_id} bind path={target_path}, the error is: {e}",
                     );
                 }
             } else {
@@ -516,7 +509,7 @@ impl Node for NodeImpl {
                 .meta_data
                 .get_volume_by_id(vol_id)
                 .await
-                .with_context(|| format!("failed to find volume ID={}", vol_id))?;
+                .with_context(|| format!("failed to find volume ID={vol_id}"))?;
 
             if !req.has_capacity_range() {
                 return Err(ArgumentInvalid {
@@ -525,7 +518,7 @@ impl Node for NodeImpl {
             }
 
             let file_stat = stat::stat(vol_path)
-                .with_context(|| format!("failed to get file stat of {}", vol_path))?;
+                .with_context(|| format!("failed to get file stat of {vol_path}"))?;
 
             let sflag = SFlag::from_bits_truncate(file_stat.st_mode);
             if let SFlag::S_IFDIR = sflag {
@@ -535,8 +528,7 @@ impl Node for NodeImpl {
             } else {
                 return Err(ArgumentInvalid {
                     context: vec![format!(
-                        "volume ID={} has unsupported file type={:?}",
-                        vol_id, sflag
+                        "volume ID={vol_id} has unsupported file type={sflag:?}"
                     )],
                 });
             }

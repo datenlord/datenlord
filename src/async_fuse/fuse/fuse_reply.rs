@@ -196,7 +196,7 @@ impl ReplyRaw {
         })
         .await
         .unwrap_or_else(|e| {
-            panic!("failed to send bytes to fuse device for error {}", e);
+            panic!("failed to send bytes to fuse device for error {e}");
         })?;
 
         debug!("sent {} bytes to fuse device successfully", wsize);
@@ -774,7 +774,7 @@ impl FuseDeleteNotification {
             padding: 0,
         };
         let file_name = CString::new(name.clone())
-            .unwrap_or_else(|e| panic!("failed to create CString for {}, error is {:?}", name, e));
+            .unwrap_or_else(|e| panic!("failed to create CString for {name}, error is {e:?}"));
         #[allow(clippy::as_conversions)] // allow this for enum
         self.reply
             .send_raw_message(FUSE_NOTIFY_DELETE as i32, (notify_delete, file_name))
@@ -803,9 +803,9 @@ mod test {
     fn test_slice() {
         let s = [1_i32, 2_i32, 3_i32, 4_i32, 5_i32, 6_i32];
         let v = s.to_owned();
-        println!("{:?}", v);
+        println!("{v:?}");
         let v1 = s.to_vec();
-        println!("{:?}", v1);
+        println!("{v1:?}");
 
         let s1 = [1_i32, 2_i32, 3_i32];
         let s2 = [4_i32, 5_i32, 6_i32];
@@ -815,8 +815,8 @@ mod test {
         let mut v1 = l1.to_vec();
         v1.extend(&l2);
 
-        println!("{:?}", l1);
-        println!("{:?}", v1);
+        println!("{l1:?}");
+        println!("{v1:?}");
     }
     #[tokio::test(flavor = "multi_thread")]
     async fn test_reply_output() -> anyhow::Result<()> {
@@ -897,10 +897,9 @@ mod test {
         aligned_bytes.copy_from_slice(&bytes);
 
         let mut de = Deserializer::new(&aligned_bytes);
-        let foh: &FuseOutHeader = de.fetch_ref().context("failed to fetch FuseOutHeader")?;
+        let _foh: &FuseOutHeader = de.fetch_ref().context("failed to fetch FuseOutHeader")?;
         let fao: &FuseAttrOut = de.fetch_ref().context("failed to fetch FuseAttrOut")?;
 
-        dbg!(foh, fao);
         debug_assert_eq!(fao.attr.ino, ino);
         debug_assert_eq!(fao.attr.size, size);
         debug_assert_eq!(fao.attr.blocks, blocks);

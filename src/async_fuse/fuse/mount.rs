@@ -105,8 +105,7 @@ pub async fn umount(short_path: &Path) -> anyhow::Result<()> {
                 //     &mount_path,
                 //     nix::mount::MntFlags::MNT_FORCE,
                 // ).context(format!(
-                "failed to un-mount FUSE, path={:?}",
-                mount_path,
+                "failed to un-mount FUSE, path={mount_path:?}",
             ))
         } else {
             // Use fusermount to un-mount
@@ -201,7 +200,7 @@ async fn fuser_mount(mount_point: &Path) -> anyhow::Result<RawFd> {
         let mount_fd = if let Some(cmsg) = msg.cmsgs().next() {
             if let ControlMessageOwned::ScmRights(fds) = cmsg {
                 debug_assert_eq!(fds.len(), 1);
-                *fds.get(0)
+                *fds.first()
                     .unwrap_or_else(|| panic!("failed to get the only fd"))
             } else {
                 panic!("unexpected cmsg")
@@ -229,7 +228,7 @@ async fn direct_mount(mount_point: &Path) -> anyhow::Result<RawFd> {
             .await?
             .context("failed to open fuse device")?;
     let mount_path = mount_point.to_path_buf();
-    let full_path = tokio::task::spawn_blocking(move || fs::canonicalize(&mount_path)).await??;
+    let full_path = tokio::task::spawn_blocking(move || fs::canonicalize(mount_path)).await??;
     let target_path = full_path.clone();
     let fstype = "fuse";
     let fsname = "/dev/fuse";
@@ -237,8 +236,7 @@ async fn direct_mount(mount_point: &Path) -> anyhow::Result<RawFd> {
     let mnt_sb = tokio::task::spawn_blocking(move || stat::stat(&full_path))
         .await?
         .context(format!(
-            "failed to get the file stat of mount point={:?}",
-            mount_point,
+            "failed to get the file stat of mount point={mount_point:?}",
         ))?;
     let opts = format!(
         "fd={},rootmode={:o},user_id={},group_id={}",
@@ -259,7 +257,7 @@ async fn direct_mount(mount_point: &Path) -> anyhow::Result<RawFd> {
         )
     })
     .await?
-    .context(format!("failed to direct mount {:?}", mount_point))?;
+    .context(format!("failed to direct mount {mount_point:?}"))?;
 
     Ok(dev_fd)
 }

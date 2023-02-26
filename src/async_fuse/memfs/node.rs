@@ -50,7 +50,7 @@ pub trait Node: Sized {
     /// Get node attr
     fn get_attr(&self) -> FileAttr;
     /// Set node attr
-    async fn set_attr(&mut self, new_attr: FileAttr) -> FileAttr;
+    fn set_attr(&mut self, new_attr: FileAttr) -> FileAttr;
     /// Get node attr and increase lookup count
     fn lookup_attr(&self) -> FileAttr;
     /// Get node open count
@@ -114,9 +114,9 @@ pub trait Node: Sized {
     /// Load data from directory, file or symlink target.
     async fn load_data(&mut self, offset: usize, len: usize) -> anyhow::Result<usize>;
     /// Insert directory entry for rename()
-    async fn insert_entry_for_rename(&mut self, child_entry: DirEntry) -> Option<DirEntry>;
+    fn insert_entry_for_rename(&mut self, child_entry: DirEntry) -> Option<DirEntry>;
     /// Remove directory entry from cache only for rename()
-    async fn remove_entry_for_rename(&mut self, child_name: &str) -> Option<DirEntry>;
+    fn remove_entry_for_rename(&mut self, child_name: &str) -> Option<DirEntry>;
     /// Unlink directory entry from both cache and disk
     async fn unlink_entry(&mut self, child_name: &str) -> anyhow::Result<DirEntry>;
     /// Read directory
@@ -235,12 +235,12 @@ impl DefaultNode {
     }
 
     /// Update mtime and ctime to now
-    async fn update_mtime_ctime_to_now(&mut self) {
+    fn update_mtime_ctime_to_now(&mut self) {
         let mut attr = self.get_attr();
         let st_now = SystemTime::now();
         attr.mtime = st_now;
         attr.ctime = st_now;
-        self.set_attr(attr).await;
+        self.set_attr(attr);
     }
 
     /// Increase node lookup count
@@ -343,7 +343,7 @@ impl DefaultNode {
         })
         .await
         .unwrap_or_else(|e| {
-            panic!("failed to join fcntl::openat task for error {}", e);
+            panic!("failed to join fcntl::openat task for error {e}");
         })
     }
 
@@ -540,7 +540,7 @@ impl Node for DefaultNode {
     }
 
     /// Set node attribute
-    async fn set_attr(&mut self, new_attr: FileAttr) -> FileAttr {
+    fn set_attr(&mut self, new_attr: FileAttr) -> FileAttr {
         let old_attr = self.get_attr();
         match self.data {
             DefaultNodeData::Directory(..) => debug_assert_eq!(new_attr.kind, SFlag::S_IFDIR),
@@ -612,11 +612,10 @@ impl Node for DefaultNode {
         let new_fd = tokio::task::spawn_blocking(move || unistd::dup(fh.cast()))
             .await
             .unwrap_or_else(|e| {
-                panic!("failed to join unistd::dup task for error {}", e);
+                panic!("failed to join unistd::dup task for error {e}");
             })
             .context(format!(
-                "flush() failed to duplicate the handler ino={} fh={:?}",
-                ino, fh,
+                "flush() failed to duplicate the handler ino={ino} fh={fh:?}",
             ))
             .unwrap_or_else(|e| {
                 panic!(
@@ -627,11 +626,10 @@ impl Node for DefaultNode {
         tokio::task::spawn_blocking(move || unistd::close(new_fd))
             .await
             .unwrap_or_else(|e| {
-                panic!("failed to join unistd::close task for error {}", e);
+                panic!("failed to join unistd::close task for error {e}");
             })
             .context(format!(
-                "flush() failed to close the duplicated file handler={} of ino={}",
-                new_fd, ino,
+                "flush() failed to close the duplicated file handler={new_fd} of ino={ino}",
             ))
             .unwrap_or_else(|e| {
                 panic!(
@@ -648,8 +646,7 @@ impl Node for DefaultNode {
         let new_fd = tokio::task::spawn_blocking(move || unistd::dup(raw_fd))
             .await?
             .context(format!(
-                "dup_fd() failed to duplicate the handler ino={} raw fd={:?}",
-                ino, raw_fd,
+                "dup_fd() failed to duplicate the handler ino={ino} raw fd={raw_fd:?}",
             ))?;
         // increase open count once dup() success
         self.inc_open_count();
@@ -658,8 +655,7 @@ impl Node for DefaultNode {
         tokio::task::spawn_blocking(move || fcntl::fcntl(new_fd, fcntl_oflags))
             .await?
             .context(format!(
-                "dup_fd() failed to set the flags={:?} of duplicated handler of ino={}",
-                oflags, ino,
+                "dup_fd() failed to set the flags={oflags:?} of duplicated handler of ino={ino}",
             ))
             .unwrap_or_else(|err| {
                 panic!(
@@ -741,8 +737,7 @@ impl Node for DefaultNode {
         let dir_data = self.get_dir_data_mut();
         debug_assert!(
             !dir_data.contains_key(child_symlink_name),
-            "create_child_symlink() cannot create duplicated symlink name={:?}",
-            child_symlink_name,
+            "create_child_symlink() cannot create duplicated symlink name={child_symlink_name:?}",
         );
         let child_symlink_name_string = child_symlink_name.to_owned();
         let target_path_clone = target_path.clone();
@@ -756,23 +751,20 @@ impl Node for DefaultNode {
         .await?
         .context(format!(
             "create_child_symlink() failed to create symlink \
-                    name={:?} to target path={:?} under parent ino={}",
-            child_symlink_name, target_path, ino,
+                    name={child_symlink_name:?} to target path={target_path:?} under parent ino={ino}",
         ))?;
 
         let child_fd = Self::get_child_symlink_fd(fd, child_symlink_name)
             .await
             .context(format!(
-                "create_child_symlink() failed to open symlink itself with name={:?} \
-                under parent ino={}",
-                child_symlink_name, ino,
+                "create_child_symlink() failed to open symlink itself with name={child_symlink_name:?} \
+                under parent ino={ino}",
             ))?;
         let child_attr = fs_util::load_attr(child_fd)
             // let child_attr = util::load_symlink_attr(fd, child_symlink_name.clone())
             .await
             .context(format!(
-                "create_child_symlink() failed to get the attribute of the new symlink={:?}",
-                child_symlink_name,
+                "create_child_symlink() failed to get the attribute of the new symlink={child_symlink_name:?}",
             ))?;
         debug_assert_eq!(SFlag::S_IFLNK, child_attr.kind);
 
@@ -793,7 +785,7 @@ impl Node for DefaultNode {
         let mut full_path = self.full_path().to_owned();
         full_path.push_str(child_symlink_name);
 
-        self.update_mtime_ctime_to_now().await;
+        self.update_mtime_ctime_to_now();
         Ok(Self::new(
             self.get_ino(),
             child_symlink_name,
@@ -818,16 +810,14 @@ impl Node for DefaultNode {
         let child_fd = Self::get_child_symlink_fd(fd, child_symlink_name)
             .await
             .context(format!(
-                "load_child_symlink() failed to open symlink itself with name={:?} \
-                under parent ino={}",
-                child_symlink_name, ino,
-            ))?;
+            "load_child_symlink() failed to open symlink itself with name={child_symlink_name:?} \
+                under parent ino={ino}",
+        ))?;
         let child_attr = fs_util::load_attr(child_fd)
             // let child_attr = util::load_symlink_attr(fd, child_symlink_name.clone())
             .await
             .context(format!(
-                "load_child_symlink() failed to get the attribute of the new symlink={:?}",
-                child_symlink_name,
+                "load_child_symlink() failed to get the attribute of the new symlink={child_symlink_name:?}",
             ))?;
         debug_assert_eq!(SFlag::S_IFLNK, child_attr.kind);
 
@@ -839,8 +829,7 @@ impl Node for DefaultNode {
             .await?
             .context(format!(
                 "load_child_symlink() failed to open \
-                            the new directory name={:?} under parent ino={}",
-                child_symlink_name, ino,
+                            the new directory name={child_symlink_name:?} under parent ino={ino}",
             ))?;
             Path::new(&target_path_osstr).to_owned()
         };
@@ -872,15 +861,13 @@ impl Node for DefaultNode {
         let child_raw_fd = fs_util::open_dir_at(fd, child_dir_name)
             .await
             .context(format!(
-                "open_child_dir() failed to open the new directory name={:?} \
-                    under parent ino={}",
-                child_dir_name, ino,
+                "open_child_dir() failed to open the new directory name={child_dir_name:?} \
+                    under parent ino={ino}",
             ))?;
 
         // get new directory attribute
         let child_attr = fs_util::load_attr(child_raw_fd).await.context(format!(
-            "open_child_dir() failed to get the attribute of the new child directory={:?}",
-            child_dir_name,
+            "open_child_dir() failed to get the attribute of the new child directory={child_dir_name:?}",
         ))?;
         debug_assert_eq!(SFlag::S_IFDIR, child_attr.kind);
 
@@ -909,8 +896,7 @@ impl Node for DefaultNode {
         let dir_data = self.get_dir_data_mut();
         debug_assert!(
             !dir_data.contains_key(child_dir_name),
-            "open_child_dir_helper() cannot create duplicated directory name={:?}",
-            child_dir_name
+            "open_child_dir_helper() cannot create duplicated directory name={child_dir_name:?}"
         );
         let child_dir_name_string = child_dir_name.to_owned();
         tokio::task::spawn_blocking(move || {
@@ -919,22 +905,19 @@ impl Node for DefaultNode {
         .await?
         .context(format!(
             "open_child_dir_helper() failed to create directory \
-                        name={:?} under parent ino={}",
-            child_dir_name, ino,
+                        name={child_dir_name:?} under parent ino={ino}",
         ))?;
 
         let child_raw_fd = fs_util::open_dir_at(fd, child_dir_name)
             .await
             .context(format!(
-                "open_child_dir_helper() failed to open the new directory name={:?} \
-                    under parent ino={}",
-                child_dir_name, ino,
+                "open_child_dir_helper() failed to open the new directory name={child_dir_name:?} \
+                    under parent ino={ino}",
             ))?;
 
         // get new directory attribute
         let child_attr = fs_util::load_attr(child_raw_fd).await.context(format!(
-            "open_child_dir_helper() failed to get the attribute of the new child directory={:?}",
-            child_dir_name,
+            "open_child_dir_helper() failed to get the attribute of the new child directory={child_dir_name:?}",
         ))?;
         debug_assert_eq!(SFlag::S_IFDIR, child_attr.kind);
 
@@ -961,7 +944,7 @@ impl Node for DefaultNode {
             Arc::clone(&self.meta),
         );
 
-        self.update_mtime_ctime_to_now().await;
+        self.update_mtime_ctime_to_now();
         Ok(child_node)
     }
 
@@ -982,9 +965,8 @@ impl Node for DefaultNode {
         })
         .await?
         .context(format!(
-            "open_child_file() failed to open a file name={:?} \
-                under parent ino={} with oflags={:?} and mode={:?}",
-            child_file_name, ino, oflags, mode,
+            "open_child_file() failed to open a file name={child_file_name:?} \
+                under parent ino={ino} with oflags={oflags:?} and mode={mode:?}",
         ))?;
 
         // get new file attribute
@@ -1020,8 +1002,7 @@ impl Node for DefaultNode {
         let dir_data = self.get_dir_data_mut();
         debug_assert!(
             !dir_data.contains_key(child_file_name),
-            "create_child_file() cannot create duplicated file name={:?}",
-            child_file_name
+            "create_child_file() cannot create duplicated file name={child_file_name:?}"
         );
         debug_assert!(oflags.contains(OFlag::O_CREAT));
         let child_file_name_string = child_file_name.to_owned();
@@ -1030,9 +1011,8 @@ impl Node for DefaultNode {
         })
         .await?
         .context(format!(
-            "create_child_file() failed to open a file name={:?} \
-                under parent ino={} with oflags={:?} and mode={:?}",
-            child_file_name, ino, oflags, mode,
+            "create_child_file() failed to open a file name={child_file_name:?} \
+                under parent ino={ino} with oflags={oflags:?} and mode={mode:?}",
         ))?;
 
         // get new file attribute
@@ -1052,7 +1032,7 @@ impl Node for DefaultNode {
         let mut full_path = self.full_path().to_owned();
         full_path.push_str(child_file_name);
 
-        self.update_mtime_ctime_to_now().await;
+        self.update_mtime_ctime_to_now();
         Ok(Self::new(
             self.get_ino(),
             child_file_name,
@@ -1131,10 +1111,10 @@ impl Node for DefaultNode {
     }
 
     /// Insert directory entry for rename()
-    async fn insert_entry_for_rename(&mut self, child_entry: DirEntry) -> Option<DirEntry> {
+    fn insert_entry_for_rename(&mut self, child_entry: DirEntry) -> Option<DirEntry> {
         let dir_data = self.get_dir_data_mut();
         let previous_entry = dir_data.insert(child_entry.entry_name().into(), child_entry);
-        self.update_mtime_ctime_to_now().await;
+        self.update_mtime_ctime_to_now();
         debug!(
             "insert_entry_for_rename() successfully inserted new entry \
                 and replaced previous entry={:?}",
@@ -1145,11 +1125,11 @@ impl Node for DefaultNode {
     }
 
     /// Remove directory entry from cache only for rename()
-    async fn remove_entry_for_rename(&mut self, child_name: &str) -> Option<DirEntry> {
+    fn remove_entry_for_rename(&mut self, child_name: &str) -> Option<DirEntry> {
         let dir_data = self.get_dir_data_mut();
         let remove_res = dir_data.remove(child_name);
         if remove_res.is_some() {
-            self.update_mtime_ctime_to_now().await;
+            self.update_mtime_ctime_to_now();
         }
         remove_res
     }
@@ -1180,8 +1160,7 @@ impl Node for DefaultNode {
                 })
                 .await?
                 .context(format!(
-                    "unlink_entry() failed to delete the file name={:?} from disk",
-                    child_name,
+                    "unlink_entry() failed to delete the file name={child_name:?} from disk",
                 ))?;
             }
             SFlag::S_IFREG | SFlag::S_IFLNK => {
@@ -1194,8 +1173,7 @@ impl Node for DefaultNode {
                 })
                 .await?
                 .context(format!(
-                    "unlink_entry() failed to delete the file name={:?} from disk",
-                    child_name,
+                    "unlink_entry() failed to delete the file name={child_name:?} from disk",
                 ))?;
             }
             _ => panic!(
@@ -1203,7 +1181,7 @@ impl Node for DefaultNode {
                 removed_entry.entry_type()
             ),
         }
-        self.update_mtime_ctime_to_now().await;
+        self.update_mtime_ctime_to_now();
         Ok(removed_entry)
     }
 
@@ -1306,8 +1284,7 @@ impl Node for DefaultNode {
         let fcntl_oflags = fcntl::FcntlArg::F_SETFL(oflags);
         let fd = fh.cast();
         fcntl::fcntl(fd, fcntl_oflags).context(format!(
-            "write_file() failed to set the flags={:?} to file handler={} of ino={}",
-            oflags, fd, ino,
+            "write_file() failed to set the flags={oflags:?} to file handler={fd} of ino={ino}",
         ))?;
         let mut written_size = data.len();
         if write_to_disk {
@@ -1325,7 +1302,7 @@ impl Node for DefaultNode {
             (offset.cast::<u64>()).overflow_add(written_size.cast()),
         );
         debug!("file {:?} size = {:?}", self.name, self.attr.size);
-        self.update_mtime_ctime_to_now().await;
+        self.update_mtime_ctime_to_now();
 
         Ok(written_size)
     }
@@ -1338,7 +1315,7 @@ impl Node for DefaultNode {
             tokio::task::spawn_blocking(move || unistd::fsync(fd))
                 .await
                 .unwrap_or_else(|e| {
-                    panic!("failed to join unistd::fsync task for error {}", e);
+                    panic!("failed to join unistd::fsync task for error {e}");
                 })
                 .context(format!(
                     "release() failed to flush the file of ino={} and name={:?}",
@@ -1355,7 +1332,7 @@ impl Node for DefaultNode {
         tokio::task::spawn_blocking(move || unistd::close(fd))
             .await
             .unwrap_or_else(|e| {
-                panic!("failed to join unistd::close task for error {}", e);
+                panic!("failed to join unistd::close task for error {e}");
             })
             .context(format!(
                 "release() failed to close the file handler={} of ino={} and name={:?}",
@@ -1377,7 +1354,7 @@ impl Node for DefaultNode {
         tokio::task::spawn_blocking(move || unistd::close(fh.cast()))
             .await
             .unwrap_or_else(|e| {
-                panic!("failed to join unistd::close task for error {}", e);
+                panic!("failed to join unistd::close task for error {e}");
             })
             .context(format!(
                 "releasedir() failed to close the file handler={} of ino={} and name={:?}",
@@ -1418,8 +1395,7 @@ impl Node for DefaultNode {
             tokio::task::spawn_blocking(move || stat::fchmod(fd, nix_mode))
                 .await?
                 .context(format!(
-                    "setattr_helper() failed to chmod with mode={}",
-                    mode_bits,
+                    "setattr_helper() failed to chmod with mode={mode_bits}",
                 ))?;
             attr.perm = fs_util::parse_mode_bits(mode_bits);
             debug!(
@@ -1439,8 +1415,7 @@ impl Node for DefaultNode {
             tokio::task::spawn_blocking(move || unistd::fchown(fd, nix_user_id, nix_group_id))
                 .await?
                 .context(format!(
-                    "setattr_helper() failed to set uid={:?} and gid={:?}",
-                    nix_user_id, nix_group_id,
+                    "setattr_helper() failed to set uid={nix_user_id:?} and gid={nix_group_id:?}",
                 ))?;
             if let Some(raw_uid) = param.u_id {
                 attr.uid = raw_uid;
@@ -1456,8 +1431,7 @@ impl Node for DefaultNode {
             tokio::task::spawn_blocking(move || unistd::ftruncate(fd, file_size.cast()))
                 .await?
                 .context(format!(
-                    "setattr_helper() failed to truncate file size to {}",
-                    file_size
+                    "setattr_helper() failed to truncate file size to {file_size}"
                 ))?;
             attr.size = file_size;
             attr.mtime = st_now;
@@ -1539,16 +1513,14 @@ pub fn rename_fullpath_recursive(
     while let Some((child, parent)) = node_pool.pop_front() {
         let parent_node = cache.get(&parent).unwrap_or_else(|| {
             panic!(
-                "impossible case when rename, the parent i-node of ino={} should be in the cache",
-                parent
+                "impossible case when rename, the parent i-node of ino={parent} should be in the cache"
             )
         });
         let mut parent_path = parent_node.full_path().to_owned();
 
         let child_node = cache.get_mut(&child).unwrap_or_else(|| {
             panic!(
-                "impossible case when rename, the child i-node of ino={} should be in the cache",
-                child
+                "impossible case when rename, the child i-node of ino={child} should be in the cache"
             )
         });
         child_node.set_parent_ino(parent);
@@ -1605,8 +1577,7 @@ mod test {
         let new_oflags = OFlag::O_WRONLY | OFlag::O_APPEND;
         let fcntl_oflags = FcntlArg::F_SETFL(new_oflags);
         fcntl::fcntl(dup_fd, fcntl_oflags).context(format!(
-            "failed to set new flags={:?} to the dup fd={}",
-            new_oflags, dup_fd,
+            "failed to set new flags={new_oflags:?} to the dup fd={dup_fd}",
         ))?;
 
         let file_content = "ABCDEFGHJKLMNOPQRSTUVWXYZ";
@@ -1625,7 +1596,7 @@ mod test {
         {
             unistd::lseek(fd, 0, unistd::Whence::SeekSet)?;
             let mut buffer: Vec<u8> = std::iter::repeat(0_u8).take(file_content.len()).collect();
-            let read_size = unistd::read(fd, &mut *buffer)?;
+            let read_size = unistd::read(fd, &mut buffer)?;
             assert_eq!(read_size, file_content.len(), "read size not match");
             let content = String::from_utf8(buffer)?;
             assert_eq!(content, file_content, "file content not match");
