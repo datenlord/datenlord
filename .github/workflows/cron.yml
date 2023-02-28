@@ -202,7 +202,7 @@ jobs:
           kind create cluster --config ./kind-config.yaml
       - name: Setup SSH
         run: |
-          cat > /tmp/sources.list <<'END
+          cat > /tmp/sources.list <<'END'
           # ubuntu20
           deb http://mirrors.aliyun.com/ubuntu/ focal main restricted
           deb http://mirrors.aliyun.com/ubuntu/ focal-updates main restricted
