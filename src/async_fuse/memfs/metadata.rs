@@ -128,7 +128,7 @@ impl MetaData for DefaultMetaData {
     ) -> (Arc<Self>, Option<CacheServer>) {
         let root_path = Path::new(root_path)
             .canonicalize()
-            .with_context(|| format!("failed to canonicalize the mount path={:?}", root_path))
+            .with_context(|| format!("failed to canonicalize the mount path={root_path:?}"))
             .unwrap_or_else(|e| panic!("{}", e));
 
         let root_path = root_path
@@ -171,8 +171,7 @@ impl MetaData for DefaultMetaData {
         let inode = cache.get(&ino).unwrap_or_else(|| {
             panic!(
                 "try_delete_node() found fs is inconsistent, \
-                    the i-node of ino={} is not in cache",
-                ino,
+                    the i-node of ino={ino} is not in cache",
             );
         });
 
@@ -219,9 +218,7 @@ impl MetaData for DefaultMetaData {
     ) -> anyhow::Result<(Duration, FuseAttr, u64)> {
         // pre-check
         let mut cache = self.cache.write().await;
-        let parent_node = self
-            .create_node_pre_check(parent, node_name, &mut cache)
-            .await
+        let parent_node = Self::create_node_pre_check(parent, node_name, &mut cache)
             .context("create_node_helper() failed to pre check")?;
         let parent_name = parent_node.get_name().to_owned();
         // all checks are passed, ready to create new node
@@ -237,9 +234,8 @@ impl MetaData for DefaultMetaData {
                     .create_child_dir(node_name, m_flags)
                     .await
                     .context(format!(
-                    "create_node_helper() failed to create directory with name={:?} and mode={:?} \
-                            under parent directory of ino={} and name={:?}",
-                    node_name, m_flags, parent, parent_name,
+                    "create_node_helper() failed to create directory with name={node_name:?} and mode={m_flags:?} \
+                            under parent directory of ino={parent} and name={parent_name:?}",
                 ))?
             }
             SFlag::S_IFREG => {
@@ -259,9 +255,8 @@ impl MetaData for DefaultMetaData {
                     )
                     .await
                     .context(format!(
-                        "create_node_helper() failed to create file with name={:?} and mode={:?} \
-                            under parent directory of ino={} and name={:?}",
-                        node_name, m_flags, parent, parent_name,
+                        "create_node_helper() failed to create file with name={node_name:?} and mode={m_flags:?} \
+                            under parent directory of ino={parent} and name={parent_name:?}",
                     ))?
             }
             SFlag::S_IFLNK => {
@@ -283,16 +278,14 @@ impl MetaData for DefaultMetaData {
                     )
                     .await
                     .context(format!(
-                        "create_node_helper() failed to create symlink with name={:?} to target path={:?} \
-                            under parent directory of ino={} and name={:?}",
-                        node_name, target_path, parent, parent_name,
+                        "create_node_helper() failed to create symlink with name={node_name:?} to target path={target_path:?} \
+                            under parent directory of ino={parent} and name={parent_name:?}",
                     ))?
             }
             _ => {
                 panic!(
-                    "create_node_helper() found unsupported i-node type={:?} with name={:?} to create \
-                        under parent directory of ino={} and name={:?}",
-                        node_type, node_name, parent, parent_name,
+                    "create_node_helper() found unsupported i-node type={node_type:?} with name={node_name:?} to create \
+                        under parent directory of ino={parent} and name={parent_name:?}",
                 );
             }
         };
@@ -324,8 +317,7 @@ impl MetaData for DefaultMetaData {
             let parent_node = cache.get(&parent).unwrap_or_else(|| {
                 panic!(
                     "remove_node_helper() found fs is inconsistent, \
-                        parent of ino={} should be in cache before remove its child",
-                    parent,
+                        parent of ino={parent} should be in cache before remove its child",
                 );
             });
             match parent_node.get_entry(node_name) {
@@ -338,9 +330,8 @@ impl MetaData for DefaultMetaData {
                     return util::build_error_result_from_errno(
                         Errno::ENOENT,
                         format!(
-                            "remove_node_helper() failed to find i-node name={:?} \
-                                under parent of ino={}",
-                            node_name, parent,
+                            "remove_node_helper() failed to find i-node name={node_name:?} \
+                                under parent of ino={parent}",
                         ),
                     );
                 }
@@ -351,10 +342,9 @@ impl MetaData for DefaultMetaData {
                         let dir_node = cache.get(&node_ino).unwrap_or_else(|| {
                             panic!(
                                 "remove_node_helper() found fs is inconsistent, \
-                                    directory name={:?} of ino={} \
-                                    found under the parent of ino={}, \
+                                    directory name={node_name:?} of ino={node_ino} \
+                                    found under the parent of ino={parent}, \
                                     but no i-node found for this directory",
-                                node_name, node_ino, parent,
                             );
                         });
                         if !dir_node.is_node_data_empty() {
@@ -368,9 +358,8 @@ impl MetaData for DefaultMetaData {
                                 Errno::ENOTEMPTY,
                                 format!(
                                     "remove_node_helper() cannot remove \
-                                        the non-empty directory name={:?} of ino={} \
-                                        under the parent directory of ino={}",
-                                    node_name, node_ino, parent,
+                                        the non-empty directory name={node_name:?} of ino={node_ino} \
+                                        under the parent directory of ino={parent}",
                                 ),
                             );
                         }
@@ -379,9 +368,8 @@ impl MetaData for DefaultMetaData {
                     let child_inode = cache.get(&node_ino).unwrap_or_else(|| {
                         panic!(
                             "remove_node_helper() found fs is inconsistent, \
-                                i-node name={:?} of ino={} found under the parent of ino={}, \
-                                but no i-node found for this node",
-                            node_name, node_ino, parent
+                                i-node name={node_name:?} of ino={node_ino} found under the parent of ino={parent}, \
+                                but no i-node found for this node"
                         )
                     });
                     debug_assert_eq!(node_ino, child_inode.get_ino());
@@ -398,9 +386,8 @@ impl MetaData for DefaultMetaData {
             self.may_deferred_delete_node_helper(node_ino)
                 .await
                 .context(format!(
-                    "remove_node_helper() failed to maybe deferred delete child i-node of ino={}, \
-                        name={:?} and type={:?} under parent ino={}",
-                    node_ino, node_name, node_type, parent,
+                    "remove_node_helper() failed to maybe deferred delete child i-node of ino={node_ino}, \
+                        name={node_name:?} and type={node_type:?} under parent ino={parent}",
                 ))?;
             // reply.ok().await?;
             debug!(
@@ -461,8 +448,7 @@ impl MetaData for DefaultMetaData {
             let parent_node = cache.get_mut(&parent).unwrap_or_else(|| {
                 panic!(
                     "lookup_helper() found fs is inconsistent, \
-                        parent i-node of ino={} should be in cache",
-                    parent,
+                        parent i-node of ino={parent} should be in cache",
                 );
             });
             let parent_name = parent_node.get_name().to_owned();
@@ -472,9 +458,8 @@ impl MetaData for DefaultMetaData {
                         .open_child_dir(child_name, None)
                         .await
                         .context(format!(
-                            "lookup_helper() failed to open sub-directory name={:?} \
-                            under parent directory of ino={} and name={:?}",
-                            child_name, parent, parent_name,
+                            "lookup_helper() failed to open sub-directory name={child_name:?} \
+                            under parent directory of ino={parent} and name={parent_name:?}",
                         ))?
                 }
                 SFlag::S_IFREG => {
@@ -488,23 +473,18 @@ impl MetaData for DefaultMetaData {
                         )
                         .await
                         .context(format!(
-                            "lookup_helper() failed to open child file name={:?} with flags={:?} \
-                                under parent directory of ino={} and name={:?}",
-                            child_name, oflags, parent, parent_name,
+                            "lookup_helper() failed to open child file name={child_name:?} with flags={oflags:?} \
+                                under parent directory of ino={parent} and name={parent_name:?}",
                         ))?
                 }
                 SFlag::S_IFLNK => parent_node
                     .load_child_symlink(child_name, None)
                     .await
                     .context(format!(
-                        "lookup_helper() failed to read child symlink name={:?} \
-                                under parent directory of ino={} and name={:?}",
-                        child_name, parent, parent_name,
+                        "lookup_helper() failed to read child symlink name={child_name:?} \
+                                under parent directory of ino={parent} and name={parent_name:?}",
                     ))?,
-                _ => panic!(
-                    "lookup_helper() found unsupported file type={:?}",
-                    child_type,
-                ),
+                _ => panic!("lookup_helper() found unsupported file type={child_type:?}",),
             };
             let child_ino = child_node.get_ino();
             let attr = child_node.lookup_attr();
@@ -569,13 +549,10 @@ impl MetaData for DefaultMetaData {
             let mut cache = self.cache.write().await;
             let old_parent_node = cache.get_mut(&old_parent).unwrap_or_else(|| {
                 panic!(
-                    "impossible case when rename, the from parent i-node of ino={} should be in cache",
-                    old_parent,
+                    "impossible case when rename, the from parent i-node of ino={old_parent} should be in cache",
                 )
             });
-            let insert_res = old_parent_node
-                .insert_entry_for_rename(exchange_entry)
-                .await;
+            let insert_res = old_parent_node.insert_entry_for_rename(exchange_entry);
             debug_assert!(
                 insert_res.is_none(),
                 "impossible case when rename, the from i-node of name={:?} should have been \
@@ -588,8 +565,7 @@ impl MetaData for DefaultMetaData {
             // call rename2 here to exchange two nodes
             let exchanged_node = cache.get_mut(&new_entry_ino).unwrap_or_else(|| {
                 panic!(
-                    "impossible case when rename, the new entry i-node of ino={} should be in cache",
-                    new_entry_ino,
+                    "impossible case when rename, the new entry i-node of ino={new_entry_ino} should be in cache",
                 )
             });
             exchanged_node.set_parent_ino(old_parent);
@@ -599,8 +575,7 @@ impl MetaData for DefaultMetaData {
                 .await
                 .context(format!(
                     "rename_exchange_helper() failed to load attribute of \
-                        to i-node of ino={} and name={:?} under parent directory",
-                    new_entry_ino, new_name,
+                        to i-node of ino={new_entry_ino} and name={new_name:?} under parent directory",
                 ))
                 .unwrap_or_else(|e| {
                     panic!(
@@ -615,9 +590,8 @@ impl MetaData for DefaultMetaData {
             panic!("rename2 system call has not been supported in libc to exchange two nodes yet!");
         } else {
             panic!(
-                "impossible case, the child i-node of name={:?} to be exchanged \
-                    should be under to parent directory ino={}",
-                new_name, new_parent,
+                "impossible case, the child i-node of name={new_name:?} to be exchanged \
+                    should be under to parent directory ino={new_parent}",
             );
         }
     }
@@ -657,8 +631,7 @@ impl MetaData for DefaultMetaData {
                 .await
                 .context(format!(
                     "rename_may_replace_helper() failed to \
-                        maybe deferred delete the replaced i-node ino={}",
-                    new_ino,
+                        maybe deferred delete the replaced i-node ino={new_ino}",
                 ))?;
         }
         let old_name_clone = old_name.clone();
@@ -674,17 +647,15 @@ impl MetaData for DefaultMetaData {
         })
         .await?
         .context(format!(
-            "rename_may_replace_helper() failed to move the from i-node name={:?} under \
-                from parent ino={} to the to i-node name={:?} under new parent ino={}",
-            old_name, old_parent, new_name, new_parent,
+            "rename_may_replace_helper() failed to move the from i-node name={old_name:?} under \
+                from parent ino={old_parent} to the to i-node name={new_name:?} under new parent ino={new_parent}",
         ))?;
 
         {
             let mut cache = self.cache.write().await;
             let moved_node = cache.get_mut(&old_entry_ino).unwrap_or_else(|| {
                 panic!(
-                "impossible case when rename, the from entry i-node of ino={} should be in cache",
-                old_entry_ino,
+                "impossible case when rename, the from entry i-node of ino={old_entry_ino} should be in cache",
             )
             });
             moved_node.set_parent_ino(new_parent);
@@ -694,8 +665,7 @@ impl MetaData for DefaultMetaData {
                 .await
                 .context(format!(
                     "rename_may_replace_helper() failed to \
-                    load attribute of old entry i-node of ino={}",
-                    old_entry_ino,
+                    load attribute of old entry i-node of ino={old_entry_ino}",
                 ))
                 .unwrap_or_else(|e| {
                     panic!(
@@ -740,15 +710,13 @@ impl MetaData for DefaultMetaData {
                 tokio::task::spawn_blocking(move || unistd::fdatasync(fh.cast()))
                     .await?
                     .context(format!(
-                        "fsync_helper() failed to flush the i-node of ino={}",
-                        ino
+                        "fsync_helper() failed to flush the i-node of ino={ino}"
                     ))?;
             } else {
                 tokio::task::spawn_blocking(move || unistd::fsync(fh.cast()))
                     .await?
                     .context(format!(
-                        "fsync_helper() failed to flush the i-node of ino={}",
-                        ino
+                        "fsync_helper() failed to flush the i-node of ino={ino}"
                     ))?;
             }
         }
@@ -782,8 +750,7 @@ impl MetaData for DefaultMetaData {
         let inode = cache.get_mut(&ino).unwrap_or_else(|| {
             panic!(
                 "write() found fs is inconsistent, \
-                 the inode ino={} is not in cache",
-                ino
+                 the inode ino={ino} is not in cache"
             );
         });
         debug!(
@@ -807,17 +774,15 @@ impl DefaultMetaData {
 
     /// The pre-check before create node
     #[allow(single_use_lifetimes)]
-    async fn create_node_pre_check<'a, 'b>(
-        &self,
+    fn create_node_pre_check<'b>(
         parent: INum,
         node_name: &str,
-        cache: &'b mut RwLockWriteGuard<'a, BTreeMap<INum, <Self as MetaData>::N>>,
+        cache: &'b mut RwLockWriteGuard<BTreeMap<INum, <Self as MetaData>::N>>,
     ) -> anyhow::Result<&'b mut <Self as MetaData>::N> {
         let parent_node = cache.get_mut(&parent).unwrap_or_else(|| {
             panic!(
                 "create_node_pre_check() found fs is inconsistent, \
-                    parent of ino={} should be in cache before create it new child",
-                parent,
+                    parent of ino={parent} should be in cache before create it new child",
             );
         });
         if let Some(occupied) = parent_node.get_entry(node_name) {
@@ -845,7 +810,7 @@ impl DefaultMetaData {
     }
 
     /// Helper function to pre-check if node can be deferred deleted.
-    async fn deferred_delete_pre_check(&self, inode: &DefaultNode) -> (bool, INum, String) {
+    fn deferred_delete_pre_check(inode: &DefaultNode) -> (bool, INum, String) {
         // pre-check whether deferred delete or not
         debug_assert!(inode.get_lookup_count() >= 0); // lookup count cannot be negative
         debug_assert!(inode.get_open_count() >= 0); // open count cannot be negative
@@ -863,23 +828,19 @@ impl DefaultMetaData {
         let inode = cache.get(&ino).unwrap_or_else(|| {
             panic!(
                 "may_deferred_delete_node_helper() failed to \
-                     find the i-node of ino={} to remove",
-                ino,
+                     find the i-node of ino={ino} to remove",
             );
         });
-        let (deferred_deletion, parent_ino, node_name) =
-            self.deferred_delete_pre_check(inode).await;
+        let (deferred_deletion, parent_ino, node_name) = Self::deferred_delete_pre_check(inode);
         let parent_node = cache.get_mut(&parent_ino).unwrap_or_else(|| {
             panic!(
                 "may_deferred_delete_node_helper() failed to \
-                     find the parent of ino={} for i-node of ino={}",
-                parent_ino, ino,
+                     find the parent of ino={parent_ino} for i-node of ino={ino}",
             );
         });
         let deleted_entry = parent_node.unlink_entry(&node_name).await.context(format!(
-            "may_deferred_delete_node_helper() failed to remove entry name={:?} \
-                 and ino={} from parent directory ino={}",
-            node_name, ino, parent_ino,
+            "may_deferred_delete_node_helper() failed to remove entry name={node_name:?} \
+                 and ino={ino} from parent directory ino={parent_ino}",
         ))?;
         debug!(
             "may_deferred_delete_node_helper() successfully remove entry name={:?} \
@@ -894,8 +855,7 @@ impl DefaultMetaData {
             let inode = cache.get(&ino).unwrap_or_else(|| {
                 panic!(
                     "impossible case, may_deferred_delete_node_helper() \
-                     i-node of ino={} is not in cache",
-                    ino,
+                     i-node of ino={ino} is not in cache",
                 );
             });
             debug!(
@@ -914,8 +874,7 @@ impl DefaultMetaData {
             let inode = cache.remove(&ino).unwrap_or_else(|| {
                 panic!(
                     "impossible case, may_deferred_delete_node_helper() \
-                     i-node of ino={} is not in cache",
-                    ino,
+                     i-node of ino={ino} is not in cache",
                 )
             });
             debug!(
@@ -939,8 +898,7 @@ impl DefaultMetaData {
         let parent_node = cache.get(&parent).unwrap_or_else(|| {
             panic!(
                 "lookup_helper() found fs is inconsistent, \
-                        the parent i-node of ino={} should be in cache",
-                parent,
+                        the parent i-node of ino={parent} should be in cache",
             );
         });
         if let Some(child_entry) = parent_node.get_entry(name) {
@@ -982,8 +940,7 @@ impl DefaultMetaData {
         let old_parent_node = cache.get(&old_parent).unwrap_or_else(|| {
             panic!(
                 "rename() found fs is inconsistent, \
-                    the parent i-node of ino={} should be in cache",
-                old_parent,
+                    the parent i-node of ino={old_parent} should be in cache",
             );
         });
         let old_parent_fd = old_parent_node.get_fd();
@@ -1016,8 +973,7 @@ impl DefaultMetaData {
         let new_parent_node = cache.get(&new_parent).unwrap_or_else(|| {
             panic!(
                 "rename() found fs is inconsistent, \
-                    the new parent i-node of ino={} should be in cache",
-                new_parent,
+                    the new parent i-node of ino={new_parent} should be in cache",
             );
         });
         let new_parent_fd = new_parent_node.get_fd();
@@ -1064,11 +1020,10 @@ impl DefaultMetaData {
         let mut cache = self.cache.write().await;
         let old_parent_node = cache.get_mut(&old_parent).unwrap_or_else(|| {
             panic!(
-                "impossible case when rename, the from parent i-node of ino={} should be in cache",
-                old_parent,
+                "impossible case when rename, the from parent i-node of ino={old_parent} should be in cache",
             )
         });
-        let entry_to_move = match old_parent_node.remove_entry_for_rename(old_name).await {
+        let entry_to_move = match old_parent_node.remove_entry_for_rename(old_name) {
             None => panic!(
                 "impossible case when rename, the from entry of name={:?} \
                         should be under from directory ino={} and name={:?}",
@@ -1083,10 +1038,9 @@ impl DefaultMetaData {
         node::rename_fullpath_recursive(entry_to_move.ino(), new_parent, &mut cache);
         let new_parent_node = cache.get_mut(&new_parent).unwrap_or_else(|| {
             panic!(
-                "impossible case when rename, the to parent i-node of ino={} should be in cache",
-                new_parent
+                "impossible case when rename, the to parent i-node of ino={new_parent} should be in cache"
             )
         });
-        new_parent_node.insert_entry_for_rename(entry_to_move).await
+        new_parent_node.insert_entry_for_rename(entry_to_move)
     }
 }

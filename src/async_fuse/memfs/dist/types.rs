@@ -68,7 +68,7 @@ pub fn entry_type_to_serial(entry_type: SFlag) -> SerialSFlag {
         SFlag::S_IFDIR => SerialSFlag::Dir,
         SFlag::S_IFREG => SerialSFlag::Reg,
         SFlag::S_IFLNK => SerialSFlag::Lnk,
-        _ => panic!("unsupported entry type {:?}", entry_type),
+        _ => panic!("unsupported entry type {entry_type:?}"),
     }
 }
 

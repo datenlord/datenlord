@@ -5,12 +5,18 @@ on:
   schedule: [cron: "0 */4 * * *"]
 
 env:
-  RUST_VERSION: 1.61.0
+  RUST_VERSION: 1.67.1
+  BUSYBOX_IMAGE: busybox:1.35.0
   CONFIG_DOCKERHUB: datenlord-deploy.yaml
   CONFIG_MINIKUBE: scripts/datenlord_minikube.yaml
   CONFIG_KIND: scripts/datenlord.yaml
   CONTROLLER_APP_LABEL: csi-controller-datenlord
   CONTROLLER_CONTAINER_NAME: datenlord-controller-plugin
+  CSI_ATTACHER_IMAGE: quay.io/k8scsi/csi-attacher:v2.2.0
+  CSI_DRIVER_IMAGE: quay.io/k8scsi/csi-node-driver-registrar:v1.3.0
+  CSI_PROVISIONER_IMAGE: quay.io/k8scsi/csi-provisioner:v1.6.0
+  CSI_RESIZER_IMAGE: quay.io/k8scsi/csi-resizer:v0.5.0
+  CSI_SNAPSHOTTER_IMAGE: quay.io/k8scsi/csi-snapshotter:v2.1.1
   DATENLORD_CSI_IMAGE: datenlord/csiplugin:e2e_test
   DATENLORD_IMAGE: datenlord/datenlord:e2e_test
   DATENLORD_LOGGING: scripts/datenlord-logging.yaml
@@ -21,19 +27,21 @@ env:
   DATENLORD_NAMESPACE: csi-datenlord
   E2E_TEST_CONFIG: scripts/datenlord-e2e-test.yaml
   ELASTICSEARCH_LABEL: elasticsearch
-  FUSE_CONTAINER_NAME: datenlord-fuse
+  ETCD_IMAGE: gcr.io/etcd-development/etcd:v3.4.13
+  FUSE_CONTAINER_NAME: datenlord-async
   FUSE_MOUNT_PATH: /var/opt/datenlord-data
   GRAFANA_LABEL: grafana
   GRAFANA_PORT: 3000
   K8S_CONFIG: k8s.e2e.config
   K8S_VERSION: v1.21.1
   KIBANA_LABEL: kibana
-  KIND_NODE_VERSION: kindest/node:v1.21.1@sha256:69860bda5563ac81e3c0057d654b5253219618a22ec3a346306239bba8cfa1a6
+  KIND_NODE_VERSION: kindest/node:v1.21.1
   KIND_VERSION: v0.11.1
   # MINIKUBE_VERSION: v1.13.0
   NODE_APP_LABEL: csi-nodeplugin-datenlord
   NODE_CONTAINER_NAME: datenlord
   PROMETHEUS_LABEL: prometheus-server
+  SCHEDULER_IMAGE: k8s.gcr.io/kube-scheduler:v1.19.1
   SNAPSHOTTER_VERSION: v5.0.0
 
 jobs:
@@ -161,6 +169,12 @@ jobs:
     # https://www.stackovercloud.com/2020/01/08/blog-testing-of-csi-drivers/
     runs-on: ubuntu-latest
     steps:
+      - name: Free Disk Space (Ubuntu)
+        uses: jlumbroso/free-disk-space@main
+        with:
+          # this might remove tools that are actually needed,
+          # when set to "true" but frees about 6 GB
+          tool-cache: true
       - name: Check out code
         uses: actions/checkout@v2
       - name: Install Kind
@@ -188,11 +202,27 @@ jobs:
           kind create cluster --config ./kind-config.yaml
       - name: Setup SSH
         run: |
+          cat > /tmp/sources.list <<'END'
+          # ubuntu20
+          deb http://mirrors.aliyun.com/ubuntu/ focal main restricted
+          deb http://mirrors.aliyun.com/ubuntu/ focal-updates main restricted
+          deb http://mirrors.aliyun.com/ubuntu/ focal universe
+          deb http://mirrors.aliyun.com/ubuntu/ focal-updates universe
+          deb http://mirrors.aliyun.com/ubuntu/ focal multiverse
+          deb http://mirrors.aliyun.com/ubuntu/ focal-updates multiverse
+          deb http://mirrors.aliyun.com/ubuntu/ focal-backports main restricted universe multiverse
+          deb http://mirrors.aliyun.com/ubuntu/ focal-security main restricted
+          deb http://mirrors.aliyun.com/ubuntu/ focal-security universe
+          deb http://mirrors.aliyun.com/ubuntu/ focal-security multiverse
+          END
+          
           cat >>/tmp/setup.sh <<'END'
           NODES_IP="$(kubectl get nodes -A -o wide | awk 'FNR > 2 {print $6}')"
           NODES="$(kubectl get nodes -A -o wide | awk 'FNR > 2 {print $1}')"
           for node in ${NODES}; do
             USER="$(whoami)"
+            #docker cp /etc/apt/sources.list ${node}:/etc/apt/sources.list
+            docker cp /tmp/sources.list ${node}:/etc/apt/sources.list
             docker exec ${node} apt-get update
             docker exec ${node} apt-get install -y ssh sudo
             docker exec ${node} systemctl start sshd
@@ -221,9 +251,13 @@ jobs:
       - name: Docker build fuse and csi
         run: |
           docker build . --build-arg RUST_IMAGE_VERSION=$RUST_VERSION --file ./Dockerfile --target datenlord --tag $DATENLORD_IMAGE
-          kind load docker-image $DATENLORD_IMAGE
       - name: Deploy DatenLord to K8S
         run: |
+          for image in $ETCD_IMAGE $BUSYBOX_IMAGE $SCHEDULER_IMAGE $CSI_ATTACHER_IMAGE $CSI_DRIVER_IMAGE $CSI_PROVISIONER_IMAGE $CSI_RESIZER_IMAGE $CSI_SNAPSHOTTER_IMAGE; do
+            docker pull $image
+            kind load docker-image $image
+          done
+          kind load docker-image $DATENLORD_IMAGE
           kubectl cluster-info
           kubectl get pods -A
           kubectl apply -f https://raw.githubusercontent.com/kubernetes-csi/external-snapshotter/${SNAPSHOTTER_VERSION}/client/config/crd/snapshot.storage.k8s.io_volumesnapshots.yaml

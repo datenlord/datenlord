@@ -29,14 +29,13 @@ pub async fn register_node_id(
 ) -> anyhow::Result<()> {
     etcd_client
         .write_or_update_kv(
-            format!("{}{}", ETCD_NODE_IP_PORT_PREFIX, node_id).as_str(),
-            &format!("{}:{}", node_ipaddr, port),
+            format!("{ETCD_NODE_IP_PORT_PREFIX}{node_id}").as_str(),
+            &format!("{node_ipaddr}:{port}"),
         )
         .await
         .with_context(|| {
             format!(
-                "Update Node Ip address failed, node_id:{}, node_ipaddr: {}, port: {}",
-                node_id, node_ipaddr, port
+                "Update Node Ip address failed, node_id:{node_id}, node_ipaddr: {node_ipaddr}, port: {port}"
             )
         })?;
 
@@ -49,13 +48,10 @@ pub async fn get_node_ip_and_port(
     node_id: &str,
 ) -> anyhow::Result<String> {
     let ip_and_port = etcd_client
-        .get_at_most_one_value(format!("{}{}", ETCD_NODE_IP_PORT_PREFIX, node_id))
+        .get_at_most_one_value(format!("{ETCD_NODE_IP_PORT_PREFIX}{node_id}"))
         .await
         .with_context(|| {
-            format!(
-                "Fail to get Node Ip address and port information, node_id:{}",
-                node_id
-            )
+            format!("Fail to get Node Ip address and port information, node_id:{node_id}")
         })?;
 
     if let Some(ip_and_port) = ip_and_port {
@@ -64,8 +60,7 @@ pub async fn get_node_ip_and_port(
     } else {
         debug!("node {} missing ip and port information", node_id);
         Err(anyhow::Error::msg(format!(
-            "Ip and port is not registered for Node {}",
-            node_id
+            "Ip and port is not registered for Node {node_id}"
         )))
     }
 }
@@ -81,11 +76,11 @@ pub async fn register_volume(
         .await
         .with_context(|| "lock fail while register volume")?;
 
-    let volume_info_key = format!("{}{}", ETCD_VOLUME_INFO_PREFIX, volume_info);
+    let volume_info_key = format!("{ETCD_VOLUME_INFO_PREFIX}{volume_info}");
     let volume_node_list: Option<Vec<u8>> = etcd_client
         .get_at_most_one_value(volume_info_key.as_str())
         .await
-        .with_context(|| format!("get {} from etcd fail", volume_info_key))?;
+        .with_context(|| format!("get {volume_info_key} from etcd fail"))?;
 
     /*
     let new_volume_node_list = if let Some(node_list) = volume_node_list {
@@ -117,10 +112,7 @@ pub async fn register_volume(
         |node_list| {
             let mut node_set: HashSet<String> = bincode::deserialize(node_list.as_slice())
                 .unwrap_or_else(|e| {
-                    panic!(
-                        "fail to deserialize node list for volume {:?}, error: {}",
-                        volume_info, e
-                    );
+                    panic!("fail to deserialize node list for volume {volume_info:?}, error: {e}");
                 });
             if !node_set.contains(node_id) {
                 node_set.insert(node_id.to_owned());
@@ -131,10 +123,7 @@ pub async fn register_volume(
     );
 
     let volume_node_list_bin = bincode::serialize(&new_volume_node_list).unwrap_or_else(|e| {
-        panic!(
-            "fail to serialize node list for volume {:?}, error: {}",
-            volume_info, e
-        )
+        panic!("fail to serialize node list for volume {volume_info:?}, error: {e}")
     });
 
     etcd_client
@@ -142,8 +131,7 @@ pub async fn register_volume(
         .await
         .with_context(|| {
             format!(
-                "Update Volume to Node Id mapping failed, volume:{}, node id: {}",
-                volume_info, node_id
+                "Update Volume to Node Id mapping failed, volume:{volume_info}, node id: {node_id}"
             )
         })?;
 
@@ -161,19 +149,16 @@ pub async fn get_volume_nodes(
     node_id: &str,
     volume_info: &str,
 ) -> anyhow::Result<HashSet<String>> {
-    let volume_info_key = format!("{}{}", ETCD_VOLUME_INFO_PREFIX, volume_info);
+    let volume_info_key = format!("{ETCD_VOLUME_INFO_PREFIX}{volume_info}");
     let volume_node_list: Option<Vec<u8>> = etcd_client
         .get_at_most_one_value(volume_info_key.as_str())
         .await
-        .with_context(|| format!("get {} from etcd fail", volume_info_key))?;
+        .with_context(|| format!("get {volume_info_key} from etcd fail"))?;
 
     let new_volume_node_list = if let Some(node_list) = volume_node_list {
         let mut node_set: HashSet<String> = bincode::deserialize(node_list.as_slice())
             .unwrap_or_else(|e| {
-                panic!(
-                    "fail to deserialize node list for volume {:?}, error: {}",
-                    volume_info, e
-                );
+                panic!("fail to deserialize node list for volume {volume_info:?}, error: {e}");
             });
 
         debug!("node set when get volume related node, {:?}", node_set);
@@ -215,15 +200,12 @@ where
     let node_list: Option<Vec<u8>> = etcd_client
         .get_at_most_one_value(node_list_key)
         .await
-        .with_context(|| format!("get {} from etcd fail", ETCD_NODE_ID_COUNTER_KEY))?;
+        .with_context(|| format!("get {ETCD_NODE_ID_COUNTER_KEY} from etcd fail"))?;
 
     let new_node_list = fun(node_list);
 
     let node_list_bin = bincode::serialize(&new_node_list).unwrap_or_else(|e| {
-        panic!(
-            "fail to serialize node list for file {:?}, error: {}",
-            file_name, e
-        )
+        panic!("fail to serialize node list for file {file_name:?}, error: {e}")
     });
 
     let node_list_key_clone_2 = node_list_key_clone.clone();
@@ -231,10 +213,7 @@ where
         .write_or_update_kv(node_list_key_clone, &node_list_bin)
         .await
         .with_context(|| {
-            format!(
-                "update {:?} to value {:?} failed",
-                node_list_key_clone_2, node_list_bin
-            )
+            format!("update {node_list_key_clone_2:?} to value {node_list_bin:?} failed")
         })?;
 
     etcd_client
@@ -261,10 +240,7 @@ pub async fn add_node_to_file_list(
             |list| {
                 let mut node_set: HashSet<String> = bincode::deserialize(list.as_slice())
                     .unwrap_or_else(|e| {
-                        panic!(
-                            "fail to deserialize node list for file {:?}, error: {}",
-                            file_name, e
-                        );
+                        panic!("fail to deserialize node list for file {file_name:?}, error: {e}");
                     });
 
                 if !node_set.contains(node_id) {
@@ -290,10 +266,7 @@ pub async fn remove_node_from_file_list(
             Some(list) => {
                 let mut node_set: HashSet<String> = bincode::deserialize(list.as_slice())
                     .unwrap_or_else(|e| {
-                        panic!(
-                            "fail to deserialize node list for file {:?}, error: {}",
-                            file_name, e
-                        );
+                        panic!("fail to deserialize node list for file {file_name:?}, error: {e}");
                     });
 
                 if node_set.contains(node_id) {
