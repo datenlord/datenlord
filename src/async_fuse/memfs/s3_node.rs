@@ -158,41 +158,6 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
         old_attr
     }
 
-    /// Get a new inode number
-    async fn new_inode_num(&self) -> u64 {
-        let lock_key = etcd::lock_inode_number(Arc::<EtcdDelegate>::clone(&self.meta.etcd_client))
-            .await
-            .unwrap_or_else(|e| panic!("failed to get etcd inode number lock, error is {e:?}"));
-        let default = self.meta.cur_inum();
-        let cur_inum = dist_client::get_ino_num(
-            Arc::<EtcdDelegate>::clone(&self.meta.etcd_client),
-            &self.meta.node_id,
-            &self.meta.volume_info,
-            default,
-        )
-        .await
-        .unwrap_or_else(|e| {
-            warn!("Load inode num from other node error: {}", e);
-            default
-        });
-
-        let inum = if cur_inum > default {
-            self.meta
-                .cur_inum
-                .store(cur_inum.overflow_add(1), atomic::Ordering::Relaxed);
-            cur_inum.cast()
-        } else {
-            self.meta
-                .cur_inum
-                .fetch_add(1, atomic::Ordering::SeqCst)
-                .cast()
-        };
-        etcd::unlock_inode_number(Arc::<EtcdDelegate>::clone(&self.meta.etcd_client), lock_key)
-            .await
-            .unwrap_or_else(|e| panic!("failed to release etcd inode number lock, error is {e:?}"));
-        inum
-    }
-
     /// Get fullpath of this node
     pub(crate) fn full_path(&self) -> &str {
         self.full_path.as_str()
@@ -669,7 +634,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
         }
 
         // get symbol file attribute
-        let child_attr = Arc::new(RwLock::new(FileAttr {
+        let child_attr = FileAttr {
             ino: inum,
             kind: SFlag::S_IFLNK,
             size: target_path
@@ -729,7 +694,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
                     });
                 // get symbol file attribute
                 FileAttr {
-                    ino: self.new_inode_num().await,
+                    ino: 0,
                     kind: SFlag::S_IFLNK,
                     size: len.cast(),
                     blocks: 0,
@@ -787,7 +752,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
                     .await
                     .unwrap_or_else(|e| panic!("failed to get last modified of file {absolute_path:?} from s3 backend, error is {e:?}"));
                 FileAttr {
-                    ino: self.new_inode_num().await,
+                    ino: 0, // will be set later
                     kind: SFlag::S_IFDIR,
                     atime: last_modified,
                     mtime: last_modified,
@@ -836,7 +801,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
         }
 
         // get new directory attribute
-        let child_attr = Arc::new(RwLock::new(FileAttr {
+        let child_attr = FileAttr {
             ino: inum,
             kind: SFlag::S_IFDIR,
             perm: fs_util::parse_mode_bits(mode.bits()),
@@ -890,7 +855,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
                         )
                     });
                 FileAttr {
-                    ino: self.new_inode_num().await,
+                    ino: 0, // will be set later
                     kind: SFlag::S_IFREG,
                     size: content_len.cast(),
                     blocks: content_len
@@ -945,7 +910,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
         }
 
         // get new file attribute
-        let child_attr = Arc::new(RwLock::new(FileAttr {
+        let child_attr = FileAttr {
             ino: inum,
             kind: SFlag::S_IFREG,
             perm: fs_util::parse_mode_bits(mode.bits()),

@@ -14,9 +14,6 @@ mod s3_metadata;
 mod s3_node;
 /// S3 backend wrapper module
 pub mod s3_wrapper;
-/// Serializable types module
-pub mod serial;
-
 use std::collections::BTreeMap;
 use std::os::unix::ffi::OsStringExt;
 use std::os::unix::prelude::RawFd;
