@@ -78,6 +78,7 @@ pub trait Node: Sized {
     /// Create symlink in a directory
     async fn create_child_symlink(
         &mut self,
+        inum: INum,
         child_symlink_name: &str,
         target_path: PathBuf,
     ) -> anyhow::Result<Self>;
@@ -94,7 +95,12 @@ pub trait Node: Sized {
         remote: Option<FileAttr>,
     ) -> anyhow::Result<Self>;
     /// Create sub-directory in a directory
-    async fn create_child_dir(&mut self, child_dir_name: &str, mode: Mode) -> anyhow::Result<Self>;
+    async fn create_child_dir(
+        &mut self,
+        inum: INum,
+        child_dir_name: &str,
+        mode: Mode,
+    ) -> anyhow::Result<Self>;
     /// Open file in a directory
     async fn open_child_file(
         &self,
@@ -106,6 +112,7 @@ pub trait Node: Sized {
     /// Create file in a directory
     async fn create_child_file(
         &mut self,
+        inum: INum,
         child_file_name: &str,
         oflags: OFlag,
         mode: Mode,
@@ -729,6 +736,7 @@ impl Node for DefaultNode {
     /// Create symlink in a directory
     async fn create_child_symlink(
         &mut self,
+        _inum: INum,
         child_symlink_name: &str,
         target_path: PathBuf,
     ) -> anyhow::Result<Self> {
@@ -890,7 +898,12 @@ impl Node for DefaultNode {
     }
 
     /// Create sub-directory in a directory
-    async fn create_child_dir(&mut self, child_dir_name: &str, mode: Mode) -> anyhow::Result<Self> {
+    async fn create_child_dir(
+        &mut self,
+        _inum: INum,
+        child_dir_name: &str,
+        mode: Mode,
+    ) -> anyhow::Result<Self> {
         let ino = self.get_ino();
         let fd = self.fd;
         let dir_data = self.get_dir_data_mut();
@@ -992,6 +1005,7 @@ impl Node for DefaultNode {
     /// Create file in a directory
     async fn create_child_file(
         &mut self,
+        _inum: INum,
         child_file_name: &str,
         oflags: OFlag,
         mode: Mode,
