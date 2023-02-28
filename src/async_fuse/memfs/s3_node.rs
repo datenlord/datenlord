@@ -134,7 +134,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
     }
 
     /// Set node attribute
-    pub(crate) async fn _set_attr(&mut self, new_attr: FileAttr, _broadcast: bool) -> FileAttr {
+    pub(crate) fn _set_attr(&mut self, new_attr: FileAttr, _broadcast: bool) -> FileAttr {
         let old_attr = self.get_attr();
         match self.data {
             S3NodeData::Directory(..) => debug_assert_eq!(new_attr.kind, SFlag::S_IFDIR),
@@ -165,7 +165,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
     async fn new_inode_num(&self) -> u64 {
         let lock_key = etcd::lock_inode_number(Arc::<EtcdDelegate>::clone(&self.meta.etcd_client))
             .await
-            .unwrap_or_else(|e| panic!("failed to get etcd inode number lock, error is {:?}", e));
+            .unwrap_or_else(|e| panic!("failed to get etcd inode number lock, error is {e:?}"));
         let default = self.meta.cur_inum();
         let cur_inum = dist_client::get_ino_num(
             Arc::<EtcdDelegate>::clone(&self.meta.etcd_client),
@@ -192,9 +192,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
         };
         etcd::unlock_inode_number(Arc::<EtcdDelegate>::clone(&self.meta.etcd_client), lock_key)
             .await
-            .unwrap_or_else(|e| {
-                panic!("failed to release etcd inode number lock, error is {:?}", e)
-            });
+            .unwrap_or_else(|e| panic!("failed to release etcd inode number lock, error is {e:?}"));
         inum
     }
 
@@ -228,20 +226,17 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
         match child_type {
             SFlag::S_IFDIR => self.absolute_dir_with_child(child),
             SFlag::S_IFREG | SFlag::S_IFLNK => self.absolute_path_with_child(child),
-            _ => panic!(
-                "absolute_path_of_child() found unsupported file type {:?}",
-                child_type
-            ),
+            _ => panic!("absolute_path_of_child() found unsupported file type {child_type:?}"),
         }
     }
 
     /// Update mtime and ctime to now
-    async fn update_mtime_ctime_to_now(&mut self) {
+    fn update_mtime_ctime_to_now(&mut self) {
         let mut attr = self.get_attr();
         let st_now = SystemTime::now();
         attr.mtime = st_now;
         attr.ctime = st_now;
-        self.set_attr(attr).await;
+        self.set_attr(attr);
     }
 
     /// Increase node lookup count
@@ -306,7 +301,8 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
     }
 
     /// Open root node
-    pub(crate) async fn open_root_node(
+    #[allow(clippy::unnecessary_wraps)]
+    pub(crate) fn open_root_node(
         root_ino: INum,
         name: &str,
         s3_backend: Arc<S>,
@@ -385,16 +381,14 @@ pub async fn rename_fullpath_recursive<S: S3BackEnd + Send + Sync + 'static>(
     while let Some((child, parent)) = node_pool.pop_front() {
         let parent_node = cache.get(&parent).unwrap_or_else(|| {
             panic!(
-                "impossible case when rename, the parent i-node of ino={} should be in the cache",
-                parent
+                "impossible case when rename, the parent i-node of ino={parent} should be in the cache"
             )
         });
         let parent_path = parent_node.full_path.clone();
 
         let child_node = cache.get_mut(&child).unwrap_or_else(|| {
             panic!(
-                "impossible case when rename, the child i-node of ino={} should be in the cache",
-                child
+                "impossible case when rename, the child i-node of ino={child} should be in the cache"
             )
         });
         child_node.set_parent_ino(parent);
@@ -431,8 +425,7 @@ pub async fn rename_fullpath_recursive<S: S3BackEnd + Send + Sync + 'static>(
 
         if let Err(e) = child_node.s3_backend.rename(&old_path, &new_path).await {
             panic!(
-                "failed to rename from {:?} to {:?} in s3 backend, error is {:?}",
-                old_path, new_path, e
+                "failed to rename from {old_path:?} to {new_path:?} in s3 backend, error is {e:?}"
             );
         }
 
@@ -506,8 +499,8 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
     }
 
     /// Set node attribute
-    async fn set_attr(&mut self, new_attr: FileAttr) -> FileAttr {
-        self._set_attr(new_attr, true).await
+    fn set_attr(&mut self, new_attr: FileAttr) -> FileAttr {
+        self._set_attr(new_attr, true)
     }
 
     /// Get node attribute and increase lookup count
@@ -555,7 +548,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
             .s3_backend
             .get_meta(&self.full_path)
             .await
-            .unwrap_or_else(|e| panic!("failed to get meta from s3 backend, error is {:?}", e));
+            .unwrap_or_else(|e| panic!("failed to get meta from s3 backend, error is {e:?}"));
 
         let attr = FileAttr {
             ino: self.get_ino(),
@@ -572,7 +565,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
             ..FileAttr::default()
         };
 
-        self.set_attr(attr).await;
+        self.set_attr(attr);
 
         Ok(attr)
     }
@@ -659,12 +652,11 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
         let dir_data = self.get_dir_data();
         debug_assert!(
             !dir_data.contains_key(child_symlink_name),
-            "create_child_symlink() cannot create duplicated symlink name={:?}",
-            child_symlink_name,
+            "create_child_symlink() cannot create duplicated symlink name={child_symlink_name:?}",
         );
         let target_str = target_path
             .to_str()
-            .unwrap_or_else(|| panic!("failed to convert {:?} to utf8 string", target_path));
+            .unwrap_or_else(|| panic!("failed to convert {target_path:?} to utf8 string"));
         if let Err(e) = self
             .s3_backend
             .put_data(
@@ -675,10 +667,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
             )
             .await
         {
-            panic!(
-                "failed to put data of file {:?} to s3 backend, error is {:?}",
-                absolute_path, e
-            );
+            panic!("failed to put data of file {absolute_path:?} to s3 backend, error is {e:?}");
         }
 
         // get symbol file attribute
@@ -708,7 +697,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
             target_path
         };
 
-        self.update_mtime_ctime_to_now().await;
+        self.update_mtime_ctime_to_now();
         Ok(Self::new(
             self.get_ino(),
             child_symlink_name,
@@ -736,8 +725,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
                     .await
                     .unwrap_or_else(|e| {
                         panic!(
-                            "failed to get meta of {:?} from s3 backend, error is {:?}",
-                            absolute_path, e
+                            "failed to get meta of {absolute_path:?} from s3 backend, error is {e:?}"
                         )
                     });
                 // get symbol file attribute
@@ -765,12 +753,11 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
                     .await
                     .unwrap_or_else(|e| {
                         panic!(
-                            "failed to get data of {:?} from s3 backend, error is {:?}",
-                            absolute_path, e
+                            "failed to get data of {absolute_path:?} from s3 backend, error is {e:?}"
                         )
                     }),
             )
-            .unwrap_or_else(|e| panic!("failed to convert to utf string, error is {:?}", e)),
+            .unwrap_or_else(|e| panic!("failed to convert to utf string, error is {e:?}")),
         );
 
         Ok(Self::new(
@@ -799,7 +786,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
                     .s3_backend
                     .get_last_modified(absolute_path.as_str())
                     .await
-                    .unwrap_or_else(|e| panic!("failed to get last modified of file {:?} from s3 backend, error is {:?}", absolute_path, e));
+                    .unwrap_or_else(|e| panic!("failed to get last modified of file {absolute_path:?} from s3 backend, error is {e:?}"));
                 FileAttr {
                     ino: self.new_inode_num().await,
                     kind: SFlag::S_IFDIR,
@@ -838,14 +825,10 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
         // TODO return error
         debug_assert!(
             !dir_data.contains_key(child_dir_name),
-            "create_child_dir() cannot create duplicated directory name={:?}",
-            child_dir_name
+            "create_child_dir() cannot create duplicated directory name={child_dir_name:?}"
         );
         if let Err(e) = self.s3_backend.create_dir(absolute_path.as_str()).await {
-            panic!(
-                "failed to create dir={:?} in s3 backend, error is {:?}",
-                absolute_path, e
-            );
+            panic!("failed to create dir={absolute_path:?} in s3 backend, error is {e:?}");
         }
 
         // get new directory attribute
@@ -877,7 +860,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
             Arc::clone(&self.meta),
         );
 
-        self.update_mtime_ctime_to_now().await;
+        self.update_mtime_ctime_to_now();
         Ok(child_node)
     }
 
@@ -899,8 +882,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
                     .await
                     .unwrap_or_else(|e| {
                         panic!(
-                            "failed to get meta of {:?} from s3 backend, error is {:?}",
-                            absolute_path, e
+                            "failed to get meta of {absolute_path:?} from s3 backend, error is {e:?}"
                         )
                     });
                 FileAttr {
@@ -946,8 +928,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
         let dir_data = self.get_dir_data();
         debug_assert!(
             !dir_data.contains_key(child_file_name),
-            "open_child_file_helper() cannot create duplicated file name={:?}",
-            child_file_name
+            "open_child_file_helper() cannot create duplicated file name={child_file_name:?}"
         );
         debug_assert!(oflags.contains(OFlag::O_CREAT));
         if let Err(e) = self
@@ -955,10 +936,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
             .put_data(absolute_path.as_str(), b"", 0, 0)
             .await
         {
-            panic!(
-                "failed to put data of file {:?} to s3 backend, error is {:?}",
-                absolute_path, e
-            );
+            panic!("failed to put data of file {absolute_path:?} to s3 backend, error is {e:?}");
         }
 
         // get new file attribute
@@ -980,7 +958,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
         let previous_value = dir_data_mut.insert(child_file_name.to_owned(), entry);
         debug_assert!(previous_value.is_none()); // double check creation race
 
-        self.update_mtime_ctime_to_now().await;
+        self.update_mtime_ctime_to_now();
         Ok(Self::new(
             self.get_ino(),
             child_file_name,
@@ -1080,11 +1058,11 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
     }
 
     /// Insert directory entry for rename()
-    async fn insert_entry_for_rename(&mut self, child_entry: DirEntry) -> Option<DirEntry> {
+    fn insert_entry_for_rename(&mut self, child_entry: DirEntry) -> Option<DirEntry> {
         let dir_data = self.get_dir_data_mut();
         let previous_entry = dir_data.insert(child_entry.entry_name().into(), child_entry);
 
-        self.update_mtime_ctime_to_now().await;
+        self.update_mtime_ctime_to_now();
         debug!(
             "insert_entry_for_rename() successfully inserted new entry \
                 and replaced previous entry={:?}",
@@ -1095,11 +1073,11 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
     }
 
     /// Remove directory entry from cache only for rename()
-    async fn remove_entry_for_rename(&mut self, child_name: &str) -> Option<DirEntry> {
+    fn remove_entry_for_rename(&mut self, child_name: &str) -> Option<DirEntry> {
         let dir_data = self.get_dir_data_mut();
         let remove_res = dir_data.remove(child_name);
         if remove_res.is_some() {
-            self.update_mtime_ctime_to_now().await;
+            self.update_mtime_ctime_to_now();
         }
         remove_res
     }
@@ -1136,7 +1114,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
                 removed_entry.entry_type()
             ),
         }
-        self.update_mtime_ctime_to_now().await;
+        self.update_mtime_ctime_to_now();
         Ok(removed_entry)
     }
 
@@ -1239,7 +1217,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
         );
 
         debug!("file {:?} size = {:?}", self.name, self.attr.size);
-        self.update_mtime_ctime_to_now().await;
+        self.update_mtime_ctime_to_now();
 
         Ok(written_size)
     }

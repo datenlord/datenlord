@@ -176,7 +176,7 @@ impl MetaData {
         // List key-value pairs with prefix
         let node_list: Vec<DatenLordNode> = self
             .etcd_delegate
-            .get_list(&format!("{}/", NODE_PREFIX))
+            .get_list(&format!("{NODE_PREFIX}/"))
             .await?;
         debug_assert!(
             !node_list.is_empty(),
@@ -189,8 +189,7 @@ impl MetaData {
             .get(idx)
             .unwrap_or_else(|| {
                 panic!(
-                    "failed to get the {}-th node from returned node list, list={:?}",
-                    idx, node_list,
+                    "failed to get the {idx}-th node from returned node list, list={node_list:?}",
                 )
             })
             .clone())
@@ -237,9 +236,7 @@ impl MetaData {
                 volume
                     .node_ids
                     .get(0)
-                    .unwrap_or_else(|| {
-                        panic!("volume ID={} has an empty node id vector", volume_id)
-                    })
+                    .unwrap_or_else(|| panic!("volume ID={volume_id} has an empty node id vector"))
                     .clone()
             } else {
                 panic!("failed to find snapshot and volume from content source");
@@ -252,13 +249,12 @@ impl MetaData {
                 )
             {
                 panic!(
-                    "select node ID={} is not in requisite topology and preferred topology",
-                    node_id,
+                    "select node ID={node_id} is not in requisite topology and preferred topology",
                 );
             } else {
                 self.get_node_by_id(&node_id)
                     .await
-                    .or_else(|_| panic!("failed to get node ID={} from etcd", node_id))
+                    .or_else(|_| panic!("failed to get node ID={node_id} from etcd"))
             }
         } else if req.has_accessibility_requirements() {
             let preferred_topology = req.get_accessibility_requirements().get_preferred();
@@ -276,8 +272,7 @@ impl MetaData {
                     .get(0)
                     .unwrap_or_else(|| {
                         panic!(
-                            "failed to get the first topology from preferred topology, list={:?}",
-                            preferred_topology,
+                            "failed to get the first topology from preferred topology, list={preferred_topology:?}",
                         )
                     })
                     .get_segments()
@@ -291,7 +286,7 @@ impl MetaData {
                 if !requisite_topology.is_empty()
                     && !Self::validate_node_in_topology(node_id, requisite_topology)
                 {
-                    panic!("node ID={} doesn't exist in requisite topology", node_id);
+                    panic!("node ID={node_id} doesn't exist in requisite topology");
                 } else {
                     node_id
                 }
@@ -303,7 +298,7 @@ impl MetaData {
             );
             self.get_node_by_id(node_id)
                 .await
-                .or_else(|_| panic!("failed to get node ID={} from etcd", node_id))
+                .or_else(|_| panic!("failed to get node ID={node_id} from etcd"))
         } else {
             debug!("request doesn't have volume content source and accessibility requirements, select random node");
             self.select_random_node().await
@@ -336,7 +331,7 @@ impl MetaData {
     pub async fn get_nodes(&self) -> DatenLordResult<Vec<String>> {
         let nodes: Vec<DatenLordNode> = self
             .etcd_delegate
-            .get_list(&format!("{}/", NODE_PREFIX))
+            .get_list(&format!("{NODE_PREFIX}/"))
             .await?;
         Ok(nodes.iter().map(|node| node.node_id.clone()).collect())
     }
@@ -355,16 +350,16 @@ impl MetaData {
     pub async fn get_node_by_id(&self, node_id: &str) -> DatenLordResult<DatenLordNode> {
         let get_res = self
             .etcd_delegate
-            .get_at_most_one_value(format!("{}/{}", NODE_PREFIX, node_id))
+            .get_at_most_one_value(format!("{NODE_PREFIX}/{node_id}"))
             .await;
         match get_res {
             Ok(val) => val.ok_or(NodeNotFound {
                 node_id: node_id.to_owned(),
-                context: vec![format!("Node ID={} is not found in etcd", node_id)],
+                context: vec![format!("Node ID={node_id} is not found in etcd")],
             }),
             Err(e) => {
                 warn!("failed to get node ID={}, the error is: {}", node_id, e);
-                Err(e.with_context(|| format!("failed to get node ID={}", node_id)))
+                Err(e.with_context(|| format!("failed to get node ID={node_id}")))
             }
         }
     }
@@ -373,16 +368,16 @@ impl MetaData {
     pub async fn get_snapshot_by_id(&self, snap_id: &str) -> DatenLordResult<DatenLordSnapshot> {
         let get_res = self
             .etcd_delegate
-            .get_at_most_one_value(format!("{}/{}", SNAPSHOT_ID_PREFIX, snap_id))
+            .get_at_most_one_value(format!("{SNAPSHOT_ID_PREFIX}/{snap_id}"))
             .await;
         match get_res {
             Ok(val) => val.ok_or(SnapshotNotFound {
                 snapshot_id: snap_id.to_owned(),
-                context: vec![format!("Snapshot ID={} is not found in etcd", snap_id)],
+                context: vec![format!("Snapshot ID={snap_id} is not found in etcd")],
             }),
             Err(e) => {
                 warn!("failed to get snapshot ID={}, the error is: {}", snap_id, e);
-                Err(e.with_context(|| format!("failed to get snapshot ID={} from etcd", snap_id)))
+                Err(e.with_context(|| format!("failed to get snapshot ID={snap_id} from etcd")))
             }
         }
     }
@@ -392,7 +387,7 @@ impl MetaData {
         &self,
         snap_name: &str,
     ) -> DatenLordResult<DatenLordSnapshot> {
-        let snap_name_key = format!("{}/{}", SNAPSHOT_NAME_PREFIX, snap_name);
+        let snap_name_key = format!("{SNAPSHOT_NAME_PREFIX}/{snap_name}");
         let snap_id: String = match self
             .etcd_delegate
             .get_at_most_one_value(snap_name_key)
@@ -405,7 +400,7 @@ impl MetaData {
                     debug!("failed to find snapshot name={} from etcd", snap_name);
                     return Err(SnapshotNotFound {
                         snapshot_id: snap_name.to_owned(),
-                        context: vec![format!("Snapshot name={} is not found in etcd", snap_name)],
+                        context: vec![format!("Snapshot name={snap_name} is not found in etcd")],
                     });
                 }
             }
@@ -415,7 +410,7 @@ impl MetaData {
                     snap_name, e
                 );
                 return Err(e.with_context(|| {
-                    format!("failed to find snapshot name={} from etcd", snap_name)
+                    format!("failed to find snapshot name={snap_name} from etcd")
                 }));
             }
         };
@@ -428,7 +423,7 @@ impl MetaData {
         &self,
         src_volume_id: &str,
     ) -> DatenLordResult<DatenLordSnapshot> {
-        let src_vol_id_key = format!("{}/{}", SNAPSHOT_SOURCE_ID_PREFIX, src_volume_id);
+        let src_vol_id_key = format!("{SNAPSHOT_SOURCE_ID_PREFIX}/{src_volume_id}");
         let snap_id: String = match self
             .etcd_delegate
             .get_at_most_one_value(src_vol_id_key)
@@ -443,10 +438,9 @@ impl MetaData {
                         src_volume_id
                     );
                     return Err(SnapshotNotFound {
-                        snapshot_id: "".to_owned(),
+                        snapshot_id: String::new(),
                         context: vec![format!(
-                            "failed to find snapshot by source volume ID={} from etcd",
-                            src_volume_id
+                            "failed to find snapshot by source volume ID={src_volume_id} from etcd"
                         )],
                     });
                 }
@@ -457,10 +451,7 @@ impl MetaData {
                     src_volume_id, e,
                 );
                 return Err(e.with_context(|| {
-                    format!(
-                        "failed to find snapshot by source volume ID={} from etcd",
-                        src_volume_id
-                    )
+                    format!("failed to find snapshot by source volume ID={src_volume_id} from etcd")
                 }));
             }
         };
@@ -490,24 +481,21 @@ impl MetaData {
         } else {
             return Err(StartingTokenInvalid {
                 starting_token: starting_token.to_owned(),
-                context: vec![format!("invalid starting position {}", starting_token)],
+                context: vec![format!("invalid starting position {starting_token}")],
             });
         };
         if starting_pos > 0 && starting_pos >= total_num {
             return Err(StartingTokenInvalid {
                 starting_token: starting_token.to_owned(),
                 context: vec![format!(
-                    "invalid starting token={}, larger than or equal to the list size={} of volumes",
-                    starting_token,
-                    total_num,
+                    "invalid starting token={starting_token}, larger than or equal to the list size={total_num} of volumes",
                 )],
             });
         }
         let (remaining, ofr) = total_num.overflowing_sub(starting_pos);
         debug_assert!(
             !ofr,
-            "total_num={} subtract num_to_list={} overflowed",
-            total_num, starting_pos,
+            "total_num={total_num} subtract num_to_list={starting_pos} overflowed",
         );
 
         let num_to_list = if max_entries > 0_i32 {
@@ -522,8 +510,7 @@ impl MetaData {
         let (next_pos, ofnp) = starting_pos.overflowing_add(num_to_list);
         debug_assert!(
             !ofnp,
-            "sarting_pos={} add num_to_list={} overflowed",
-            starting_pos, num_to_list,
+            "sarting_pos={starting_pos} add num_to_list={num_to_list} overflowed",
         );
 
         let result_vec = vector
@@ -536,8 +523,7 @@ impl MetaData {
                 let (end_idx_not_list, ofen) = starting_pos.overflowing_add(num_to_list);
                 debug_assert!(
                     !ofen,
-                    "starting_pos={} add num_to_list={} overflowed",
-                    starting_pos, num_to_list,
+                    "starting_pos={starting_pos} add num_to_list={num_to_list} overflowed",
                 );
                 if idx >= end_idx_not_list {
                     return None;
@@ -556,7 +542,7 @@ impl MetaData {
     ) -> DatenLordResult<(Vec<ListVolumesResponse_Entry>, usize)> {
         let vol_list: Vec<DatenLordVolume> = self
             .etcd_delegate
-            .get_list(&format!("{}/", VOLUME_ID_PREFIX))
+            .get_list(&format!("{VOLUME_ID_PREFIX}/"))
             .await?;
 
         Self::list_helper(vol_list, starting_token, max_entries, |vol| {
@@ -580,7 +566,7 @@ impl MetaData {
     ) -> DatenLordResult<(Vec<ListSnapshotsResponse_Entry>, usize)> {
         let snap_list: Vec<DatenLordSnapshot> = self
             .etcd_delegate
-            .get_list(&format!("{}/", SNAPSHOT_ID_PREFIX))
+            .get_list(&format!("{SNAPSHOT_ID_PREFIX}/"))
             .await?;
 
         Self::list_helper(snap_list, starting_token, max_entries, |snap| {
@@ -593,7 +579,7 @@ impl MetaData {
             entry.mut_snapshot().set_creation_time(
                 match util::generate_proto_timestamp(&snap.creation_time) {
                     Ok(ts) => ts,
-                    Err(e) => panic!("failed to generate proto timestamp, the error is: {}", e,),
+                    Err(e) => panic!("failed to generate proto timestamp, the error is: {e}",),
                 },
             );
             entry.mut_snapshot().set_ready_to_use(snap.ready_to_use);
@@ -620,26 +606,26 @@ impl MetaData {
     pub async fn get_volume_by_id(&self, vol_id: &str) -> DatenLordResult<DatenLordVolume> {
         match self
             .etcd_delegate
-            .get_at_most_one_value(format!("{}/{}", VOLUME_ID_PREFIX, vol_id))
+            .get_at_most_one_value(format!("{VOLUME_ID_PREFIX}/{vol_id}"))
             .await
         {
             Ok(val) => val.ok_or(VolumeNotFound {
                 volume_id: vol_id.to_owned(),
-                context: vec![format!("Volume ID={} is not found in etcd", vol_id)],
+                context: vec![format!("Volume ID={vol_id} is not found in etcd")],
             }),
             Err(e) => {
                 debug!(
                     "failed to find volume ID={} from etcd, the error is: {}",
                     vol_id, e
                 );
-                Err(e.with_context(|| format!("failed to find volume ID={} from etcd", vol_id)))
+                Err(e.with_context(|| format!("failed to find volume ID={vol_id} from etcd")))
             }
         }
     }
 
     /// Get volume by name
     pub async fn get_volume_by_name(&self, vol_name: &str) -> DatenLordResult<DatenLordVolume> {
-        let vol_name_key = format!("{}/{}", VOLUME_NAME_PREFIX, vol_name);
+        let vol_name_key = format!("{VOLUME_NAME_PREFIX}/{vol_name}");
         let vol_id: String = match self.etcd_delegate.get_at_most_one_value(vol_name_key).await {
             Ok(val) => {
                 if let Some(v) = val {
@@ -648,10 +634,7 @@ impl MetaData {
                     debug!("volume with name={} is not found in etcd", vol_name,);
                     return Err(VolumeNotFound {
                         volume_id: vol_name.to_owned(),
-                        context: vec![format!(
-                            "Volume with name={} is not found in etcd",
-                            vol_name
-                        )],
+                        context: vec![format!("Volume with name={vol_name} is not found in etcd")],
                     });
                 }
             }
@@ -661,7 +644,7 @@ impl MetaData {
                     vol_name, e,
                 );
                 return Err(e.with_context(|| {
-                    format!("failed to find volume by name={} from etcd", vol_name)
+                    format!("failed to find volume by name={vol_name} from etcd")
                 }));
             }
         };
@@ -679,34 +662,31 @@ impl MetaData {
         let snap_id_str = snap_id.to_owned();
 
         // TODO: use etcd transancation?
-        let snap_id_key = format!("{}/{}", SNAPSHOT_ID_PREFIX, snap_id);
+        let snap_id_key = format!("{SNAPSHOT_ID_PREFIX}/{snap_id}");
         self.etcd_delegate
             .write_new_kv(&snap_id_key, snapshot)
             .await
-            .with_context(|| format!("failed to add new snapshot key={} to etcd", snap_id_key))?;
+            .with_context(|| format!("failed to add new snapshot key={snap_id_key} to etcd"))?;
 
         let snap_name_key = format!("{}/{}", SNAPSHOT_NAME_PREFIX, snapshot.snap_name);
         self.etcd_delegate
             .write_new_kv(&snap_name_key, &snap_id_str)
             .await
-            .with_context(|| format!("failed to add new snapshot key={} to etcd", snap_name_key))?;
+            .with_context(|| format!("failed to add new snapshot key={snap_name_key} to etcd"))?;
 
         let snap_source_id_key = format!("{}/{}", SNAPSHOT_SOURCE_ID_PREFIX, snapshot.vol_id);
         self.etcd_delegate
             .write_new_kv(&snap_source_id_key, &snap_id_str)
             .await
             .with_context(|| {
-                format!(
-                    "failed to add new snapshot key={} to etcd",
-                    snap_source_id_key,
-                )
+                format!("failed to add new snapshot key={snap_source_id_key} to etcd",)
             })?;
 
         let node_snap_key = format!("{}/{}/{}", NODE_SNAPSHOT_PREFIX, snapshot.node_id, snap_id);
         self.etcd_delegate
             .write_new_kv(&node_snap_key, &snapshot.ready_to_use)
             .await
-            .with_context(|| format!("failed to add new snapshot key={} to etcd", node_snap_key))?;
+            .with_context(|| format!("failed to add new snapshot key={node_snap_key} to etcd"))?;
 
         Ok(())
     }
@@ -715,15 +695,18 @@ impl MetaData {
     pub async fn delete_snapshot_meta_data(
         &self,
         snap_id: &str,
-    ) -> DatenLordResult<DatenLordSnapshot> {
+    ) -> DatenLordResult<Option<DatenLordSnapshot>> {
         info!("deleting the meta data of snapshot ID={}", snap_id);
 
         // TODO: use etcd transancation?
-        let snap_id_key = format!("{}/{}", SNAPSHOT_ID_PREFIX, snap_id);
-        let snap_id_pre_value: DatenLordSnapshot = self
-            .etcd_delegate
-            .delete_exact_one_value(&snap_id_key)
-            .await?;
+        let snap_id_key = format!("{SNAPSHOT_ID_PREFIX}/{snap_id}");
+        let snap_id_pre_value: DatenLordSnapshot = if let Some(snap_id_pre_value) =
+            self.etcd_delegate.delete_one_value(&snap_id_key).await?
+        {
+            snap_id_pre_value
+        } else {
+            return Ok(None);
+        };
 
         let snap_name_key = format!("{}/{}", SNAPSHOT_NAME_PREFIX, snap_id_pre_value.snap_name);
         let snap_name_pre_value: String = self
@@ -751,7 +734,7 @@ impl MetaData {
             "deleted snapshot ID={} name={} source volume ID={} at node ID={}",
             snap_id, snap_name_pre_value, snap_source_pre_value, snap_id_pre_value.node_id,
         );
-        Ok(snap_id_pre_value)
+        Ok(Some(snap_id_pre_value))
     }
 
     /// Update the existing volume meta data
@@ -763,15 +746,14 @@ impl MetaData {
         info!("updating the meta data of volume ID={}", vol_id);
         let vol_id_str = vol_id.to_owned();
 
-        let vol_id_key = format!("{}/{}", VOLUME_ID_PREFIX, vol_id);
+        let vol_id_key = format!("{VOLUME_ID_PREFIX}/{vol_id}");
         let vol_id_pre_value = self
             .etcd_delegate
             .update_existing_kv(&vol_id_key, volume)
             .await?;
         debug_assert_eq!(
             vol_id_pre_value.vol_id, vol_id,
-            "replaced volume key={} value not match",
-            vol_id_key,
+            "replaced volume key={vol_id_key} value not match",
         );
 
         let vol_name_key = format!("{}/{}", VOLUME_NAME_PREFIX, volume.vol_name);
@@ -781,8 +763,7 @@ impl MetaData {
             .await?;
         debug_assert_eq!(
             vol_name_pre_value, vol_id,
-            "replaced volume key={} value not match",
-            vol_name_key,
+            "replaced volume key={vol_name_key} value not match",
         );
 
         // Volume ephemeral field cannot be changed
@@ -811,23 +792,23 @@ impl MetaData {
         info!("adding the meta data of volume ID={}", vol_id);
         let vol_id_str = vol_id.to_owned();
 
-        let vol_id_key = format!("{}/{}", VOLUME_ID_PREFIX, vol_id);
+        let vol_id_key = format!("{VOLUME_ID_PREFIX}/{vol_id}");
         self.etcd_delegate
             .write_new_kv(&vol_id_key, volume)
             .await
-            .with_context(|| format!("failed to add new volume key={} to etcd", vol_id_key,))?;
+            .with_context(|| format!("failed to add new volume key={vol_id_key} to etcd",))?;
 
         let vol_name_key = format!("{}/{}", VOLUME_NAME_PREFIX, volume.vol_name);
         self.etcd_delegate
             .write_new_kv(&vol_name_key, &vol_id_str)
             .await
-            .with_context(|| format!("failed to add new volume key={} to etcd", vol_name_key,))?;
+            .with_context(|| format!("failed to add new volume key={vol_name_key} to etcd",))?;
 
         let node_vol_key = format!("{}/{}/{}", NODE_VOLUME_PREFIX, self.get_node_id(), vol_id);
         self.etcd_delegate
             .write_new_kv(&node_vol_key, &volume.ephemeral)
             .await
-            .with_context(|| format!("failed to add new volume key={} to etcd", node_vol_key,))?;
+            .with_context(|| format!("failed to add new volume key={node_vol_key} to etcd",))?;
 
         Ok(())
     }
@@ -842,12 +823,12 @@ impl MetaData {
     ) -> DatenLordResult<DatenLordVolume> {
         info!("deleting volume ID={} on node ID={}", vol_id, node_id);
 
-        let etcd_vol_lock = format!("{}/{}", ETCD_VOLUME_LOCK_PREFIX, vol_id);
+        let etcd_vol_lock = format!("{ETCD_VOLUME_LOCK_PREFIX}/{vol_id}");
         let lock_key = self
             .etcd_delegate
             .lock(etcd_vol_lock.as_bytes(), 10)
             .await
-            .with_context(|| format!("failed to lock {}", etcd_vol_lock))?;
+            .with_context(|| format!("failed to lock {etcd_vol_lock}"))?;
         let volume = self.get_volume_by_id(vol_id).await?;
         assert_eq!(
             volume.get_primary_node_id(),
@@ -858,7 +839,7 @@ impl MetaData {
         );
 
         // TODO: use etcd transancation?
-        let vol_id_key = format!("{}/{}", VOLUME_ID_PREFIX, vol_id);
+        let vol_id_key = format!("{VOLUME_ID_PREFIX}/{vol_id}");
         let vol_id_pre_value: DatenLordVolume = self
             .etcd_delegate
             .delete_exact_one_value(&vol_id_key)
@@ -870,7 +851,7 @@ impl MetaData {
             .delete_exact_one_value(&vol_name_key)
             .await?;
 
-        let node_vol_key = format!("{}/{}/{}", NODE_VOLUME_PREFIX, node_id, vol_id);
+        let node_vol_key = format!("{NODE_VOLUME_PREFIX}/{node_id}/{vol_id}");
         let _node_vol_pre_value: bool = self
             .etcd_delegate
             .delete_exact_one_value(&node_vol_key)
@@ -879,7 +860,7 @@ impl MetaData {
         self.etcd_delegate
             .unlock(lock_key)
             .await
-            .with_context(|| format!("failed to unlock {}", etcd_vol_lock))?;
+            .with_context(|| format!("failed to unlock {etcd_vol_lock}"))?;
 
         let get_mount_path_res = self.get_volume_bind_mount_path(vol_id).await;
         if let Ok(pre_mount_path_vec) = get_mount_path_res {
@@ -894,9 +875,8 @@ impl MetaData {
                         let umount_res = util::umount_volume_bind_path(pre_mount_path);
                         if let Err(e) = umount_res {
                             panic!(
-                                "failed to un-mount volume ID={} bind path={}, \
-                                    the error is: {}",
-                                vol_id_owned, pre_mount_path, e,
+                                "failed to un-mount volume ID={vol_id_owned} bind path={pre_mount_path}, \
+                                    the error is: {e}",
                             );
                         }
                     });
@@ -920,14 +900,14 @@ impl MetaData {
 
     /// Decompress snapshot of volume to destination
     fn decompress_snapshot(snap_path: &Path, dst_path: &Path) -> DatenLordResult<()> {
-        let tar_gz = File::open(snap_path)
-            .with_context(|| format!("failed to open path={:?}", snap_path))?;
+        let tar_gz =
+            File::open(snap_path).with_context(|| format!("failed to open path={snap_path:?}"))?;
 
         let tar_file = flate2::read::GzDecoder::new(tar_gz);
         let mut archive = tar::Archive::new(tar_file);
         archive
             .unpack(dst_path)
-            .with_context(|| format!("failed to decompress snapshot to {:?}", dst_path))?;
+            .with_context(|| format!("failed to decompress snapshot to {dst_path:?}"))?;
         Ok(())
     }
 
@@ -977,8 +957,7 @@ impl MetaData {
 
         debug_assert!(
             dst_path.is_dir(),
-            "the volume of mount access type should have a directory path: {:?}",
-            dst_path,
+            "the volume of mount access type should have a directory path: {dst_path:?}",
         );
         let snap_path_owned = src_snapshot.snap_path.clone();
         let dst_path_owned = dst_path.clone();
@@ -1074,12 +1053,12 @@ impl MetaData {
             .etcd_delegate
             .lock(etcd_vol_mount_path_lock.as_bytes(), 10)
             .await
-            .with_context(|| format!("failed to lock {}", etcd_vol_mount_path_lock))?;
+            .with_context(|| format!("failed to lock {etcd_vol_mount_path_lock}"))?;
         let mut mount_path_set =
             self.get_volume_bind_mount_path(vol_id)
                 .await
                 .with_context(|| {
-                    format!("failed to get the bind mount paths of volume ID={}", vol_id,)
+                    format!("failed to get the bind mount paths of volume ID={vol_id}",)
                 })?;
         if mount_path_set.contains(mount_path) {
             let volume_mount_path_key = format!(
@@ -1103,11 +1082,10 @@ impl MetaData {
                     .await
                     .with_context(|| {
                         format!(
-                            "failed to delete one mount path={} of volume ID={}",
-                            mount_path, vol_id
+                            "failed to delete one mount path={mount_path} of volume ID={vol_id}"
                         )
                     })?;
-                Ok((&volume_mount_paths)
+                Ok(volume_mount_paths
                     .split(VOLUME_BIND_MOUNT_PATH_SEPARATOR)
                     .map(std::borrow::ToOwned::to_owned)
                     .collect())
@@ -1115,7 +1093,7 @@ impl MetaData {
             self.etcd_delegate
                 .unlock(lock_key)
                 .await
-                .with_context(|| format!("failed to unlock {}", etcd_vol_mount_path_lock))?;
+                .with_context(|| format!("failed to unlock {etcd_vol_mount_path_lock}"))?;
             pre_path_set
         } else {
             Ok(mount_path_set)
@@ -1138,7 +1116,7 @@ impl MetaData {
             .delete_exact_one_value(&volume_mount_path_key)
             .await?;
 
-        Ok((&mount_paths)
+        Ok(mount_paths
             .split(VOLUME_BIND_MOUNT_PATH_SEPARATOR)
             .map(std::borrow::ToOwned::to_owned)
             .collect())
@@ -1160,7 +1138,7 @@ impl MetaData {
             .get_at_most_one_value(volume_mount_path_key)
             .await?;
         match get_opt {
-            Some(pre_mount_paths) => Ok((&pre_mount_paths)
+            Some(pre_mount_paths) => Ok(pre_mount_paths
                 .split(VOLUME_BIND_MOUNT_PATH_SEPARATOR)
                 .map(std::borrow::ToOwned::to_owned)
                 .collect()),
@@ -1187,7 +1165,7 @@ impl MetaData {
             .etcd_delegate
             .lock(etcd_vol_mount_path_lock.as_bytes(), 10)
             .await
-            .with_context(|| format!("failed to lock {}", etcd_vol_mount_path_lock))?;
+            .with_context(|| format!("failed to lock {etcd_vol_mount_path_lock}"))?;
         let get_mount_path_res = self.get_volume_bind_mount_path(vol_id).await;
         let mut mount_path_set = match get_mount_path_res {
             Ok(v) => v,
@@ -1213,9 +1191,8 @@ impl MetaData {
                     .await;
                 if let Err(e) = write_res {
                     panic!(
-                        "failed to write the mount path={} of volume ID={} to etcd, \
-                            the error is: {}",
-                        target_path, vol_id, e,
+                        "failed to write the mount path={target_path} of volume ID={vol_id} to etcd, \
+                            the error is: {e}",
                     );
                 }
             }
@@ -1228,17 +1205,13 @@ impl MetaData {
                     Ok(pre_mount_paths) => {
                         debug_assert!(
                             !pre_mount_paths.contains(target_path),
-                            "the previous mount paths={} of volume ID={} \
-                                should not contain new mount path={}",
-                            pre_mount_paths,
-                            vol_id,
-                            target_path,
+                            "the previous mount paths={pre_mount_paths} of volume ID={vol_id} \
+                                should not contain new mount path={target_path}",
                         );
                     }
                     Err(e) => panic!(
-                        "failed to add the mount path={} of volume ID={} to etcd, \
-                            the error is: {}",
-                        target_path, vol_id, e,
+                        "failed to add the mount path={target_path} of volume ID={vol_id} to etcd, \
+                            the error is: {e}",
                     ),
                 }
             }
@@ -1249,7 +1222,7 @@ impl MetaData {
         self.etcd_delegate
             .unlock(lock_key)
             .await
-            .with_context(|| format!("failed to unlock {}", etcd_vol_mount_path_lock))?;
+            .with_context(|| format!("failed to unlock {etcd_vol_mount_path_lock}"))?;
         Ok(())
     }
 
@@ -1270,10 +1243,7 @@ impl MetaData {
             debug!("found target bind mount directory={:?}", target_path);
         } else {
             fs::create_dir_all(target_path).with_context(|| {
-                format!(
-                    "failed to create target bind mount directory={:?}",
-                    target_dir,
-                )
+                format!("failed to create target bind mount directory={target_dir:?}",)
             })?;
         };
 
@@ -1291,8 +1261,7 @@ impl MetaData {
                 }
             }
             Err(e) => panic!(
-                "failed to get mount path of volume ID={} from etcd, the error is: {}",
-                vol_id, e,
+                "failed to get mount path of volume ID={vol_id} from etcd, the error is: {e}",
             ),
         };
         let vol_path_owned = vol_path.clone();
@@ -1310,12 +1279,7 @@ impl MetaData {
             )
         })
         .await?
-        .with_context(|| {
-            format!(
-                "failed to bind mount from {:?} to {:?}",
-                vol_path, target_path,
-            )
-        });
+        .with_context(|| format!("failed to bind mount from {vol_path:?} to {target_path:?}",));
         if let Err(bind_err) = mount_res {
             if ephemeral {
                 match self
@@ -1350,7 +1314,7 @@ impl MetaData {
         /// Remove bad snapshot when compress error
         fn remove_bad_snapshot(snap_path: &Path) {
             let remove_res = fs::remove_file(snap_path)
-                .with_context(|| format!("failed to remove bad snapshot file {:?}", snap_path,));
+                .with_context(|| format!("failed to remove bad snapshot file {snap_path:?}",));
             if let Err(remove_err) = remove_res {
                 error!(
                     "failed to remove bad snapshot file {:?}, the error is: {}",
@@ -1360,8 +1324,8 @@ impl MetaData {
         }
 
         let vol_path = &src_vol.vol_path;
-        let tar_gz = File::create(&snap_path)
-            .with_context(|| format!("failed to create snapshot file {:?}", snap_path))?;
+        let tar_gz = File::create(snap_path)
+            .with_context(|| format!("failed to create snapshot file {snap_path:?}"))?;
         let gz_file = flate2::write::GzEncoder::new(tar_gz, flate2::Compression::default());
         let mut tar_file = tar::Builder::new(gz_file);
         let tar_res = tar_file.append_dir_all("./", vol_path).with_context(|| {
@@ -1457,8 +1421,7 @@ impl MetaData {
         } else {
             Err(ArgumentInvalid {
                 context: vec![format!(
-                    "the new size={} is smaller than original size={}",
-                    new_size_bytes, old_size_bytes,
+                    "the new size={new_size_bytes} is smaller than original size={old_size_bytes}",
                 )],
             })
         }
@@ -1777,7 +1740,7 @@ impl DatenLordSnapshot {
         assert!(!snap_name.is_empty(), "snapshot name cannot be empty");
         assert!(!vol_id.is_empty(), "source volume ID cannot be empty");
         assert!(!node_id.is_empty(), "node ID cannot be empty");
-        assert!(size_bytes >= 0, "invalid snapshot size: {}", size_bytes);
+        assert!(size_bytes >= 0, "invalid snapshot size: {size_bytes}");
         Self {
             snap_name,
             snap_id,

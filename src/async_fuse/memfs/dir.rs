@@ -156,13 +156,11 @@ impl DirEntry {
         let name_bytes = cstr_to_bytes(&entry.d_name);
 
         let name = match memchr(0, name_bytes) {
-            None => panic!("entry name has no nul byte: {:?}", name_bytes),
+            None => panic!("entry name has no nul byte: {name_bytes:?}"),
             Some(idx) => {
                 debug_assert!(idx < 256);
                 String::from_utf8(unsafe { name_bytes.get_unchecked(..idx) }.to_vec())
-                    .unwrap_or_else(|e| {
-                        panic!("failed to convert to utf8 string, error is {:?}", e)
-                    })
+                    .unwrap_or_else(|e| panic!("failed to convert to utf8 string, error is {e:?}"))
             }
         };
 
