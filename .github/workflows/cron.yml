@@ -3,7 +3,7 @@ on:
   pull_request:
     branches: [master]
   schedule: [cron: "0 */4 * * *"]
-
+  workflow_dispatch: 
 env:
   RUST_VERSION: 1.67.1
   BUSYBOX_IMAGE: busybox:1.35.0

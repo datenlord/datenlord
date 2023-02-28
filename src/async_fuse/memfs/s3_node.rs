@@ -3,7 +3,6 @@
 use super::cache::{GlobalCache, IoMemBlock};
 use super::dir::DirEntry;
 use super::dist::client as dist_client;
-use super::dist::etcd;
 use super::fs_util::{self, FileAttr};
 use super::node::Node;
 use super::s3_metadata::S3MetaData;
@@ -15,7 +14,7 @@ use crate::async_fuse::metrics;
 use crate::common::etcd_delegate::EtcdDelegate;
 use async_trait::async_trait;
 use clippy_utilities::{Cast, OverflowArithmetic};
-use log::{debug, warn};
+use log::debug;
 use nix::fcntl::OFlag;
 use nix::sys::stat::Mode;
 use nix::sys::stat::SFlag;
@@ -159,41 +158,6 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
         */
         self.attr = new_attr;
         old_attr
-    }
-
-    /// Get a new inode number
-    async fn new_inode_num(&self) -> u64 {
-        let lock_key = etcd::lock_inode_number(Arc::<EtcdDelegate>::clone(&self.meta.etcd_client))
-            .await
-            .unwrap_or_else(|e| panic!("failed to get etcd inode number lock, error is {e:?}"));
-        let default = self.meta.cur_inum();
-        let cur_inum = dist_client::get_ino_num(
-            Arc::<EtcdDelegate>::clone(&self.meta.etcd_client),
-            &self.meta.node_id,
-            &self.meta.volume_info,
-            default,
-        )
-        .await
-        .unwrap_or_else(|e| {
-            warn!("Load inode num from other node error: {}", e);
-            default
-        });
-
-        let inum = if cur_inum > default {
-            self.meta
-                .cur_inum
-                .store(cur_inum.overflow_add(1), atomic::Ordering::Relaxed);
-            cur_inum.cast()
-        } else {
-            self.meta
-                .cur_inum
-                .fetch_add(1, atomic::Ordering::SeqCst)
-                .cast()
-        };
-        etcd::unlock_inode_number(Arc::<EtcdDelegate>::clone(&self.meta.etcd_client), lock_key)
-            .await
-            .unwrap_or_else(|e| panic!("failed to release etcd inode number lock, error is {e:?}"));
-        inum
     }
 
     /// Get fullpath of this node
@@ -645,6 +609,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
     /// Create symlink in a directory
     async fn create_child_symlink(
         &mut self,
+        inum: INum,
         child_symlink_name: &str,
         target_path: PathBuf,
     ) -> anyhow::Result<Self> {
@@ -672,7 +637,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
 
         // get symbol file attribute
         let child_attr = FileAttr {
-            ino: self.new_inode_num().await,
+            ino: inum,
             kind: SFlag::S_IFLNK,
             size: target_path
                 .to_str()
@@ -730,7 +695,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
                     });
                 // get symbol file attribute
                 FileAttr {
-                    ino: self.new_inode_num().await,
+                    ino: 0,
                     kind: SFlag::S_IFLNK,
                     size: len.cast(),
                     blocks: 0,
@@ -788,7 +753,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
                     .await
                     .unwrap_or_else(|e| panic!("failed to get last modified of file {absolute_path:?} from s3 backend, error is {e:?}"));
                 FileAttr {
-                    ino: self.new_inode_num().await,
+                    ino: 0, // will be set later
                     kind: SFlag::S_IFDIR,
                     atime: last_modified,
                     mtime: last_modified,
@@ -819,7 +784,12 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
     }
 
     /// Create sub-directory in a directory
-    async fn create_child_dir(&mut self, child_dir_name: &str, mode: Mode) -> anyhow::Result<Self> {
+    async fn create_child_dir(
+        &mut self,
+        inum: INum,
+        child_dir_name: &str,
+        mode: Mode,
+    ) -> anyhow::Result<Self> {
         let absolute_path = self.absolute_dir_with_child(child_dir_name);
         let dir_data = self.get_dir_data();
         // TODO return error
@@ -833,7 +803,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
 
         // get new directory attribute
         let child_attr = FileAttr {
-            ino: self.new_inode_num().await,
+            ino: inum,
             kind: SFlag::S_IFDIR,
             perm: fs_util::parse_mode_bits(mode.bits()),
             ..FileAttr::now()
@@ -886,7 +856,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
                         )
                     });
                 FileAttr {
-                    ino: self.new_inode_num().await,
+                    ino: 0, // will be set later
                     kind: SFlag::S_IFREG,
                     size: content_len.cast(),
                     blocks: content_len
@@ -919,6 +889,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
     /// Create file in a directory
     async fn create_child_file(
         &mut self,
+        inum: INum,
         child_file_name: &str,
         oflags: OFlag,
         mode: Mode,
@@ -941,7 +912,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
 
         // get new file attribute
         let child_attr = FileAttr {
-            ino: self.new_inode_num().await,
+            ino: inum,
             kind: SFlag::S_IFREG,
             perm: fs_util::parse_mode_bits(mode.bits()),
             size: 0,
@@ -1137,16 +1108,11 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
     /// Fake data for statefs
     /// TODO: handle some important data from S3 storage
     async fn statefs(&self) -> anyhow::Result<StatFsParam> {
-        let inode_num = self
-            .meta
-            .cur_inum
-            .load(atomic::Ordering::Relaxed)
-            .overflow_sub(1);
         Ok(StatFsParam {
             blocks: 10_000_000_000,
             bfree: 10_000_000_000,
             bavail: 10_000_000_000,
-            files: inode_num.cast(),
+            files: 0, // TODO: file count is  temporarily zero
             f_free: 1_000_000,
             bsize: 4096, // TODO: consider use customized block size
             namelen: 1024,

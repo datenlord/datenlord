@@ -231,7 +231,7 @@ impl MetaData for DefaultMetaData {
                     node_name, m_flags, parent, parent_name,
                 );
                 parent_node
-                    .create_child_dir(node_name, m_flags)
+                    .create_child_dir(0, node_name, m_flags)
                     .await
                     .context(format!(
                     "create_node_helper() failed to create directory with name={node_name:?} and mode={m_flags:?} \
@@ -248,6 +248,7 @@ impl MetaData for DefaultMetaData {
                 );
                 parent_node
                     .create_child_file(
+                        0,
                         node_name,
                         o_flags,
                         m_flags,
@@ -268,6 +269,7 @@ impl MetaData for DefaultMetaData {
                 );
                 parent_node
                     .create_child_symlink(
+                        0,
                         node_name,
                         target_path.unwrap_or_else(|| panic!(
                             "create_node_helper() failed to \

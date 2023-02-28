@@ -1,8 +1,10 @@
 use super::cache::GlobalCache;
 use super::dir::DirEntry;
 use super::dist::client as dist_client;
+use super::dist::etcd;
 use super::dist::server::CacheServer;
 use super::fs_util::{self, FileAttr};
+use super::inode::InodeState;
 use super::metadata::MetaData;
 use super::node::Node;
 use super::s3_node::{self, S3Node};
@@ -23,7 +25,6 @@ use nix::sys::stat::SFlag;
 use std::collections::BTreeMap;
 use std::os::unix::io::RawFd;
 use std::path::Path;
-use std::sync::atomic::Ordering;
 use std::sync::{atomic::AtomicU32, Arc};
 use std::time::Duration;
 use tokio::sync::{Mutex, RwLock, RwLockWriteGuard};
@@ -49,8 +50,8 @@ pub struct S3MetaData<S: S3BackEnd + Send + Sync + 'static> {
     pub(crate) cache: RwLock<BTreeMap<INum, S3Node<S>>>,
     /// Global data cache
     pub(crate) data_cache: Arc<GlobalCache>,
-    /// Current available node number, it'll increase after using
-    pub(crate) cur_inum: AtomicU32,
+    /// inode related, inum alloc and recycle
+    pub(crate) inode_state: InodeState,
     /// Current available fd, it'll increase after using
     pub(crate) cur_fd: AtomicU32,
     /// Current service id
@@ -103,7 +104,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
             cache: RwLock::new(BTreeMap::new()),
             etcd_client: etcd_arc,
             data_cache: Arc::<GlobalCache>::clone(&data_cache),
-            cur_inum: AtomicU32::new(2),
+            inode_state: InodeState::new(),
             cur_fd: AtomicU32::new(4),
             node_id: node_id.to_owned(),
             volume_info: volume_info.to_owned(),
@@ -189,10 +190,21 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         target_path: Option<&Path>,
     ) -> anyhow::Result<(Duration, FuseAttr, u64)> {
         // pre-check
-        let (parent_full_path, child_attr, fuse_attr) = {
+        let (parent_full_path, full_path, child_attr, fuse_attr) = {
             let mut cache = self.cache.write().await;
             let parent_node = Self::create_node_pre_check(parent, node_name, &mut cache)
                 .context("create_node_helper() failed to pre check")?;
+            let full_path = format!("{}{}", parent_node.full_path(), node_name);
+            // check cluster conflict creating by trying to alloc ino
+            let (inum, is_new) = self.inode_get_inum_by_fullpath(full_path.as_str()).await;
+            if !is_new {
+                // inum created by others or exist in remote cache
+                //todo delete parent node cache to update parent dir content
+                return Err(anyhow::anyhow!("create_node_helper() failed to create node, ino alloc failed, \
+                    the node of name={:?} already exists under parent directory of ino={} and name={:?}",
+                    node_name, parent, parent_node.get_name()));
+            }
+
             let parent_name = parent_node.get_name().to_owned();
             // all checks are passed, ready to create new node
             let m_flags = fs_util::parse_mode(mode);
@@ -204,7 +216,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
                     node_name, m_flags, parent, parent_name,
                 );
                     parent_node
-                    .create_child_dir(node_name, m_flags)
+                    .create_child_dir(inum,node_name, m_flags)
                     .await
                     .context(format!(
                         "create_node_helper() failed to create directory with name={node_name:?} and mode={m_flags:?} \
@@ -221,6 +233,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
                     );
                     parent_node
                         .create_child_file(
+                            inum,
                             node_name,
                             o_flags,
                             m_flags,
@@ -241,6 +254,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
                     );
                     parent_node
                     .create_child_symlink(
+                        inum,
                         node_name,
                         target_path.unwrap_or_else(|| panic!(
                             "create_node_helper() failed to \
@@ -279,12 +293,26 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
             let pnode = cache.get(&parent).unwrap_or_else(|| {
                 panic!("failed to get parent inode {parent:?}, parent name {parent_name:?}")
             });
-            (pnode.full_path().to_owned(), new_node_attr, fuse_attr)
+            (
+                pnode.full_path().to_owned(),
+                full_path,
+                new_node_attr,
+                fuse_attr,
+            )
         };
 
         self.sync_attr_remote(&parent_full_path).await;
         self.sync_dir_remote(&parent_full_path, node_name, &child_attr, target_path)
             .await;
+        // inode is cached, so we should remove the path mark
+        // We dont need to sync for the unmark
+        let etcd_client = Arc::clone(&self.etcd_client);
+        let volume = self.volume_info.clone();
+        tokio::spawn(async move {
+            let vol = volume;
+            etcd::unmark_fullpath_with_ino_in_etcd(etcd_client, &vol, full_path).await;
+        });
+
         let ttl = Duration::new(MY_TTL_SEC, 0);
         Ok((ttl, fuse_attr, MY_GENERATION))
     }
@@ -506,11 +534,6 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
 }
 
 impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
-    /// Get current inode number
-    pub(crate) fn cur_inum(&self) -> u32 {
-        self.cur_inum.load(Ordering::Relaxed)
-    }
-
     /// The pre-check before create node
     #[allow(single_use_lifetimes)]
     fn create_node_pre_check<'b>(

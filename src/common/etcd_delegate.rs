@@ -5,6 +5,7 @@ use super::util;
 use core::fmt;
 use core::fmt::Debug;
 use core::time::Duration;
+use etcd_client::{EtcdLeaseGrantRequest, TxnCmp, TxnOpResponse};
 use log::debug;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -141,6 +142,85 @@ impl EtcdDelegate {
         }
     }
 
+    /// if key exist, don't insert, return the old value
+    /// if key not exist, insert, return None
+    async fn write_to_etcd_if_none<
+        T: DeserializeOwned + Serialize + Clone + Debug + Send + Sync,
+        K: Into<Vec<u8>> + Debug + Clone + Send,
+    >(
+        &self,
+        key: K,
+        value: &T,
+        expire: Option<Duration>,
+    ) -> DatenLordResult<Option<T>> {
+        let bin_value = bincode::serialize(value)
+            .with_context(|| format!("failed to encode {value:?} to binary"))?;
+        let mut put_request = etcd_client::EtcdPutRequest::new(key.clone(), bin_value);
+        if let Some(dur) = expire {
+            put_request.set_lease(
+                self.etcd_rs_client
+                    .lease()
+                    .grant(EtcdLeaseGrantRequest::new(dur))
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "failed to get LeaseGrantResponse from etcd, the timeout={}",
+                            dur.as_secs()
+                        )
+                    })?
+                    .id(),
+            );
+        };
+        let txn_req = etcd_client::EtcdTxnRequest::new()
+            // etcd：chack key exist in txn
+            //  https://github.com/etcd-io/etcd/issues/7115
+            //  https://github.com/etcd-io/etcd/issues/6740
+            //key does not exist when create revision is 0, check the links above
+            .when_create_revision(etcd_client::KeyRange::key(key.clone()), TxnCmp::Equal, 0)
+            //key does not exist, insert kv
+            .and_then(put_request)
+            //key exists, return old value
+            .or_else(etcd_client::EtcdRangeRequest::new(
+                etcd_client::KeyRange::key(key.clone()),
+            ));
+        let txn_res = self
+            .etcd_rs_client
+            .kv()
+            .txn(txn_req)
+            .await
+            .with_context(|| {
+                format!("failed to get PutResponse from etcd for key={key:?}, value={value:?}",)
+            })?;
+
+        if txn_res.is_success() {
+            //key does not exist, insert kv
+            Ok(None)
+        } else {
+            let mut resp_ = txn_res.get_responses();
+            assert_eq!(resp_.len(), 1, "txn response length should be 1");
+            match resp_.pop().unwrap_or_else(|| {
+                panic!("txn response length should be 1 and pop should not fail")
+            }) {
+                TxnOpResponse::Range(mut resp) => {
+                    let kv = resp.take_kvs();
+                    //key exists
+                    let decoded_value: T = util::decode_from_bytes(
+                        kv.get(0)
+                            .unwrap_or_else(|| panic!("kv res must be sz>0"))
+                            .value(),
+                    )?;
+                    Ok(Some(decoded_value))
+                }
+                TxnOpResponse::Put(_) | TxnOpResponse::Delete(_) | TxnOpResponse::Txn(_) => {
+                    panic!("txn response should be RangeResponse");
+                }
+                _ => {
+                    panic!("new op unconsidered");
+                }
+            }
+        }
+    }
+
     /// Delete a key value pair or nothing from etcd
     async fn delete_from_etcd<T: DeserializeOwned + Clone + Debug + Send + Sync>(
         &self,
@@ -237,6 +317,20 @@ impl EtcdDelegate {
         } else {
             Ok(())
         }
+    }
+
+    /// return exist value if key exists
+    /// return none if key does not exist
+    #[inline]
+    pub async fn write_new_kv_no_panic<
+        T: DeserializeOwned + Serialize + Clone + Debug + Send + Sync,
+    >(
+        &self,
+        key: &str,
+        value: &T,
+        expire: Option<Duration>,
+    ) -> DatenLordResult<Option<T>> {
+        self.write_to_etcd_if_none(key, value, expire).await
     }
 
     /// Write key value pair to etcd, if key exists, update it
