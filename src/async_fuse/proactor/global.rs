@@ -110,7 +110,7 @@ pub trait Operation {
 /// Do something with a shared state
 fn with<R>(shared_state: &SharedState, f: impl FnOnce(&mut State) -> R) -> R {
     let mut state = shared_state.lock();
-    f(&mut *state)
+    f(&mut state)
 }
 
 impl State {
@@ -154,7 +154,7 @@ impl<T: Operation + Send + Unpin + 'static> Future for IoRequest<T> {
     type Output = (io::Result<u32>, T);
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let this: &mut Self = &mut *self;
+        let this: &mut Self = &mut self;
 
         let ProactorInner {
             ref chan,
@@ -203,7 +203,7 @@ impl<T: Operation + Send + Unpin + 'static> Future for IoRequest<T> {
 
                 chan.clone()
                     .try_send(Arc::clone(&this.state))
-                    .unwrap_or_else(|e| panic!("send error: {}", e));
+                    .unwrap_or_else(|e| panic!("send error: {e}"));
                 return Poll::Pending;
             },
             Step::InQueue | Step::Submitted => {
@@ -217,7 +217,7 @@ impl<T: Operation + Send + Unpin + 'static> Future for IoRequest<T> {
                 state.reset();
                 Poll::Ready((result, data))
             }
-            Step::Empty | Step::Dropped | Step::Poisoned => panic!("invalid step: {:?}", step),
+            Step::Empty | Step::Dropped | Step::Poisoned => panic!("invalid step: {step:?}"),
         }
     }
 }
@@ -244,7 +244,7 @@ impl<T: Operation + Send + Unpin + 'static> Drop for IoRequest<T> {
                 state.reset();
                 drop(pool.push(Arc::clone(&self.state)));
             }
-            Step::Dropped | Step::Poisoned => panic!("invalid step: {:?}", step),
+            Step::Dropped | Step::Poisoned => panic!("invalid step: {step:?}"),
         }
     }
 }
@@ -265,7 +265,7 @@ impl Proactor {
         #[allow(clippy::expect_used)]
         static GLOBAL_PROACTOR: Lazy<Proactor> =
             Lazy::new(|| Proactor::start_driver().expect("failed to start global proactor driver"));
-        &*GLOBAL_PROACTOR
+        &GLOBAL_PROACTOR
     }
 
     /// Creates a shared state from the inner object pool
@@ -299,13 +299,13 @@ impl Proactor {
 
         {
             let inner = Arc::clone(&inner);
-            tokio::task::spawn(async move { Self::submitter(&mut sq, &mut rx, &*inner).await });
+            tokio::task::spawn(async move { Self::submitter(&mut sq, &mut rx, &inner).await });
         }
         {
             let inner = Arc::clone(&inner);
             // using tokio::task::spawn / spawn_blocking here would cause deadlock
             // `Self::completer` is pure non-async routine
-            thread::spawn(move || Self::completer(&mut cq, &*inner));
+            thread::spawn(move || Self::completer(&mut cq, &inner));
         }
 
         Ok(Self { inner })
@@ -340,7 +340,7 @@ impl Proactor {
             }
 
             trace!("submitter is submitting");
-            let on_err = |err| panic!("proactor failed: {}", err);
+            let on_err = |err| panic!("proactor failed: {err}");
             let n_submitted = sq.submit().unwrap_or_else(on_err);
             trace!("submitter submitted {} sqes", n_submitted);
         }
@@ -360,7 +360,7 @@ impl Proactor {
             if cq.ready() == 0 {
                 trace!("completer is waiting a cqe");
                 cq.wait_cqes(1)
-                    .unwrap_or_else(|err| panic!("proactor failed: {}", err));
+                    .unwrap_or_else(|err| panic!("proactor failed: {err}"));
             }
             let mut cqes_cnt: u32 = 0;
             while let Some(cqe) = cq.peek_cqe() {
@@ -413,7 +413,7 @@ impl Proactor {
                 drop(pool.push(shared_state));
             }
             Step::Empty | Step::Preparing | Step::Submitted | Step::Completed | Step::Poisoned => {
-                panic!("invalid step: {:?}", step)
+                panic!("invalid step: {step:?}")
             }
         };
     }
@@ -443,7 +443,7 @@ impl Proactor {
                 | Step::InQueue
                 | Step::Completed
                 | Step::Poisoned => {
-                    panic!("invalid step: {:?}", step);
+                    panic!("invalid step: {step:?}");
                 }
             }
         }

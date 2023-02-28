@@ -45,7 +45,7 @@ where
                 let mut one_result = Vec::new();
                 let mut stream = TcpStream::connect(ip_and_port)
                     .await
-                    .unwrap_or_else(|e| panic!("fail connect to {}, error: {}", ip_and_port, e));
+                    .unwrap_or_else(|e| panic!("fail connect to {ip_and_port}, error: {e}"));
                 tcp::write_message(&mut stream, data).await?;
                 tcp::read_message(&mut stream, &mut one_result).await?;
 
@@ -238,9 +238,9 @@ pub async fn read_data(
             {
                 {
                     let mut result = Vec::new();
-                    let mut stream = TcpStream::connect(ip_and_port).await.unwrap_or_else(|e| {
-                        panic!("fail connect to {}, error: {}", ip_and_port, e)
-                    });
+                    let mut stream = TcpStream::connect(ip_and_port)
+                        .await
+                        .unwrap_or_else(|e| panic!("fail connect to {ip_and_port}, error: {e}"));
 
                     tcp::write_message(&mut stream, &check).await?;
                     tcp::read_message(&mut stream, &mut result).await?;
@@ -251,9 +251,9 @@ pub async fn read_data(
                 {
                     let mut result = Vec::new();
                     // FIXME: Should reuse the connection
-                    let mut stream = TcpStream::connect(ip_and_port).await.unwrap_or_else(|e| {
-                        panic!("fail connect to {}, error: {}", ip_and_port, e)
-                    });
+                    let mut stream = TcpStream::connect(ip_and_port)
+                        .await
+                        .unwrap_or_else(|e| panic!("fail connect to {ip_and_port}, error: {e}"));
 
                     tcp::write_message(&mut stream, &read_data).await?;
                     tcp::read_message(&mut stream, &mut result).await?;
@@ -290,7 +290,7 @@ pub async fn get_ino_num(
             {
                 let mut stream = TcpStream::connect(ip_and_port)
                     .await
-                    .unwrap_or_else(|e| panic!("fail connect to {}, error: {}", ip_and_port, e));
+                    .unwrap_or_else(|e| panic!("fail connect to {ip_and_port}, error: {e}"));
 
                 tcp::write_message(&mut stream, &get_inum).await?;
                 let inum = tcp::read_u32(&mut stream).await?;

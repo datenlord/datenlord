@@ -230,7 +230,7 @@ impl<'b> Deserializer<'b> {
         };
 
         Ok(std::str::from_utf8(bytes_without_nul)
-            .unwrap_or_else(|e| panic!("failed to convert to utf8 string, error is {:?}", e)))
+            .unwrap_or_else(|e| panic!("failed to convert to utf8 string, error is {e:?}")))
     }
 
     /// Returns `TooMuchData` if the bytes is not completely consumed
@@ -268,12 +268,13 @@ mod tests {
         let mut de = Deserializer::new(&buf);
         assert_eq!(
             de.fetch_bytes(5)
-                .unwrap_or_else(|err| panic!("failed to fetch 5 bytes, the error is: {}", err,)),
+                .unwrap_or_else(|err| panic!("failed to fetch 5 bytes, the error is: {err}",)),
             &[0; 5]
         );
         assert_eq!(de.bytes.len(), 3);
 
-        assert!(de.fetch_bytes(5).is_err());
+        #[allow(clippy::unwrap_used)]
+        de.fetch_bytes(5).unwrap_err();
         assert_eq!(de.bytes.len(), 3);
     }
 
@@ -287,7 +288,7 @@ mod tests {
             let mut de = Deserializer::new(&*buf);
             assert_eq!(
                 de.fetch_ref::<u32>()
-                    .unwrap_or_else(|err| panic!("failed to fetch u32, the error is: {}", err)),
+                    .unwrap_or_else(|err| panic!("failed to fetch u32, the error is: {err}")),
                 &u32::from_ne_bytes([0, 1, 2, 3])
             );
             assert_eq!(de.bytes.len(), 4);
@@ -297,7 +298,7 @@ mod tests {
             let mut de = Deserializer::new(&*buf);
             assert_eq!(
                 de.fetch_ref::<u64>()
-                    .unwrap_or_else(|err| panic!("failed to fetch u64, the error is: {}", err)),
+                    .unwrap_or_else(|err| panic!("failed to fetch u64, the error is: {err}")),
                 &u64::from_ne_bytes([0, 1, 2, 3, 4, 5, 6, 7])
             );
             assert_eq!(de.bytes.len(), 0);
@@ -305,6 +306,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::unwrap_used)]
     fn fetch_all_as_slice() {
         // this buffer contains two `u32`
         // so it can be aligned to 4 bytes
@@ -315,8 +317,7 @@ mod tests {
             let mut de = Deserializer::new(&*buf);
             assert_eq!(
                 de.fetch_all_as_slice::<u32>().unwrap_or_else(|err| panic!(
-                    "failed to fetch all data and build slice of u32, the error is: {}",
-                    err,
+                    "failed to fetch all data and build slice of u32, the error is: {err}",
                 )),
                 &[
                     u32::from_ne_bytes([0, 1, 2, 3]),
@@ -328,7 +329,7 @@ mod tests {
 
         {
             let mut de = Deserializer::new(&*buf);
-            assert!(de.fetch_bytes(3).is_ok());
+            de.fetch_bytes(3).unwrap();
             assert_eq!(
                 de.fetch_all_as_slice::<u32>().unwrap_err(),
                 DeserializeError::NotEnough
@@ -344,12 +345,12 @@ mod tests {
         let mut de = Deserializer::new(&buf);
         assert_eq!(
             de.fetch_c_str()
-                .unwrap_or_else(|err| panic!("failed to fetch C-String, the error is: {}", err)),
+                .unwrap_or_else(|err| panic!("failed to fetch C-String, the error is: {err}")),
             b"hello\0".as_ref()
         );
         assert_eq!(
             de.fetch_c_str()
-                .unwrap_or_else(|err| panic!("failed to fetch C-String, the error is: {}", err)),
+                .unwrap_or_else(|err| panic!("failed to fetch C-String, the error is: {err}")),
             b"world\0".as_ref()
         );
         assert_eq!(de.bytes.len(), 0);
