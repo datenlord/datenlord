@@ -164,10 +164,7 @@ impl GlobalCache {
         len: usize,
     ) -> Vec<IoMemBlock> {
         let guard = pin();
-        let file_cache = match self.inner.get(file_name, &guard) {
-            Some(cache) => cache,
-            None => return vec![],
-        };
+        let Some(file_cache) = self.inner.get(file_name, &guard) else { return vec![] };
 
         if len == 0 {
             return vec![];
@@ -226,8 +223,7 @@ impl GlobalCache {
                         .get(start_index..end_index)
                         .unwrap_or_else(|| {
                             panic!(
-                                "error when getting range of {}..{} in the cache bucket",
-                                start_index, end_index
+                                "error when getting range of {start_index}..{end_index} in the cache bucket"
                             )
                         })
                         .iter()
@@ -264,9 +260,7 @@ impl GlobalCache {
     /// Invalidate file's cache
     pub(crate) fn invalidate(&self, file_name: &[u8], index: Vec<Index>) {
         let guard = pin();
-        let file_cache = if let Some(cache) = self.inner.get(file_name, &guard) {
-            cache
-        } else {
+        let Some(file_cache) = self.inner.get(file_name, &guard) else {
             debug!(
                 "cache for {:?} is empty, don't need to invalidate",
                 OsStr::from_bytes(file_name)
@@ -318,9 +312,7 @@ impl GlobalCache {
         index: Vec<Index>,
     ) -> (Vec<Index>, bool) {
         let guard = pin();
-        let file_cache = if let Some(cache) = self.inner.get(file_name, &guard) {
-            cache
-        } else {
+        let Some(file_cache) = self.inner.get(file_name, &guard) else {
             debug!(
                 "cache for {:?} is empty, don't need to invalidate",
                 OsStr::from_bytes(file_name)
@@ -401,9 +393,7 @@ impl GlobalCache {
     /// Read file from cache
     pub(crate) fn read(&self, file_name: &[u8], index: Vec<Index>) -> Vec<IoMemBlock> {
         let guard = pin();
-        let file_cache = if let Some(cache) = self.inner.get(file_name, &guard) {
-            cache
-        } else {
+        let Some(file_cache) = self.inner.get(file_name, &guard) else {
             debug!(
                 "cache for {:?} is empty, don't need to invalidate",
                 OsStr::from_bytes(file_name)
@@ -494,10 +484,7 @@ impl GlobalCache {
             if let Some(ref etcd) = self.etcd_client {
                 if let Some(ref id) = self.node_id {
                     if let Err(e) = etcd::add_node_to_file_list(etcd, id, file_name).await {
-                        panic!(
-                            "Cannot add node {} to file {:?} node list, error: {}",
-                            id, file_name, e
-                        );
+                        panic!("Cannot add node {id} to file {file_name:?} node list, error: {e}");
                     }
                 }
             }
@@ -695,10 +682,7 @@ impl GlobalCache {
         if let Some(ref etcd) = self.etcd_client {
             if let Some(ref id) = self.node_id {
                 if let Err(e) = etcd::remove_node_from_file_list(etcd, id, file_name).await {
-                    panic!(
-                        "Cannot remove node {} to file {:?} node list, error: {}",
-                        id, file_name, e
-                    );
+                    panic!("Cannot remove node {id} to file {file_name:?} node list, error: {e}");
                 }
             }
         }
@@ -786,7 +770,7 @@ impl MemBlockBucket {
         if let Some(memblock) = self.inner.write().get_mut(index) {
             *memblock = Some(mem);
         } else {
-            panic!("index={} is out of bound of MemBlockBucket", index);
+            panic!("index={index} is out of bound of MemBlockBucket");
         }
     }
 }
@@ -928,10 +912,7 @@ impl MemBlock {
         (**self.write())
             .get_mut(offset..)
             .unwrap_or_else(|| {
-                panic!(
-                    "overflow when get pointer for Memblock from offset {}",
-                    offset
-                )
+                panic!("overflow when get pointer for Memblock from offset {offset}")
             })
             .as_mut_ptr()
     }
@@ -988,7 +969,7 @@ mod test {
                     .get(0)
                     .unwrap_or_else(|| panic!("index error"))
                     .as_slice()
-                    .get(0)
+                    .first()
                     .unwrap_or_else(|| panic!("index error"))
             },
             &b'a'
@@ -1026,7 +1007,7 @@ mod test {
                     .get(1)
                     .unwrap_or_else(|| panic!("index error"))
                     .as_slice()
-                    .get(0)
+                    .first()
                     .unwrap_or_else(|| panic!("index error"))
             },
             &b'a'
@@ -1097,7 +1078,7 @@ mod test {
                     .get(MEMORY_BUCKET_VEC_SIZE)
                     .unwrap_or_else(|| panic!("index error"))
                     .as_slice()
-                    .get(0)
+                    .first()
                     .unwrap_or_else(|| panic!("index error"))
             },
             &b'b'

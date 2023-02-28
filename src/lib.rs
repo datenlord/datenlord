@@ -42,6 +42,9 @@
     clippy::exhaustive_enums,
     clippy::missing_panics_doc, // TODO: add panic docs
     clippy::panic_in_result_fn,
+    clippy::mod_module_files, // TODO: fix code structure to pass this lint
+    clippy::std_instead_of_core, // Cause false positive in src/common/error.rs
+    clippy::std_instead_of_alloc,
 )]
 
 pub mod common;

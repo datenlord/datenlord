@@ -129,10 +129,7 @@ pub fn build_grpc_controller_server(
 fn remove_socket_file(sock: &str) {
     if std::path::Path::new(sock).exists() {
         if let Err(e) = std::fs::remove_file(sock) {
-            panic!(
-                "failed to remove existing socket file {}, the error is: {}",
-                sock, e,
-            );
+            panic!("failed to remove existing socket file {sock}, the error is: {e}",);
         }
     }
 }
@@ -320,7 +317,7 @@ mod test {
         let expanded_vol = meta_data
             .get_volume_by_id(vol_id)
             .await
-            .with_context(|| format!("failed to find volume ID={}", vol_id))?;
+            .with_context(|| format!("failed to find volume ID={vol_id}"))?;
         assert_eq!(
             expanded_vol.size_bytes, new_size_bytes,
             "the expanded volume size not match"
@@ -373,7 +370,10 @@ mod test {
 
         let del_snap_res = meta_data.delete_snapshot_meta_data(snap_id).await?;
         assert_eq!(
-            del_snap_res.snap_id, snap_id,
+            del_snap_res
+                .unwrap_or_else(|| panic!("Cannot get snap id {snap_id} from etcd"))
+                .snap_id,
+            snap_id,
             "deleted snapshot ID not match"
         );
         let del_vol_res = meta_data
@@ -388,6 +388,7 @@ mod test {
     }
 
     #[allow(clippy::unnecessary_wraps)]
+    #[allow(clippy::unwrap_used)]
     fn run_test_server() -> DatenLordResult<()> {
         let controller_end_point = CONTROLLER_END_POINT.to_owned();
         let node_end_point = NODE_END_POINT.to_owned();
@@ -403,7 +404,7 @@ mod test {
                 let etcd_delegate = EtcdDelegate::new(etcd_address_vec)
                     .await
                     .unwrap_or_else(|e| {
-                        panic!("failed to create new EtcdDelegate for error {}", e);
+                        panic!("failed to create new EtcdDelegate for error {e}");
                     });
                 let clear_res = clear_test_data(&etcd_delegate).await;
                 assert!(
@@ -422,7 +423,7 @@ mod test {
                 .await
                 {
                     Ok(md) => md,
-                    Err(e) => panic!("failed to build meta data, the error is : {}", e,),
+                    Err(e) => panic!("failed to build meta data, the error is : {e}",),
                 };
                 let controller_md = Arc::new(controller_meta_data);
                 let controller_server = match build_grpc_controller_server(
@@ -431,7 +432,7 @@ mod test {
                     Arc::<MetaData>::clone(&controller_md),
                 ) {
                     Ok(server) => server,
-                    Err(e) => panic!("failed to build CSI server, the error is : {}", e,),
+                    Err(e) => panic!("failed to build CSI server, the error is : {e}",),
                 };
                 let node_meta_data = match build_meta_data(
                     worker_port,
@@ -444,7 +445,7 @@ mod test {
                 .await
                 {
                     Ok(md) => md,
-                    Err(e) => panic!("failed to build meta data, the error is : {}", e,),
+                    Err(e) => panic!("failed to build meta data, the error is : {e}",),
                 };
                 let node_worker_md = Arc::new(node_meta_data);
                 let node_server = match build_grpc_node_server(
@@ -453,11 +454,11 @@ mod test {
                     Arc::<MetaData>::clone(&node_worker_md),
                 ) {
                     Ok(server) => server,
-                    Err(e) => panic!("failed to build Node server, the error is : {}", e,),
+                    Err(e) => panic!("failed to build Node server, the error is : {e}",),
                 };
                 let worker_server = match build_grpc_worker_server(node_worker_md) {
                     Ok(server) => server,
-                    Err(e) => panic!("failed to build Worker server, the error is : {}", e,),
+                    Err(e) => panic!("failed to build Worker server, the error is : {e}",),
                 };
 
                 // Keep running the task in the background
@@ -611,10 +612,7 @@ mod test {
     ) -> DatenLordResult<()> {
         let vol_file_path = get_volume_path(vol_id).join(vol_file_name);
         let buffer = fs::read_to_string(&vol_file_path).with_context(|| {
-            format!(
-                "failed to read the file name={:?} of volume ID={}",
-                vol_file_path, vol_id
-            )
+            format!("failed to read the file name={vol_file_path:?} of volume ID={vol_id}")
         })?;
         assert!(
             !buffer.is_empty(),
@@ -622,8 +620,7 @@ mod test {
         );
         assert_eq!(
             buffer, expected_content,
-            "verify volume content failed, read content: {}, expected content: {}",
-            buffer, expected_content,
+            "verify volume content failed, read content: {buffer}, expected content: {expected_content}",
         );
         Ok(())
     }
@@ -642,7 +639,7 @@ mod test {
 
     fn test_list_volumes(client: &ControllerClient) -> DatenLordResult<()> {
         let vol_names = (1_i32..5_i32)
-            .map(|idx| format!("tmp_volume_name_{}", idx))
+            .map(|idx| format!("tmp_volume_name_{idx}"))
             .collect::<Vec<_>>();
 
         // Test create new volume
@@ -716,10 +713,7 @@ mod test {
         for vol_id in volumes {
             del_vol_req.set_volume_id(vol_id.clone());
             let _del_vol_resp3 = delete_volume(client, &del_vol_req).with_context(|| {
-                format!(
-                    "failed to get DeleteVolumeResponse when delete volume ID={}",
-                    vol_id,
-                )
+                format!("failed to get DeleteVolumeResponse when delete volume ID={vol_id}",)
             })?;
         }
         Ok(())

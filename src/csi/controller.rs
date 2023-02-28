@@ -108,16 +108,13 @@ impl ControllerImplInner {
             return Err(VolumeAlreadyExist {
                 volume_id: vol_name.to_owned(),
                 context: vec![format!(
-                    "volume with the same name={} already exist but with different size",
-                    vol_name,
+                    "volume with the same name={vol_name} already exist but with different size",
                 )],
             });
         }
 
         if req.has_volume_content_source() {
-            let ex_vol_content_source = if let Some(ref vcs) = ex_vol.content_source {
-                vcs
-            } else {
+            let Some(ref ex_vol_content_source) = ex_vol.content_source else {
                 return Err(VolumeAlreadyExist {
                     volume_id: ex_vol.vol_id.clone(),
                     context: vec![format!(
@@ -208,10 +205,7 @@ impl ControllerImplInner {
                 ex_snap.size_bytes,
             )
             .with_context(|| {
-                format!(
-                    "failed to build CreateSnapshotResponse at controller ID={}",
-                    node_id,
-                )
+                format!("failed to build CreateSnapshotResponse at controller ID={node_id}",)
             });
             match build_resp_res {
                 Ok(resp) => {
@@ -227,9 +221,8 @@ impl ControllerImplInner {
             Err(SnapshotAlreadyExist {
                 snapshot_id: snap_name.to_owned(),
                 context: vec![format!(
-                    "snapshot with the same name={} exists on node ID={} \
+                    "snapshot with the same name={snap_name} exists on node ID={node_id} \
                             but of different source volume ID",
-                    snap_name, node_id,
                 )],
             })
         }
@@ -279,7 +272,7 @@ impl ControllerImplInner {
         let rpc_type = ControllerServiceCapability_RPC_Type::CREATE_DELETE_VOLUME;
         if !self.validate_request_capability(rpc_type) {
             return Err(ArgumentInvalid {
-                context: vec![format!("unsupported capability {:?}", rpc_type)],
+                context: vec![format!("unsupported capability {rpc_type:?}")],
             });
         }
 
@@ -396,7 +389,7 @@ impl Controller for ControllerImpl {
             let rpc_type = ControllerServiceCapability_RPC_Type::CREATE_DELETE_VOLUME;
             if !self_inner.validate_request_capability(rpc_type) {
                 return Err(ArgumentInvalid {
-                    context: vec![format!("unsupported capability {:?}", rpc_type)],
+                    context: vec![format!("unsupported capability {rpc_type:?}")],
                 });
             }
 
@@ -411,8 +404,7 @@ impl Controller for ControllerImpl {
                         .await
                         .with_context(|| {
                             format!(
-                                "failed to delete volume ID={} on node ID={}",
-                                vol_id, primary_node_id,
+                                "failed to delete volume ID={vol_id} on node ID={primary_node_id}",
                             )
                         });
                     match worker_delete_res {
@@ -499,8 +491,7 @@ impl Controller for ControllerImpl {
             if vol_caps.is_empty() {
                 return Err(ArgumentInvalid {
                     context: vec![format!(
-                        "volume ID={} has no volume capabilities in reqeust",
-                        vol_id
+                        "volume ID={vol_id} has no volume capabilities in reqeust"
                     )],
                 });
             }
@@ -549,7 +540,7 @@ impl Controller for ControllerImpl {
             let rpc_type = ControllerServiceCapability_RPC_Type::LIST_VOLUMES;
             if !self_inner.validate_request_capability(rpc_type) {
                 return Err(ArgumentInvalid {
-                    context: vec![format!("unsupported capability {:?}", rpc_type)],
+                    context: vec![format!("unsupported capability {rpc_type:?}")],
                 });
             }
 
@@ -621,7 +612,7 @@ impl Controller for ControllerImpl {
             let rpc_type = ControllerServiceCapability_RPC_Type::CREATE_DELETE_SNAPSHOT;
             if !self_inner.validate_request_capability(rpc_type) {
                 return Err(ArgumentInvalid {
-                    context: vec![format!("unsupported capability {:?}", rpc_type)],
+                    context: vec![format!("unsupported capability {rpc_type:?}")],
                 });
             }
 
@@ -671,8 +662,7 @@ impl Controller for ControllerImpl {
                         .await
                         .with_context(|| {
                             format!(
-                                "failed to create snapshot name={} on node ID={}",
-                                snap_name, primary_node_id,
+                                "failed to create snapshot name={snap_name} on node ID={primary_node_id}",
                             )
                         })
                 }
@@ -706,7 +696,7 @@ impl Controller for ControllerImpl {
             let rpc_type = ControllerServiceCapability_RPC_Type::CREATE_DELETE_SNAPSHOT;
             if !self_inner.validate_request_capability(rpc_type) {
                 return Err(ArgumentInvalid {
-                    context: vec![format!("unsupported capability {:?}", rpc_type)],
+                    context: vec![format!("unsupported capability {rpc_type:?}")],
                 });
             }
 
@@ -770,7 +760,7 @@ impl Controller for ControllerImpl {
             let rpc_type = ControllerServiceCapability_RPC_Type::LIST_SNAPSHOTS;
             if !self_inner.validate_request_capability(rpc_type) {
                 return Err(ArgumentInvalid {
-                    context: vec![format!("unsupported capability {:?}", rpc_type)],
+                    context: vec![format!("unsupported capability {rpc_type:?}")],
                 });
             }
 
@@ -889,7 +879,7 @@ impl Controller for ControllerImpl {
                 Ordering::Less => {
                     let expand_res = self_inner.meta_data.expand(&mut ex_vol, capacity).await;
                     if let Err(e) = expand_res {
-                        panic!("failed to expand volume ID={}, the error is: {}", vol_id, e,);
+                        panic!("failed to expand volume ID={vol_id}, the error is: {e}",);
                     }
                 }
                 Ordering::Greater => {

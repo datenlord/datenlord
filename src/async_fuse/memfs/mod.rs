@@ -227,8 +227,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         let inode = cache.get(&ino).unwrap_or_else(|| {
             panic!(
                 "getattr() found fs is inconsistent, \
-                 the inode ino={} is not in cache",
-                ino
+                 the inode ino={ino} is not in cache"
             );
         });
         let attr = inode.get_attr();
@@ -262,10 +261,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
 
         let cache = self.metadata.cache().read().await;
         let node = cache.get(&ino).unwrap_or_else(|| {
-            panic!(
-                "open() found fs is inconsistent, the i-node of ino={} should be in cache",
-                ino,
-            );
+            panic!("open() found fs is inconsistent, the i-node of ino={ino} should be in cache",);
         });
         let o_flags = fs_util::parse_oflag(flags);
         // TODO: handle open flags
@@ -317,8 +313,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
             let inode = cache.get(&ino).unwrap_or_else(|| {
                 panic!(
                     "forget() found fs is inconsistent, \
-                     the inode ino={} is not in cache",
-                    ino
+                     the inode ino={ino} is not in cache"
                 );
             });
 
@@ -365,7 +360,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
                 atime={:?}, mtime={:?}, fh={:?}, req={:?})",
             ino,
             valid,
-            mode.map(|bits| format!("{:#o}", bits)),
+            mode.map(|bits| format!("{bits:#o}")),
             u_id,
             g_id,
             size,
@@ -381,8 +376,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         let inode = cache.get_mut(&ino).unwrap_or_else(|| {
             panic!(
                 "setattr() found fs is inconsistent, \
-                    the i-node of ino={} should be in cache",
-                ino,
+                    the i-node of ino={ino} should be in cache",
             );
         });
         let ttl = Duration::new(MY_TTL_SEC, 0);
@@ -391,7 +385,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         match set_res {
             Ok((attr_changed, file_attr)) => {
                 if attr_changed {
-                    inode.set_attr(file_attr).await;
+                    inode.set_attr(file_attr);
                     debug!(
                         "setattr() successfully set the attribute of ino={} and name={:?}, the set attr={:?}",
                         ino, inode.get_name(), file_attr,
@@ -438,8 +432,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
             .create_node_helper(parent, name, mode, SFlag::S_IFREG, None)
             .await
             .context(format!(
-                "mknod() failed to create an i-node name={:?} and mode={:?} under parent ino={},",
-                name, mode, parent,
+                "mknod() failed to create an i-node name={name:?} and mode={mode:?} under parent ino={parent},",
             ));
         match mknod_res {
             Ok((ttl, fuse_attr, generation)) => reply.entry(ttl, fuse_attr, generation).await,
@@ -475,8 +468,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
             .create_node_helper(parent, name, mode, SFlag::S_IFDIR, None)
             .await
             .context(format!(
-                "mkdir() failed to create a directory name={:?} and mode={:?} under parent ino={}",
-                name, mode, parent,
+                "mkdir() failed to create a directory name={name:?} and mode={mode:?} under parent ino={parent}",
             ));
         match mkdir_res {
             Ok((ttl, fuse_attr, generation)) => reply.entry(ttl, fuse_attr, generation).await,
@@ -508,24 +500,20 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
             let parent_node = cache.get(&parent).unwrap_or_else(|| {
                 panic!(
                     "unlink() found fs is inconsistent, \
-                        parent of ino={} should be in cache before remove its child",
-                    parent,
+                        parent of ino={parent} should be in cache before remove its child",
                 );
             });
             let child_entry = parent_node.get_entry(name).unwrap_or_else(|| {
                 panic!(
                     "unlink() found fs is inconsistent, \
-                        the child entry name={:?} to remove is not under parent of ino={}",
-                    name, parent,
+                        the child entry name={name:?} to remove is not under parent of ino={parent}",
                 );
             });
             let entry_type = child_entry.entry_type();
             debug_assert_ne!(
                 SFlag::S_IFDIR,
                 entry_type,
-                "unlink() should not remove sub-directory name={:?} under parent ino={}",
-                name,
-                parent,
+                "unlink() should not remove sub-directory name={name:?} under parent ino={parent}",
             );
             entry_type
         };
@@ -535,8 +523,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
             .remove_node_helper(parent, name, entry_type)
             .await
             .context(format!(
-                "unlink() failed to remove file name={:?} under parent ino={}",
-                name, parent,
+                "unlink() failed to remove file name={name:?} under parent ino={parent}",
             ));
         match unlink_res {
             Ok(()) => reply.ok().await,
@@ -570,8 +557,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
             .remove_node_helper(parent, dir_name, SFlag::S_IFDIR)
             .await
             .context(format!(
-                "rmdir() failed to remove sub-directory name={:?} under parent ino={}",
-                dir_name, parent,
+                "rmdir() failed to remove sub-directory name={dir_name:?} under parent ino={parent}",
             ));
         match rmdir_res {
             Ok(()) => reply.ok().await,
@@ -648,18 +634,13 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
             "read(ino={}, fh={}, offset={}, size={}, req={:?})",
             ino, fh, offset, size, req,
         );
-        debug_assert!(
-            !offset.is_negative(),
-            "offset={} cannot be negative",
-            offset
-        );
+        debug_assert!(!offset.is_negative(), "offset={offset} cannot be negative");
 
         let mut cache = self.metadata.cache().write().await;
         let inode = cache.get_mut(&ino).unwrap_or_else(|| {
             panic!(
                 "read() found fs is inconsistent, \
-                 the inode ino={} is not in cache",
-                ino
+                 the inode ino={ino} is not in cache"
             );
         });
 
@@ -792,8 +773,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         let inode = cache.get_mut(&ino).unwrap_or_else(|| {
             panic!(
                 "flush() found fs is inconsistent, \
-                 the inode ino={} is not in cache",
-                ino
+                 the inode ino={ino} is not in cache"
             );
         });
         inode.flush(ino, fh).await;
@@ -828,8 +808,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
             let inode = cache.get_mut(&ino).unwrap_or_else(|| {
                 panic!(
                     "relese() found fs is inconsistent, \
-                     the inode ino={} is not in cache",
-                    ino
+                     the inode ino={ino} is not in cache"
                 );
             });
             inode.close(ino, fh, flush).await;
@@ -886,8 +865,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         let inode = cache.get(&ino).unwrap_or_else(|| {
             panic!(
                 "opendir() found fs is inconsistent, \
-                    the i-node of ino={} should be in cache",
-                ino,
+                    the i-node of ino={ino} should be in cache",
             );
         });
 
@@ -963,8 +941,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         let inode = cache.get_mut(&ino).unwrap_or_else(|| {
             panic!(
                 "relese() found fs is inconsistent, \
-                 the inode ino={} is not in cache",
-                ino
+                 the inode ino={ino} is not in cache"
             );
         });
         if inode.need_load_dir_data() {
@@ -1013,8 +990,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
             let inode = cache.get(&ino).unwrap_or_else(|| {
                 panic!(
                     "releasedir() found fs is inconsistent, \
-                     the inode ino={} is not in cache",
-                    ino
+                     the inode ino={ino} is not in cache"
                 );
             });
             inode.closedir(ino, fh).await;
@@ -1065,8 +1041,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         let inode = cache.get(&ino).unwrap_or_else(|| {
             panic!(
                 "statfs() found fs is inconsistent, \
-                    the i-node of ino={} should be in cache",
-                ino,
+                    the i-node of ino={ino} should be in cache",
             );
         });
 
@@ -1103,8 +1078,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         let symlink_node = cache.get(&ino).unwrap_or_else(|| {
             panic!(
                 "readlink() found fs is inconsistent, \
-                 the inode ino={} is not in cache",
-                ino
+                 the inode ino={ino} is not in cache"
             );
         });
         let target_path = symlink_node.get_symlink_target();
@@ -1141,8 +1115,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         )
         .await
         .context(format!(
-            "symlink() failed to create a symlink name={:?} to target path={:?} under parent ino={}",
-            name, target_path, parent,
+            "symlink() failed to create a symlink name={name:?} to target path={target_path:?} under parent ino={parent}",
         ));
         match symlink_res {
             Ok((ttl, fuse_attr, generation)) => reply.entry(ttl, fuse_attr, generation).await,
