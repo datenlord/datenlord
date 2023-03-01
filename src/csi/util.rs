@@ -56,7 +56,7 @@ lazy_static! {
     // Dedicated runtime for spawn grpc task
     static ref TOKIO_RUNTIME: tokio::runtime::Runtime = tokio::runtime::Runtime::new()
         .unwrap_or_else(|e| {
-            panic!("failed to spawn a runtime for error {}", e);
+            panic!("failed to spawn a runtime for error {e}");
         });
 }
 
@@ -106,7 +106,7 @@ pub fn copy_directory_recursively(
         } else if entry_path.is_file() {
             fs::copy(entry_path, &target_path)?;
             let add_res = num_copied.overflowing_add(1);
-            debug_assert!(!add_res.1, "num_copied={} add 1 overflowed", num_copied);
+            debug_assert!(!add_res.1, "num_copied={num_copied} add 1 overflowed");
             num_copied = add_res.0;
         } else {
             info!("skip non-file and non-dir path: {}", entry_path.display());
@@ -172,7 +172,7 @@ pub async fn async_success<R: Send>(sink: UnarySink<R>, r: R) {
     let res = sink.success(r).await;
 
     if let Err(e) = res {
-        panic!("failed to send response, the error is: {:?}", e)
+        panic!("failed to send response, the error is: {e:?}")
     }
 }
 
@@ -185,12 +185,12 @@ pub async fn async_fail<R>(sink: UnarySink<R>, err: DatenLordError) {
         "the input RpcStatusCode should not be OK"
     );
     */
-    let details = format!("{}", err);
+    let details = format!("{err}");
     let rs = RpcStatus::with_message(err, details);
     let res = sink.fail(rs).await;
 
     if let Err(e) = res {
-        panic!("failed to send response, the error is: {:?}", e)
+        panic!("failed to send response, the error is: {e:?}")
     }
 }
 
@@ -258,19 +258,14 @@ pub fn mount_volume_bind_path(
                 Some(OsStr::new(&mount_options))
             },
         )
-        .with_context(|| {
-            format!(
-                "failed to direct mount {:?} to {:?}",
-                from_path, target_path
-            )
-        })
+        .with_context(|| format!("failed to direct mount {from_path:?} to {target_path:?}"))
     } else {
         let mut mount_cmd = Command::new(get_bind_mount_helper_cmd());
         mount_cmd
             .arg("-f")
             .arg(from_path)
             .arg("-t")
-            .arg(&target_path);
+            .arg(target_path);
         if read_only {
             mount_cmd.arg("-r");
         }
@@ -278,10 +273,10 @@ pub fn mount_volume_bind_path(
             mount_cmd.arg("-m");
         }
         if !fs_type.is_empty() {
-            mount_cmd.arg("-s").arg(&fs_type);
+            mount_cmd.arg("-s").arg(fs_type);
         }
         if !mount_options.is_empty() {
-            mount_cmd.arg("-o").arg(&mount_options);
+            mount_cmd.arg("-o").arg(mount_options);
         }
         let mount_handle = match mount_cmd.output() {
             Ok(h) => h,
@@ -331,7 +326,7 @@ pub fn umount_volume_bind_path(target_dir: &str) -> DatenLordResult<()> {
     } else {
         let umount_handle = Command::new(get_bind_mount_helper_cmd())
             .arg("-u")
-            .arg(&target_dir)
+            .arg(target_dir)
             .output()
             .add_context("bind mount helper command failed to start")?;
         if !umount_handle.status.success() {
@@ -353,7 +348,7 @@ pub fn umount_volume_bind_path(target_dir: &str) -> DatenLordResult<()> {
 
     // csi-sanity requires plugin to remove the target mount directory
     fs::remove_dir_all(target_dir)
-        .with_context(|| format!("failed to remove mount target path={}", target_dir))?;
+        .with_context(|| format!("failed to remove mount target path={target_dir}"))?;
 
     Ok(())
 }
@@ -363,10 +358,10 @@ pub fn get_ip_of_node(node_id: &str) -> IpAddr {
     let hostname = format!("{}:{}", node_id, 0_i32);
     let sockets = hostname.to_socket_addrs();
     let addrs: Vec<_> = sockets
-        .unwrap_or_else(|_| panic!("Failed to resolve node ID={}", node_id))
+        .unwrap_or_else(|_| panic!("Failed to resolve node ID={node_id}"))
         .collect();
     addrs
         .get(0) // Return the first ip for now.
-        .unwrap_or_else(|| panic!("Failed to get ip address when resolve node ID={}", node_id))
+        .unwrap_or_else(|| panic!("Failed to get ip address when resolve node ID={node_id}"))
         .ip()
 }

@@ -30,8 +30,7 @@ fn test_file_manipulation_rust_way(mount_dir: &Path) -> anyhow::Result<()> {
     assert_eq!(content, FILE_CONTENT);
     assert!(
         !file_path.exists(),
-        "the file {:?} should have been removed",
-        file_path,
+        "the file {file_path:?} should have been removed",
     );
     Ok(())
 }
@@ -54,7 +53,7 @@ fn test_file_manipulation_nix_way(mount_dir: &Path) -> anyhow::Result<()> {
 
     unistd::lseek(fd, 0, Whence::SeekSet)?;
     let mut buffer: Vec<u8> = iter::repeat(0_u8).take(FILE_CONTENT.len()).collect();
-    let read_size = unistd::read(fd, &mut *buffer)?;
+    let read_size = unistd::read(fd, &mut buffer)?;
     assert_eq!(
         read_size,
         FILE_CONTENT.len(),
@@ -72,8 +71,7 @@ fn test_file_manipulation_nix_way(mount_dir: &Path) -> anyhow::Result<()> {
     unistd::unlink(&file_path)?; // immediate deletion
     assert!(
         !file_path.exists(),
-        "the file {:?} should have been removed",
-        file_path,
+        "the file {file_path:?} should have been removed",
     );
     Ok(())
 }
@@ -91,7 +89,7 @@ fn test_dir_manipulation_nix_way(mount_dir: &Path) -> anyhow::Result<()> {
     let repeat_times = 100_i32;
     let mut sub_dirs = HashSet::new();
     for i in 0_i32..repeat_times {
-        let sub_dir_name = format!("test_sub_dir_{}", i);
+        let sub_dir_name = format!("test_sub_dir_{i}");
         let sub_dir_path = dir_path.join(&sub_dir_name);
         unistd::mkdir(&sub_dir_path, dir_mode)?;
         sub_dirs.insert(sub_dir_name);
@@ -112,9 +110,7 @@ fn test_dir_manipulation_nix_way(mount_dir: &Path) -> anyhow::Result<()> {
                 let str_name = String::from_utf8(byte_vec).ok()?;
                 assert!(
                     sub_dirs.contains(&str_name),
-                    "the sub directory name {} should be in the hashmap {:?}",
-                    str_name,
-                    sub_dirs,
+                    "the sub directory name {str_name} should be in the hashmap {sub_dirs:?}",
                 );
                 Some(str_name)
             }
@@ -159,7 +155,7 @@ fn test_deferred_deletion(mount_dir: &Path) -> anyhow::Result<()> {
         .take(FILE_CONTENT.len().overflow_mul(repeat_times))
         .collect();
     unistd::lseek(fd, 0, Whence::SeekSet)?;
-    let read_size = unistd::read(fd, &mut *buffer)?;
+    let read_size = unistd::read(fd, &mut buffer)?;
     let content = String::from_utf8(buffer)?;
     unistd::close(fd)?;
 
@@ -178,8 +174,7 @@ fn test_deferred_deletion(mount_dir: &Path) -> anyhow::Result<()> {
 
     assert!(
         !file_path.exists(),
-        "the file {:?} should have been removed",
-        file_path,
+        "the file {file_path:?} should have been removed",
     );
     Ok(())
 }
@@ -215,14 +210,9 @@ fn test_rename_file(mount_dir: &Path) -> anyhow::Result<()> {
 
     assert!(
         !old_file.exists(),
-        "the old file {:?} should have been removed",
-        old_file,
+        "the old file {old_file:?} should have been removed",
     );
-    assert!(
-        new_file.exists(),
-        "the new file {:?} should exist",
-        new_file,
-    );
+    assert!(new_file.exists(), "the new file {new_file:?} should exist",);
 
     // Clean up
     fs::remove_dir_all(&from_dir)?;
@@ -263,7 +253,7 @@ fn test_rename_file_replace(mount_dir: &Path) -> anyhow::Result<()> {
 
     let mut buffer: Vec<u8> = iter::repeat(0_u8).take(FILE_CONTENT.len()).collect();
     unistd::lseek(old_fd, 0, Whence::SeekSet)?;
-    let old_file_read_size = unistd::read(old_fd, &mut *buffer)?;
+    let old_file_read_size = unistd::read(old_fd, &mut buffer)?;
     let content = String::from_utf8(buffer)?;
     unistd::close(old_fd)?;
     assert_eq!(
@@ -280,7 +270,7 @@ fn test_rename_file_replace(mount_dir: &Path) -> anyhow::Result<()> {
 
     let mut buffer: Vec<u8> = iter::repeat(0_u8).take(FILE_CONTENT.len()).collect();
     unistd::lseek(new_fd, 0, Whence::SeekSet)?;
-    let new_file_read_size = unistd::read(new_fd, &mut *buffer)?;
+    let new_file_read_size = unistd::read(new_fd, &mut buffer)?;
     let content = String::from_utf8(buffer)?;
     unistd::close(new_fd)?;
     assert_eq!(
@@ -297,14 +287,9 @@ fn test_rename_file_replace(mount_dir: &Path) -> anyhow::Result<()> {
 
     assert!(
         !old_file.exists(),
-        "the old file {:?} should not exist",
-        new_file,
+        "the old file {new_file:?} should not exist",
     );
-    assert!(
-        new_file.exists(),
-        "the new file {:?} should exist",
-        new_file,
-    );
+    assert!(new_file.exists(), "the new file {new_file:?} should exist",);
 
     // Clean up
     // fs::remove_file(&old_file)?;
@@ -334,13 +319,11 @@ fn test_rename_dir(mount_dir: &Path) -> anyhow::Result<()> {
 
     assert!(
         !old_sub_dir.exists(),
-        "the old direcotry {:?} should have been removed",
-        old_sub_dir
+        "the old direcotry {old_sub_dir:?} should have been removed"
     );
     assert!(
         new_sub_dir.exists(),
-        "the new direcotry {:?} should exist",
-        new_sub_dir,
+        "the new direcotry {new_sub_dir:?} should exist",
     );
 
     // Clean up
@@ -358,9 +341,9 @@ fn test_symlink_dir(mount_dir: &Path) -> anyhow::Result<()> {
 
     let src_dir = Path::new("src_dir");
     if src_dir.exists() {
-        fs::remove_dir_all(&src_dir)?;
+        fs::remove_dir_all(src_dir)?;
     }
-    fs::create_dir_all(&src_dir).context(format!("failed to create directory={:?}", src_dir))?;
+    fs::create_dir_all(src_dir).context(format!("failed to create directory={src_dir:?}"))?;
 
     let src_file_name = "src.txt";
     let src_path = Path::new(&src_dir).join(src_file_name);
@@ -368,27 +351,26 @@ fn test_symlink_dir(mount_dir: &Path) -> anyhow::Result<()> {
     let dst_dir = Path::new("dst_dir");
     unistd::symlinkat(src_dir, None, dst_dir).context("create symlink failed")?;
     // std::os::unix::fs::symlink(&src_path, &dst_path).context("create symlink failed")?;
-    let target_path = std::fs::read_link(&dst_dir).context("read symlink failed ")?;
+    let target_path = std::fs::read_link(dst_dir).context("read symlink failed ")?;
     assert_eq!(src_dir, target_path, "symlink target path not match");
 
     //let dst_path = Path::new(&dst_dir).join(src_file_name);
     let dst_path = Path::new("./dst_dir").join(src_file_name);
-    fs::write(&dst_path, FILE_CONTENT)
-        .context(format!("failed to write to file={:?}", dst_path))?;
-    let content = fs::read_to_string(&src_path).context("read symlink target file failed")?;
+    fs::write(&dst_path, FILE_CONTENT).context(format!("failed to write to file={dst_path:?}"))?;
+    let content = fs::read_to_string(src_path).context("read symlink target file failed")?;
     assert_eq!(
         content, FILE_CONTENT,
         "symlink target file content not match"
     );
 
-    let md = std::fs::symlink_metadata(&dst_dir).context("read symlink metadata failed")?;
+    let md = std::fs::symlink_metadata(dst_dir).context("read symlink metadata failed")?;
     assert!(
         md.file_type().is_symlink(),
         "file type should be symlink other than {:?}",
         md.file_type(),
     );
 
-    let entries = fs::read_dir(&dst_dir)
+    let entries = fs::read_dir(dst_dir)
         .context("ready symlink target directory failed")?
         .filter_map(|e| {
             if let Ok(entry) = e {
@@ -407,8 +389,8 @@ fn test_symlink_dir(mount_dir: &Path) -> anyhow::Result<()> {
         "directory entry name not match",
     );
 
-    fs::remove_dir_all(&src_dir)?; // immediate deletion
-    fs::remove_dir_all(&dst_dir)?; // immediate deletion
+    fs::remove_dir_all(src_dir)?; // immediate deletion
+    fs::remove_dir_all(dst_dir)?; // immediate deletion
     assert!(!src_dir.exists());
     assert!(!dst_dir.exists());
     std::env::set_current_dir(current_dir)?;
@@ -423,15 +405,15 @@ fn test_symlink_file(mount_dir: &Path) -> anyhow::Result<()> {
     std::env::set_current_dir(Path::new(mount_dir))?;
 
     let src_path = Path::new("src.txt");
-    fs::write(&src_path, FILE_CONTENT)?;
+    fs::write(src_path, FILE_CONTENT)?;
 
     let dst_path = Path::new("dst.txt");
     unistd::symlinkat(src_path, None, dst_path).context("create symlink failed")?;
     // std::os::unix::fs::symlink(&src_path, &dst_path).context("create symlink failed")?;
-    let target_path = std::fs::read_link(&dst_path).context("read symlink failed ")?;
+    let target_path = std::fs::read_link(dst_path).context("read symlink failed ")?;
     assert_eq!(src_path, target_path, "symlink target path not match");
 
-    let content = fs::read_to_string(&dst_path).context("read symlink target file failed")?;
+    let content = fs::read_to_string(dst_path).context("read symlink target file failed")?;
     assert_eq!(
         content, FILE_CONTENT,
         "symlink target file content not match"
@@ -442,14 +424,14 @@ fn test_symlink_file(mount_dir: &Path) -> anyhow::Result<()> {
     //     .context("open symlink target file failed ")?;
     // unistd::close(fd).context("failed to close symlink target file")?;
 
-    let md = std::fs::symlink_metadata(&dst_path).context("read symlink metadata failed")?;
+    let md = std::fs::symlink_metadata(dst_path).context("read symlink metadata failed")?;
     assert!(
         md.file_type().is_symlink(),
         "file type should be symlink other than {:?}",
         md.file_type(),
     );
-    fs::remove_file(&src_path)?; // immediate deletion
-    fs::remove_file(&dst_path)?; // immediate deletion
+    fs::remove_file(src_path)?; // immediate deletion
+    fs::remove_file(dst_path)?; // immediate deletion
     assert!(!src_path.exists());
     assert!(!dst_path.exists());
     std::env::set_current_dir(current_dir)?;
@@ -469,7 +451,7 @@ fn test_bind_mount(fuse_mount_dir: &Path) -> anyhow::Result<()> {
             info!("cleanup_dir() failed to un-mount {:?}", directory);
         }
         fs::remove_dir_all(directory)
-            .context(format!("cleanup_dir() failed to remove {:?}", directory))?;
+            .context(format!("cleanup_dir() failed to remove {directory:?}"))?;
         Ok(())
     }
 
@@ -481,15 +463,15 @@ fn test_bind_mount(fuse_mount_dir: &Path) -> anyhow::Result<()> {
     }
     let from_dir = Path::new(fuse_mount_dir).join("bind_from_dir");
     if from_dir.exists() {
-        cleanup_dir(&from_dir).context(format!("failed to cleanup {:?}", from_dir))?;
+        cleanup_dir(&from_dir).context(format!("failed to cleanup {from_dir:?}"))?;
     }
-    fs::create_dir_all(&from_dir).context(format!("failed to create {:?}", from_dir))?;
+    fs::create_dir_all(&from_dir).context(format!("failed to create {from_dir:?}"))?;
 
     let target_dir = Path::new("/tmp/bind_target_dir");
     if target_dir.exists() {
-        cleanup_dir(target_dir).context(format!("failed to cleanup {:?}", target_dir))?;
+        cleanup_dir(target_dir).context(format!("failed to cleanup {target_dir:?}"))?;
     }
-    fs::create_dir_all(&target_dir).context(format!("failed to create {:?}", from_dir))?;
+    fs::create_dir_all(target_dir).context(format!("failed to create {from_dir:?}"))?;
 
     nix::mount::mount::<Path, Path, Path, Path>(
         Some(&from_dir),
@@ -499,8 +481,7 @@ fn test_bind_mount(fuse_mount_dir: &Path) -> anyhow::Result<()> {
         None, // mount option data
     )
     .context(format!(
-        "failed to bind mount {:?} to {:?}",
-        from_dir, target_dir,
+        "failed to bind mount {from_dir:?} to {target_dir:?}",
     ))?;
 
     let file_path = Path::new(&target_dir).join("tmp.txt");
@@ -509,12 +490,12 @@ fn test_bind_mount(fuse_mount_dir: &Path) -> anyhow::Result<()> {
     fs::remove_file(&file_path)?; // immediate deletion
     assert_eq!(content, FILE_CONTENT, "file content not match");
 
-    nix::mount::umount(target_dir).context(format!("failed to un-mount {:?}", target_dir))?;
+    nix::mount::umount(target_dir).context(format!("failed to un-mount {target_dir:?}"))?;
 
     // cleanup_dir(&from_dir)?;
     // cleanup_dir(target_dir)?
-    fs::remove_dir_all(&from_dir).context(format!("failed to remove {:?}", from_dir))?;
-    fs::remove_dir_all(target_dir).context(format!("failed to remove {:?}", target_dir))?;
+    fs::remove_dir_all(&from_dir).context(format!("failed to remove {from_dir:?}"))?;
+    fs::remove_dir_all(target_dir).context(format!("failed to remove {target_dir:?}"))?;
     Ok(())
 }
 
