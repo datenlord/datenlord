@@ -50,7 +50,14 @@
     clippy::shadow_reuse, //it’s a common pattern in Rust code
     clippy::shadow_same, //it’s a common pattern in Rust code
     clippy::same_name_method, // Skip for protobuf generated code
-
+    clippy::mod_module_files, // TODO: fix code structure to pass this lint
+    clippy::std_instead_of_core, // Cause false positive in src/common/error.rs
+    clippy::std_instead_of_alloc,
+    clippy::pub_use, // TODO: fix this
+    clippy::missing_trait_methods, // TODO: fix this
+    clippy::arithmetic_side_effects, // TODO: fix this
+    clippy::use_debug, // Allow debug print
+    clippy::print_stdout, // Allow println!
 )]
 
 pub mod async_fuse;
@@ -332,8 +339,7 @@ fn get_end_point(matches: &ArgMatches) -> String {
             let sock = s.clone();
             assert!(
                 sock.starts_with("unix:///"),
-                "invalid socket end point: {}, should start with unix:///",
-                sock
+                "invalid socket end point: {sock}, should start with unix:///"
             );
             sock
         }
@@ -348,7 +354,7 @@ fn get_worker_port(matches: &ArgMatches) -> u16 {
     let worker_port = match matches.get_one::<String>(WORKER_PORT_ARG_NAME) {
         Some(p) => match p.parse::<u16>() {
             Ok(port) => port,
-            Err(e) => panic!("failed to parse port, the error is: {}", e),
+            Err(e) => panic!("failed to parse port, the error is: {e}"),
         },
         None => panic!("No valid worker port"),
     };
@@ -388,10 +394,7 @@ fn get_driver_name(matches: &ArgMatches) -> String {
 /// Get mount dir
 #[must_use]
 fn get_mount_dir(matches: &ArgMatches) -> &str {
-    let mount_dir = match matches.get_one::<String>(MOUNT_POINT_ARG_NAME) {
-        Some(mp) => mp,
-        None => panic!("No mount point input"),
-    };
+    let Some(mount_dir) = matches.get_one::<String>(MOUNT_POINT_ARG_NAME) else { panic!("No mount point input") };
     mount_dir
 }
 
@@ -421,7 +424,7 @@ fn get_scheduler_port(matches: &ArgMatches) -> u16 {
     {
         Some(p) => match p.parse::<u16>() {
             Ok(port) => port,
-            Err(e) => panic!("failed to parse port, the error is: {}", e),
+            Err(e) => panic!("failed to parse port, the error is: {e}"),
         },
         None => 12345,
     };
@@ -432,9 +435,9 @@ fn get_scheduler_port(matches: &ArgMatches) -> u16 {
 #[must_use]
 fn get_cache_capacity(matches: &ArgMatches) -> usize {
     let cache_capacity = match matches.get_one::<String>(CACHE_CAPACITY_ARG_NAME) {
-        Some(cc) => cc.parse::<usize>().unwrap_or_else(|_| {
-            panic!("cannot parse cache capacity in usize, the input is: {}", cc)
-        }),
+        Some(cc) => cc
+            .parse::<usize>()
+            .unwrap_or_else(|_| panic!("cannot parse cache capacity in usize, the input is: {cc}")),
         None => CACHE_DEFAULT_CAPACITY,
     };
     cache_capacity
@@ -443,10 +446,7 @@ fn get_cache_capacity(matches: &ArgMatches) -> usize {
 /// Get volume info
 #[must_use]
 fn get_volume_info(matches: &ArgMatches) -> &str {
-    let volume_info = match matches.get_one::<String>(VOLUME_INFO_ARG_NAME) {
-        Some(vi) => vi,
-        None => panic!("No volume information input"),
-    };
+    let Some(volume_info) = matches.get_one::<String>(VOLUME_INFO_ARG_NAME) else { panic!("No volume information input") };
     volume_info
 }
 
@@ -516,7 +516,7 @@ fn get_map<'a>(map: &HashMap<String, Arg<'a>>, name: &str) -> Arg<'a> {
     if let Some(res) = map.get(name) {
         res.clone()
     } else {
-        panic!("Failed to get default argument {}", name);
+        panic!("Failed to get default argument {name}");
     }
 }
 
@@ -613,16 +613,16 @@ async fn main() -> anyhow::Result<()> {
                 if let Err(e) =
                     async_fuse::start_async_fuse(etcd_delegate.clone(), &async_args).await
                 {
-                    panic!("failed to start async fuse, error is {:?}", e);
+                    panic!("failed to start async fuse, error is {e:?}");
                 }
             });
 
             csi_thread
                 .await
-                .unwrap_or_else(|e| panic!("csi thread error: {:?}", e));
+                .unwrap_or_else(|e| panic!("csi thread error: {e:?}"));
             async_fuse_thread
                 .await
-                .unwrap_or_else(|e| panic!("csi thread error: {:?}", e));
+                .unwrap_or_else(|e| panic!("csi thread error: {e:?}"));
         }
         Some((START_SCHEDULER_EXTENDER, matches)) => {
             let metadata = parse_metadata(matches, RunAsRole::SchedulerExtender).await?;
@@ -653,7 +653,7 @@ async fn main() -> anyhow::Result<()> {
             };
 
             if let Err(e) = async_fuse::start_async_fuse(etcd_delegate, &async_args).await {
-                panic!("failed to start async fuse, error is {:?}", e);
+                panic!("failed to start async fuse, error is {e:?}");
             }
         }
         _ => panic!("Wrong subcommand!"),

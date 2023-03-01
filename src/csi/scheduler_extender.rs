@@ -100,7 +100,7 @@ impl SchdulerExtender {
     /// Create `SchedulerExtender`
     pub fn new(meta_data: Arc<MetaData>, address: SocketAddr) -> Self {
         let server = Server::http(address)
-            .unwrap_or_else(|e| panic!("failed to create server at {}, error is: {}", address, e));
+            .unwrap_or_else(|e| panic!("failed to create server at {address}, error is: {e}"));
         Self {
             meta_data,
             address,
@@ -143,7 +143,7 @@ impl SchdulerExtender {
                     }
                     let accessible_nodes: HashSet<_> = nodes_map
                         .iter()
-                        .filter_map(|(k, v)| (v == &volumes.len()).then(|| k))
+                        .filter_map(|(k, v)| (v == &volumes.len()).then_some(k))
                         .collect();
 
                     if let Some(ref node_list) = args.Nodes {
@@ -163,7 +163,7 @@ impl SchdulerExtender {
                             }),
                             NodeNames: None,
                             FailedNodes: HashMap::new(),
-                            Error: "".to_owned(),
+                            Error: String::new(),
                         }
                     } else if let Some(ref nodes) = args.NodeNames {
                         let candidate_nodes: Vec<_> = nodes
@@ -174,14 +174,14 @@ impl SchdulerExtender {
                             Nodes: None,
                             NodeNames: Some(candidate_nodes),
                             FailedNodes: HashMap::new(),
-                            Error: "".to_owned(),
+                            Error: String::new(),
                         }
                     } else {
                         ExtenderFilterResult {
                             Nodes: args.Nodes,
                             NodeNames: args.NodeNames,
                             FailedNodes: HashMap::new(),
-                            Error: "".to_owned(),
+                            Error: String::new(),
                         }
                     }
                 }
@@ -193,8 +193,7 @@ impl SchdulerExtender {
                     NodeNames: args.NodeNames.and(Some(vec![])),
                     FailedNodes: HashMap::new(),
                     Error: format!(
-                        "faile to get all nodes from etcd, failed to schedule, the error is {}",
-                        e
+                        "faile to get all nodes from etcd, failed to schedule, the error is {e}"
                     ),
                 },
             }
@@ -203,7 +202,7 @@ impl SchdulerExtender {
                 Nodes: args.Nodes,
                 NodeNames: args.NodeNames,
                 FailedNodes: HashMap::new(),
-                Error: "".to_owned(),
+                Error: String::new(),
             }
         }
     }

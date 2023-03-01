@@ -158,7 +158,7 @@ mod tests {
 
         let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
 
-        let file_name = format!("/tmp/proactor_v0_test_{}", timestamp);
+        let file_name = format!("/tmp/proactor_v0_test_{timestamp}");
         let content = "helloworld";
         let reversed_content = "dlrowolleh";
 
