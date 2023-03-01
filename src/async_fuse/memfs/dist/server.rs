@@ -69,13 +69,10 @@ async fn listen<S: S3BackEnd + Send + Sync + 'static>(
     cache: Arc<GlobalCache>,
     meta: Arc<S3MetaData<S>>,
 ) {
-    let listener = tokio::net::TcpListener::bind(format!("{}:{}", ip, port))
+    let listener = tokio::net::TcpListener::bind(format!("{ip}:{port}"))
         .await
         .unwrap_or_else(|e| {
-            panic!(
-                "Fail to bind tcp listener to {}:{}, error is {}",
-                ip, port, e
-            );
+            panic!("Fail to bind tcp listener to {ip}:{port}, error is {e}");
         });
     loop {
         match listener.accept().await {
@@ -87,11 +84,11 @@ async fn listen<S: S3BackEnd + Send + Sync + 'static>(
                     let mut local_stream = stream;
                     match dispatch(&mut local_stream, cache_clone, meta_clone).await {
                         Ok(_) => {}
-                        Err(e) => panic!("process cache request error: {}", e),
+                        Err(e) => panic!("process cache request error: {e}"),
                     }
                 });
             }
-            Err(e) => panic!("Fail to create incoming tcp stream, error is {}", e),
+            Err(e) => panic!("Fail to create incoming tcp stream, error is {e}"),
         }
     }
 }
@@ -104,10 +101,7 @@ async fn dispatch<S: S3BackEnd + Send + Sync + 'static>(
 ) -> anyhow::Result<bool> {
     let mut buf = Vec::new();
     if let Err(e) = tcp::read_message(stream, &mut buf).await {
-        panic!(
-            "fail to read distributed cache request from tcp stream, {}",
-            e
-        );
+        panic!("fail to read distributed cache request from tcp stream, {e}");
     }
 
     let request = request::deserialize_cache(buf.as_slice());
@@ -331,7 +325,7 @@ async fn push_attr<S: S3BackEnd + Send + Sync + 'static>(
             let mut new_attr = types::serial_to_file_attr(attr);
             new_attr.ino = old_attr.ino;
 
-            node._set_attr(new_attr, false).await;
+            node._set_attr(new_attr, false);
         }
     }
 
