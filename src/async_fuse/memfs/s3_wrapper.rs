@@ -12,6 +12,7 @@ use s3::{
     Region,
 };
 use serde_xml_rs as serde_xml;
+use std::fmt::Write;
 use std::time::SystemTime;
 
 /// S3 backend error
@@ -94,11 +95,11 @@ impl S3BackEnd for S3BackEndImpl {
             endpoint: endpoint.into(),
         };
         let credentials = Credentials::new(Some(access_key), Some(secret_key), None, None, None)
-            .unwrap_or_else(|e| panic!("failed to create credentials, error is {:?}", e));
+            .unwrap_or_else(|e| panic!("failed to create credentials, error is {e:?}"));
         let config = BucketConfiguration::default();
         let bucket = Bucket::create_with_path_style(bucket_name, region, credentials, config)
             .await
-            .unwrap_or_else(|e| panic!("failed to create bucket, error is {:?}", e));
+            .unwrap_or_else(|e| panic!("failed to create bucket, error is {e:?}"));
 
         if !bucket.success() && bucket.response_code != 409 {
             return Err(S3Error::S3InternalError(format!(
@@ -163,7 +164,7 @@ impl S3BackEnd for S3BackEndImpl {
                     if dir.ends_with('/') {
                         dir.into()
                     } else {
-                        format!("{}/", dir)
+                        format!("{dir}/")
                     },
                     Some("/".into()),
                 )
@@ -197,10 +198,7 @@ impl S3BackEnd for S3BackEndImpl {
                 )),
                 Some(ref lm) => Ok(chrono::DateTime::parse_from_str(lm, "%a, %e %b %Y %T %Z")
                     .unwrap_or_else(|e| {
-                        panic!(
-                            "failed to DateTime::parse_from_str {:?}, error is {:?}",
-                            lm, e
-                        )
+                        panic!("failed to DateTime::parse_from_str {lm:?}, error is {e:?}")
                     })
                     .into()),
             },
@@ -221,8 +219,7 @@ impl S3BackEnd for S3BackEndImpl {
                         chrono::DateTime::parse_from_rfc2822(lm)
                             .unwrap_or_else(|e| {
                                 panic!(
-                                    "failed to DateTime::parse_from_rfc2822 {:?}, error is {:?}",
-                                    lm, e
+                                    "failed to DateTime::parse_from_rfc2822 {lm:?}, error is {e:?}"
                                 )
                             })
                             .into(),
@@ -256,9 +253,9 @@ impl S3BackEnd for S3BackEndImpl {
         let (data, _) = resultify_anyhow!(request.response_data(false).await)?;
         let msg: InitiateMultipartUploadResponse = serde_xml::from_str(
             std::str::from_utf8(data.as_slice())
-                .map_err(|e| S3Error::S3InternalError(format!("{}", e)))?,
+                .map_err(|e| S3Error::S3InternalError(format!("{e}")))?,
         )
-        .map_err(|e| S3Error::S3InternalError(format!("{}", e)))?;
+        .map_err(|e| S3Error::S3InternalError(format!("{e}")))?;
         let path = msg.key;
         let upload_id = &msg.upload_id;
 
@@ -274,7 +271,7 @@ impl S3BackEnd for S3BackEndImpl {
             let request = RequestImpl::new(&self.bucket, &path, command);
             let (data, _code) = resultify_anyhow!(request.response_data(true).await)?;
             let etag = std::str::from_utf8(data.as_slice())
-                .map_err(|e| S3Error::S3InternalError(format!("{}", e)))?;
+                .map_err(|e| S3Error::S3InternalError(format!("{e}")))?;
 
             etags.push(etag.to_owned());
 
@@ -317,14 +314,20 @@ pub fn format_anyhow_error(error: &anyhow::Error) -> String {
         .chain()
         .map(std::string::ToString::to_string)
         .collect::<Vec<_>>();
-    let mut err_msg = err_msg_vec.as_slice().join(", caused by: ");
-    err_msg.push_str(&format!(", root cause: {}", error.root_cause()));
+    let mut err_msg = String::new();
+    let _ignore = write!(
+        err_msg,
+        "{}, root cause: {}",
+        err_msg_vec.as_slice().join(", caused by: "),
+        error.root_cause()
+    );
+
     err_msg
 }
 
 #[derive(Debug)]
 /// Do nothing S3 backend
-pub struct DoNothingImpl {}
+pub struct DoNothingImpl;
 
 #[async_trait]
 impl S3BackEnd for DoNothingImpl {
@@ -393,7 +396,7 @@ mod test {
             TEST_SECRET_KEY,
         )
         .await
-        .unwrap_or_else(|e| panic!("failed to create s3 backend, error is {:?}", e))
+        .unwrap_or_else(|e| panic!("failed to create s3 backend, error is {e:?}"))
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -401,10 +404,10 @@ mod test {
     async fn test_get_meta() {
         let s3_backend = create_backend().await;
         if let Err(e) = s3_backend.create_dir("test_dir").await {
-            panic!("failed to create dir in s3 backend, error is {:?}", e);
+            panic!("failed to create dir in s3 backend, error is {e:?}");
         }
         if let Err(e) = s3_backend.get_meta("test_dir").await {
-            panic!("failed to get meta from s3 backend, error is {:?}", e);
+            panic!("failed to get meta from s3 backend, error is {e:?}");
         }
     }
 }

@@ -32,10 +32,10 @@ pub async fn setup(mount_dir: &Path, is_s3: bool) -> anyhow::Result<tokio::task:
             debug!("umounted {:?} before setup", mount_dir);
         }
 
-        fs::remove_dir_all(&mount_dir)?;
+        fs::remove_dir_all(mount_dir)?;
     }
-    fs::create_dir_all(&mount_dir)?;
-    let abs_root_path = fs::canonicalize(&mount_dir)?;
+    fs::create_dir_all(mount_dir)?;
+    let abs_root_path = fs::canonicalize(mount_dir)?;
 
     let fs_task = tokio::task::spawn(async move {
         async fn run_fs(mount_point: &Path, is_s3: bool) -> anyhow::Result<()> {
@@ -83,7 +83,7 @@ pub async fn setup(mount_dir: &Path, is_s3: bool) -> anyhow::Result<tokio::task:
     // do not block main thread
     let th = tokio::task::spawn(async {
         fs_task.await.unwrap_or_else(|e| {
-            panic!("fs_task failed to join for error {}", e);
+            panic!("fs_task failed to join for error {e}");
         });
         debug!("spawned a thread for futures::executor::block_on()");
     });
@@ -116,8 +116,7 @@ pub async fn teardown(mount_dir: &Path, th: tokio::task::JoinHandle<()>) -> anyh
     th.await.unwrap_or_else(|res| {
         panic!(
             "failed to wait the test setup thread to finish, \
-            the thread result is: {:?}",
-            res,
+            the thread result is: {res:?}",
         );
     });
 

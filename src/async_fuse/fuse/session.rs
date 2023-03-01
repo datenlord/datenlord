@@ -136,8 +136,7 @@ impl Session {
         // let mount_path = Path::new(mount_point);
         assert!(
             mount_path.is_dir(),
-            "the input mount path={:?} is not a directory",
-            mount_path
+            "the input mount path={mount_path:?} is not a directory"
         );
 
         // Must create filesystem before mount
@@ -166,7 +165,7 @@ impl Session {
             let (buffer_idx, mut byte_buffer) = pool_receiver.recv()?;
 
             let (res, byte_buffer) = tokio::task::spawn_blocking(move || {
-                let res = unistd::read(fuse_dev_fd, &mut *byte_buffer);
+                let res = unistd::read(fuse_dev_fd, &mut byte_buffer);
                 (res, byte_buffer)
             })
             .await?;
@@ -217,8 +216,7 @@ impl Session {
                         _ => {
                             panic!(
                                 "non-recoverable io error when read FUSE device, \
-                                    the error is: {}",
-                                err_msg,
+                                    the error is: {err_msg}",
                             );
                             // break;
                         }
@@ -240,10 +238,7 @@ impl Session {
         proto_version: ProtoVersion,
     ) {
         let bytes = byte_buffer.get(..read_size).unwrap_or_else(|| {
-            panic!(
-                "failed to read {} bytes from the {}-th buffer",
-                read_size, buffer_idx,
-            )
+            panic!("failed to read {read_size} bytes from the {buffer_idx}-th buffer",)
         });
         let fuse_req = match Request::new(bytes, proto_version) {
             // Dispatch request
@@ -251,7 +246,7 @@ impl Session {
             // Quit on illegal request
             Err(e) => {
                 // TODO: graceful handle request build failure
-                panic!("failed to build FUSE request, the error is: {}", e);
+                panic!("failed to build FUSE request, the error is: {e}");
             }
         };
         debug!("received FUSE req={}", fuse_req);
@@ -266,8 +261,7 @@ impl Session {
         let res = sender.send((buffer_idx, byte_buffer));
         if let Err(e) = res {
             panic!(
-                "failed to put the {}-th buffer back to buffer pool, the error is: {}",
-                buffer_idx, e,
+                "failed to put the {buffer_idx}-th buffer back to buffer pool, the error is: {e}",
             );
         }
     }
@@ -284,8 +278,7 @@ impl Session {
             let res = pool_sender.send((i, buf));
             if let Err(e) = res {
                 panic!(
-                    "failed to insert buffer idx={} to buffer pool when initializing, the error is: {}",
-                    i, e,
+                    "failed to insert buffer idx={i} to buffer pool when initializing, the error is: {e}",
                 );
             }
         });
@@ -293,7 +286,7 @@ impl Session {
         let fuse_fd = self.dev_fd();
         let (idx, mut byte_buf) = pool_receiver.recv()?;
         let read_result = tokio::task::spawn_blocking(move || {
-            let res = unistd::read(fuse_fd, &mut *byte_buf);
+            let res = unistd::read(fuse_fd, &mut byte_buf);
             (res, byte_buf)
         })
         .await?;
@@ -315,14 +308,14 @@ impl Session {
             }
         }
         pool_sender.send((idx, byte_buf)).context(format!(
-            "failed to put buffer idx={} back to buffer pool after FUSE init",
-            idx,
+            "failed to put buffer idx={idx} back to buffer pool after FUSE init",
         ))?;
 
         Ok((pool_sender, pool_receiver))
     }
 
     /// Initialize FUSE session
+    #[allow(single_use_lifetimes)] // false positive
     async fn init<'a>(
         &self,
         arg: &'_ FuseInitIn,
@@ -341,7 +334,7 @@ impl Session {
             return Err(anyhow!("FUSE ABI version too low"));
         }
         // Call filesystem init method and give it a chance to return an error
-        let filesystem = &*fs;
+        let filesystem = fs;
         let init_res = filesystem.init(req).await;
         if let Err(err) = init_res {
             reply.error_code(Errno::ENOSYS).await?;
@@ -841,7 +834,7 @@ async fn dispatch<'a>(
         // }
         #[cfg(feature = "abi-7-11")]
         Operation::CuseInit { arg } => {
-            panic!("unsupported CuseInit arg={:?}", arg);
+            panic!("unsupported CuseInit arg={arg:?}");
         }
     }
 }

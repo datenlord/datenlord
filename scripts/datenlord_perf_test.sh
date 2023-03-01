@@ -13,14 +13,11 @@ readonly PERF_SCRIPT="fio_perf_test.sh"
 
 # Deploy datenlord for perf test
 kubectl apply -f ${PERF_CONFIG}
-# Sleep 30s to make sure the cluster is stable
-sleep 30
+# Sleep 60s to make sure the cluster is stable
+sleep 60
 kubectl wait --for=condition=Ready pod -l app=${ASYNC_FUSE_APP} -n ${NAMESPACE} --timeout=120s
 
-
 FIRST_NODE=$(kubectl get pods -A | grep "datenlord-async" | awk 'NR==1{print $2}')
-# Use apt sources file from host
-kubectl cp /etc/apt/sources.list ${FIRST_NODE}:/etc/apt/sources.list -n ${NAMESPACE}
 
 kubectl exec ${FIRST_NODE} -n ${NAMESPACE} -- apt-get update
 kubectl exec ${FIRST_NODE} -n ${NAMESPACE} -- apt-get install -y fio python3-pip
