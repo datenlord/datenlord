@@ -33,8 +33,6 @@ pub enum DistRequest {
     Rename(RenameParam),
     /// Remove request
     Remove(RemoveArgs),
-    /// Get inode number request
-    GetInodeNum,
 }
 
 /// `UpdateDir` request args
@@ -174,19 +172,11 @@ pub fn push_file_attr(path: &str, attr: SerialFileAttr) -> Vec<u8> {
     })
 }
 
-/// Serialize Get inode number request
-#[must_use]
-pub fn get_ino_num() -> Vec<u8> {
-    bincode::serialize(&DistRequest::GetInodeNum).unwrap_or_else(|e| {
-        panic!("fail to serialize `GetInodeNum` distributed meta operation, {e}")
-    })
-}
-
 /// Serialize Rename request
 #[must_use]
 pub fn rename(args: RenameParam) -> Vec<u8> {
     bincode::serialize(&DistRequest::Rename(args)).unwrap_or_else(|e| {
-        panic!("fail to serialize `GetInodeNum` distributed meta operation, {e}")
+        panic!("fail to serialize `RenameParam` distributed meta operation, {e}")
     })
 }
 

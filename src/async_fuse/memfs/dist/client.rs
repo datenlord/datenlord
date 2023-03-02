@@ -266,45 +266,6 @@ pub async fn read_data(
     Ok(None)
 }
 
-/// Get inode number from remote
-pub async fn get_ino_num(
-    etcd_client: Arc<EtcdDelegate>,
-    node_id: &str,
-    volume_info: &str,
-    default: u32,
-) -> anyhow::Result<u32> {
-    debug!("get_ino_num");
-    let get_inum = request::get_ino_num();
-    let mut cur = default;
-    if let Ok(nodes) = etcd::get_volume_nodes(
-        Arc::<EtcdDelegate>::clone(&etcd_client),
-        node_id,
-        volume_info,
-    )
-    .await
-    {
-        for other_id in nodes {
-            if let Ok(ref ip_and_port) =
-                etcd::get_node_ip_and_port(Arc::<EtcdDelegate>::clone(&etcd_client), &other_id)
-                    .await
-            {
-                let mut stream = TcpStream::connect(ip_and_port)
-                    .await
-                    .unwrap_or_else(|e| panic!("fail connect to {ip_and_port}, error: {e}"));
-
-                tcp::write_message(&mut stream, &get_inum).await?;
-                let inum = tcp::read_u32(&mut stream).await?;
-
-                if inum > cur {
-                    cur = inum;
-                }
-            }
-        }
-    }
-
-    Ok(cur)
-}
-
 /// Rename file request to remote
 pub async fn rename(
     etcd_client: Arc<EtcdDelegate>,
