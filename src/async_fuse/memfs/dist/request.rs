@@ -3,8 +3,8 @@
 use crate::async_fuse::fuse::protocol::INum;
 
 use super::super::fs_util::FileAttr;
+use super::super::serial::{self, SerialFileAttr, SerialSFlag};
 use super::super::RenameParam;
-use super::types::{self, SerialFileAttr, SerialSFlag};
 use log::info;
 use nix::sys::stat::SFlag;
 use serde::{Deserialize, Serialize};
@@ -135,7 +135,7 @@ pub fn update_dir(
     let args = UpdateDirArgs {
         parent_path: parent.to_owned(),
         child_name: child.to_owned(),
-        child_attr: types::file_attr_to_serial(child_attr),
+        child_attr: serial::file_attr_to_serial(child_attr),
         target_path: target_path.map(std::borrow::ToOwned::to_owned),
     };
 
@@ -186,7 +186,7 @@ pub fn remove(parent: INum, child: &str, child_type: SFlag) -> Vec<u8> {
     let args = RemoveArgs {
         parent,
         child_name: child.to_owned(),
-        child_type: types::entry_type_to_serial(child_type),
+        child_type: serial::entry_type_to_serial(child_type),
     };
 
     bincode::serialize(&DistRequest::Remove(args)).unwrap_or_else(|e| {

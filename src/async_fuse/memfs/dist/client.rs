@@ -3,11 +3,11 @@ use crate::async_fuse::memfs::RenameParam;
 
 use super::super::dir::DirEntry;
 use super::super::fs_util::FileAttr;
+use super::super::serial;
 use super::etcd;
 use super::request::{self, Index};
 use super::response;
 use super::tcp;
-use super::types;
 use crate::common::etcd_delegate::EtcdDelegate;
 use log::debug;
 use nix::sys::stat::SFlag;
@@ -180,7 +180,7 @@ pub async fn push_attr(
         etcd_client,
         node_id,
         volume_info,
-        &request::push_file_attr(path, types::file_attr_to_serial(attr)),
+        &request::push_file_attr(path, serial::file_attr_to_serial(attr)),
         do_nothing,
         Ok(()),
     )

@@ -1,20 +1,22 @@
-use super::super::dir::DirEntry;
-use super::super::fs_util::FileAttr;
+use super::dir::DirEntry;
+use super::fs_util::FileAttr;
 use crate::async_fuse::fuse::protocol::INum;
-use libc::ino_t;
 use nix::sys::stat::SFlag;
+use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
-use std::time::SystemTime;
+use std::{sync::Arc, time::SystemTime};
 
 /// Serializable `DirEntry`
 #[derive(Serialize, Deserialize, Debug)]
 pub struct SerialDirEntry {
-    /// The i-number of the entry
-    ino: ino_t,
-    /// The `SFlag` type of the entry
-    entry_type: SerialSFlag,
+    // /// The i-number of the entry
+    // ino: ino_t,
+    // /// The `SFlag` type of the entry
+    // entry_type: SerialSFlag,
     /// The entry name
     name: String,
+    /// File attr
+    file_attr: SerialFileAttr,
 }
 
 /// Serializable `FileAttr`
@@ -86,9 +88,8 @@ pub const fn serial_to_entry_type(entry_type: &SerialSFlag) -> SFlag {
 #[must_use]
 pub fn dir_entry_to_serial(entry: &DirEntry) -> SerialDirEntry {
     SerialDirEntry {
-        ino: entry.ino(),
-        entry_type: { entry_type_to_serial(entry.entry_type()) },
         name: entry.entry_name().to_owned(),
+        file_attr: file_attr_to_serial(&entry.file_attr_arc_ref().read()),
     }
 }
 
@@ -96,9 +97,10 @@ pub fn dir_entry_to_serial(entry: &DirEntry) -> SerialDirEntry {
 #[must_use]
 pub fn serial_to_dir_entry(entry: &SerialDirEntry) -> DirEntry {
     DirEntry::new(
-        entry.ino,
+        // entry.ino,
         entry.name.clone(),
-        serial_to_entry_type(&entry.entry_type),
+        // serial_to_entry_type(&entry.entry_type),
+        Arc::new(RwLock::new(serial_to_file_attr(&entry.file_attr))),
     )
 }
 
