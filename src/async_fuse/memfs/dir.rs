@@ -117,6 +117,10 @@ impl IntoIterator for Dir {
 /// Directory entry
 #[derive(Debug, Clone)]
 pub struct DirEntry {
+    // /// The i-number of the entry
+    // ino: ino_t,
+    // /// The `SFlag` type of the entry
+    // entry_type: SFlag,
     /// The entry name
     name: String,
     /// File attr
@@ -126,7 +130,12 @@ pub struct DirEntry {
 impl DirEntry {
     /// Create `DirEntry`
     pub const fn new(name: String, file_attr: Arc<RwLock<FileAttr>>) -> Self {
-        Self { name, file_attr }
+        Self {
+            // ino,
+            // entry_type,
+            name,
+            file_attr,
+        }
     }
     /// Returns the inode number (`d_ino`) of the underlying `dirent`.
     pub fn ino(&self) -> ino_t {
@@ -148,6 +157,7 @@ impl DirEntry {
     /// notably, some Linux filesystems don't implement this. The caller should use `stat` or
     /// `fstat` if this returns `None`.
     pub fn entry_type(&self) -> SFlag {
+        // self.entry_type
         self.file_attr.read().kind
     }
 
@@ -178,6 +188,8 @@ impl DirEntry {
         };
 
         Self {
+            // ino,
+            // entry_type,
             name,
             file_attr: Arc::new(RwLock::new(FileAttr {
                 ino,
