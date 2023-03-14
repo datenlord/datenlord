@@ -63,6 +63,7 @@ protoc-grpcio = "3.0.0"
 
 [dev-dependencies]
 mock-etcd = { git = "https://github.com/datenlord/etcd-client", rev = "f697899" }
+mockall = "0.11.2"
 
 [[bin]]
 path = "src/bin/bind_mounter.rs"

@@ -9,6 +9,10 @@ use std::{sync::Arc, time::SystemTime};
 /// Serializable `DirEntry`
 #[derive(Serialize, Deserialize, Debug)]
 pub struct SerialDirEntry {
+    // /// The i-number of the entry
+    // ino: ino_t,
+    // /// The `SFlag` type of the entry
+    // entry_type: SerialSFlag,
     /// The entry name
     name: String,
     /// File attr
@@ -16,7 +20,7 @@ pub struct SerialDirEntry {
 }
 
 /// Serializable `FileAttr`
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct SerialFileAttr {
     /// Inode number
     ino: INum,
@@ -49,7 +53,7 @@ pub struct SerialFileAttr {
 }
 
 /// Serializable `SFlag`
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum SerialSFlag {
     /// Regular file
     Reg,
@@ -93,7 +97,9 @@ pub fn dir_entry_to_serial(entry: &DirEntry) -> SerialDirEntry {
 #[must_use]
 pub fn serial_to_dir_entry(entry: &SerialDirEntry) -> DirEntry {
     DirEntry::new(
+        // entry.ino,
         entry.name.clone(),
+        // serial_to_entry_type(&entry.entry_type),
         Arc::new(RwLock::new(serial_to_file_attr(&entry.file_attr))),
     )
 }

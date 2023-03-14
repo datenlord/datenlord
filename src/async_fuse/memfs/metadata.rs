@@ -4,6 +4,7 @@ use super::dist::server::CacheServer;
 use super::fs_util::{self, FileAttr};
 use super::node::{self, DefaultNode, Node};
 use super::RenameParam;
+use crate::async_fuse::fuse::file_system::FsAsyncResultSender;
 use crate::async_fuse::fuse::protocol::{FuseAttr, INum, FUSE_ROOT_ID};
 use crate::async_fuse::util;
 use crate::common::etcd_delegate::EtcdDelegate;
@@ -15,13 +16,14 @@ use nix::errno::Errno;
 use nix::fcntl::OFlag;
 use nix::sys::stat::SFlag;
 use nix::unistd;
-use parking_lot::RwLock as SyncRwLock; // conflict with tokio RwLock
+use parking_lot::RwLock as SyncRwLock;
 use std::collections::BTreeMap;
 use std::os::unix::io::RawFd;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{Mutex, RwLock, RwLockWriteGuard};
+use tokio::task::JoinHandle;
 
 /// The time-to-live seconds of FUSE attributes
 const MY_TTL_SEC: u64 = 3600; // TODO: should be a long value, say 1 hour
@@ -43,7 +45,8 @@ pub trait MetaData {
         etcd_client: EtcdDelegate,
         node_id: &str,
         volume_info: &str,
-    ) -> (Arc<Self>, Option<CacheServer>);
+        fs_async_sender: FsAsyncResultSender,
+    ) -> (Arc<Self>, Option<CacheServer>, Vec<JoinHandle<()>>);
 
     /// Helper function to create node
     async fn create_node_helper(
@@ -98,6 +101,9 @@ pub trait MetaData {
 
     /// Set fuse fd into `MetaData`
     async fn set_fuse_fd(&self, fuse_fd: RawFd);
+
+    /// Stop all async tasks
+    fn stop_all_async_tasks(&self);
 }
 
 /// File system in-memory meta-data
@@ -112,6 +118,8 @@ pub struct DefaultMetaData {
     data_cache: Arc<GlobalCache>,
     /// Fuse fd
     fuse_fd: Mutex<RawFd>,
+    /// Send async result to session
+    fs_async_sender: FsAsyncResultSender,
 }
 
 #[async_trait]
@@ -126,7 +134,8 @@ impl MetaData for DefaultMetaData {
         _: EtcdDelegate,
         _: &str,
         _: &str,
-    ) -> (Arc<Self>, Option<CacheServer>) {
+        fs_async_sender: FsAsyncResultSender,
+    ) -> (Arc<Self>, Option<CacheServer>, Vec<JoinHandle<()>>) {
         let root_path = Path::new(root_path)
             .canonicalize()
             .with_context(|| format!("failed to canonicalize the mount path={root_path:?}"))
@@ -142,6 +151,7 @@ impl MetaData for DefaultMetaData {
             cache: RwLock::new(BTreeMap::new()),
             data_cache: Arc::new(GlobalCache::new_with_capacity(capacity)),
             fuse_fd: Mutex::new(-1_i32),
+            fs_async_sender,
         });
 
         let root_inode =
@@ -153,7 +163,7 @@ impl MetaData for DefaultMetaData {
                 });
         meta.cache.write().await.insert(FUSE_ROOT_ID, root_inode);
 
-        (meta, None)
+        (meta, None, vec![])
     }
 
     /// Get metadata cache
@@ -456,15 +466,13 @@ impl MetaData for DefaultMetaData {
             });
             let parent_name = parent_node.get_name().to_owned();
             let child_node = match child_type {
-                SFlag::S_IFDIR => {
-                    parent_node
-                        .open_child_dir(child_name, None)
-                        .await
-                        .context(format!(
-                            "lookup_helper() failed to open sub-directory name={child_name:?} \
+                SFlag::S_IFDIR => parent_node
+                    .open_child_dir(child_name, child_attr)
+                    .await
+                    .context(format!(
+                        "lookup_helper() failed to open sub-directory name={child_name:?} \
                             under parent directory of ino={parent} and name={parent_name:?}",
-                        ))?
-                }
+                    ))?,
                 SFlag::S_IFREG => {
                     let oflags = OFlag::O_RDWR;
                     parent_node
@@ -774,6 +782,9 @@ impl MetaData for DefaultMetaData {
             .write_file(fh, offset, data, o_flags, write_to_disk)
             .await
     }
+
+    /// Stop all async tasks
+    fn stop_all_async_tasks(&self) {}
 }
 
 impl DefaultMetaData {
