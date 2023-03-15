@@ -4,6 +4,7 @@ use super::dist::server::CacheServer;
 use super::fs_util::{self, FileAttr};
 use super::node::{self, DefaultNode, Node};
 use super::RenameParam;
+use crate::async_fuse::fuse::file_system::FsAsyncResultSender;
 use crate::async_fuse::fuse::protocol::{FuseAttr, INum, FUSE_ROOT_ID};
 use crate::async_fuse::util;
 use crate::common::etcd_delegate::EtcdDelegate;
@@ -16,6 +17,7 @@ use nix::fcntl::OFlag;
 use nix::sys::stat::SFlag;
 use nix::unistd;
 use parking_lot::RwLock as SyncRwLock;
+use tokio::task::JoinHandle;
 use std::collections::BTreeMap;
 use std::os::unix::io::RawFd;
 use std::path::{Path, PathBuf};
@@ -43,7 +45,8 @@ pub trait MetaData {
         etcd_client: EtcdDelegate,
         node_id: &str,
         volume_info: &str,
-    ) -> (Arc<Self>, Option<CacheServer>);
+        fs_async_sender:FsAsyncResultSender
+    ) -> (Arc<Self>, Option<CacheServer>, Vec<JoinHandle<()>>);
 
     /// Helper function to create node
     async fn create_node_helper(
@@ -126,7 +129,8 @@ impl MetaData for DefaultMetaData {
         _: EtcdDelegate,
         _: &str,
         _: &str,
-    ) -> (Arc<Self>, Option<CacheServer>) {
+        _fs_async_sender:FsAsyncResultSender// todo:must be used
+    ) -> (Arc<Self>, Option<CacheServer>, Vec<JoinHandle<()>>) {
         let root_path = Path::new(root_path)
             .canonicalize()
             .with_context(|| format!("failed to canonicalize the mount path={root_path:?}"))
@@ -153,7 +157,7 @@ impl MetaData for DefaultMetaData {
                 });
         meta.cache.write().await.insert(FUSE_ROOT_ID, root_inode);
 
-        (meta, None)
+        (meta, None, vec![])
     }
 
     /// Get metadata cache

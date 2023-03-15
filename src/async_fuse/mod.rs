@@ -4,6 +4,8 @@ use crate::{common::etcd_delegate::EtcdDelegate, AsyncFuseArgs, VolumeType};
 use fuse::session::Session;
 use memfs::s3_wrapper::{DoNothingImpl, S3BackEndImpl};
 
+use self::fuse::file_system::FsController;
+
 pub mod fuse;
 pub mod memfs;
 /// Datenlord metrics
@@ -29,7 +31,7 @@ pub async fn start_async_fuse(
     let mount_point = std::path::Path::new(&args.mount_dir);
     match args.volume_type {
         VolumeType::Local => {
-            let fs: memfs::MemFs<memfs::DefaultMetaData> = memfs::MemFs::new(
+            let (fs,_fs_controller):(memfs::MemFs<memfs::DefaultMetaData>,FsController) = memfs::MemFs::new(
                 &args.mount_dir,
                 args.cache_capacity,
                 &args.ip_address.to_string(),
@@ -43,7 +45,7 @@ pub async fn start_async_fuse(
             ss.run().await?;
         }
         VolumeType::S3 => {
-            let fs: memfs::MemFs<memfs::S3MetaData<S3BackEndImpl>> = memfs::MemFs::new(
+            let (fs,_fs_controller):(memfs::MemFs<memfs::S3MetaData<S3BackEndImpl>>,FsController) = memfs::MemFs::new(
                 &args.volume_info,
                 args.cache_capacity,
                 &args.ip_address.to_string(),
@@ -57,7 +59,7 @@ pub async fn start_async_fuse(
             ss.run().await?;
         }
         VolumeType::None => {
-            let fs: memfs::MemFs<memfs::S3MetaData<DoNothingImpl>> = memfs::MemFs::new(
+            let (fs,_fs_controller):(memfs::MemFs<memfs::S3MetaData<DoNothingImpl>>,FsController) = memfs::MemFs::new(
                 &args.volume_info,
                 args.cache_capacity,
                 &args.ip_address.to_string(),

@@ -10,6 +10,8 @@ use super::node::Node;
 use super::s3_node::{self, S3Node};
 use super::s3_wrapper::S3BackEnd;
 use super::RenameParam;
+use super::persist::PersistTask;
+use crate::async_fuse::fuse::file_system::FsAsyncResultSender;
 #[cfg(feature = "abi-7-18")]
 use crate::async_fuse::fuse::fuse_reply::FuseDeleteNotification;
 use crate::async_fuse::fuse::protocol::{FuseAttr, INum, FUSE_ROOT_ID};
@@ -24,6 +26,7 @@ use nix::errno::Errno;
 use nix::fcntl::OFlag;
 use nix::sys::stat::SFlag;
 use parking_lot::RwLock as SyncRwLock;
+use tokio::task::JoinHandle;
 use std::collections::BTreeMap;
 use std::os::unix::io::RawFd;
 use std::path::Path;
@@ -83,7 +86,8 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         etcd_client: EtcdDelegate,
         node_id: &str,
         volume_info: &str,
-    ) -> (Arc<Self>, Option<CacheServer>) {
+        fs_async_sender:FsAsyncResultSender
+    ) -> (Arc<Self>, Option<CacheServer>, Vec<JoinHandle<()>>) {
         let (bucket_name, endpoint, access_key, secret_key) = parse_s3_info(s3_info);
         let s3_backend = Arc::new(
             match S::new(bucket_name, endpoint, access_key, secret_key).await {
@@ -91,7 +95,10 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
                 Err(e) => panic!("{e:?}"),
             },
         );
-
+        let mut async_tasks=vec![];
+        let (_persist_handle,persist_join_handle)=
+            PersistTask::spawn(Arc::clone(&s3_backend),fs_async_sender);
+        async_tasks.push(persist_join_handle);
         let etcd_arc = Arc::new(etcd_client);
         let data_cache = Arc::new(GlobalCache::new_dist_with_bz_and_capacity(
             10_485_760, // 10 * 1024 * 1024
@@ -124,12 +131,12 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
             .unwrap_or_else(|e| {
                 panic!("{}", e);
             });
-
+        
         let full_path = root_inode.full_path().to_owned();
         meta.cache.write().await.insert(FUSE_ROOT_ID, root_inode);
         meta.path2inum.write().await.insert(full_path, FUSE_ROOT_ID);
 
-        (meta, Some(server))
+        (meta, Some(server), async_tasks)
     }
 
     /// Get metadata cache

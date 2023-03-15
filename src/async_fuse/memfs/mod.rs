@@ -16,6 +16,8 @@ mod s3_node;
 pub mod s3_wrapper;
 /// Serializable types module
 pub mod serial;
+/// Persist module
+mod persist;
 
 use std::collections::BTreeMap;
 use std::os::unix::ffi::OsStringExt;
@@ -37,6 +39,7 @@ use crate::async_fuse::fuse::fuse_reply::{
     ReplyAttr, ReplyBMap, ReplyCreate, ReplyData, ReplyDirectory, ReplyEmpty, ReplyEntry,
     ReplyLock, ReplyOpen, ReplyStatFs, ReplyWrite, ReplyXAttr,
 };
+use crate::async_fuse::fuse::file_system;
 use crate::async_fuse::fuse::fuse_request::Request;
 use crate::async_fuse::fuse::protocol::{INum, FUSE_ROOT_ID};
 use crate::common::etcd_delegate::EtcdDelegate;
@@ -48,6 +51,8 @@ use metadata::MetaData;
 use node::Node;
 pub use s3_metadata::S3MetaData;
 use serde::{Deserialize, Serialize};
+
+use super::fuse::file_system::FsController;
 
 /// The time-to-live seconds of FUSE attributes
 const MY_TTL_SEC: u64 = 3600; // TODO: should be a long value, say 1 hour
@@ -143,8 +148,9 @@ impl<M: MetaData + Send + Sync + 'static> MemFs<M> {
         etcd_client: EtcdDelegate,
         node_id: &str,
         volume_info: &str,
-    ) -> anyhow::Result<Self> {
-        let (metadata, server) = M::new(
+    ) -> anyhow::Result<(Self,FsController)> {
+        let (sender,receiver)=file_system::new_fs_async_result_chan();
+        let (metadata, server,async_task_join_handles) = M::new(
             mount_point,
             capacity,
             ip,
@@ -152,9 +158,10 @@ impl<M: MetaData + Send + Sync + 'static> MemFs<M> {
             etcd_client,
             node_id,
             volume_info,
+            sender,
         )
         .await;
-        Ok(Self { metadata, server })
+        Ok((Self { metadata, server },FsController::new(receiver, async_task_join_handles)))
     }
 
     /// Read content check
