@@ -1,7 +1,7 @@
 //! The implementation of FUSE session
 
 use super::context::ProtoVersion;
-use super::file_system::FileSystem;
+use super::file_system::{FileSystem, FsController};
 use crate::async_fuse::memfs::{FileLockParam, RenameParam, SetAttrParam};
 //use super::channel::Channel;
 // #[cfg(target_os = "macos")]
@@ -90,6 +90,8 @@ pub struct Session {
     filesystem: Arc<dyn FileSystem + Send + Sync + 'static>,
     /// All sub-tasks
     tasks: Vec<tokio::task::JoinHandle<()>>,
+    /// Some state held by session to communicate with and control the fs
+    fs_controller:FsController
 }
 
 /// FUSE device fd
@@ -105,9 +107,13 @@ impl Drop for FuseFd {
 impl Drop for Session {
     fn drop(&mut self) {
         futures::executor::block_on(async {
+            // join fuse request handling tasks.
             for join_handle in &self.tasks {
                 join_handle.abort();
             }
+            // stop and join async sub tasks
+            self.filesystem.stop_all_async_tasks();
+            self.fs_controller.join_all_async_tasks().await;
             let mount_path = &self.mount_path;
             let res = mount::umount(mount_path).await;
             match res {
@@ -132,6 +138,7 @@ impl Session {
     pub async fn new(
         mount_path: &Path,
         fs: impl FileSystem + Send + Sync + 'static,
+        fs_controller: FsController,
     ) -> anyhow::Result<Self> {
         // let mount_path = Path::new(mount_point);
         assert!(
@@ -150,6 +157,7 @@ impl Session {
             filesystem: Arc::new(fs),
             mount_path: mount_path.to_owned(),
             tasks: Vec::new(),
+            fs_controller,
         })
     }
 

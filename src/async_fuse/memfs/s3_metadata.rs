@@ -7,6 +7,7 @@ use super::fs_util::{self, FileAttr};
 use super::inode::InodeState;
 use super::metadata::MetaData;
 use super::node::Node;
+use super::persist::PersistHandle;
 use super::s3_node::{self, S3Node};
 use super::s3_wrapper::S3BackEnd;
 use super::RenameParam;
@@ -65,6 +66,8 @@ pub struct S3MetaData<S: S3BackEnd + Send + Sync + 'static> {
     pub(crate) path2inum: RwLock<BTreeMap<String, INum>>,
     /// Fuse fd
     fuse_fd: Mutex<RawFd>,
+    /// Persist handle
+    persist_handle:PersistHandle,
 }
 
 /// Parse S3 info
@@ -96,7 +99,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
             },
         );
         let mut async_tasks=vec![];
-        let (_persist_handle,persist_join_handle)=
+        let (persist_handle,persist_join_handle)=
             PersistTask::spawn(Arc::clone(&s3_backend),fs_async_sender);
         async_tasks.push(persist_join_handle);
         let etcd_arc = Arc::new(etcd_client);
@@ -117,6 +120,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
             volume_info: volume_info.to_owned(),
             path2inum: RwLock::new(BTreeMap::new()),
             fuse_fd: Mutex::new(-1_i32),
+            persist_handle
         });
 
         let server = CacheServer::new(
@@ -537,6 +541,10 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         self.invalidate_remote(&full_path, offset, data_len).await;
         self.sync_attr_remote(&full_path).await;
         result
+    }
+    /// Stop all async tasks
+    fn stop_all_async_tasks(&self){
+        self.persist_handle.system_end();
     }
 }
 

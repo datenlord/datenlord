@@ -31,7 +31,7 @@ pub async fn start_async_fuse(
     let mount_point = std::path::Path::new(&args.mount_dir);
     match args.volume_type {
         VolumeType::Local => {
-            let (fs,_fs_controller):(memfs::MemFs<memfs::DefaultMetaData>,FsController) = memfs::MemFs::new(
+            let (fs,fs_controller):(memfs::MemFs<memfs::DefaultMetaData>,FsController) = memfs::MemFs::new(
                 &args.mount_dir,
                 args.cache_capacity,
                 &args.ip_address.to_string(),
@@ -41,11 +41,11 @@ pub async fn start_async_fuse(
                 &args.volume_info,
             )
             .await?;
-            let ss = Session::new(mount_point, fs).await?;
+            let ss = Session::new(mount_point, fs,fs_controller).await?;
             ss.run().await?;
         }
         VolumeType::S3 => {
-            let (fs,_fs_controller):(memfs::MemFs<memfs::S3MetaData<S3BackEndImpl>>,FsController) = memfs::MemFs::new(
+            let (fs,fs_controller):(memfs::MemFs<memfs::S3MetaData<S3BackEndImpl>>,FsController) = memfs::MemFs::new(
                 &args.volume_info,
                 args.cache_capacity,
                 &args.ip_address.to_string(),
@@ -55,11 +55,11 @@ pub async fn start_async_fuse(
                 &args.volume_info,
             )
             .await?;
-            let ss = Session::new(mount_point, fs).await?;
+            let ss = Session::new(mount_point, fs,fs_controller).await?;
             ss.run().await?;
         }
         VolumeType::None => {
-            let (fs,_fs_controller):(memfs::MemFs<memfs::S3MetaData<DoNothingImpl>>,FsController) = memfs::MemFs::new(
+            let (fs,fs_controller):(memfs::MemFs<memfs::S3MetaData<DoNothingImpl>>,FsController) = memfs::MemFs::new(
                 &args.volume_info,
                 args.cache_capacity,
                 &args.ip_address.to_string(),
@@ -69,7 +69,7 @@ pub async fn start_async_fuse(
                 &args.volume_info,
             )
             .await?;
-            let ss = Session::new(mount_point, fs).await?;
+            let ss = Session::new(mount_point, fs,fs_controller).await?;
             ss.run().await?;
         }
     }

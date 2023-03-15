@@ -101,6 +101,9 @@ pub trait MetaData {
 
     /// Set fuse fd into `MetaData`
     async fn set_fuse_fd(&self, fuse_fd: RawFd);
+
+    /// Stop all async tasks
+    fn stop_all_async_tasks(&self);
 }
 
 /// File system in-memory meta-data
@@ -776,6 +779,9 @@ impl MetaData for DefaultMetaData {
             .write_file(fh, offset, data, o_flags, write_to_disk)
             .await
     }
+
+    /// Stop all async tasks
+    fn stop_all_async_tasks(&self){}
 }
 
 impl DefaultMetaData {

@@ -284,6 +284,9 @@ pub trait FileSystem {
 
     /// Set fuse fd into `FileSystem`
     async fn set_fuse_fd(&self, fuse_fd: RawFd);
+
+    /// Stop all async tasks
+    fn stop_all_async_tasks(&self);
 }
 
 /// create channel of communication from async task to main loop
@@ -317,7 +320,6 @@ impl FsController {
             async_task_join_handles,
         }
     }
-    #[allow(dead_code)]
     /// before calling this, make sure just all task will break their loop.
     pub(crate) async fn join_all_async_tasks(&mut self) {
         while let Some(task) = self.async_task_join_handles.pop() {

@@ -178,7 +178,6 @@ impl PersistHandle {
     }
     /// Stop the persist task loop
     #[inline]
-    #[allow(dead_code)]
     pub(crate) fn system_end(&self) {
         self.shared.system_end.store(true, Ordering::SeqCst);
     }

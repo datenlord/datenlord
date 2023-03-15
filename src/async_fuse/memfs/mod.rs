@@ -1297,6 +1297,11 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
     async fn set_fuse_fd(&self, fuse_fd: RawFd) {
         self.metadata.set_fuse_fd(fuse_fd).await;
     }
+
+    /// Stop all async tasks
+    fn stop_all_async_tasks(&self){
+        self.metadata.stop_all_async_tasks();
+    }
 }
 
 #[cfg(test)]
