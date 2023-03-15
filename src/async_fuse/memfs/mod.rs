@@ -9,6 +9,8 @@ mod inode;
 /// fs metadata module
 mod metadata;
 mod node;
+/// Persist module
+mod persist;
 /// fs metadata with S3 backend module
 mod s3_metadata;
 mod s3_node;
@@ -31,6 +33,7 @@ use log::{debug, warn};
 use nix::errno::Errno;
 use nix::sys::stat::SFlag;
 
+use crate::async_fuse::fuse::file_system;
 use crate::async_fuse::fuse::file_system::FileSystem;
 use crate::async_fuse::fuse::fuse_reply::AsIoVec;
 use crate::async_fuse::fuse::fuse_reply::{
@@ -48,6 +51,8 @@ use metadata::MetaData;
 use node::Node;
 pub use s3_metadata::S3MetaData;
 use serde::{Deserialize, Serialize};
+
+use super::fuse::file_system::FsController;
 
 /// The time-to-live seconds of FUSE attributes
 const MY_TTL_SEC: u64 = 3600; // TODO: should be a long value, say 1 hour
@@ -143,8 +148,9 @@ impl<M: MetaData + Send + Sync + 'static> MemFs<M> {
         etcd_client: EtcdDelegate,
         node_id: &str,
         volume_info: &str,
-    ) -> anyhow::Result<Self> {
-        let (metadata, server) = M::new(
+    ) -> anyhow::Result<(Self, FsController)> {
+        let (sender, receiver) = file_system::new_fs_async_result_chan();
+        let (metadata, server, async_task_join_handles) = M::new(
             mount_point,
             capacity,
             ip,
@@ -152,9 +158,13 @@ impl<M: MetaData + Send + Sync + 'static> MemFs<M> {
             etcd_client,
             node_id,
             volume_info,
+            sender,
         )
         .await;
-        Ok(Self { metadata, server })
+        Ok((
+            Self { metadata, server },
+            FsController::new(receiver, async_task_join_handles),
+        ))
     }
 
     /// Read content check
@@ -1289,6 +1299,11 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
     /// Set fuse fd into `FileSystem`
     async fn set_fuse_fd(&self, fuse_fd: RawFd) {
         self.metadata.set_fuse_fd(fuse_fd).await;
+    }
+
+    /// Stop all async tasks
+    fn stop_all_async_tasks(&self) {
+        self.metadata.stop_all_async_tasks();
     }
 }
 
