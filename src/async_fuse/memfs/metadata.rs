@@ -118,6 +118,8 @@ pub struct DefaultMetaData {
     data_cache: Arc<GlobalCache>,
     /// Fuse fd
     fuse_fd: Mutex<RawFd>,
+    /// Send async result to session
+    fs_async_sender:FsAsyncResultSender
 }
 
 #[async_trait]
@@ -132,7 +134,7 @@ impl MetaData for DefaultMetaData {
         _: EtcdDelegate,
         _: &str,
         _: &str,
-        _fs_async_sender:FsAsyncResultSender// todo:must be used
+        fs_async_sender:FsAsyncResultSender
     ) -> (Arc<Self>, Option<CacheServer>, Vec<JoinHandle<()>>) {
         let root_path = Path::new(root_path)
             .canonicalize()
@@ -149,6 +151,7 @@ impl MetaData for DefaultMetaData {
             cache: RwLock::new(BTreeMap::new()),
             data_cache: Arc::new(GlobalCache::new_with_capacity(capacity)),
             fuse_fd: Mutex::new(-1_i32),
+            fs_async_sender
         });
 
         let root_inode =

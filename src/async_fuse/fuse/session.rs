@@ -162,73 +162,104 @@ impl Session {
     }
 
     /// Run the FUSE session
-    #[allow(clippy::wildcard_enum_match_arm)] // nix::Errno is marked as non_exhaustive
+    #[allow(clippy::wildcard_enum_match_arm, clippy::restriction)] // nix::Errno is marked as non_exhaustive
     pub async fn run(mut self) -> anyhow::Result<()> {
+        // For recycling the buffers used by process_fuse_request.
         let (pool_sender, pool_receiver) = self
             .setup_buffer_pool()
             .await
             .context("failed to setup buffer pool")?;
         let fuse_dev_fd = self.dev_fd();
+        let mut buffer_idx = 0;
+        let mut read_fuse_task = None;
         loop {
-            let (buffer_idx, mut byte_buffer) = pool_receiver.recv()?;
+            if read_fuse_task.is_none() {
+                let (buffer_idx_, mut byte_buffer) = pool_receiver.recv()?;
+                buffer_idx = buffer_idx_;
+                // Read msg from FUSE
+                read_fuse_task = Some(tokio::task::spawn_blocking(move || {
+                    let res = unistd::read(fuse_dev_fd, &mut byte_buffer);
+                    (res, byte_buffer)
+                }));
+            }
+            // return false to stop the loop
+            let mut handle_fuse_request_res =
+                |res: nix::Result<usize>, byte_buffer: AlignedBytes| {
+                    match res {
+                        Ok(read_size) => {
+                            debug!("read successfully {} byte data from FUSE device", read_size);
 
-            let (res, byte_buffer) = tokio::task::spawn_blocking(move || {
-                let res = unistd::read(fuse_dev_fd, &mut byte_buffer);
-                (res, byte_buffer)
-            })
-            .await?;
-
-            match res {
-                Ok(read_size) => {
-                    debug!("read successfully {} byte data from FUSE device", read_size);
-
-                    // let chan = Channel::new(self).await?;
-                    let fuse_fd = fuse_dev_fd;
-                    let fs = Arc::clone(&self.filesystem);
-                    let sender = pool_sender.clone();
-                    let proto_version = self.proto_version.load();
-                    self.tasks
-                        .push(tokio::task::spawn(Self::process_fuse_request(
-                            buffer_idx,
-                            byte_buffer,
-                            read_size,
-                            fuse_fd,
-                            fs,
-                            sender,
-                            proto_version,
-                        )));
-                }
-                Err(err) => {
-                    let err_msg = crate::async_fuse::util::format_nix_error(err); // TODO: refactor format_nix_error()
-                    error!(
-                        "failed to receive from FUSE kernel, the error is: {}",
-                        err_msg
-                    );
-                    match err {
-                        // Operation interrupted. Accordingly to FUSE, this is safe to retry
-                        Errno::ENOENT => {
-                            info!("operation interrupted, retry.");
+                            // let chan = Channel::new(self).await?;
+                            let fuse_fd = fuse_dev_fd;
+                            let fs = Arc::clone(&self.filesystem);
+                            let sender = pool_sender.clone();
+                            let proto_version = self.proto_version.load();
+                            self.tasks
+                                .push(tokio::task::spawn(Self::process_fuse_request(
+                                    buffer_idx,
+                                    byte_buffer,
+                                    read_size,
+                                    fuse_fd,
+                                    fs,
+                                    sender,
+                                    proto_version,
+                                )));
                         }
-                        // Interrupted system call, retry
-                        Errno::EINTR => {
-                            info!("interrupted system call, retry");
-                        }
-                        // Explicitly try again
-                        Errno::EAGAIN => info!("Explicitly retry"),
-                        // Filesystem was unmounted, quit the loop
-                        Errno::ENODEV => {
-                            info!("filesystem destroyed, quit the run loop");
-                            break;
-                        }
-                        // Unhandled error
-                        _ => {
-                            panic!(
-                                "non-recoverable io error when read FUSE device, \
-                                    the error is: {err_msg}",
+                        Err(err) => {
+                            let err_msg = crate::async_fuse::util::format_nix_error(err); // TODO: refactor format_nix_error()
+                            error!(
+                                "failed to receive from FUSE kernel, the error is: {}",
+                                err_msg
                             );
-                            // break;
+                            match err {
+                                // Operation interrupted. Accordingly to FUSE, this is safe to retry
+                                Errno::ENOENT => {
+                                    info!("operation interrupted, retry.");
+                                }
+                                // Interrupted system call, retry
+                                Errno::EINTR => {
+                                    info!("interrupted system call, retry");
+                                }
+                                // Explicitly try again
+                                Errno::EAGAIN => info!("Explicitly retry"),
+                                // Filesystem was unmounted, quit the loop
+                                Errno::ENODEV => {
+                                    info!("filesystem destroyed, quit the run loop");
+                                    return false;
+                                }
+                                // Unhandled error
+                                _ => {
+                                    panic!(
+                                        "non-recoverable io error when read FUSE device, \
+                                    the error is: {err_msg}",
+                                    );
+                                }
+                            }
                         }
                     }
+
+                    true
+                };
+            let handle_fs_async_result = |res: Result<(), anyhow::Error>| match res {
+                Ok(..) => {}
+                Err(e) => {
+                    panic!("async task has error occurred, the error is: {e}");
+                }
+            };
+
+            // Select read_fuse_task and async Result
+            tokio::select! {
+                res = read_fuse_task.as_mut().unwrap_or_else(||{
+                    // read_fuse_task is always prepared with value by above logic.
+                    unreachable!()}) => {
+                    let (res, byte_buffer) = res?;
+                    if !handle_fuse_request_res(res, byte_buffer){
+                        break;
+                    }
+                    read_fuse_task=None;
+                }
+                res = self.fs_controller.recv_async_task_res() => {
+                    handle_fs_async_result(res);
                 }
             }
         }
