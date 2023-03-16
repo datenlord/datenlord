@@ -274,9 +274,9 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
         s3_backend: Arc<S>,
         meta: Arc<S3MetaData<S>>,
     ) -> anyhow::Result<Self> {
-        match persist::read_persisted_dir(&s3_backend, "/".to_string().to_owned()).await {
+        match persist::read_persisted_dir(&s3_backend, "/".to_owned()).await {
             Err(e) => {
-                //todo: handle different type of error
+                //todo: handle different type of error, key not exist, net err, etc.
                 debug!("read persit dir error {e}");
 
                 let now = SystemTime::now();
@@ -771,40 +771,26 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
         child_dir_name: &str,
         child_attr: Arc<RwLock<FileAttr>>,
     ) -> anyhow::Result<Self> {
-        // let absolute_path = self.absolute_dir_with_child(child_dir_name);
-
-        // // get new directory attribute
-        // let child_attr = match remote {
-        //     None => {
-        //         let last_modified = self
-        //             .s3_backend
-        //             .get_last_modified(absolute_path.as_str())
-        //             .await
-        //             .unwrap_or_else(|e| panic!("failed to get last modified of file {absolute_path:?} from s3 backend, error is {e:?}"));
-        //         FileAttr {
-        //             ino: 0, // will be set later
-        //             kind: SFlag::S_IFDIR,
-        //             atime: last_modified,
-        //             mtime: last_modified,
-        //             ctime: last_modified,
-        //             crtime: last_modified,
-        //             ..FileAttr::default()
-        //         }
-        //     }
-        //     Some(attr) => attr,
-        // };
-
-        // debug_assert_eq!(SFlag::S_IFDIR, child_attr.read().kind);
-
         // lookup count and open count are increased to 1 by creation
         let full_path = format!("{}{}/", self.full_path, child_dir_name);
+
+        let dirdata=match persist::read_persisted_dir(&self.s3_backend, full_path.clone()).await{
+            Ok(dir)=>{
+                dir.new_s3_node_data_dir()
+            }
+            Err(e)=>{
+                debug!("failed to get dir data from s3, path:{full_path}, err:{e}");
+                // dir data not persisted init with empty
+                S3NodeData::Directory(BTreeMap::new())
+            }
+        };
 
         let child_node = Self::new(
             self.get_ino(),
             child_dir_name,
             full_path,
             child_attr,
-            S3NodeData::Directory(BTreeMap::new()),
+            dirdata,
             Arc::clone(&self.s3_backend),
             Arc::clone(&self.meta),
         );

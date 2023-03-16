@@ -393,18 +393,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
                     and i-node of ino={} and name={:?}",
                 parent, ino, child_name,
             );
-            // let child_path = {
-            //     let cache = self.cache.read().await;
-            //     let parent_node = cache.get(&parent).unwrap_or_else(|| {
-            //         panic!(
-            //             "lookup_helper() found fs is inconsistent, \
-            //             parent i-node of ino={parent} should be in cache",
-            //         );
-            //     });
-            //     parent_node.absolute_path_of_child(child_name, child_type)
-            // };
-            // let remote_attr = self.get_attr_remote(&child_path).await;
-
+            
             let (mut child_node, parent_name) = {
                 let cache = self.cache.read().await;
                 let parent_node = cache.get(&parent).unwrap_or_else(|| {
