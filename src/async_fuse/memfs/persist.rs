@@ -1,3 +1,4 @@
+use super::fs_util::FileAttr;
 use super::serial;
 use super::serial::SerialFileAttr;
 use crate::async_fuse::fuse::file_system::FsAsyncResultSender;
@@ -51,7 +52,6 @@ impl Error for PersistError {
 /// Read persist dir content
 /// read when child dir cache missed in lookup
 ///  or `open_root_node` when start.
-#[allow(dead_code)]
 pub(crate) async fn read_persisted_dir<S: S3BackEnd + Sync + Send + 'static>(
     s3_backend: &Arc<S>,
     dir_full_path: String,
@@ -84,6 +84,13 @@ pub(crate) struct PersistDirContent {
     pub(crate) persist_serialized: PersistSerializePart,
 }
 impl PersistDirContent {
+    pub(crate) fn try_get_root_attr(&self) -> anyhow::Result<FileAttr> {
+        match self.persist_serialized.root_attr.as_ref() {
+            Some(attr) => Ok(serial::serial_to_file_attr(attr)),
+            None => Err(anyhow::Error::from(PersistError::FileAttrMissingForRoot)),
+        }
+    }
+
     #[allow(dead_code)]
     /// make `S3NodeData::Dir` from persisted data.
     pub(crate) fn new_s3_node_data_dir(&self) -> S3NodeData {

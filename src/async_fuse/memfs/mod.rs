@@ -9,6 +9,8 @@ mod inode;
 /// fs metadata module
 mod metadata;
 mod node;
+/// Persist module
+mod persist;
 /// fs metadata with S3 backend module
 mod s3_metadata;
 mod s3_node;
@@ -16,8 +18,6 @@ mod s3_node;
 pub mod s3_wrapper;
 /// Serializable types module
 pub mod serial;
-/// Persist module
-mod persist;
 
 use std::collections::BTreeMap;
 use std::os::unix::ffi::OsStringExt;
@@ -33,13 +33,13 @@ use log::{debug, warn};
 use nix::errno::Errno;
 use nix::sys::stat::SFlag;
 
+use crate::async_fuse::fuse::file_system;
 use crate::async_fuse::fuse::file_system::FileSystem;
 use crate::async_fuse::fuse::fuse_reply::AsIoVec;
 use crate::async_fuse::fuse::fuse_reply::{
     ReplyAttr, ReplyBMap, ReplyCreate, ReplyData, ReplyDirectory, ReplyEmpty, ReplyEntry,
     ReplyLock, ReplyOpen, ReplyStatFs, ReplyWrite, ReplyXAttr,
 };
-use crate::async_fuse::fuse::file_system;
 use crate::async_fuse::fuse::fuse_request::Request;
 use crate::async_fuse::fuse::protocol::{INum, FUSE_ROOT_ID};
 use crate::common::etcd_delegate::EtcdDelegate;
@@ -148,9 +148,9 @@ impl<M: MetaData + Send + Sync + 'static> MemFs<M> {
         etcd_client: EtcdDelegate,
         node_id: &str,
         volume_info: &str,
-    ) -> anyhow::Result<(Self,FsController)> {
-        let (sender,receiver)=file_system::new_fs_async_result_chan();
-        let (metadata, server,async_task_join_handles) = M::new(
+    ) -> anyhow::Result<(Self, FsController)> {
+        let (sender, receiver) = file_system::new_fs_async_result_chan();
+        let (metadata, server, async_task_join_handles) = M::new(
             mount_point,
             capacity,
             ip,
@@ -161,7 +161,10 @@ impl<M: MetaData + Send + Sync + 'static> MemFs<M> {
             sender,
         )
         .await;
-        Ok((Self { metadata, server },FsController::new(receiver, async_task_join_handles)))
+        Ok((
+            Self { metadata, server },
+            FsController::new(receiver, async_task_join_handles),
+        ))
     }
 
     /// Read content check
@@ -1299,7 +1302,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
     }
 
     /// Stop all async tasks
-    fn stop_all_async_tasks(&self){
+    fn stop_all_async_tasks(&self) {
         self.metadata.stop_all_async_tasks();
     }
 }

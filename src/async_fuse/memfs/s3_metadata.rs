@@ -8,10 +8,10 @@ use super::inode::InodeState;
 use super::metadata::MetaData;
 use super::node::Node;
 use super::persist::PersistHandle;
+use super::persist::PersistTask;
 use super::s3_node::{self, S3Node};
 use super::s3_wrapper::S3BackEnd;
 use super::RenameParam;
-use super::persist::PersistTask;
 use crate::async_fuse::fuse::file_system::FsAsyncResultSender;
 #[cfg(feature = "abi-7-18")]
 use crate::async_fuse::fuse::fuse_reply::FuseDeleteNotification;
@@ -27,13 +27,13 @@ use nix::errno::Errno;
 use nix::fcntl::OFlag;
 use nix::sys::stat::SFlag;
 use parking_lot::RwLock as SyncRwLock;
-use tokio::task::JoinHandle;
 use std::collections::BTreeMap;
 use std::os::unix::io::RawFd;
 use std::path::Path;
 use std::sync::{atomic::AtomicU32, Arc};
 use std::time::Duration;
 use tokio::sync::{Mutex, RwLock, RwLockWriteGuard};
+use tokio::task::JoinHandle;
 
 /// The time-to-live seconds of FUSE attributes
 const MY_TTL_SEC: u64 = 3600; // TODO: should be a long value, say 1 hour
@@ -67,7 +67,7 @@ pub struct S3MetaData<S: S3BackEnd + Send + Sync + 'static> {
     /// Fuse fd
     fuse_fd: Mutex<RawFd>,
     /// Persist handle
-    persist_handle:PersistHandle,
+    persist_handle: PersistHandle,
 }
 
 /// Parse S3 info
@@ -89,7 +89,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         etcd_client: EtcdDelegate,
         node_id: &str,
         volume_info: &str,
-        fs_async_sender:FsAsyncResultSender
+        fs_async_sender: FsAsyncResultSender,
     ) -> (Arc<Self>, Option<CacheServer>, Vec<JoinHandle<()>>) {
         let (bucket_name, endpoint, access_key, secret_key) = parse_s3_info(s3_info);
         let s3_backend = Arc::new(
@@ -98,9 +98,9 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
                 Err(e) => panic!("{e:?}"),
             },
         );
-        let mut async_tasks=vec![];
-        let (persist_handle,persist_join_handle)=
-            PersistTask::spawn(Arc::clone(&s3_backend),fs_async_sender);
+        let mut async_tasks = vec![];
+        let (persist_handle, persist_join_handle) =
+            PersistTask::spawn(Arc::clone(&s3_backend), fs_async_sender);
         async_tasks.push(persist_join_handle);
         let etcd_arc = Arc::new(etcd_client);
         let data_cache = Arc::new(GlobalCache::new_dist_with_bz_and_capacity(
@@ -120,7 +120,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
             volume_info: volume_info.to_owned(),
             path2inum: RwLock::new(BTreeMap::new()),
             fuse_fd: Mutex::new(-1_i32),
-            persist_handle
+            persist_handle,
         });
 
         let server = CacheServer::new(
@@ -131,11 +131,12 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         );
 
         let root_inode = S3Node::open_root_node(FUSE_ROOT_ID, "/", s3_backend, Arc::clone(&meta))
+            .await
             .context("failed to open FUSE root node")
             .unwrap_or_else(|e| {
                 panic!("{}", e);
             });
-        
+
         let full_path = root_inode.full_path().to_owned();
         meta.cache.write().await.insert(FUSE_ROOT_ID, root_inode);
         meta.path2inum.write().await.insert(full_path, FUSE_ROOT_ID);
@@ -543,7 +544,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         result
     }
     /// Stop all async tasks
-    fn stop_all_async_tasks(&self){
+    fn stop_all_async_tasks(&self) {
         self.persist_handle.system_end();
     }
 }

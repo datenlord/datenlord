@@ -5,6 +5,7 @@ use super::dir::DirEntry;
 use super::dist::client as dist_client;
 use super::fs_util::{self, FileAttr};
 use super::node::Node;
+use super::persist;
 use super::s3_metadata::S3MetaData;
 use super::s3_wrapper::S3BackEnd;
 use super::SetAttrParam;
@@ -267,34 +268,60 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
 
     /// Open root node
     #[allow(clippy::unnecessary_wraps)]
-    pub(crate) fn open_root_node(
+    pub(crate) async fn open_root_node(
         root_ino: INum,
         name: &str,
         s3_backend: Arc<S>,
         meta: Arc<S3MetaData<S>>,
     ) -> anyhow::Result<Self> {
-        let now = SystemTime::now();
-        let attr = Arc::new(RwLock::new(FileAttr {
-            ino: root_ino,
-            atime: now,
-            mtime: now,
-            ctime: now,
-            crtime: now,
-            kind: SFlag::S_IFDIR,
-            ..FileAttr::default()
-        }));
+        match persist::read_persisted_dir(&s3_backend, "/".to_string().to_owned()).await {
+            Err(e) => {
+                //todo: handle different type of error
+                debug!("read persit dir error {e}");
 
-        let root_node = Self::new(
-            root_ino,
-            name,
-            "/".to_owned(),
-            attr,
-            S3NodeData::Directory(BTreeMap::new()),
-            s3_backend,
-            meta,
-        );
+                let now = SystemTime::now();
+                let attr = Arc::new(RwLock::new(FileAttr {
+                    ino: root_ino,
+                    atime: now,
+                    mtime: now,
+                    ctime: now,
+                    crtime: now,
+                    kind: SFlag::S_IFDIR,
+                    ..FileAttr::default()
+                }));
 
-        Ok(root_node)
+                let root_node = Self::new(
+                    root_ino,
+                    name,
+                    "/".to_owned(),
+                    attr,
+                    S3NodeData::Directory(BTreeMap::new()),
+                    s3_backend,
+                    meta,
+                );
+
+                Ok(root_node)
+            }
+            Ok(data) => match data.try_get_root_attr() {
+                Ok(attr) => {
+                    let root_node = Self::new(
+                        root_ino,
+                        name,
+                        "/".to_owned(),
+                        Arc::new(RwLock::new(attr)),
+                        data.new_s3_node_data_dir(),
+                        s3_backend,
+                        meta,
+                    );
+
+                    Ok(root_node)
+                }
+                Err(e) => {
+                    log::error!("root node persist lack of attr info {e}");
+                    Err(e)
+                }
+            },
+        }
     }
 
     /// flush all data of a node

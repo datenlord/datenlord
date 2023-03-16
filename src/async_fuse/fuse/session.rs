@@ -91,7 +91,7 @@ pub struct Session {
     /// All sub-tasks
     tasks: Vec<tokio::task::JoinHandle<()>>,
     /// Some state held by session to communicate with and control the fs
-    fs_controller:FsController
+    fs_controller: FsController,
 }
 
 /// FUSE device fd
