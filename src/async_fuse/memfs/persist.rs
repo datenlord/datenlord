@@ -1,5 +1,5 @@
 use super::fs_util::FileAttr;
-use super::serial;
+use super::serial::{self, file_attr_to_serial};
 use super::serial::SerialFileAttr;
 use crate::async_fuse::fuse::file_system::FsAsyncResultSender;
 use crate::async_fuse::fuse::protocol::INum;
@@ -10,6 +10,7 @@ use clippy_utilities::OverflowArithmetic;
 use log::debug;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt;
 use std::sync::atomic::Ordering::Acquire;
@@ -88,6 +89,25 @@ impl PersistDirContent {
         match self.persist_serialized.root_attr.as_ref() {
             Some(attr) => Ok(serial::serial_to_file_attr(attr)),
             None => Err(anyhow::Error::from(PersistError::FileAttrMissingForRoot)),
+        }
+    }
+
+    pub(crate) fn new_from_cache(dir_full_path:String,files:&BTreeMap<String, DirEntry>,f_attr: SerialFileAttr)
+        ->PersistDirContent{
+        let root_attr=if dir_full_path=="/" {
+            Some(f_attr)
+        }else{
+            None
+        };
+        
+        PersistDirContent{
+            dir_full_path,
+            persist_serialized: PersistSerializePart{
+                file_map:files.iter().map(|(fname,entry)|{
+                    (fname.clone(),file_attr_to_serial(&entry.file_attr_arc_ref().read()))
+                }).collect() ,
+                root_attr , 
+            },
         }
     }
 
@@ -286,5 +306,137 @@ impl<S: S3BackEnd + Sync + Send + 'static> PersistTask<S> {
                 debug!("persist task end");
             }),
         )
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use rand::distributions::Alphanumeric;
+    use rand::prelude::Distribution;
+
+    // use super::PersistDirContent;
+    // use super::PersistSerializePart;
+    use crate::async_fuse::fuse::file_system;
+    use crate::async_fuse::memfs::fs_util::FileAttr;
+    use crate::async_fuse::memfs::persist::{PersistTask, PersistDirContent, PersistSerializePart, self};
+    use crate::async_fuse::memfs::s3_wrapper::{MockS3BackEnd, S3Error};
+    use crate::async_fuse::memfs::serial::file_attr_to_serial;
+    use std::collections::HashMap;
+    use std::sync::Arc;
+    use std::time::UNIX_EPOCH;
+    use std::time::{Duration, SystemTime};
+    // use std::rc::Rc;
+    use parking_lot::RwLock;
+
+    fn create_mock()->Arc<MockS3BackEnd>{
+        let mut mock = MockS3BackEnd::new();
+
+        let map = Arc::new(RwLock::new(HashMap::new()));
+        let map_clone = Arc::clone(&map);
+        mock.expect_put_data()
+            .withf(move |file, data, offset, len| {
+                map_clone
+                    .write()
+                    .insert(file.to_owned(), (data.to_vec(), *offset, *len));
+                true
+            })
+            .returning(|_, _, _, _| Ok(()));
+
+        let map_clone = Arc::clone(&map);
+        mock.expect_get_data().returning(move |f| 
+            map_clone.read().get(f).map_or_else(|| Err(S3Error::S3InternalError(
+                "data not existed".to_owned()
+            )),|e|{
+                Ok(e.0.clone())
+            })
+        );
+        Arc::new(mock)
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_mock_s3() {
+        let _m=create_mock();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_stop_task() {
+        let mock=create_mock();
+        
+        let (tx, _rx) = 
+            file_system::new_fs_async_result_chan();
+        let (handle, join) = 
+            PersistTask::spawn(mock,tx);
+        let begin = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(10)).await;
+            handle.system_end();
+        });
+        join.await.unwrap();
+        let end = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
+        let dur = (end - begin).as_millis();
+        assert!(dur > 10000);
+
+        ()
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_persist() {
+        let mock=create_mock();
+        let mock_clone=Arc::clone(&mock);
+
+        let (tx,_rx)
+            =file_system::new_fs_async_result_chan();
+        let (handle,join)=
+            PersistTask::spawn(mock_clone,tx);
+        
+        for _ in 0..100{
+            
+            let mut rng = rand::thread_rng();
+            let s: String = Alphanumeric
+                .sample_iter(&mut rng)
+                .take(7)
+                .map(char::from)
+                .collect::<String>()
+                .to_uppercase();
+            println!("rand path {s}");
+            let path=format!("/{}/",s);
+            let file_map={
+                let mut map=HashMap::new();
+                let s: String = Alphanumeric
+                .sample_iter(&mut rng)
+                .take(7)
+                .map(char::from)
+                .collect::<String>()
+                .to_uppercase();
+                map.insert(s, file_attr_to_serial(&FileAttr::now()));
+                map
+            };
+            let begin=SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
+            handle.mark_dirty(0, PersistDirContent{
+                dir_full_path:path.clone(),
+                persist_serialized:PersistSerializePart{
+                    file_map:file_map.clone(),
+                    root_attr: None,
+                }
+            });
+            handle.wait_persist(0).await;   
+            let end=SystemTime::now().duration_since(UNIX_EPOCH).unwrap(); 
+            let dur = (end - begin).as_millis();
+            // smaller than persist cycle
+            assert!(dur <110);
+            // should get the dir
+            match persist::read_persisted_dir(&mock, path).await{
+                Ok(dir) => {
+                    assert_eq!(dir.persist_serialized.file_map.iter().next().unwrap().0,
+                    file_map.iter().next().unwrap().0);
+                },
+                Err(_) => {panic!("dir should be persisted and exists")},
+            }
+        }
+
+        handle.system_end();
+        join.await.unwrap();
+
+        ()
     }
 }

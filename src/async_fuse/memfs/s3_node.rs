@@ -1208,6 +1208,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
 
         debug!("file {:?} size = {:?}", self.name, self.attr.read().size);
         self.update_mtime_ctime_to_now();
+        //FileAttr changed, remember to persist the directory after calling this fn
 
         Ok(written_size)
     }

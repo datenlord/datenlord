@@ -14,6 +14,8 @@ use s3::{
 use serde_xml_rs as serde_xml;
 use std::fmt::Write;
 use std::time::SystemTime;
+#[cfg(test)]
+use mockall::{automock, predicate::*};
 
 /// S3 backend error
 #[derive(thiserror::Error, Debug)]
@@ -27,10 +29,11 @@ pub enum S3Error {
 pub type S3Result<T> = Result<T, S3Error>;
 
 /// S3 backend
+#[cfg_attr(test, automock)]
 #[async_trait]
 pub trait S3BackEnd {
     /// New `S3BackEnd`
-    async fn new(
+    async fn new_backend(
         bucket_name: &str,
         endpoint: &str,
         access_key: &str,
@@ -84,7 +87,7 @@ macro_rules! resultify_anyhow {
 #[async_trait]
 impl S3BackEnd for S3BackEndImpl {
     #[allow(dead_code)]
-    async fn new(
+    async fn new_backend(
         bucket_name: &str,
         endpoint: &str,
         access_key: &str,
@@ -332,7 +335,7 @@ pub struct DoNothingImpl;
 #[async_trait]
 impl S3BackEnd for DoNothingImpl {
     #[allow(dead_code)]
-    async fn new(_: &str, _: &str, _: &str, _: &str) -> S3Result<Self> {
+    async fn new_backend(_: &str, _: &str, _: &str, _: &str) -> S3Result<Self> {
         Ok(Self {})
     }
 
@@ -389,7 +392,7 @@ mod test {
     const TEST_SECRET_KEY: &str = "test1234";
 
     async fn create_backend() -> S3BackEndImpl {
-        S3BackEndImpl::new(
+        S3BackEndImpl::new_backend(
             TEST_BUCKET_NAME,
             TEST_ENDPOINT,
             TEST_ACCESS_KEY,
