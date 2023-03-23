@@ -11,11 +11,15 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::io::RawFd;
 use std::path::Path;
 use std::ptr::NonNull;
+use std::sync::Arc;
 
 use libc::ino_t;
 use memchr::memchr;
 use nix::fcntl::OFlag;
 use nix::sys::stat::{Mode, SFlag};
+use parking_lot::RwLock;
+
+use super::fs_util::FileAttr;
 
 /// Directory meta-data
 pub struct Dir(NonNull<libc::DIR>);
@@ -113,26 +117,20 @@ impl IntoIterator for Dir {
 /// Directory entry
 #[derive(Debug, Clone)]
 pub struct DirEntry {
-    /// The i-number of the entry
-    ino: ino_t,
-    /// The `SFlag` type of the entry
-    entry_type: SFlag,
     /// The entry name
     name: String,
+    /// File attr
+    file_attr: Arc<RwLock<FileAttr>>,
 }
 
 impl DirEntry {
     /// Create `DirEntry`
-    pub const fn new(ino: ino_t, name: String, entry_type: SFlag) -> Self {
-        Self {
-            ino,
-            entry_type,
-            name,
-        }
+    pub const fn new(name: String, file_attr: Arc<RwLock<FileAttr>>) -> Self {
+        Self { name, file_attr }
     }
     /// Returns the inode number (`d_ino`) of the underlying `dirent`.
-    pub const fn ino(&self) -> ino_t {
-        self.ino
+    pub fn ino(&self) -> ino_t {
+        self.file_attr.read().ino
     }
 
     /// Returns the bare file name of this directory entry without any other leading path component.
@@ -140,13 +138,17 @@ impl DirEntry {
         self.name.as_str()
     }
 
+    /// Return the ref of file attr arc
+    pub fn file_attr_arc_ref(&self) -> &Arc<RwLock<FileAttr>> {
+        &self.file_attr
+    }
     /// Returns the type of this directory entry, if known.
     ///
     /// See platform `readdir(3)` or `dirent(5)` manpage for when the file type is known;
     /// notably, some Linux filesystems don't implement this. The caller should use `stat` or
     /// `fstat` if this returns `None`.
-    pub const fn entry_type(&self) -> SFlag {
-        self.entry_type
+    pub fn entry_type(&self) -> SFlag {
+        self.file_attr.read().kind
     }
 
     /// Build `DirEntry` from `libc::dirent64`
@@ -176,9 +178,12 @@ impl DirEntry {
         };
 
         Self {
-            ino,
-            entry_type,
             name,
+            file_attr: Arc::new(RwLock::new(FileAttr {
+                ino,
+                kind: entry_type,
+                ..FileAttr::now()
+            })),
         }
     }
 }
