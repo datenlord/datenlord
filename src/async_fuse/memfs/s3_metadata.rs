@@ -27,15 +27,14 @@ use log::debug;
 use nix::errno::Errno;
 use nix::fcntl::OFlag;
 use nix::sys::stat::SFlag;
-use parking_lot::RwLock as SyncRwLock;
+use parking_lot::RwLock as SyncRwLock; // conflict with tokio RwLock
 use std::collections::BTreeMap;
 use std::os::unix::io::RawFd;
 use std::path::Path;
 use std::sync::{atomic::AtomicU32, Arc};
 use std::time::Duration;
 use tokio::sync::{Mutex, RwLock, RwLockWriteGuard};
-use tokio::task::JoinHandle;
-use super::serial;
+
 /// The time-to-live seconds of FUSE attributes
 const MY_TTL_SEC: u64 = 3600; // TODO: should be a long value, say 1 hour
 /// The generation ID of FUSE attributes
@@ -398,7 +397,6 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
                     and i-node of ino={} and name={:?}",
                 parent, ino, child_name,
             );
-            
             let (mut child_node, parent_name) = {
                 let cache = self.cache.read().await;
                 let parent_node = cache.get(&parent).unwrap_or_else(|| {
@@ -1216,21 +1214,6 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
             panic!("failed to sync dir to others, error: {e}");
         }
     }
-
-    // /// Get attr from other nodes
-    // async fn get_attr_remote(&self, path: &str) -> Option<FileAttr> {
-    //     match dist_client::get_attr(
-    //         Arc::<EtcdDelegate>::clone(&self.etcd_client),
-    //         &self.node_id,
-    //         &self.volume_info,
-    //         path,
-    //     )
-    //     .await
-    //     {
-    //         Err(e) => panic!("failed to sync attribute to others, error: {e}"),
-    //         Ok(res) => res,
-    //     }
-    // }
 
     /// Sync rename request to other nodes
     async fn rename_remote(&self, args: RenameParam) {
