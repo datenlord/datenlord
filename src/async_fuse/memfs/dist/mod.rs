@@ -7,5 +7,3 @@ pub mod response;
 pub mod server;
 /// Tcp communication module
 mod tcp;
-/// Serializable types module
-pub mod types;

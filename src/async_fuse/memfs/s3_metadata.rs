@@ -17,19 +17,19 @@ use crate::async_fuse::util;
 use crate::common::etcd_delegate::EtcdDelegate;
 use anyhow::Context;
 use async_trait::async_trait;
+use clippy_utilities::{Cast, OverflowArithmetic};
 use itertools::Itertools;
 use log::debug;
 use nix::errno::Errno;
 use nix::fcntl::OFlag;
 use nix::sys::stat::SFlag;
+use parking_lot::RwLock as SyncRwLock; // conflict with tokio RwLock
 use std::collections::BTreeMap;
 use std::os::unix::io::RawFd;
 use std::path::Path;
 use std::sync::{atomic::AtomicU32, Arc};
 use std::time::Duration;
 use tokio::sync::{Mutex, RwLock, RwLockWriteGuard};
-
-use clippy_utilities::{Cast, OverflowArithmetic};
 
 /// The time-to-live seconds of FUSE attributes
 const MY_TTL_SEC: u64 = 3600; // TODO: should be a long value, say 1 hour
@@ -343,8 +343,8 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         child_name: &str,
     ) -> anyhow::Result<(Duration, FuseAttr, u64)> {
         let pre_check_res = self.lookup_pre_check(parent, child_name).await;
-        let (ino, child_type) = match pre_check_res {
-            Ok((ino, child_type)) => (ino, child_type),
+        let (ino, child_type, child_attr) = match pre_check_res {
+            Ok((ino, child_type, child_attr)) => (ino, child_type, child_attr),
             Err(e) => {
                 debug!(
                     "lookup() failed to pre-check, the error is: {}",
@@ -381,18 +381,6 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
                     and i-node of ino={} and name={:?}",
                 parent, ino, child_name,
             );
-            let child_path = {
-                let cache = self.cache.read().await;
-                let parent_node = cache.get(&parent).unwrap_or_else(|| {
-                    panic!(
-                        "lookup_helper() found fs is inconsistent, \
-                        parent i-node of ino={parent} should be in cache",
-                    );
-                });
-                parent_node.absolute_path_of_child(child_name, child_type)
-            };
-            let remote_attr = self.get_attr_remote(&child_path).await;
-
             let (mut child_node, parent_name) = {
                 let cache = self.cache.read().await;
                 let parent_node = cache.get(&parent).unwrap_or_else(|| {
@@ -404,7 +392,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
                 let parent_name = parent_node.get_name().to_owned();
                 let child_node = match child_type {
                     SFlag::S_IFDIR => parent_node
-                        .open_child_dir(child_name, remote_attr)
+                        .open_child_dir(child_name, child_attr)
                         .await
                         .context(format!(
                             "lookup_helper() failed to open sub-directory name={child_name:?} \
@@ -415,7 +403,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
                         parent_node
                             .open_child_file(
                                 child_name,
-                                remote_attr,
+                                child_attr,
                                 oflags,
                                 Arc::<GlobalCache>::clone(&self.data_cache),
                             )
@@ -426,7 +414,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
                         ))?
                     }
                     SFlag::S_IFLNK => parent_node
-                        .load_child_symlink(child_name, remote_attr)
+                        .load_child_symlink(child_name, child_attr)
                         .await
                         .context(format!(
                             "lookup_helper() failed to read child symlink name={child_name:?} \
@@ -671,7 +659,11 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
     }
 
     /// Lookup helper function to pre-check
-    async fn lookup_pre_check(&self, parent: INum, name: &str) -> anyhow::Result<(INum, SFlag)> {
+    async fn lookup_pre_check(
+        &self,
+        parent: INum,
+        name: &str,
+    ) -> anyhow::Result<(INum, SFlag, Arc<SyncRwLock<FileAttr>>)> {
         // lookup child ino and type first
         let cache = self.cache.read().await;
         let parent_node = cache.get(&parent).unwrap_or_else(|| {
@@ -683,7 +675,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
         if let Some(child_entry) = parent_node.get_entry(name) {
             let ino = child_entry.ino();
             let child_type = child_entry.entry_type();
-            Ok((ino, child_type))
+            Ok((ino, child_type, Arc::clone(child_entry.file_attr_arc_ref())))
         } else {
             debug!(
                 "lookup_helper() failed to find the file name={:?} \
@@ -810,9 +802,10 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
                 old_parent,
                 old_parent_node.get_name(),
             ),
-            Some(old_entry) => {
-                DirEntry::new(old_entry.ino(), new_name.to_owned(), old_entry.entry_type())
-            }
+            Some(old_entry) => DirEntry::new(
+                new_name.to_owned(),
+                Arc::clone(old_entry.file_attr_arc_ref()),
+            ),
         };
 
         s3_node::rename_fullpath_recursive(entry_to_move.ino(), new_parent, &mut cache).await;
@@ -866,11 +859,9 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
                 replaced_entry.ino(),
                 "rename_exchange_helper() replaced entry i-number not match"
             );
-            let exchange_entry = DirEntry::new(
-                new_entry_ino,
-                old_name.to_owned(),
-                replaced_entry.entry_type(),
-            );
+            let attr = Arc::clone(replaced_entry.file_attr_arc_ref());
+            attr.write().ino = new_entry_ino;
+            let exchange_entry = DirEntry::new(old_name.to_owned(), attr);
 
             let mut cache = self.cache.write().await;
             let old_parent_node = cache.get_mut(&old_parent).unwrap_or_else(|| {
@@ -1157,21 +1148,6 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
         .await
         {
             panic!("failed to sync dir to others, error: {e}");
-        }
-    }
-
-    /// Get attr from other nodes
-    async fn get_attr_remote(&self, path: &str) -> Option<FileAttr> {
-        match dist_client::get_attr(
-            Arc::<EtcdDelegate>::clone(&self.etcd_client),
-            &self.node_id,
-            &self.volume_info,
-            path,
-        )
-        .await
-        {
-            Err(e) => panic!("failed to sync attribute to others, error: {e}"),
-            Ok(res) => res,
         }
     }
 
