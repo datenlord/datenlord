@@ -12,6 +12,7 @@ use super::persist::PersistHandle;
 use super::persist::PersistTask;
 use super::s3_node::{self, S3Node};
 use super::s3_wrapper::S3BackEnd;
+use super::serial;
 use super::RenameParam;
 use crate::async_fuse::fuse::file_system::FsAsyncResultSender;
 #[cfg(feature = "abi-7-18")]
@@ -34,8 +35,8 @@ use std::path::Path;
 use std::sync::{atomic::AtomicU32, Arc};
 use std::time::Duration;
 use tokio::sync::{Mutex, RwLock, RwLockWriteGuard};
-use tokio::task::JoinHandle;
-use super::serial;
+use tokio::task::JoinHandle; // conflict with tokio RwLock
+
 /// The time-to-live seconds of FUSE attributes
 const MY_TTL_SEC: u64 = 3600; // TODO: should be a long value, say 1 hour
 /// The generation ID of FUSE attributes
@@ -203,7 +204,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         target_path: Option<&Path>,
     ) -> anyhow::Result<(Duration, FuseAttr, u64)> {
         // pre-check
-        let ( full_path, fuse_attr) = {
+        let (parent_full_path, full_path, child_attr, fuse_attr) = {
             let mut cache = self.cache.write().await;
             let parent_node = Self::create_node_pre_check(parent, node_name, &mut cache)
                 .context("create_node_helper() failed to pre check")?;
@@ -306,20 +307,17 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
             let pnode = cache.get(&parent).unwrap_or_else(|| {
                 panic!("failed to get parent inode {parent:?}, parent name {parent_name:?}")
             });
-            let parent_full_path=pnode.full_path().to_owned();
-            self.sync_attr_remote(&parent_full_path).await;
-            self.sync_dir_remote(&parent_full_path, node_name, &new_node_attr, target_path)
-                .await;
-            // After sync to other，we should do async persist
-            self.persist_handle.mark_dirty(parent, PersistDirContent::new_from_cache(
-                parent_full_path, pnode.get_dir_data(), serial::file_attr_to_serial(&pnode.get_attr())));
-            
             (
+                pnode.full_path().to_owned(),
                 full_path,
+                new_node_attr,
                 fuse_attr,
             )
         };
 
+        self.sync_attr_remote(&parent_full_path).await;
+        self.sync_dir_remote(&parent_full_path, node_name, &child_attr, target_path)
+            .await;
         // inode is cached, so we should remove the path mark
         // We dont need to sync for the unmark
         let etcd_client = Arc::clone(&self.etcd_client);
@@ -398,7 +396,6 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
                     and i-node of ino={} and name={:?}",
                 parent, ino, child_name,
             );
-            
             let (mut child_node, parent_name) = {
                 let cache = self.cache.read().await;
                 let parent_node = cache.get(&parent).unwrap_or_else(|| {
@@ -467,8 +464,8 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
 
     /// Rename helper to exchange on disk
     async fn rename_exchange_helper(&self, param: RenameParam) -> anyhow::Result<()> {
-        let old=param.old_parent;
-        let new=param.new_parent;
+        let old = param.old_parent;
+        let new = param.new_parent;
         self.rename_exchange_local(&param).await?;
         self.rename_remote(param).await;
         self.load_parent_from_cache_and_mark_dirty(old).await;
@@ -478,8 +475,8 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
 
     /// Rename helper to move on disk, it may replace destination entry
     async fn rename_may_replace_helper(&self, param: RenameParam) -> anyhow::Result<()> {
-        let old=param.old_parent;
-        let new=param.new_parent;
+        let old = param.old_parent;
+        let new = param.new_parent;
         self.rename_may_replace_local(&param, false).await?;
         self.rename_remote(param).await;
         self.load_parent_from_cache_and_mark_dirty(old).await;
@@ -518,7 +515,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         flags: u32,
     ) -> anyhow::Result<usize> {
         let data_len = data.len();
-        let (result, full_path,parent_ino) = {
+        let (result, full_path, parent_ino) = {
             let mut cache = self.cache().write().await;
             let inode = cache.get_mut(&ino).unwrap_or_else(|| {
                 panic!(
@@ -533,7 +530,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
             //              the inode ino={ino} is not in cache"
             //         );
             //     });
-            
+
             debug!(
                 "write_helper() about to write {} byte data to file of ino={} \
                 and name {:?} at offset={}",
@@ -547,22 +544,26 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
             let res = inode
                 .write_file(fh, offset, data, o_flags, write_to_disk)
                 .await;
-            (res, inode.get_full_path().to_owned(),parent_ino)
+            (res, inode.get_full_path().to_owned(), parent_ino)
         };
         self.invalidate_remote(&full_path, offset, data_len).await;
         self.sync_attr_remote(&full_path).await;
         // update dir
         let cache = self.cache().write().await;
-        let parent= cache.get(&parent_ino).unwrap_or_else(|| {
-                panic!(
-                    "write() found fs is inconsistent, \
+        let parent = cache.get(&parent_ino).unwrap_or_else(|| {
+            panic!(
+                "write() found fs is inconsistent, \
                         the inode ino={ino} is not in cache"
-                );
-            });
-        self.persist_handle.mark_dirty(parent.get_ino(), 
-            PersistDirContent::new_from_cache(parent.full_path().to_owned(),parent.get_dir_data(),
-                serial::file_attr_to_serial(&parent.get_attr())
-        ));
+            );
+        });
+        self.persist_handle.mark_dirty(
+            parent.get_ino(),
+            PersistDirContent::new_from_cache(
+                parent.full_path().to_owned(),
+                parent.get_dir_data(),
+                serial::file_attr_to_serial(&parent.get_attr()),
+            ),
+        );
         result
     }
     /// Stop all async tasks
@@ -572,20 +573,24 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
 }
 
 impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
-
     /// Get parent content from cache and do the persist operation.
     /// This function will try to get the lock, so make sure there's no deadlock.
-    async fn load_parent_from_cache_and_mark_dirty(&self,parent:INum){
-        let cache=self.cache.read().await;
-        let p=cache.get(&parent).unwrap_or_else(||{
+    async fn load_parent_from_cache_and_mark_dirty(&self, parent: INum) {
+        let cache = self.cache.read().await;
+        let p = cache.get(&parent).unwrap_or_else(|| {
             panic!(
                 "load_parent_from_cache_and_mark_dirty() found fs is inconsistent, \
                     parent of ino={parent} should be in cache",
             );
         });
-        self.persist_handle.mark_dirty(parent, PersistDirContent::new_from_cache(
-            p.full_path().to_owned(), p.get_dir_data(), 
-            serial::file_attr_to_serial(&p.get_attr())));
+        self.persist_handle.mark_dirty(
+            parent,
+            PersistDirContent::new_from_cache(
+                p.full_path().to_owned(),
+                p.get_dir_data(),
+                serial::file_attr_to_serial(&p.get_attr()),
+            ),
+        );
     }
 
     /// The pre-check before create node
@@ -1216,21 +1221,6 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
             panic!("failed to sync dir to others, error: {e}");
         }
     }
-
-    // /// Get attr from other nodes
-    // async fn get_attr_remote(&self, path: &str) -> Option<FileAttr> {
-    //     match dist_client::get_attr(
-    //         Arc::<EtcdDelegate>::clone(&self.etcd_client),
-    //         &self.node_id,
-    //         &self.volume_info,
-    //         path,
-    //     )
-    //     .await
-    //     {
-    //         Err(e) => panic!("failed to sync attribute to others, error: {e}"),
-    //         Ok(res) => res,
-    //     }
-    // }
 
     /// Sync rename request to other nodes
     async fn rename_remote(&self, args: RenameParam) {

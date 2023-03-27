@@ -16,7 +16,7 @@ use nix::errno::Errno;
 use nix::fcntl::OFlag;
 use nix::sys::stat::SFlag;
 use nix::unistd;
-use parking_lot::RwLock as SyncRwLock;
+use parking_lot::RwLock as SyncRwLock; // conflict with tokio RwLock
 use std::collections::BTreeMap;
 use std::os::unix::io::RawFd;
 use std::path::{Path, PathBuf};
@@ -36,6 +36,7 @@ pub trait MetaData {
     /// Node type
     type N: Node + Send + Sync + 'static;
 
+    #[allow(clippy::too_many_arguments)]
     /// Create `MetaData`
     async fn new(
         root_path: &str,

@@ -29,9 +29,6 @@ use std::sync::Arc;
 use std::time::SystemTime;
 use tokio::sync::RwLockWriteGuard;
 
-// /// Block size constant
-// const BLOCK_SIZE: usize = 1024;
-
 /// A file node data or a directory node data
 #[derive(Debug)]
 pub enum S3NodeData {
@@ -278,7 +275,6 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
             Err(e) => {
                 //todo: handle different type of error, key not exist, net err, etc.
                 debug!("read persit dir error {e}");
-
                 let now = SystemTime::now();
                 let attr = Arc::new(RwLock::new(FileAttr {
                     ino: root_ino,
@@ -711,35 +707,6 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
     ) -> anyhow::Result<Self> {
         let absolute_path = self.absolute_path_with_child(child_symlink_name);
 
-        // let child_attr = match remote {
-        //     None => {
-        //         let (len, last_modified) = self
-        //             .s3_backend
-        //             .get_meta(absolute_path.as_str())
-        //             .await
-        //             .unwrap_or_else(|e| {
-        //                 panic!(
-        //                     "failed to get meta of {absolute_path:?} from s3 backend, error is {e:?}"
-        //                 )
-        //             });
-        //         // get symbol file attribute
-        //         FileAttr {
-        //             ino: 0,
-        //             kind: SFlag::S_IFLNK,
-        //             size: len.cast(),
-        //             blocks: 0,
-        //             perm: 0o777,
-        //             atime: last_modified,
-        //             mtime: last_modified,
-        //             ctime: last_modified,
-        //             crtime: last_modified,
-        //             ..FileAttr::default()
-        //         }
-        //     }
-        //     Some(attr) => attr,
-        // };
-        // debug_assert_eq!(SFlag::S_IFLNK, child_attr.read().kind);
-
         let target_path = PathBuf::from(
             String::from_utf8(
                 self.s3_backend
@@ -773,18 +740,14 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
     ) -> anyhow::Result<Self> {
         // lookup count and open count are increased to 1 by creation
         let full_path = format!("{}{}/", self.full_path, child_dir_name);
-
-        let dirdata=match persist::read_persisted_dir(&self.s3_backend, full_path.clone()).await{
-            Ok(dir)=>{
-                dir.new_s3_node_data_dir()
-            }
-            Err(e)=>{
+        let dirdata = match persist::read_persisted_dir(&self.s3_backend, full_path.clone()).await {
+            Ok(dir) => dir.new_s3_node_data_dir(),
+            Err(e) => {
                 debug!("failed to get dir data from s3, path:{full_path}, err:{e}");
                 // dir data not persisted init with empty
                 S3NodeData::Directory(BTreeMap::new())
             }
         };
-
         let child_node = Self::new(
             self.get_ino(),
             child_dir_name,
@@ -857,40 +820,6 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
         _oflags: OFlag,
         global_cache: Arc<GlobalCache>,
     ) -> anyhow::Result<Self> {
-        // get new file attribute
-        // let absolute_path = self.absolute_path_with_child(child_file_name);
-        // todo: why load attr from remote?
-        // let child_attr = match remote {
-        //     None => {
-        //         let (content_len, last_modified) = self
-        //             .s3_backend
-        //             .get_meta(absolute_path.as_str())
-        //             .await
-        //             .unwrap_or_else(|e| {
-        //                 panic!(
-        //                     "failed to get meta of {absolute_path:?} from s3 backend, error is {e:?}"
-        //                 )
-        //             });
-        //         FileAttr {
-        //             ino: 0, // will be set later
-        //             kind: SFlag::S_IFREG,
-        //             size: content_len.cast(),
-        //             blocks: content_len
-        //                 .overflow_add(BLOCK_SIZE)
-        //                 .overflow_sub(1)
-        //                 .overflow_div(BLOCK_SIZE)
-        //                 .cast(),
-        //             atime: last_modified,
-        //             mtime: last_modified,
-        //             ctime: last_modified,
-        //             crtime: last_modified,
-        //             ..FileAttr::default()
-        //         }
-        //     }
-        //     Some(attr) => attr,
-        // };
-        // debug_assert_eq!(SFlag::S_IFREG, child_attr.kind);
-
         Ok(Self::new(
             self.get_ino(),
             child_file_name,

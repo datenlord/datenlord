@@ -320,6 +320,7 @@ impl FsController {
             async_task_join_handles,
         }
     }
+
     /// before calling this, make sure just all task will break their loop.
     pub(crate) async fn join_all_async_tasks(&mut self) {
         while let Some(task) = self.async_task_join_handles.pop() {
@@ -327,7 +328,8 @@ impl FsController {
                 .unwrap_or_else(|e| panic!("join async task error {e}"));
         }
     }
-    // async read a result from async task
+
+    /// async read a result from async task
     pub(crate) async fn recv_async_task_res(&mut self) -> anyhow::Result<()> {
         if let Some(res) = self.async_res_receiver.recv().await {
             res
