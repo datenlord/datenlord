@@ -7,9 +7,14 @@ use super::fs_util::{self, FileAttr};
 use super::inode::InodeState;
 use super::metadata::MetaData;
 use super::node::Node;
+use super::persist::PersistDirContent;
+use super::persist::PersistHandle;
+use super::persist::PersistTask;
 use super::s3_node::{self, S3Node};
 use super::s3_wrapper::S3BackEnd;
+use super::serial;
 use super::RenameParam;
+use crate::async_fuse::fuse::file_system::FsAsyncResultSender;
 #[cfg(feature = "abi-7-18")]
 use crate::async_fuse::fuse::fuse_reply::FuseDeleteNotification;
 use crate::async_fuse::fuse::protocol::{FuseAttr, INum, FUSE_ROOT_ID};
@@ -62,6 +67,8 @@ pub struct S3MetaData<S: S3BackEnd + Send + Sync + 'static> {
     pub(crate) path2inum: RwLock<BTreeMap<String, INum>>,
     /// Fuse fd
     fuse_fd: Mutex<RawFd>,
+    /// Persist handle
+    pub(crate) persist_handle: PersistHandle,
 }
 
 /// Parse S3 info
@@ -83,15 +90,19 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         etcd_client: EtcdDelegate,
         node_id: &str,
         volume_info: &str,
-    ) -> (Arc<Self>, Option<CacheServer>) {
+        fs_async_sender: FsAsyncResultSender,
+    ) -> (Arc<Self>, Option<CacheServer>, Vec<JoinHandle<()>>) {
         let (bucket_name, endpoint, access_key, secret_key) = parse_s3_info(s3_info);
         let s3_backend = Arc::new(
-            match S::new(bucket_name, endpoint, access_key, secret_key).await {
+            match S::new_backend(bucket_name, endpoint, access_key, secret_key).await {
                 Ok(s) => s,
                 Err(e) => panic!("{e:?}"),
             },
         );
-
+        let mut async_tasks = vec![];
+        let (persist_handle, persist_join_handle) =
+            PersistTask::spawn(Arc::clone(&s3_backend), fs_async_sender);
+        async_tasks.push(persist_join_handle);
         let etcd_arc = Arc::new(etcd_client);
         let data_cache = Arc::new(GlobalCache::new_dist_with_bz_and_capacity(
             10_485_760, // 10 * 1024 * 1024
@@ -110,6 +121,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
             volume_info: volume_info.to_owned(),
             path2inum: RwLock::new(BTreeMap::new()),
             fuse_fd: Mutex::new(-1_i32),
+            persist_handle,
         });
 
         let server = CacheServer::new(
@@ -120,6 +132,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         );
 
         let root_inode = S3Node::open_root_node(FUSE_ROOT_ID, "/", s3_backend, Arc::clone(&meta))
+            .await
             .context("failed to open FUSE root node")
             .unwrap_or_else(|e| {
                 panic!("{}", e);
@@ -129,7 +142,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         meta.cache.write().await.insert(FUSE_ROOT_ID, root_inode);
         meta.path2inum.write().await.insert(full_path, FUSE_ROOT_ID);
 
-        (meta, Some(server))
+        (meta, Some(server), async_tasks)
     }
 
     /// Get metadata cache
@@ -332,6 +345,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         self.remove_node_local(parent, node_name, node_type, false)
             .await?;
         self.remove_remote(parent, node_name, node_type).await;
+        self.load_dir_from_cache_and_mark_dirty(parent).await;
         Ok(())
     }
 
@@ -449,15 +463,23 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
 
     /// Rename helper to exchange on disk
     async fn rename_exchange_helper(&self, param: RenameParam) -> anyhow::Result<()> {
+        let old = param.old_parent;
+        let new = param.new_parent;
         self.rename_exchange_local(&param).await?;
         self.rename_remote(param).await;
+        self.load_dir_from_cache_and_mark_dirty(old).await;
+        self.load_dir_from_cache_and_mark_dirty(new).await;
         Ok(())
     }
 
     /// Rename helper to move on disk, it may replace destination entry
     async fn rename_may_replace_helper(&self, param: RenameParam) -> anyhow::Result<()> {
+        let old = param.old_parent;
+        let new = param.new_parent;
         self.rename_may_replace_local(&param, false).await?;
         self.rename_remote(param).await;
+        self.load_dir_from_cache_and_mark_dirty(old).await;
+        self.load_dir_from_cache_and_mark_dirty(new).await;
         Ok(())
     }
 
@@ -492,7 +514,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         flags: u32,
     ) -> anyhow::Result<usize> {
         let data_len = data.len();
-        let (result, full_path) = {
+        let (result, full_path, parent_ino) = {
             let mut cache = self.cache().write().await;
             let inode = cache.get_mut(&ino).unwrap_or_else(|| {
                 panic!(
@@ -500,6 +522,14 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
                      the inode ino={ino} is not in cache"
                 );
             });
+            let parent_ino = inode.get_parent_ino();
+            // let parent= cache.get_mut(&inode.get_parent_ino()).unwrap_or_else(|| {
+            //         panic!(
+            //             "write() found fs is inconsistent, \
+            //              the inode ino={ino} is not in cache"
+            //         );
+            //     });
+
             debug!(
                 "write_helper() about to write {} byte data to file of ino={} \
                 and name {:?} at offset={}",
@@ -513,11 +543,31 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
             let res = inode
                 .write_file(fh, offset, data, o_flags, write_to_disk)
                 .await;
-            (res, inode.get_full_path().to_owned())
+            (res, inode.get_full_path().to_owned(), parent_ino)
         };
         self.invalidate_remote(&full_path, offset, data_len).await;
         self.sync_attr_remote(&full_path).await;
+        // update dir
+        let cache = self.cache().write().await;
+        let parent = cache.get(&parent_ino).unwrap_or_else(|| {
+            panic!(
+                "write() found fs is inconsistent, \
+                        the inode ino={ino} is not in cache"
+            );
+        });
+        self.persist_handle.mark_dirty(
+            parent.get_ino(),
+            PersistDirContent::new_from_cache(
+                parent.full_path().to_owned(),
+                parent.get_dir_data(),
+                serial::file_attr_to_serial(&parent.get_attr()),
+            ),
+        );
         result
+    }
+    /// Stop all async tasks
+    fn stop_all_async_tasks(&self) {
+        self.persist_handle.system_end();
     }
 }
 

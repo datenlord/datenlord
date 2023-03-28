@@ -5,6 +5,7 @@ use super::dir::DirEntry;
 use super::dist::client as dist_client;
 use super::fs_util::{self, FileAttr};
 use super::node::Node;
+use super::persist;
 use super::s3_metadata::S3MetaData;
 use super::s3_wrapper::S3BackEnd;
 use super::SetAttrParam;
@@ -264,7 +265,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
 
     /// Open root node
     #[allow(clippy::unnecessary_wraps)]
-    pub(crate) fn open_root_node(
+    pub(crate) async fn open_root_node(
         root_ino: INum,
         name: &str,
         s3_backend: Arc<S>,
@@ -281,17 +282,38 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
             ..FileAttr::default()
         }));
 
-        let root_node = Self::new(
-            root_ino,
-            name,
-            "/".to_owned(),
-            attr,
-            S3NodeData::Directory(BTreeMap::new()),
-            s3_backend,
-            meta,
-        );
+                let root_node = Self::new(
+                    root_ino,
+                    name,
+                    "/".to_owned(),
+                    attr,
+                    S3NodeData::Directory(BTreeMap::new()),
+                    s3_backend,
+                    meta,
+                );
 
-        Ok(root_node)
+                Ok(root_node)
+            }
+            Ok(data) => match data.try_get_root_attr() {
+                Ok(attr) => {
+                    let root_node = Self::new(
+                        root_ino,
+                        name,
+                        "/".to_owned(),
+                        Arc::new(RwLock::new(attr)),
+                        data.new_s3_node_data_dir(),
+                        s3_backend,
+                        meta,
+                    );
+
+                    Ok(root_node)
+                }
+                Err(e) => {
+                    log::error!("root node persist lack of attr info {e}");
+                    Err(e)
+                }
+            },
+        }
     }
 
     /// flush all data of a node
@@ -300,10 +322,11 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
             return Ok(());
         }
         let data_cache = match self.data {
-            S3NodeData::RegFile(ref data_cache) => Arc::<GlobalCache>::clone(data_cache),
-            // Do nothing for Directory.
-            // TODO: Sync dir data to S3 storage
-            S3NodeData::Directory(..) => return Ok(()),
+            S3NodeData::RegFile(ref data_cache) => Arc::clone(data_cache),
+            S3NodeData::Directory(..) => {
+                self.meta.persist_handle.wait_persist(self.get_ino()).await;
+                return Ok(());
+            }
             S3NodeData::SymLink(..) => panic!("forbidden to flush data for link"),
         };
 
@@ -720,7 +743,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
             child_dir_name,
             full_path,
             child_attr,
-            S3NodeData::Directory(BTreeMap::new()),
+            dirdata,
             Arc::clone(&self.s3_backend),
             Arc::clone(&self.meta),
         );
@@ -1104,6 +1127,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
 
         debug!("file {:?} size = {:?}", self.name, self.attr.read().size);
         self.update_mtime_ctime_to_now();
+        //FileAttr changed, remember to persist the directory after calling this fn
 
         Ok(written_size)
     }

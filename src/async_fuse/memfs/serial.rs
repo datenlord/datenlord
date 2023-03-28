@@ -16,7 +16,7 @@ pub struct SerialDirEntry {
 }
 
 /// Serializable `FileAttr`
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct SerialFileAttr {
     /// Inode number
     ino: INum,
@@ -49,7 +49,7 @@ pub struct SerialFileAttr {
 }
 
 /// Serializable `SFlag`
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum SerialSFlag {
     /// Regular file
     Reg,
