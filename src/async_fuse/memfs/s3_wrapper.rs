@@ -1,6 +1,8 @@
 use super::cache::IoMemBlock;
 use async_trait::async_trait;
 use clippy_utilities::{Cast, OverflowArithmetic};
+#[cfg(test)]
+use mockall::{automock, predicate::str};
 use s3::{
     bucket::Bucket,
     bucket_ops::BucketConfiguration,
@@ -14,8 +16,6 @@ use s3::{
 use serde_xml_rs as serde_xml;
 use std::fmt::Write;
 use std::time::SystemTime;
-#[cfg(test)]
-use mockall::{automock, predicate::*};
 
 /// S3 backend error
 #[derive(thiserror::Error, Debug)]
@@ -29,6 +29,7 @@ pub enum S3Error {
 pub type S3Result<T> = Result<T, S3Error>;
 
 /// S3 backend
+#[allow(clippy::integer_arithmetic, clippy::indexing_slicing)]
 #[cfg_attr(test, automock)]
 #[async_trait]
 pub trait S3BackEnd {

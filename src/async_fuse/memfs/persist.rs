@@ -1,18 +1,18 @@
 use super::fs_util::FileAttr;
-use super::serial::{self, file_attr_to_serial};
 use super::serial::SerialFileAttr;
+use super::serial::{self, file_attr_to_serial};
 use crate::async_fuse::fuse::file_system::FsAsyncResultSender;
 use crate::async_fuse::fuse::protocol::INum;
 use crate::async_fuse::memfs::dir::DirEntry;
 use crate::async_fuse::memfs::s3_node::S3NodeData;
 use crate::async_fuse::memfs::s3_wrapper::S3BackEnd;
+use crate::common::error::DatenLordError;
+use crate::common::error::DatenLordResult;
 use clippy_utilities::OverflowArithmetic;
 use log::debug;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use std::error::Error;
-use std::fmt;
 use std::sync::atomic::Ordering::Acquire;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::{
@@ -20,6 +20,7 @@ use std::{
     sync::Arc,
     time::Duration,
 };
+use thiserror::Error;
 use tokio::sync::Notify;
 use tokio::task::JoinHandle;
 
@@ -29,25 +30,25 @@ const DIR_DATA_KEY_PREFIX: &str = "dir_";
 const PERSIST_RETRY_TIMES: u32 = 3;
 
 /// Errors of persist operations
-#[derive(Debug)]
+#[derive(Error, Debug)]
 #[allow(dead_code)]
-pub(crate) enum PersistError {
-    /// Error when loading the root dir data but missing the root dir attr
+pub enum PersistError {
+    // #[error("data store disconnected")]
+    // Disconnect(#[from] io::Error),
+    // #[error("the data for key `{0}` is not available")]
+    // Redaction(String),
+    // #[error("invalid header (expected {expected:?}, found {found:?})")]
+    // InvalidHeader {
+    //     expected: String,
+    //     found: String,
+    // },
+    /// Root dir should have a specific Option to store its attr, because it doesn't have a parent.
+    #[error("missing root's file attr")]
     FileAttrMissingForRoot,
-}
 
-impl fmt::Display for PersistError {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match *self {
-            PersistError::FileAttrMissingForRoot => write!(f, "FileAttrMissingForRoot"),
-        }
-    }
-}
-
-impl Error for PersistError {
-    fn description(&self) -> &str {
-        "FileAttrMissingForRoot"
-    }
+    /// `try_persist_one_dirty` will return error when there's no more data to persist.
+    #[error("no more dirty to persist")]
+    NoMoreDirtyToPersist,
 }
 
 /// Read persist dir content
@@ -85,6 +86,7 @@ pub(crate) struct PersistDirContent {
     pub(crate) persist_serialized: PersistSerializePart,
 }
 impl PersistDirContent {
+    /// Root dir without parent need to store attr specificly
     pub(crate) fn try_get_root_attr(&self) -> anyhow::Result<FileAttr> {
         match self.persist_serialized.root_attr.as_ref() {
             Some(attr) => Ok(serial::serial_to_file_attr(attr)),
@@ -92,21 +94,27 @@ impl PersistDirContent {
         }
     }
 
-    pub(crate) fn new_from_cache(dir_full_path:String,files:&BTreeMap<String, DirEntry>,f_attr: SerialFileAttr)
-        ->PersistDirContent{
-        let root_attr=if dir_full_path=="/" {
-            Some(f_attr)
-        }else{
-            None
-        };
-        
-        PersistDirContent{
+    /// New `PersistDirContent` from mem cache data
+    pub(crate) fn new_from_cache(
+        dir_full_path: String,
+        files: &BTreeMap<String, DirEntry>,
+        f_attr: SerialFileAttr,
+    ) -> PersistDirContent {
+        let root_attr = (dir_full_path == "/").then_some(f_attr);
+
+        PersistDirContent {
             dir_full_path,
-            persist_serialized: PersistSerializePart{
-                file_map:files.iter().map(|(fname,entry)|{
-                    (fname.clone(),file_attr_to_serial(&entry.file_attr_arc_ref().read()))
-                }).collect() ,
-                root_attr , 
+            persist_serialized: PersistSerializePart {
+                file_map: files
+                    .iter()
+                    .map(|(fname, entry)| {
+                        (
+                            fname.clone(),
+                            file_attr_to_serial(&entry.file_attr_arc_ref().read()),
+                        )
+                    })
+                    .collect(),
+                root_attr,
             },
         }
     }
@@ -221,8 +229,11 @@ pub(crate) struct PersistTask<S: S3BackEnd + Sync + Send + 'static> {
 impl<S: S3BackEnd + Sync + Send + 'static> PersistTask<S> {
     /// Called by persist task loop to take out one and persist to s3 each time.
     #[inline]
-    async fn try_persist_one_dirty(&self, fs_async_result_sender: &FsAsyncResultSender) -> bool {
-        let mut to_persist = None;
+    async fn try_persist_one_dirty(
+        &self,
+        fs_async_result_sender: &FsAsyncResultSender,
+    ) -> DatenLordResult<()> {
+        let mut next_to_persist = None;
         let mut left_more_dirty = false;
         {
             // takeout one dirty data
@@ -232,11 +243,11 @@ impl<S: S3BackEnd + Sync + Send + 'static> PersistTask<S> {
                 let (notify_list, data) = dirty_map_locked.remove(&inum).unwrap_or_else(|| {
                     panic!("We already knew the key:{inum} exists, it's impossible to panic.")
                 });
-                to_persist = Some((inum, notify_list, data));
+                next_to_persist = Some((inum, notify_list, data));
                 left_more_dirty = !dirty_map_locked.is_empty();
             }
         }
-        if let Some((_, waiting_list, dirdata)) = to_persist {
+        if let Some((_, waiting_list, dirdata)) = next_to_persist {
             // Do persist
 
             // Handle backend failure
@@ -257,13 +268,17 @@ impl<S: S3BackEnd + Sync + Send + 'static> PersistTask<S> {
                     if i == PERSIST_RETRY_TIMES.overflow_sub(1) {
                         // send err to main thread
                         fs_async_result_sender
-                            .send(Err(anyhow::Error::from(e)))
+                            .send(Err(DatenLordError::Unimplemented { context: vec![] }))
                             .await
                             .unwrap_or_else(|e| {
                                 debug!("Failed to send error to main thread,{e}");
                             });
                     }
                 } else {
+                    debug!(
+                        "Success to persist latest dir content for {}",
+                        dirdata.dir_full_path
+                    );
                     break;
                 }
             }
@@ -272,7 +287,13 @@ impl<S: S3BackEnd + Sync + Send + 'static> PersistTask<S> {
                 notify.notify_one();
             }
         }
-        left_more_dirty
+        if left_more_dirty {
+            Ok(())
+        } else {
+            Err(DatenLordError::Unimplemented {
+                context: Vec::new(),
+            })
+        }
     }
     /// Spawn the async persist task.
     pub(crate) fn spawn(
@@ -294,6 +315,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> PersistTask<S> {
                     while taskstate
                         .try_persist_one_dirty(&fs_async_result_sender)
                         .await
+                        .is_ok()
                     {}
                     if taskstate.shared.system_end.load(Acquire) {
                         break;
@@ -309,6 +331,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> PersistTask<S> {
     }
 }
 
+#[allow(clippy::unwrap_used, clippy::match_wild_err_arm)]
 #[cfg(test)]
 mod test {
     use rand::distributions::Alphanumeric;
@@ -318,7 +341,9 @@ mod test {
     // use super::PersistSerializePart;
     use crate::async_fuse::fuse::file_system;
     use crate::async_fuse::memfs::fs_util::FileAttr;
-    use crate::async_fuse::memfs::persist::{PersistTask, PersistDirContent, PersistSerializePart, self};
+    use crate::async_fuse::memfs::persist::{
+        self, PersistDirContent, PersistSerializePart, PersistTask,
+    };
     use crate::async_fuse::memfs::s3_wrapper::{MockS3BackEnd, S3Error};
     use crate::async_fuse::memfs::serial::file_attr_to_serial;
     use std::collections::HashMap;
@@ -328,7 +353,7 @@ mod test {
     // use std::rc::Rc;
     use parking_lot::RwLock;
 
-    fn create_mock()->Arc<MockS3BackEnd>{
+    fn create_mock() -> Arc<MockS3BackEnd> {
         let mut mock = MockS3BackEnd::new();
 
         let map = Arc::new(RwLock::new(HashMap::new()));
@@ -343,29 +368,26 @@ mod test {
             .returning(|_, _, _, _| Ok(()));
 
         let map_clone = Arc::clone(&map);
-        mock.expect_get_data().returning(move |f| 
-            map_clone.read().get(f).map_or_else(|| Err(S3Error::S3InternalError(
-                "data not existed".to_owned()
-            )),|e|{
-                Ok(e.0.clone())
-            })
-        );
+        mock.expect_get_data().returning(move |f| {
+            map_clone.read().get(f).map_or_else(
+                || Err(S3Error::S3InternalError("data not existed".to_owned())),
+                |e| Ok(e.0.clone()),
+            )
+        });
         Arc::new(mock)
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_mock_s3() {
-        let _m=create_mock();
+        let _m = create_mock();
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_stop_task() {
-        let mock=create_mock();
-        
-        let (tx, _rx) = 
-            file_system::new_fs_async_result_chan();
-        let (handle, join) = 
-            PersistTask::spawn(mock,tx);
+        let mock = create_mock();
+
+        let (tx, _rx) = file_system::new_fs_async_result_chan();
+        let (handle, join) = PersistTask::spawn(mock, tx);
         let begin = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_secs(10)).await;
@@ -375,22 +397,17 @@ mod test {
         let end = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
         let dur = (end - begin).as_millis();
         assert!(dur > 10000);
-
-        ()
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_persist() {
-        let mock=create_mock();
-        let mock_clone=Arc::clone(&mock);
+        let mock = create_mock();
+        let mock_clone = Arc::clone(&mock);
 
-        let (tx,_rx)
-            =file_system::new_fs_async_result_chan();
-        let (handle,join)=
-            PersistTask::spawn(mock_clone,tx);
-        
-        for _ in 0..100{
-            
+        let (tx, _rx) = file_system::new_fs_async_result_chan();
+        let (handle, join) = PersistTask::spawn(mock_clone, tx);
+
+        for _ in 0_i32..100_i32 {
             let mut rng = rand::thread_rng();
             let s: String = Alphanumeric
                 .sample_iter(&mut rng)
@@ -399,44 +416,49 @@ mod test {
                 .collect::<String>()
                 .to_uppercase();
             println!("rand path {s}");
-            let path=format!("/{}/",s);
-            let file_map={
-                let mut map=HashMap::new();
+            let path = format!("/{s}/");
+            let file_map = {
+                let mut map = HashMap::new();
                 let s: String = Alphanumeric
-                .sample_iter(&mut rng)
-                .take(7)
-                .map(char::from)
-                .collect::<String>()
-                .to_uppercase();
+                    .sample_iter(&mut rng)
+                    .take(7)
+                    .map(char::from)
+                    .collect::<String>()
+                    .to_uppercase();
                 map.insert(s, file_attr_to_serial(&FileAttr::now()));
                 map
             };
-            let begin=SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
-            handle.mark_dirty(0, PersistDirContent{
-                dir_full_path:path.clone(),
-                persist_serialized:PersistSerializePart{
-                    file_map:file_map.clone(),
-                    root_attr: None,
-                }
-            });
-            handle.wait_persist(0).await;   
-            let end=SystemTime::now().duration_since(UNIX_EPOCH).unwrap(); 
-            let dur = (end - begin).as_millis();
-            // smaller than persist cycle
-            assert!(dur <110);
-            // should get the dir
-            match persist::read_persisted_dir(&mock, path).await{
-                Ok(dir) => {
-                    assert_eq!(dir.persist_serialized.file_map.iter().next().unwrap().0,
-                    file_map.iter().next().unwrap().0);
+            let begin = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
+            handle.mark_dirty(
+                0,
+                PersistDirContent {
+                    dir_full_path: path.clone(),
+                    persist_serialized: PersistSerializePart {
+                        file_map: file_map.clone(),
+                        root_attr: None,
+                    },
                 },
-                Err(_) => {panic!("dir should be persisted and exists")},
+            );
+            handle.wait_persist(0).await;
+            let end = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
+            let duration = (end - begin).as_millis();
+            // smaller than persist cycle
+            assert!(duration < 110);
+            // should get the dir
+            match persist::read_persisted_dir(&mock, path).await {
+                Ok(dir) => {
+                    assert_eq!(
+                        dir.persist_serialized.file_map.iter().next().unwrap().0,
+                        file_map.iter().next().unwrap().0
+                    );
+                }
+                Err(_) => {
+                    panic!("dir should be persisted and exists")
+                }
             }
         }
 
         handle.system_end();
         join.await.unwrap();
-
-        ()
     }
 }

@@ -21,6 +21,7 @@ use super::protocol::{
     FATTR_MTIME, FATTR_SIZE, FATTR_UID, FUSE_ASYNC_READ, FUSE_KERNEL_MINOR_VERSION,
     FUSE_KERNEL_VERSION, FUSE_RELEASE_FLUSH,
 };
+use crate::common::error::DatenLordError;
 // #[cfg(target_os = "macos")]
 // use super::protocol::{
 //     FATTR_BKUPTIME, FATTR_CHGTIME, FATTR_CRTIME, FATTR_FLAGS, FUSE_CASE_INSENSITIVE,
@@ -240,7 +241,7 @@ impl Session {
 
                     true
                 };
-            let handle_fs_async_result = |res: Result<(), anyhow::Error>| match res {
+            let handle_fs_async_result = |res: Result<(), DatenLordError>| match res {
                 Ok(..) => {}
                 Err(e) => {
                     panic!("async task has error occurred, the error is: {e}");

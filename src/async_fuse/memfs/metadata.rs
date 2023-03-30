@@ -37,6 +37,7 @@ pub trait MetaData {
     type N: Node + Send + Sync + 'static;
 
     /// Create `MetaData`
+    #[allow(clippy::too_many_arguments)]
     async fn new(
         root_path: &str,
         capacity: usize,
