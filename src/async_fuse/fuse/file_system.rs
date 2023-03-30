@@ -6,8 +6,8 @@ use super::fuse_reply::{
 };
 use super::fuse_request::Request;
 use super::protocol::INum;
-
 use crate::async_fuse::memfs::{FileLockParam, RenameParam, SetAttrParam};
+use crate::common::error::DatenLordResult;
 use std::os::unix::io::RawFd;
 
 use std::path::Path;
@@ -294,7 +294,7 @@ pub(crate) fn new_fs_async_result_chan() -> (FsAsyncResultSender, FsAsyncResultR
     tokio::sync::mpsc::channel(10)
 }
 /// result of fs async result
-pub type FsAsyncResult = anyhow::Result<()>;
+pub type FsAsyncResult = DatenLordResult<()>;
 /// sender for async tasks to send msg(mainly refers to error) to session main loop
 pub type FsAsyncResultSender = tokio::sync::mpsc::Sender<FsAsyncResult>;
 /// receiver to receive msg from async tasks
@@ -327,14 +327,16 @@ impl FsController {
                 .unwrap_or_else(|e| panic!("join async task error {e}"));
         }
     }
-    // async read a result from async task
-    pub(crate) async fn recv_async_task_res(&mut self) -> anyhow::Result<()> {
+    /// async read a result from async task
+    pub(crate) async fn recv_async_task_res(&mut self) -> FsAsyncResult {
         if let Some(res) = self.async_res_receiver.recv().await {
             res
         } else {
-            // Only happens when channel sender destroyed,
-            //  but channel sender destroyed when Session drop,
-            //  so this only happens when there's a logic bug.
+            // The receiver is held by fs_controller, which is owned by session task.
+            // Receiver will receive none only when senders are all dropped.
+            // However senders are held by the async task, which must end before the session task.
+            // So this function is supposed to be called when the system is running
+            //   and not all senders have been dropped.
             panic!("fs async task channel was destroyed unexpectedly")
         }
     }

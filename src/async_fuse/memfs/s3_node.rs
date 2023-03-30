@@ -271,16 +271,20 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
         s3_backend: Arc<S>,
         meta: Arc<S3MetaData<S>>,
     ) -> anyhow::Result<Self> {
-        let now = SystemTime::now();
-        let attr = Arc::new(RwLock::new(FileAttr {
-            ino: root_ino,
-            atime: now,
-            mtime: now,
-            ctime: now,
-            crtime: now,
-            kind: SFlag::S_IFDIR,
-            ..FileAttr::default()
-        }));
+        match persist::read_persisted_dir(&s3_backend, "/".to_owned()).await {
+            Err(e) => {
+                //todo: handle different type of error, key not exist, net err, etc.
+                debug!("read persit dir error {e}");
+                let now = SystemTime::now();
+                let attr = Arc::new(RwLock::new(FileAttr {
+                    ino: root_ino,
+                    atime: now,
+                    mtime: now,
+                    ctime: now,
+                    crtime: now,
+                    kind: SFlag::S_IFDIR,
+                    ..FileAttr::default()
+                }));
 
                 let root_node = Self::new(
                     root_ino,
@@ -305,11 +309,11 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
                         s3_backend,
                         meta,
                     );
-
+                    debug!("Success to load root dir.");
                     Ok(root_node)
                 }
                 Err(e) => {
-                    log::error!("root node persist lack of attr info {e}");
+                    log::error!("Root node persist lack of attr info {e}.");
                     Err(e)
                 }
             },
@@ -736,7 +740,14 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
     ) -> anyhow::Result<Self> {
         // lookup count and open count are increased to 1 by creation
         let full_path = format!("{}{}/", self.full_path, child_dir_name);
-
+        let dirdata = match persist::read_persisted_dir(&self.s3_backend, full_path.clone()).await {
+            Ok(dir) => dir.new_s3_node_data_dir(),
+            Err(e) => {
+                debug!("failed to get dir data from s3, path:{full_path}, err:{e}");
+                // dir data not persisted init with empty
+                S3NodeData::Directory(BTreeMap::new())
+            }
+        };
         let child_node = Self::new(
             self.get_ino(),
             child_dir_name,

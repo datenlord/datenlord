@@ -3,7 +3,6 @@
 use grpcio::RpcStatusCode;
 use std::path::PathBuf;
 use thiserror::Error;
-
 /// `DatenLord` Result type
 pub type DatenLordResult<T> = Result<T, DatenLordError>;
 /// `DatenLord` error code
@@ -200,6 +199,13 @@ pub enum DatenLordError {
         /// Context of the error
         context: Vec<String>,
     },
+    // /// Error when doing s3 operation.
+    // #[error("S3 error: {0}")]
+    // S3Error(s3_wrapper::S3Error),
+
+    // ///
+    // #[error("persist error: {0}")]
+    // PersistError(persist::PersistError),
 }
 
 /// Add context to `DatenLordResult`
