@@ -3,8 +3,8 @@
 use crate::async_fuse::fuse::protocol::INum;
 
 use super::super::fs_util::FileAttr;
+use super::super::serial::{self, SerialFileAttr, SerialSFlag};
 use super::super::RenameParam;
-use super::types::{self, SerialFileAttr, SerialSFlag};
 use log::info;
 use nix::sys::stat::SFlag;
 use serde::{Deserialize, Serialize};
@@ -33,8 +33,6 @@ pub enum DistRequest {
     Rename(RenameParam),
     /// Remove request
     Remove(RemoveArgs),
-    /// Get inode number request
-    GetInodeNum,
 }
 
 /// `UpdateDir` request args
@@ -137,7 +135,7 @@ pub fn update_dir(
     let args = UpdateDirArgs {
         parent_path: parent.to_owned(),
         child_name: child.to_owned(),
-        child_attr: types::file_attr_to_serial(child_attr),
+        child_attr: serial::file_attr_to_serial(child_attr),
         target_path: target_path.map(std::borrow::ToOwned::to_owned),
     };
 
@@ -174,19 +172,11 @@ pub fn push_file_attr(path: &str, attr: SerialFileAttr) -> Vec<u8> {
     })
 }
 
-/// Serialize Get inode number request
-#[must_use]
-pub fn get_ino_num() -> Vec<u8> {
-    bincode::serialize(&DistRequest::GetInodeNum).unwrap_or_else(|e| {
-        panic!("fail to serialize `GetInodeNum` distributed meta operation, {e}")
-    })
-}
-
 /// Serialize Rename request
 #[must_use]
 pub fn rename(args: RenameParam) -> Vec<u8> {
     bincode::serialize(&DistRequest::Rename(args)).unwrap_or_else(|e| {
-        panic!("fail to serialize `GetInodeNum` distributed meta operation, {e}")
+        panic!("fail to serialize `RenameParam` distributed meta operation, {e}")
     })
 }
 
@@ -196,7 +186,7 @@ pub fn remove(parent: INum, child: &str, child_type: SFlag) -> Vec<u8> {
     let args = RemoveArgs {
         parent,
         child_name: child.to_owned(),
-        child_type: types::entry_type_to_serial(child_type),
+        child_type: serial::entry_type_to_serial(child_type),
     };
 
     bincode::serialize(&DistRequest::Remove(args)).unwrap_or_else(|e| {

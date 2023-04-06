@@ -4,6 +4,8 @@ mod dir;
 /// distributed communication module
 pub mod dist;
 mod fs_util;
+/// manage inode related, inum allocation and recycle
+mod inode;
 /// fs metadata module
 mod metadata;
 mod node;
@@ -12,6 +14,8 @@ mod s3_metadata;
 mod s3_node;
 /// S3 backend wrapper module
 pub mod s3_wrapper;
+/// Serializable types module
+pub mod serial;
 
 use std::collections::BTreeMap;
 use std::os::unix::ffi::OsStringExt;
