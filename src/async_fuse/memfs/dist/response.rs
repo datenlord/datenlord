@@ -2,8 +2,8 @@
 
 use super::super::dir::DirEntry;
 use super::super::fs_util::FileAttr;
+use super::super::serial::{self, SerialDirEntry, SerialFileAttr};
 use super::request::Index;
-use super::types::{self, SerialDirEntry, SerialFileAttr};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -23,7 +23,7 @@ fn serialize_direntry_map(map: &BTreeMap<String, DirEntry>) -> Vec<u8> {
 
     // Checked before
     for (name, entry) in map {
-        target.insert(name.clone(), types::dir_entry_to_serial(entry));
+        target.insert(name.clone(), serial::dir_entry_to_serial(entry));
     }
 
     let target = Some(target);
@@ -42,7 +42,7 @@ fn deserialize_direntry_map(bin: &[u8]) -> Option<BTreeMap<String, DirEntry>> {
 
         // Checked before
         for (ref name, ref entry) in map {
-            target.insert(name.clone(), types::serial_to_dir_entry(entry));
+            target.insert(name.clone(), serial::serial_to_dir_entry(entry));
         }
 
         Some(target)
@@ -117,7 +117,7 @@ pub fn get_attr_none() -> Vec<u8> {
 /// Serialize `GetAttr` response
 #[must_use]
 pub fn get_attr(attr: &FileAttr) -> Vec<u8> {
-    let serial_attr = Some(types::file_attr_to_serial(attr));
+    let serial_attr = Some(serial::file_attr_to_serial(attr));
     bincode::serialize(&serial_attr)
         .unwrap_or_else(|e| panic!("fail to serialize `GetAttr` response, {e}"))
 }
@@ -147,5 +147,5 @@ pub fn deserialize_get_attr(bin: &[u8]) -> Option<FileAttr> {
     let attr_opt: Option<SerialFileAttr> = bincode::deserialize(bin)
         .unwrap_or_else(|e| panic!("fail to deserialize DirEntry Map, {e}"));
 
-    attr_opt.map(|attr| types::serial_to_file_attr(&attr))
+    attr_opt.map(|attr| serial::serial_to_file_attr(&attr))
 }

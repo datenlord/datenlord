@@ -3,11 +3,11 @@ use crate::async_fuse::memfs::RenameParam;
 
 use super::super::dir::DirEntry;
 use super::super::fs_util::FileAttr;
+use super::super::serial;
 use super::etcd;
 use super::request::{self, Index};
 use super::response;
 use super::tcp;
-use super::types;
 use crate::common::etcd_delegate::EtcdDelegate;
 use log::debug;
 use nix::sys::stat::SFlag;
@@ -180,7 +180,7 @@ pub async fn push_attr(
         etcd_client,
         node_id,
         volume_info,
-        &request::push_file_attr(path, types::file_attr_to_serial(attr)),
+        &request::push_file_attr(path, serial::file_attr_to_serial(attr)),
         do_nothing,
         Ok(()),
     )
@@ -264,45 +264,6 @@ pub async fn read_data(
     }
 
     Ok(None)
-}
-
-/// Get inode number from remote
-pub async fn get_ino_num(
-    etcd_client: Arc<EtcdDelegate>,
-    node_id: &str,
-    volume_info: &str,
-    default: u32,
-) -> anyhow::Result<u32> {
-    debug!("get_ino_num");
-    let get_inum = request::get_ino_num();
-    let mut cur = default;
-    if let Ok(nodes) = etcd::get_volume_nodes(
-        Arc::<EtcdDelegate>::clone(&etcd_client),
-        node_id,
-        volume_info,
-    )
-    .await
-    {
-        for other_id in nodes {
-            if let Ok(ref ip_and_port) =
-                etcd::get_node_ip_and_port(Arc::<EtcdDelegate>::clone(&etcd_client), &other_id)
-                    .await
-            {
-                let mut stream = TcpStream::connect(ip_and_port)
-                    .await
-                    .unwrap_or_else(|e| panic!("fail connect to {ip_and_port}, error: {e}"));
-
-                tcp::write_message(&mut stream, &get_inum).await?;
-                let inum = tcp::read_u32(&mut stream).await?;
-
-                if inum > cur {
-                    cur = inum;
-                }
-            }
-        }
-    }
-
-    Ok(cur)
 }
 
 /// Rename file request to remote

@@ -45,6 +45,7 @@ pub async fn write_message_vector(
 }
 
 /// Write u32 to tcp stream
+#[allow(dead_code)]
 pub async fn write_u32(stream: &mut TcpStream, num: u32) -> anyhow::Result<()> {
     let num_buf = num.to_be_bytes();
     stream.write_all(&num_buf).await?;
@@ -53,6 +54,7 @@ pub async fn write_u32(stream: &mut TcpStream, num: u32) -> anyhow::Result<()> {
 }
 
 /// Read u32 from tcp stream
+#[allow(dead_code)]
 pub async fn read_u32(stream: &mut TcpStream) -> anyhow::Result<u32> {
     let mut local_buf: [u8; 4] = [0; 4];
     stream.read_exact(&mut local_buf).await?;

@@ -5,13 +5,14 @@ use super::super::dir::DirEntry;
 use super::super::node::Node;
 use super::super::s3_metadata::S3MetaData;
 use super::super::s3_node::S3Node;
+use super::super::serial::{self, SerialFileAttr};
 use super::request::{self, DistRequest, OpArgs, RemoveArgs, RemoveDirEntryArgs, UpdateDirArgs};
 use super::response;
 use super::tcp;
-use super::types::{self, SerialFileAttr};
 use crate::async_fuse::memfs::s3_wrapper::S3BackEnd;
 use crate::async_fuse::memfs::RenameParam;
 use log::debug;
+use parking_lot::RwLock;
 use std::fmt::{self, Debug};
 use std::sync::Arc;
 use tokio::net::TcpStream;
@@ -149,10 +150,6 @@ async fn dispatch<S: S3BackEnd + Send + Sync + 'static>(
             remove(stream, meta, args).await?;
             Ok(true)
         }
-        DistRequest::GetInodeNum => {
-            get_inode_num(stream, &meta).await?;
-            Ok(true)
-        }
     }
 }
 
@@ -233,17 +230,18 @@ async fn update_dir<S: S3BackEnd + Send + Sync + 'static>(
     let mut path2inum = meta.path2inum.write().await;
     if let Some(parent_inum) = path2inum.get(&args.parent_path) {
         if let Some(parent_node) = cache.get_mut(parent_inum) {
-            let child_attr = args.child_attr;
+            let child_attr_serial = args.child_attr;
+            let child_attr = Arc::new(RwLock::new(serial::serial_to_file_attr(&child_attr_serial)));
             let child_node = S3Node::new_child_node_of_parent(
                 parent_node,
                 &args.child_name,
-                types::serial_to_file_attr(&child_attr),
+                Arc::clone(&child_attr),
                 args.target_path,
             );
 
             let child_ino = child_node.get_ino();
-            let child_type = child_node.get_type();
-            let entry = DirEntry::new(child_ino, args.child_name.clone(), child_type);
+            // let child_type = child_node.get_type();
+            let entry = DirEntry::new(args.child_name.clone(), child_attr);
             // Add to parent node
             parent_node
                 .get_dir_data_mut()
@@ -322,7 +320,7 @@ async fn push_attr<S: S3BackEnd + Send + Sync + 'static>(
         if let Some(node) = meta.cache.write().await.get_mut(&inum) {
             // Keep iNum
             let old_attr = node.get_attr();
-            let mut new_attr = types::serial_to_file_attr(attr);
+            let mut new_attr = serial::serial_to_file_attr(attr);
             new_attr.ino = old_attr.ino;
 
             node._set_attr(new_attr, false);
@@ -355,7 +353,7 @@ async fn remove<S: S3BackEnd + Send + Sync + 'static>(
         .remove_node_local(
             args.parent,
             &args.child_name,
-            types::serial_to_entry_type(&args.child_type),
+            serial::serial_to_entry_type(&args.child_type),
             true,
         )
         .await
@@ -366,15 +364,5 @@ async fn remove<S: S3BackEnd + Send + Sync + 'static>(
         );
     }
     tcp::write_message(stream, &response::remove()).await?;
-    Ok(())
-}
-
-/// Handle `GetInodeNum` request
-async fn get_inode_num<S: S3BackEnd + Send + Sync + 'static>(
-    stream: &mut TcpStream,
-    meta: &Arc<S3MetaData<S>>,
-) -> anyhow::Result<()> {
-    let inum = meta.cur_inum();
-    tcp::write_u32(stream, inum).await?;
     Ok(())
 }
