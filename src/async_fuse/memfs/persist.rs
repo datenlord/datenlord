@@ -138,12 +138,6 @@ impl PersistDirContent {
             .collect();
         S3NodeData::Directory(dir_map)
     }
-    // pub(crate) fn new() -> PersistDirContent {
-    //     PersistDirContent{
-    //         dir_full_path:String::new(),
-    //         file_map:HashMap::new()
-    //     }
-    // }
 
     /// deserialize from stored data
     fn new_from_store(
