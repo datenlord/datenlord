@@ -1,7 +1,7 @@
 //! The implementation of FUSE session
 
 use super::context::ProtoVersion;
-use super::file_system::{FileSystem, FsController};
+use super::file_system::{FileSystem, FsAsyncTaskController, FsController};
 use crate::async_fuse::memfs::{FileLockParam, RenameParam, SetAttrParam};
 //use super::channel::Channel;
 // #[cfg(target_os = "macos")]
@@ -89,6 +89,8 @@ pub struct Session {
     mount_path: PathBuf,
     /// The underlying FUSE file system
     filesystem: Arc<dyn FileSystem + Send + Sync + 'static>,
+    /// The underlying FUSE file system
+    fs_async_task_controller: Arc<dyn FsAsyncTaskController + Send + Sync + 'static>,
     /// All sub-tasks
     tasks: Vec<tokio::task::JoinHandle<()>>,
     /// Some state held by session to communicate with and control the fs
@@ -113,7 +115,7 @@ impl Drop for Session {
                 join_handle.abort();
             }
             // stop and join async sub tasks
-            self.filesystem.stop_all_async_tasks();
+            self.fs_async_task_controller.stop_all_async_tasks();
             self.fs_controller.join_all_async_tasks().await;
             let mount_path = &self.mount_path;
             let res = mount::umount(mount_path).await;
@@ -136,9 +138,10 @@ impl Session {
     }
 
     /// Create FUSE session
+    #[allow(clippy::clone_on_ref_ptr)] // allow this clone to transform trait to sub-trait
     pub async fn new(
         mount_path: &Path,
-        fs: impl FileSystem + Send + Sync + 'static,
+        fs: impl FileSystem + FsAsyncTaskController + Send + Sync + 'static,
         fs_controller: FsController,
     ) -> anyhow::Result<Self> {
         // let mount_path = Path::new(mount_point);
@@ -152,18 +155,22 @@ impl Session {
             .await
             .context("failed to mount fuse device")?;
         fs.set_fuse_fd(fuse_fd).await;
+
+        let fsarc = Arc::new(fs);
         Ok(Self {
             fuse_fd: Arc::new(FuseFd(fuse_fd)),
             proto_version: AtomicCell::new(ProtoVersion::UNSPECIFIED),
-            filesystem: Arc::new(fs),
             mount_path: mount_path.to_owned(),
             tasks: Vec::new(),
+            filesystem: fsarc.clone(),
             fs_controller,
+            fs_async_task_controller: fsarc,
         })
     }
 
     /// Run the FUSE session
-    #[allow(clippy::wildcard_enum_match_arm, clippy::restriction)] // nix::Errno is marked as non_exhaustive
+    #[allow(clippy::wildcard_enum_match_arm)] // nix::Errno is marked as non_exhaustive
+    #[allow(clippy::integer_arithmetic)] // The `select` macro will generate code that goes against this rule.
     pub async fn run(mut self) -> anyhow::Result<()> {
         // For recycling the buffers used by process_fuse_request.
         let (pool_sender, pool_receiver) = self
@@ -252,11 +259,13 @@ impl Session {
             tokio::select! {
                 res = read_fuse_task.as_mut().unwrap_or_else(||{
                     // read_fuse_task is always prepared with value by above logic.
-                    unreachable!()}) => {
+                    panic!("read_fuse_task is always prepared with value by above logic.")
+                }) => {
                     let (res, byte_buffer) = res?;
                     if !handle_fuse_request_res(res, byte_buffer){
                         break;
                     }
+                    // Task is consumed, reset it to none, and next loop will prepare a new one.
                     read_fuse_task=None;
                 }
                 res = self.fs_controller.recv_async_task_res() => {
