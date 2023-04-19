@@ -1,10 +1,10 @@
 //! FUSE async implementation
 
+use self::fuse::file_system::FsController;
 use crate::{common::etcd_delegate::EtcdDelegate, AsyncFuseArgs, VolumeType};
 use fuse::session::Session;
 use memfs::s3_wrapper::{DoNothingImpl, S3BackEndImpl};
-
-use self::fuse::file_system::FsController;
+// use std::sync::Arc;
 
 pub mod fuse;
 pub mod memfs;
@@ -42,6 +42,7 @@ pub async fn start_async_fuse(
                     &args.volume_info,
                 )
                 .await?;
+
             let ss = Session::new(mount_point, fs, fs_controller).await?;
             ss.run().await?;
         }
@@ -59,6 +60,7 @@ pub async fn start_async_fuse(
                 &args.volume_info,
             )
             .await?;
+
             let ss = Session::new(mount_point, fs, fs_controller).await?;
             ss.run().await?;
         }
@@ -76,6 +78,7 @@ pub async fn start_async_fuse(
                 &args.volume_info,
             )
             .await?;
+
             let ss = Session::new(mount_point, fs, fs_controller).await?;
             ss.run().await?;
         }

@@ -284,7 +284,10 @@ pub trait FileSystem {
 
     /// Set fuse fd into `FileSystem`
     async fn set_fuse_fd(&self, fuse_fd: RawFd);
-
+}
+/// FUSE filesystem trait
+#[async_trait]
+pub trait FsAsyncTaskController {
     /// Stop all async tasks
     fn stop_all_async_tasks(&self);
 }
@@ -293,12 +296,16 @@ pub trait FileSystem {
 pub(crate) fn new_fs_async_result_chan() -> (FsAsyncResultSender, FsAsyncResultReceiver) {
     tokio::sync::mpsc::channel(10)
 }
+
 /// result of fs async result
 pub type FsAsyncResult = DatenLordResult<()>;
+
 /// sender for async tasks to send msg(mainly refers to error) to session main loop
 pub type FsAsyncResultSender = tokio::sync::mpsc::Sender<FsAsyncResult>;
+
 /// receiver to receive msg from async tasks
 pub(crate) type FsAsyncResultReceiver = tokio::sync::mpsc::Receiver<FsAsyncResult>;
+
 /// Some state held by session to communicate with and control the fs.
 #[allow(missing_debug_implementations)]
 pub struct FsController {
@@ -307,6 +314,7 @@ pub struct FsController {
     /// all async task handles to join when session deref (the end of main loop)
     async_task_join_handles: Vec<JoinHandle<()>>,
 }
+
 impl FsController {
     /// new `FsUniqueController`
     ///  pass in the join handle and msg receiver,

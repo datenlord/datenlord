@@ -35,6 +35,7 @@ use nix::sys::stat::SFlag;
 
 use crate::async_fuse::fuse::file_system;
 use crate::async_fuse::fuse::file_system::FileSystem;
+use crate::async_fuse::fuse::file_system::FsAsyncTaskController;
 use crate::async_fuse::fuse::fuse_reply::AsIoVec;
 use crate::async_fuse::fuse::fuse_reply::{
     ReplyAttr, ReplyBMap, ReplyCreate, ReplyData, ReplyDirectory, ReplyEmpty, ReplyEntry,
@@ -1300,7 +1301,10 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
     async fn set_fuse_fd(&self, fuse_fd: RawFd) {
         self.metadata.set_fuse_fd(fuse_fd).await;
     }
+}
 
+#[async_trait]
+impl<M: MetaData + Send + Sync + 'static> FsAsyncTaskController for MemFs<M> {
     /// Stop all async tasks
     fn stop_all_async_tasks(&self) {
         self.metadata.stop_all_async_tasks();
