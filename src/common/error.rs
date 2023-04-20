@@ -194,6 +194,13 @@ pub enum DatenLordError {
         context: Vec<String>,
     },
 
+    /// Error caused by module kv_engine's MetaTxn retry limit exceeded
+    #[error("TransactionRetryLimitExceededErr, context is {:#?}", .context)]
+    TransactionRetryLimitExceededErr {
+        /// Context of the error
+        context: Vec<String>,
+    },
+
     /// API is not implemented
     #[error("Not implemented, context is {:#?}", .context)]
     Unimplemented {
@@ -280,6 +287,7 @@ impl DatenLordError {
                 GrpcioErr,
                 SerdeJsonErr,
                 JoinErr,
+                TransactionRetryLimitExceededErr,
                 Unimplemented
             ]
         );
@@ -358,6 +366,7 @@ impl From<DatenLordError> for RpcStatusCode {
             DatenLordError::ArgumentInvalid { .. } => Self::INVALID_ARGUMENT,
             DatenLordError::ArgumentOutOfRange { .. } => Self::OUT_OF_RANGE,
             DatenLordError::StartingTokenInvalid { .. } => Self::ABORTED,
+            DatenLordError::TransactionRetryLimitExceededErr { .. } => Self::ABORTED,
             DatenLordError::Unimplemented { .. } => Self::UNIMPLEMENTED,
         }
     }

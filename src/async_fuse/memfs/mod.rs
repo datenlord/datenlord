@@ -6,6 +6,8 @@ pub mod dist;
 mod fs_util;
 /// manage inode related, inum allocation and recycle
 mod inode;
+/// The KV engine module
+mod kv_engine;
 /// fs metadata module
 mod metadata;
 mod node;
