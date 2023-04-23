@@ -2,7 +2,9 @@
 
 use super::context::ProtoVersion;
 use super::file_system::{FileSystem, FsAsyncTaskController, FsController};
-use crate::async_fuse::memfs::{FileLockParam, RenameParam, SetAttrParam};
+use crate::async_fuse::memfs::MetaData;
+use crate::async_fuse::memfs::{FileLockParam, MemFs, RenameParam, SetAttrParam};
+
 //use super::channel::Channel;
 // #[cfg(target_os = "macos")]
 // use super::fuse_reply::ReplyXTimes;
@@ -80,7 +82,10 @@ const MAX_BACKGROUND: u16 = 10; // TODO: set to larger value when release
 
 /// FUSE session
 #[allow(missing_debug_implementations)]
-pub struct Session {
+pub struct Session<
+    F: FileSystem + Send + Sync + 'static,
+    A: FsAsyncTaskController + Send + Sync + 'static,
+> {
     /// FUSE device fd
     fuse_fd: Arc<FuseFd>,
     /// Kernel FUSE protocol version
@@ -88,9 +93,9 @@ pub struct Session {
     /// Mount path (relative)
     mount_path: PathBuf,
     /// The underlying FUSE file system
-    filesystem: Arc<dyn FileSystem + Send + Sync + 'static>,
+    filesystem: Arc<F>,
     /// The underlying FUSE file system
-    fs_async_task_controller: Arc<dyn FsAsyncTaskController + Send + Sync + 'static>,
+    fs_async_task_controller: Arc<A>,
     /// All sub-tasks
     tasks: Vec<tokio::task::JoinHandle<()>>,
     /// Some state held by session to communicate with and control the fs
@@ -107,7 +112,9 @@ impl Drop for FuseFd {
     }
 }
 
-impl Drop for Session {
+impl<F: FileSystem + Send + Sync + 'static, A: FsAsyncTaskController + Send + Sync + 'static> Drop
+    for Session<F, A>
+{
     fn drop(&mut self) {
         futures::executor::block_on(async {
             // join fuse request handling tasks.
@@ -130,42 +137,47 @@ impl Drop for Session {
     }
 }
 
-impl Session {
+/// Create FUSE session
+#[allow(clippy::clone_on_ref_ptr)] // allow this clone to transform trait to sub-trait
+pub async fn new_session_of_memfs<M>(
+    mount_path: &Path,
+    fs: MemFs<M>,
+    fs_controller: FsController,
+) -> anyhow::Result<Session<MemFs<M>, MemFs<M>>>
+where
+    M: MetaData + Send + Sync + 'static,
+{
+    // let mount_path = Path::new(mount_point);
+    assert!(
+        mount_path.is_dir(),
+        "the input mount path={mount_path:?} is not a directory"
+    );
+
+    // Must create filesystem before mount
+    let fuse_fd = mount::mount(mount_path)
+        .await
+        .context("failed to mount fuse device")?;
+    fs.set_fuse_fd(fuse_fd).await;
+
+    let fsarc = Arc::new(fs);
+    Ok(Session {
+        fuse_fd: Arc::new(FuseFd(fuse_fd)),
+        proto_version: AtomicCell::new(ProtoVersion::UNSPECIFIED),
+        mount_path: mount_path.to_owned(),
+        tasks: Vec::new(),
+        filesystem: fsarc.clone(),
+        fs_controller,
+        fs_async_task_controller: fsarc,
+    })
+}
+
+impl<F: FileSystem + Send + Sync + 'static, A: FsAsyncTaskController + Send + Sync + 'static>
+    Session<F, A>
+{
     /// Get FUSE device fd
     #[inline]
     pub fn dev_fd(&self) -> RawFd {
         self.fuse_fd.0
-    }
-
-    /// Create FUSE session
-    #[allow(clippy::clone_on_ref_ptr)] // allow this clone to transform trait to sub-trait
-    pub async fn new(
-        mount_path: &Path,
-        fs: impl FileSystem + FsAsyncTaskController + Send + Sync + 'static,
-        fs_controller: FsController,
-    ) -> anyhow::Result<Self> {
-        // let mount_path = Path::new(mount_point);
-        assert!(
-            mount_path.is_dir(),
-            "the input mount path={mount_path:?} is not a directory"
-        );
-
-        // Must create filesystem before mount
-        let fuse_fd = mount::mount(mount_path)
-            .await
-            .context("failed to mount fuse device")?;
-        fs.set_fuse_fd(fuse_fd).await;
-
-        let fsarc = Arc::new(fs);
-        Ok(Self {
-            fuse_fd: Arc::new(FuseFd(fuse_fd)),
-            proto_version: AtomicCell::new(ProtoVersion::UNSPECIFIED),
-            mount_path: mount_path.to_owned(),
-            tasks: Vec::new(),
-            filesystem: fsarc.clone(),
-            fs_controller,
-            fs_async_task_controller: fsarc,
-        })
     }
 
     /// Run the FUSE session

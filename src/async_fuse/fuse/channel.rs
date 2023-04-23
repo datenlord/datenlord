@@ -10,7 +10,10 @@ use nix::{
 };
 use std::os::unix::io::RawFd;
 
-use super::session::Session;
+use super::{
+    file_system::{FileSystem, FsAsyncTaskController},
+    session::Session,
+};
 
 /// FUSE channel
 #[derive(Debug)]
@@ -22,7 +25,12 @@ pub struct Channel {
 impl Channel {
     /// Create FUSE channel
     #[allow(dead_code)]
-    pub async fn new(session: &Session) -> anyhow::Result<Self> {
+    pub async fn new<
+        F: FileSystem + Send + Sync + 'static,
+        A: FsAsyncTaskController + Send + Sync + 'static,
+    >(
+        session: &Session<F, A>,
+    ) -> anyhow::Result<Self> {
         let devname = "/dev/fuse";
         let clonefd = tokio::task::spawn_blocking(move || {
             fcntl::open(devname, OFlag::O_RDWR | OFlag::O_CLOEXEC, Mode::empty())

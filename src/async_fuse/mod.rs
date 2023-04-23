@@ -1,8 +1,8 @@
 //! FUSE async implementation
 
 use self::fuse::file_system::FsController;
+use crate::async_fuse::fuse::session;
 use crate::{common::etcd_delegate::EtcdDelegate, AsyncFuseArgs, VolumeType};
-use fuse::session::Session;
 use memfs::s3_wrapper::{DoNothingImpl, S3BackEndImpl};
 // use std::sync::Arc;
 
@@ -43,7 +43,7 @@ pub async fn start_async_fuse(
                 )
                 .await?;
 
-            let ss = Session::new(mount_point, fs, fs_controller).await?;
+            let ss = session::new_session_of_memfs(mount_point, fs, fs_controller).await?;
             ss.run().await?;
         }
         VolumeType::S3 => {
@@ -61,7 +61,7 @@ pub async fn start_async_fuse(
             )
             .await?;
 
-            let ss = Session::new(mount_point, fs, fs_controller).await?;
+            let ss = session::new_session_of_memfs(mount_point, fs, fs_controller).await?;
             ss.run().await?;
         }
         VolumeType::None => {
@@ -79,7 +79,7 @@ pub async fn start_async_fuse(
             )
             .await?;
 
-            let ss = Session::new(mount_point, fs, fs_controller).await?;
+            let ss = session::new_session_of_memfs(mount_point, fs, fs_controller).await?;
             ss.run().await?;
         }
     }
