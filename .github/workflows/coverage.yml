@@ -1,0 +1,35 @@
+name: Coverage
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+    branches: [master]
+
+env:
+  CI_RUST_TOOLCHAIN: 1.67.1
+
+jobs:
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - run: sudo bash ./.github/scripts/install_cov_deps.sh
+      - name: Install CSI dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y cmake g++ libprotobuf-dev protobuf-compiler
+      - uses: actions-rs/toolchain@v1
+        with:
+          profile: default
+          toolchain: ${{ env.CI_RUST_TOOLCHAIN }}
+          override: true
+          components: llvm-tools-preview
+      - run: chmod +x ./scripts/coverage.sh
+      - run: CI=yes ./scripts/coverage.sh
+      - name: Upload coverage report
+        uses: codecov/codecov-action@v3
+        with:
+          files: ./coverage/datenlord_cov.lcovrc
