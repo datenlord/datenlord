@@ -344,6 +344,7 @@ impl From<DatenLordError> for RpcStatusCode {
             | DatenLordError::SystemTimeErr { .. }
             | DatenLordError::SerdeJsonErr { .. }
             | DatenLordError::WalkdirErr { .. }
+            | DatenLordError::TransactionRetryLimitExceededErr { .. }
             | DatenLordError::JoinErr { .. } => Self::INTERNAL,
             DatenLordError::GrpcioErr { source, .. } => match source {
                 grpcio::Error::RpcFailure(ref s) => s.code(),
@@ -366,7 +367,6 @@ impl From<DatenLordError> for RpcStatusCode {
             DatenLordError::ArgumentInvalid { .. } => Self::INVALID_ARGUMENT,
             DatenLordError::ArgumentOutOfRange { .. } => Self::OUT_OF_RANGE,
             DatenLordError::StartingTokenInvalid { .. } => Self::ABORTED,
-            DatenLordError::TransactionRetryLimitExceededErr { .. } => Self::ABORTED,
             DatenLordError::Unimplemented { .. } => Self::UNIMPLEMENTED,
         }
     }

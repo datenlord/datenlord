@@ -4,49 +4,17 @@ use core::fmt::Debug;
 use datenlord::common::error::{Context, DatenLordResult};
 use etcd_client::TxnCmp;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::fmt;
-use std::path::PathBuf;
+
 use std::sync::Arc;
 
-use super::serial::*;
+use super::serial::{SerialDirEntry, SerialFileAttr, SerialNode};
 
-/// In order to derive Serialize and Deserialize,
-/// Replace the 'BTreeMap<String, DirEntry>' with 'HashMap<String, RawDirEntry>'
-#[derive(Serialize, Deserialize, Debug)]
-pub enum RawS3NodeData {
-    Directory(BTreeMap<String, SerialDirEntry>),
-    /// File data is ignored ,because `Arc<GlobalCache>` is not serializable
-    File,
-    SymLink(PathBuf),
-}
-
-/// In order to derive Serialize and Deserialize,
-/// Ignore the `s3_backend` and `meta` in `S3Node` , because they are not serializable
-/// And replace the atomic types with normal types
-#[derive(Serialize, Deserialize, Debug)]
-pub struct RawS3Node {
-    /// Parent node i-number
-    pub(crate) parent: u64,
-    /// S3Node name
-    pub(crate) name: String,
-    /// Full path
-    pub(crate) full_path: String,
-    /// S3Node attribute
-    pub(crate) attr: SerialFileAttr,
-    /// S3Node data
-    pub(crate) data: RawS3NodeData,
-    /// S3Node open counter
-    pub(crate) open_count: i64,
-    /// S3Node lookup counter
-    pub(crate) lookup_count: i64,
-    /// If S3Node has been marked as deferred deletion
-    pub(crate) deferred_deletion: bool,
-}
 /// The ValueType is used to provide support for metadata.
 #[derive(Serialize, Deserialize, Debug)]
 pub enum ValueType {
-    Node(RawS3Node),
+    Node(SerialNode),
     DirEntry(SerialDirEntry),
     INum(INum),
     Attr(SerialFileAttr),
