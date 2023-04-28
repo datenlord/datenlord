@@ -4,6 +4,8 @@ use crate::async_fuse::fuse::protocol::INum;
 use nix::sys::stat::SFlag;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+use std::path::PathBuf;
 use std::{sync::Arc, time::SystemTime};
 
 /// Serializable `DirEntry`
@@ -57,6 +59,40 @@ pub enum SerialSFlag {
     Dir,
     /// Symbolic link
     Lnk,
+}
+
+/// In order to derive Serialize and Deserialize,
+/// Replace the 'BTreeMap<String, DirEntry>' with 'HashMap<String, RawDirEntry>'
+#[derive(Serialize, Deserialize, Debug)]
+pub enum SerialNodeData {
+    /// Directory data
+    Directory(BTreeMap<String, SerialDirEntry>),
+    /// File data is ignored ,because `Arc<GlobalCache>` is not serializable
+    File,
+    /// Symbolic link data
+    SymLink(PathBuf),
+}
+
+/// TODO: We should discuss the design about persist
+/// Serializable 'Node'
+#[derive(Serialize, Deserialize, Debug)]
+pub struct SerialNode {
+    /// Parent node i-number
+    parent: u64,
+    /// S3Node name
+    name: String,
+    /// Full path of S3Node
+    full_path: String,
+    /// Node attribute
+    attr: SerialFileAttr,
+    /// Node data
+    data: SerialNodeData,
+    /// S3Node open counter
+    open_count: i64,
+    /// S3Node lookup counter
+    lookup_count: i64,
+    /// If S3Node has been marked as deferred deletion
+    deferred_delete: bool,
 }
 
 /// Convert `SFlag` to `SerialSFlag`
