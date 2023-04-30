@@ -11,35 +11,43 @@ use std::sync::Arc;
 
 use super::serial::{SerialDirEntry, SerialFileAttr, SerialNode};
 
-/// The ValueType is used to provide support for metadata.
+/// The `ValueType` is used to provide support for metadata.
 #[derive(Serialize, Deserialize, Debug)]
 pub enum ValueType {
+    /// SerialNode
     Node(SerialNode),
+    /// SerailDirEntry
     DirEntry(SerialDirEntry),
+    /// INum
     INum(INum),
+    ///
     Attr(SerialFileAttr),
 }
 
-/// The KeyType is used to locate the value in the distributed K/V storage.
+/// The `KeyType` is used to locate the value in the distributed K/V storage.
 /// Every key is prefixed with a string to indicate the type of the value.
 /// If you want to add a new type of value, you need to add a new variant to the enum.
-/// And you need to add a new match arm to the get_key function , make sure the key is unique.
+/// And you need to add a new match arm to the `get_key` function , make sure the key is unique.
 #[allow(dead_code)]
 pub enum KeyType {
+    /// INum -> SerailNode
     INum2Node(INum),
+    /// INum -> DirEntry
     INum2DirEntry(INum),
+    /// Path -> Inum
     Path2INum(String),
+    /// INum -> SerailFileAttr
     INum2Attr(INum),
 }
 
 impl KeyType {
     /// Get the key in bytes.
     fn get_key(&self) -> Vec<u8> {
-        match self {
-            KeyType::INum2Node(i) => format!("I{}", i).into_bytes(),
-            KeyType::INum2DirEntry(i) => format!("D{}", i).into_bytes(),
-            KeyType::Path2INum(p) => format!("P{}", p).into_bytes(),
-            KeyType::INum2Attr(i) => format!("A{}", i).into_bytes(),
+        match *self {
+            KeyType::INum2Node(ref i) => format!("I{i}").into_bytes(),
+            KeyType::INum2DirEntry(ref i) => format!("D{i}").into_bytes(),
+            KeyType::Path2INum(ref p) => format!("P{p}").into_bytes(),
+            KeyType::INum2Attr(ref i) => format!("A{i}").into_bytes(),
         }
     }
 }
@@ -81,12 +89,12 @@ struct EtcdTxn {
 
 impl EtcdTxn {
     /// Create a new etcd transaction.
-    async fn new(client: etcd_client::Client) -> DatenLordResult<Self> {
-        Ok(EtcdTxn {
+    fn new(client: etcd_client::Client) -> Self {
+        EtcdTxn {
             client,
             version_map: HashMap::new(),
             buffer: HashMap::new(),
-        })
+        }
     }
 }
 
@@ -95,12 +103,14 @@ impl MetaTxn for EtcdTxn {
     async fn get(&mut self, key: &KeyType) -> DatenLordResult<Option<ValueType>> {
         // first check if the key is in buffer (write op)
         let key = key.get_key();
-        if let Some(_) = self.buffer.get(&key) {
-            panic!("get the key after write in the same transaction")
-        }
-        if let Some(_) = self.version_map.get(&key) {
-            panic!("get the key twice in the same transaction");
-        }
+        assert!(
+            self.buffer.get(&key).is_none(),
+            "get the key after write in the same transaction"
+        );
+        assert!(
+            self.version_map.get(&key).is_none(),
+            "get the key twice in the same transaction"
+        );
         // Fetch the value from `etcd`
         let req = etcd_client::EtcdGetRequest::new(key.clone());
         let mut resp = self
@@ -110,22 +120,17 @@ impl MetaTxn for EtcdTxn {
             .await
             .with_context(|| format!("failed to get GetResponse from etcd, key={key:?}"))?;
         let kvs = resp.take_kvs();
-        if kvs.len() > 1 {
-            // panic here because we don't expect to have multiple values for one key
-            panic!("multiple values for one key");
-        }
-        match kvs.get(0) {
-            Some(kv) => {
-                let value = kv.value();
-                // update the version_map
-                self.version_map.insert(key.clone(), kv.version());
-                Ok(Some(serde_json::from_slice(value)?))
-            }
-            None => {
-                // update the version_map
-                self.version_map.insert(key.clone(), 0);
-                Ok(None)
-            }
+        // panic here because we don't expect to have multiple values for one key
+        assert!(kvs.len() <= 1, "multiple values for one key");
+        if let Some(kv) = kvs.get(0) {
+            let value = kv.value();
+            // update the version_map
+            self.version_map.insert(key.clone(), kv.version());
+            Ok(Some(serde_json::from_slice(value)?))
+        } else {
+            // update the version_map
+            self.version_map.insert(key.clone(), 0);
+            Ok(None)
         }
     }
 
@@ -145,7 +150,7 @@ impl MetaTxn for EtcdTxn {
     async fn commit(&mut self) -> DatenLordResult<bool> {
         let mut req: etcd_client::EtcdTxnRequest = etcd_client::EtcdTxnRequest::new();
         // add the version check
-        for (key, value) in self.version_map.iter() {
+        for (key, value) in &self.version_map {
             let key = key.clone();
             let version = *value;
             req = req.when_version(
@@ -155,9 +160,9 @@ impl MetaTxn for EtcdTxn {
             );
         }
         // add the write operations
-        for (key, value) in self.buffer.iter() {
+        for (key, value) in &self.buffer {
             let key = key.clone();
-            if let Some(value) = value {
+            if let Some(ref value) = *value {
                 // TODO(xiaguan) : maybe too many clone?
                 let put_req = etcd_client::EtcdPutRequest::new(key.clone(), value.clone());
                 req = req.and_then(put_req);
@@ -172,13 +177,15 @@ impl MetaTxn for EtcdTxn {
             .kv()
             .txn(req)
             .await
-            .with_context(|| format!("failed to get TxnResponse from etcd"))?;
+            .with_context(|| "failed to get TxnResponse from etcd".to_owned())?;
         Ok(resp.is_success())
     }
 }
 
 #[derive(Clone)]
+/// Wrap the etcd client to support the `KVEngine` trait.
 pub struct EtcdKVEngine {
+    /// The etcd client.
     client: etcd_client::Client,
 }
 
@@ -191,6 +198,7 @@ impl Debug for EtcdKVEngine {
 
 impl EtcdKVEngine {
     #[allow(dead_code)]
+    /// For local test, we need to create a new etcd kv engine locally.
     async fn new_for_local_test(etcd_address_vec: Vec<String>) -> DatenLordResult<Self> {
         let client = etcd_client::Client::connect(etcd_client::ClientConfig::new(
             etcd_address_vec.clone(),
@@ -207,7 +215,7 @@ impl EtcdKVEngine {
 
     #[allow(dead_code)]
     /// Create a new etcd kv engine.
-    pub fn new(etcd_client: etcd_client::Client) -> Arc<dyn KVEngine> {
+    pub fn new_kv_engine(etcd_client: etcd_client::Client) -> Arc<dyn KVEngine> {
         Arc::new(EtcdKVEngine {
             client: etcd_client,
         })
@@ -222,10 +230,10 @@ macro_rules! retry_txn {
         let mut result: DatenLordResult<()> =
             Err(DatenLordError::TransactionRetryLimitExceededErr {
                 context: vec![
-                    "Transaction retry failed due to exceeding the retry limit".to_string()
+                    "Transaction retry failed due to exceeding the retry limit".to_owned()
                 ],
             });
-        let mut attempts = 0;
+        let mut attempts: u32 = 0;
 
         while attempts < $retry_num {
             match { $logic } {
@@ -240,7 +248,7 @@ macro_rules! retry_txn {
                     break;
                 }
             }
-            attempts += 1;
+            attempts = attempts.wrapping_add(1);
         }
         result
     }};
@@ -249,11 +257,12 @@ macro_rules! retry_txn {
 #[async_trait]
 impl KVEngine for EtcdKVEngine {
     async fn new_meta_txn(&self) -> Box<dyn MetaTxn + Send> {
-        Box::new(EtcdTxn::new(self.client.clone()).await.unwrap())
+        Box::new(EtcdTxn::new(self.client.clone()))
     }
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod test {
 
     use super::*;
@@ -262,7 +271,7 @@ mod test {
 
     #[tokio::test]
     async fn test_connect_local() {
-        let client = EtcdKVEngine::new_for_local_test(vec![ETCD_ADDRESS.to_string()])
+        let client = EtcdKVEngine::new_for_local_test(vec![ETCD_ADDRESS.to_owned()])
             .await
             .unwrap();
         let mut txn = client.new_meta_txn().await;
@@ -287,7 +296,7 @@ mod test {
         // And the third one will set two keys and commit
         // What we expect is that the second one will fail
         // Between it's read ,the third one will set the same key
-        let client = EtcdKVEngine::new_for_local_test(vec![ETCD_ADDRESS.to_string()])
+        let client = EtcdKVEngine::new_for_local_test(vec![ETCD_ADDRESS.to_owned()])
             .await
             .unwrap();
         let mut first_txn = client.new_meta_txn().await;
@@ -303,7 +312,7 @@ mod test {
         let (first_step_tx, first_step_rx) = tokio::sync::oneshot::channel::<()>();
         let (second_step_tx, second_step_rx) = tokio::sync::oneshot::channel::<()>();
         let second_handle = tokio::spawn(async move {
-            let client = EtcdKVEngine::new_for_local_test(vec![ETCD_ADDRESS.to_string()])
+            let client = EtcdKVEngine::new_for_local_test(vec![ETCD_ADDRESS.to_owned()])
                 .await
                 .unwrap();
             let mut second_txn = client.new_meta_txn().await;
@@ -329,10 +338,10 @@ mod test {
             }
             let res = second_txn.commit().await;
             // expect the commit fail
-            assert!(res.is_err());
+            res.unwrap_err();
         });
         let third_handle = tokio::spawn(async move {
-            let client = EtcdKVEngine::new_for_local_test(vec![ETCD_ADDRESS.to_string()])
+            let client = EtcdKVEngine::new_for_local_test(vec![ETCD_ADDRESS.to_owned()])
                 .await
                 .unwrap();
             let mut third_txn = client.new_meta_txn().await;
@@ -354,7 +363,7 @@ mod test {
     #[tokio::test]
     async fn test_txn_retry() {
         let result = retry_txn!(3, {
-            let client = EtcdKVEngine::new_for_local_test(vec![ETCD_ADDRESS.to_string()])
+            let client = EtcdKVEngine::new_for_local_test(vec![ETCD_ADDRESS.to_owned()])
                 .await
                 .unwrap();
             let mut txn = client.new_meta_txn().await;
@@ -363,6 +372,6 @@ mod test {
             txn.set(&key, &value).await.unwrap();
             txn.commit().await
         });
-        assert!(result.is_ok());
+        result.unwrap();
     }
 }

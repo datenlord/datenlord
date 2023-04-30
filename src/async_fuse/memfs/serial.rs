@@ -62,7 +62,7 @@ pub enum SerialSFlag {
 }
 
 /// In order to derive Serialize and Deserialize,
-/// Replace the 'BTreeMap<String, DirEntry>' with 'HashMap<String, RawDirEntry>'
+/// Replace the 'BTreeMap<String, `DirEntry`>' with 'HashMap<String, `SerialDirEntry`>'
 #[derive(Serialize, Deserialize, Debug)]
 pub enum SerialNodeData {
     /// Directory data
