@@ -5,6 +5,7 @@ use super::dir::DirEntry;
 use super::dist::client as dist_client;
 use super::fs_util::{self, FileAttr};
 use super::node::Node;
+use super::persist;
 use super::s3_metadata::S3MetaData;
 use super::s3_wrapper::S3BackEnd;
 use super::SetAttrParam;
@@ -264,34 +265,59 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
 
     /// Open root node
     #[allow(clippy::unnecessary_wraps)]
-    pub(crate) fn open_root_node(
+    pub(crate) async fn open_root_node(
         root_ino: INum,
         name: &str,
         s3_backend: Arc<S>,
         meta: Arc<S3MetaData<S>>,
     ) -> anyhow::Result<Self> {
-        let now = SystemTime::now();
-        let attr = Arc::new(RwLock::new(FileAttr {
-            ino: root_ino,
-            atime: now,
-            mtime: now,
-            ctime: now,
-            crtime: now,
-            kind: SFlag::S_IFDIR,
-            ..FileAttr::default()
-        }));
+        match persist::read_persisted_dir(&s3_backend, "/".to_owned()).await {
+            Err(e) => {
+                //todo: handle different type of error, key not exist, net err, etc.
+                debug!("read persit dir error {e}");
+                let now = SystemTime::now();
+                let attr = Arc::new(RwLock::new(FileAttr {
+                    ino: root_ino,
+                    atime: now,
+                    mtime: now,
+                    ctime: now,
+                    crtime: now,
+                    kind: SFlag::S_IFDIR,
+                    ..FileAttr::default()
+                }));
 
-        let root_node = Self::new(
-            root_ino,
-            name,
-            "/".to_owned(),
-            attr,
-            S3NodeData::Directory(BTreeMap::new()),
-            s3_backend,
-            meta,
-        );
+                let root_node = Self::new(
+                    root_ino,
+                    name,
+                    "/".to_owned(),
+                    attr,
+                    S3NodeData::Directory(BTreeMap::new()),
+                    s3_backend,
+                    meta,
+                );
 
-        Ok(root_node)
+                Ok(root_node)
+            }
+            Ok(data) => match data.try_get_root_attr() {
+                Ok(attr) => {
+                    let root_node = Self::new(
+                        root_ino,
+                        name,
+                        "/".to_owned(),
+                        Arc::new(RwLock::new(attr)),
+                        data.new_s3_node_data_dir(),
+                        s3_backend,
+                        meta,
+                    );
+                    debug!("Success to load root dir.");
+                    Ok(root_node)
+                }
+                Err(e) => {
+                    log::error!("Root node persist lack of attr info {e}.");
+                    Err(e)
+                }
+            },
+        }
     }
 
     /// flush all data of a node
@@ -714,13 +740,20 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
     ) -> anyhow::Result<Self> {
         // lookup count and open count are increased to 1 by creation
         let full_path = format!("{}{}/", self.full_path, child_dir_name);
-
+        let dirdata = match persist::read_persisted_dir(&self.s3_backend, full_path.clone()).await {
+            Ok(dir) => dir.new_s3_node_data_dir(),
+            Err(e) => {
+                debug!("failed to get dir data from s3, path:{full_path}, err:{e}");
+                // dir data not persisted init with empty
+                S3NodeData::Directory(BTreeMap::new())
+            }
+        };
         let child_node = Self::new(
             self.get_ino(),
             child_dir_name,
             full_path,
             child_attr,
-            S3NodeData::Directory(BTreeMap::new()),
+            dirdata,
             Arc::clone(&self.s3_backend),
             Arc::clone(&self.meta),
         );
@@ -1104,6 +1137,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
 
         debug!("file {:?} size = {:?}", self.name, self.attr.read().size);
         self.update_mtime_ctime_to_now();
+        //FileAttr changed, remember to persist the directory after calling this fn
 
         Ok(written_size)
     }

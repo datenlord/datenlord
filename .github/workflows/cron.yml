@@ -170,11 +170,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Free Disk Space (Ubuntu)
-        uses: jlumbroso/free-disk-space@main
-        with:
-          # this might remove tools that are actually needed,
-          # when set to "true" but frees about 6 GB
-          tool-cache: true
+        run: |
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /opt/ghc
+          sudo rm -rf "/usr/local/share/boost"
+          sudo rm -rf "$AGENT_TOOLSDIRECTORY"
+
+        # uses: jlumbroso/free-disk-space@main
+        # with:
+        #   # this might remove tools that are actually needed,
+        #   # when set to "true" but frees about 6 GB
+        #   tool-cache: true
       - name: Check out code
         uses: actions/checkout@v2
       - name: Install Kind
