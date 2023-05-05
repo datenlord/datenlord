@@ -28,7 +28,6 @@ use log::debug;
 use nix::errno::Errno;
 use nix::fcntl::OFlag;
 use nix::sys::stat::SFlag;
-use parking_lot::RwLock as SyncRwLock;
 use std::collections::BTreeMap;
 use std::os::unix::io::RawFd;
 use std::path::Path;
@@ -741,7 +740,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
         &self,
         parent: INum,
         name: &str,
-    ) -> anyhow::Result<(INum, SFlag, Arc<SyncRwLock<FileAttr>>)> {
+    ) -> anyhow::Result<(INum, SFlag, FileAttr)> {
         // lookup child ino and type first
         let cache = self.cache.read().await;
         let parent_node = cache.get(&parent).unwrap_or_else(|| {
@@ -753,7 +752,8 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
         if let Some(child_entry) = parent_node.get_entry(name) {
             let ino = child_entry.ino();
             let child_type = child_entry.entry_type();
-            Ok((ino, child_type, Arc::clone(child_entry.file_attr_arc_ref())))
+            // FIXME : We should return reference of FileAttr instead of clone when kv_engine is implemented
+            Ok((ino, child_type, child_entry.file_attr_ref().clone()))
         } else {
             debug!(
                 "lookup_helper() failed to find the file name={:?} \
@@ -880,10 +880,9 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
                 old_parent,
                 old_parent_node.get_name(),
             ),
-            Some(old_entry) => DirEntry::new(
-                new_name.to_owned(),
-                Arc::clone(old_entry.file_attr_arc_ref()),
-            ),
+            Some(old_entry) => {
+                DirEntry::new(new_name.to_owned(), old_entry.file_attr_ref().clone())
+            }
         };
 
         s3_node::rename_fullpath_recursive(entry_to_move.ino(), new_parent, &mut cache).await;
@@ -937,8 +936,9 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
                 replaced_entry.ino(),
                 "rename_exchange_helper() replaced entry i-number not match"
             );
-            let attr = Arc::clone(replaced_entry.file_attr_arc_ref());
-            attr.write().ino = new_entry_ino;
+            // FIXME : check if the refactor code here is right
+            let mut attr = replaced_entry.file_attr_ref().clone();
+            attr.ino = new_entry_ino;
             let exchange_entry = DirEntry::new(old_name.to_owned(), attr);
 
             let mut cache = self.cache.write().await;

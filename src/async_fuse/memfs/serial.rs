@@ -2,9 +2,8 @@ use super::dir::DirEntry;
 use super::fs_util::FileAttr;
 use crate::async_fuse::fuse::protocol::INum;
 use nix::sys::stat::SFlag;
-use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
-use std::{sync::Arc, time::SystemTime};
+use std::time::SystemTime;
 
 /// Serializable `DirEntry`
 #[derive(Serialize, Deserialize, Debug)]
@@ -85,17 +84,14 @@ pub const fn serial_to_entry_type(entry_type: &SerialSFlag) -> SFlag {
 pub fn dir_entry_to_serial(entry: &DirEntry) -> SerialDirEntry {
     SerialDirEntry {
         name: entry.entry_name().to_owned(),
-        file_attr: file_attr_to_serial(&entry.file_attr_arc_ref().read()),
+        file_attr: file_attr_to_serial(&entry.file_attr_ref()),
     }
 }
 
 /// Convert `SerialDirEntry` to `DirEntry`
 #[must_use]
 pub fn serial_to_dir_entry(entry: &SerialDirEntry) -> DirEntry {
-    DirEntry::new(
-        entry.name.clone(),
-        Arc::new(RwLock::new(serial_to_file_attr(&entry.file_attr))),
-    )
+    DirEntry::new(entry.name.clone(), serial_to_file_attr(&entry.file_attr))
 }
 
 /// Convert `FileAttr` to `SerialFileAttr`

@@ -108,10 +108,7 @@ impl PersistDirContent {
                 file_map: files
                     .iter()
                     .map(|(fname, entry)| {
-                        (
-                            fname.clone(),
-                            file_attr_to_serial(&entry.file_attr_arc_ref().read()),
-                        )
+                        (fname.clone(), file_attr_to_serial(&entry.file_attr_ref()))
                     })
                     .collect(),
                 root_attr,
@@ -129,10 +126,7 @@ impl PersistDirContent {
             .map(|(name, fattr)| {
                 (
                     name.clone(),
-                    DirEntry::new(
-                        name.clone(),
-                        Arc::new(RwLock::new(serial::serial_to_file_attr(fattr))),
-                    ),
+                    DirEntry::new(name.clone(), serial::serial_to_file_attr(fattr)),
                 )
             })
             .collect();

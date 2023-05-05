@@ -16,7 +16,6 @@ use nix::errno::Errno;
 use nix::fcntl::OFlag;
 use nix::sys::stat::SFlag;
 use nix::unistd;
-use parking_lot::RwLock as SyncRwLock; // conflict with tokio RwLock
 use std::collections::BTreeMap;
 use std::os::unix::io::RawFd;
 use std::path::{Path, PathBuf};
@@ -555,10 +554,10 @@ impl MetaData for DefaultMetaData {
             //todo: check file attr logic carefully at here
             let exchange_entry = DirEntry::new(
                 old_name.to_owned(),
-                Arc::new(SyncRwLock::new(FileAttr {
+                FileAttr {
                     ino: new_entry_ino,
-                    ..*replaced_entry.file_attr_arc_ref().read()
-                })),
+                    ..*replaced_entry.file_attr_ref()
+                },
             );
 
             // TODO: support thread-safe
@@ -915,7 +914,7 @@ impl DefaultMetaData {
         &self,
         parent: INum,
         name: &str,
-    ) -> anyhow::Result<(INum, SFlag, Arc<SyncRwLock<FileAttr>>)> {
+    ) -> anyhow::Result<(INum, SFlag, FileAttr)> {
         // lookup child ino and type first
         let cache = self.cache.read().await;
         let parent_node = cache.get(&parent).unwrap_or_else(|| {
@@ -927,7 +926,7 @@ impl DefaultMetaData {
         if let Some(child_entry) = parent_node.get_entry(name) {
             let ino = child_entry.ino();
             let child_type = child_entry.entry_type();
-            Ok((ino, child_type, Arc::clone(child_entry.file_attr_arc_ref())))
+            Ok((ino, child_type, child_entry.file_attr_ref().clone()))
         } else {
             debug!(
                 "lookup_helper() failed to find the file name={:?} \
@@ -1054,10 +1053,9 @@ impl DefaultMetaData {
                 old_parent,
                 old_parent_node.get_name(),
             ),
-            Some(old_entry) => DirEntry::new(
-                new_name.to_owned(),
-                Arc::clone(old_entry.file_attr_arc_ref()),
-            ),
+            Some(old_entry) => {
+                DirEntry::new(new_name.to_owned(), old_entry.file_attr_ref().clone())
+            }
         };
         node::rename_fullpath_recursive(entry_to_move.ino(), new_parent, &mut cache);
         let new_parent_node = cache.get_mut(&new_parent).unwrap_or_else(|| {

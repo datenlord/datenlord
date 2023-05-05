@@ -12,7 +12,6 @@ use super::tcp;
 use crate::async_fuse::memfs::s3_wrapper::S3BackEnd;
 use crate::async_fuse::memfs::RenameParam;
 use log::debug;
-use parking_lot::RwLock;
 use std::fmt::{self, Debug};
 use std::sync::Arc;
 use tokio::net::TcpStream;
@@ -231,11 +230,11 @@ async fn update_dir<S: S3BackEnd + Send + Sync + 'static>(
     if let Some(parent_inum) = path2inum.get(&args.parent_path) {
         if let Some(parent_node) = cache.get_mut(parent_inum) {
             let child_attr_serial = args.child_attr;
-            let child_attr = Arc::new(RwLock::new(serial::serial_to_file_attr(&child_attr_serial)));
+            let child_attr = serial::serial_to_file_attr(&child_attr_serial);
             let child_node = S3Node::new_child_node_of_parent(
                 parent_node,
                 &args.child_name,
-                Arc::clone(&child_attr),
+                child_attr,
                 args.target_path,
             );
 

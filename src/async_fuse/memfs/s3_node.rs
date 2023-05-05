@@ -29,7 +29,7 @@ use std::time::SystemTime;
 use tokio::sync::RwLockWriteGuard;
 
 /// A file node data or a directory node data
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum S3NodeData {
     /// Directory entry data
     Directory(BTreeMap<String, DirEntry>),
@@ -41,7 +41,7 @@ pub enum S3NodeData {
 }
 
 /// A file node or a directory node
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct S3Node<S: S3BackEnd + Sync + Send + 'static> {
     /// S3 Backend
     s3_backend: Arc<S>,
@@ -87,7 +87,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
             open_count: 0,
             // lookup count set to 1 by creation
             lookup_count: 1,
-            deferred_deletion: false ,
+            deferred_deletion: false,
             meta,
         }
     }
@@ -504,12 +504,12 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
 
     /// Decrease node open count
     fn dec_open_count(&self) -> i64 {
-        self.open_count - 1 
+        self.open_count - 1
     }
 
     /// Get node lookup count
     fn get_lookup_count(&self) -> i64 {
-        self.lookup_count 
+        self.lookup_count
     }
 
     /// Decrease node lookup count
@@ -520,7 +520,8 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
 
     /// Mark node as deferred deletion
     fn mark_deferred_deletion(&self) {
-        self.deferred_deletion = true
+        // FIXME : we will implement this when kv_engine is ready
+        unimplemented!("mark_deferred_deletion is not implemented")
     }
 
     /// If node is marked as deferred deletion
@@ -909,15 +910,11 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
                 let new_len_tmp =
                     global_cache.round_up(offset.overflow_sub(aligned_offset).overflow_add(len));
 
-                let new_len =
-                    if new_len_tmp.overflow_add(aligned_offset) > self.attr.size.cast() {
-                        self.attr
-                            .size
-                            .cast::<usize>()
-                            .overflow_sub(aligned_offset)
-                    } else {
-                        new_len_tmp
-                    };
+                let new_len = if new_len_tmp.overflow_add(aligned_offset) > self.attr.size.cast() {
+                    self.attr.size.cast::<usize>().overflow_sub(aligned_offset)
+                } else {
+                    new_len_tmp
+                };
 
                 // dist_client::read_data() won't get lock at remote, OK to put here.
                 let file_data_vec = match dist_client::read_data(
