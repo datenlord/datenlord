@@ -120,7 +120,7 @@ impl MetaTxn for EtcdTxn {
             .await
             .with_context(|| format!("failed to get GetResponse from etcd, key={key:?}"))?;
         let kvs = resp.take_kvs();
-        // panic here because we don't expect to have multiple values for one key
+        // we don't expect to have multiple values for one key
         assert!(kvs.len() <= 1, "multiple values for one key");
         if let Some(kv) = kvs.get(0) {
             let value = kv.value();
@@ -151,7 +151,6 @@ impl MetaTxn for EtcdTxn {
         let mut req: etcd_client::EtcdTxnRequest = etcd_client::EtcdTxnRequest::new();
         // add the version check
         for (key, value) in &self.version_map {
-            let key = key.clone();
             let version = *value;
             req = req.when_version(
                 etcd_client::KeyRange::key(key.clone()),
@@ -161,9 +160,7 @@ impl MetaTxn for EtcdTxn {
         }
         // add the write operations
         for (key, value) in &self.buffer {
-            let key = key.clone();
             if let Some(ref value) = *value {
-                // TODO(xiaguan) : maybe too many clone?
                 let put_req = etcd_client::EtcdPutRequest::new(key.clone(), value.clone());
                 req = req.and_then(put_req);
             } else {
@@ -307,38 +304,45 @@ mod test {
         first_txn.set(&key1, &value1).await.unwrap();
         first_txn.set(&key2, &value2).await.unwrap();
         first_txn.commit().await.unwrap();
+        drop(client);
         // use two thread to do the second and third txn
         // and use channel to control the order
-        let (first_step_tx, first_step_rx) = tokio::sync::oneshot::channel::<()>();
-        let (second_step_tx, second_step_rx) = tokio::sync::oneshot::channel::<()>();
+        let (first_step_tx, mut first_step_rx) = tokio::sync::mpsc::channel(1);
+        let (second_step_tx, mut second_step_rx) = tokio::sync::mpsc::channel(1);
         let second_handle = tokio::spawn(async move {
-            let client = EtcdKVEngine::new_for_local_test(vec![ETCD_ADDRESS.to_owned()])
-                .await
-                .unwrap();
-            let mut second_txn = client.new_meta_txn().await;
-            let key1 = KeyType::Path2INum(String::from("/"));
-            let value1 = second_txn.get(&key1).await.unwrap();
-            assert!(value1.is_some());
-            if let Some(ValueType::INum(num)) = value1 {
-                assert_eq!(num, 12);
+            let result = retry_txn!(1, {
+                let client = EtcdKVEngine::new_for_local_test(vec![ETCD_ADDRESS.to_owned()])
+                    .await
+                    .unwrap();
+                let mut second_txn = client.new_meta_txn().await;
+                let key1 = KeyType::Path2INum(String::from("/"));
+                let value1 = second_txn.get(&key1).await.unwrap();
+                assert!(value1.is_some());
+                if let Some(ValueType::INum(num)) = value1 {
+                    assert_eq!(num, 12);
+                } else {
+                    panic!("wrong value type");
+                }
+                // let the third txn start
+                first_step_tx.send(()).await.unwrap();
+                // wait for the third txn to set the key
+                second_step_rx.recv().await.unwrap();
+                let key2 = KeyType::Path2INum(String::from("/a"));
+                let value2 = second_txn.get(&key2).await.unwrap();
+                assert!(value2.is_some());
+                if let Some(ValueType::INum(num)) = value2 {
+                    assert_eq!(num, 13);
+                } else {
+                    panic!("wrong value type");
+                }
+                second_txn.commit().await
+            });
+            assert!(result.is_err());
+            // check if the err is TransactionRetryLimitExceededErr
+            if let Err(DatenLordError::TransactionRetryLimitExceededErr { .. }) = result {
             } else {
-                panic!("wrong value type");
+                panic!("wrong error type");
             }
-            // let the third txn start
-            first_step_tx.send(()).unwrap();
-            // wait for the third txn to set the key
-            second_step_rx.await.unwrap();
-            let key2 = KeyType::Path2INum(String::from("/a"));
-            let value2 = second_txn.get(&key2).await.unwrap();
-            assert!(value2.is_some());
-            if let Some(ValueType::INum(num)) = value2 {
-                assert_eq!(num, 13);
-            } else {
-                panic!("wrong value type");
-            }
-            let res = second_txn.commit().await;
-            // expect the commit fail
-            res.unwrap_err();
         });
         let third_handle = tokio::spawn(async move {
             let client = EtcdKVEngine::new_for_local_test(vec![ETCD_ADDRESS.to_owned()])
@@ -346,13 +350,13 @@ mod test {
                 .unwrap();
             let mut third_txn = client.new_meta_txn().await;
             // wait for the second read first key and send the signal
-            first_step_rx.await.unwrap();
+            first_step_rx.recv().await.unwrap();
             let key1 = KeyType::Path2INum(String::from("/"));
             let value1 = ValueType::INum(14);
             third_txn.set(&key1, &value1).await.unwrap();
             third_txn.commit().await.unwrap();
             // send the signal to the second txn
-            second_step_tx.send(()).unwrap();
+            second_step_tx.send(()).await.unwrap();
         });
         second_handle.await.unwrap();
         third_handle.await.unwrap();
@@ -368,8 +372,7 @@ mod test {
                 .unwrap();
             let mut txn = client.new_meta_txn().await;
             let key = KeyType::Path2INum(String::from("/"));
-            let value = ValueType::INum(12);
-            txn.set(&key, &value).await.unwrap();
+            let _ = txn.get(&key).await.unwrap();
             txn.commit().await
         });
         result.unwrap();
