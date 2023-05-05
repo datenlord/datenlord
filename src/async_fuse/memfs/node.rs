@@ -87,13 +87,13 @@ pub trait Node: Sized {
     async fn load_child_symlink(
         &self,
         child_symlink_name: &str,
-        child_attr: Arc<RwLock<FileAttr>>,
+        child_attr: FileAttr,
     ) -> anyhow::Result<Self>;
     /// Open sub-directory in a directory
     async fn open_child_dir(
         &self,
         child_dir_name: &str,
-        child_attr: Arc<RwLock<FileAttr>>,
+        child_attr: FileAttr,
     ) -> anyhow::Result<Self>;
     /// Create sub-directory in a directory
     async fn create_child_dir(
@@ -106,7 +106,7 @@ pub trait Node: Sized {
     async fn open_child_file(
         &self,
         child_file_name: &str,
-        child_attr: Arc<RwLock<FileAttr>>,
+        child_attr: FileAttr,
         oflags: OFlag,
         global_cache: Arc<GlobalCache>,
     ) -> anyhow::Result<Self>;
@@ -178,17 +178,17 @@ pub struct DefaultNode {
     /// Full abstract path
     full_path: String,
     /// DefaultNode attribute
-    attr: Arc<RwLock<FileAttr>>,
+    attr: FileAttr,
     /// DefaultNode data
     data: DefaultNodeData,
     /// DefaultNode fd
     fd: RawFd,
     /// DefaultNode open counter
-    open_count: AtomicI64,
+    open_count: i64,
     /// DefaultNode lookup counter
-    lookup_count: AtomicI64,
+    lookup_count: i64,
     /// If DefaultNode has been marked as deferred deletion
-    deferred_deletion: AtomicBool,
+    deferred_deletion: bool,
     /// Shared metadata
     meta: Arc<DefaultMetaData>,
 }

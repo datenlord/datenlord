@@ -19,12 +19,11 @@ use log::debug;
 use nix::fcntl::OFlag;
 use nix::sys::stat::Mode;
 use nix::sys::stat::SFlag;
-use parking_lot::RwLock;
 use std::collections::BTreeMap;
 use std::collections::VecDeque;
 use std::os::unix::io::RawFd;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{self, AtomicBool, AtomicI64, Ordering};
+use std::sync::atomic::{self};
 use std::sync::Arc;
 use std::time::SystemTime;
 use tokio::sync::RwLockWriteGuard;
@@ -53,15 +52,15 @@ pub struct S3Node<S: S3BackEnd + Sync + Send + 'static> {
     /// Full path
     full_path: String,
     /// S3Node attribute
-    attr: Arc<RwLock<FileAttr>>,
+    attr: FileAttr,
     /// S3Node data
     data: S3NodeData,
     /// S3Node open counter
-    open_count: AtomicI64,
+    open_count: i64,
     /// S3Node lookup counter
-    lookup_count: AtomicI64,
+    lookup_count: i64,
     /// If S3Node has been marked as deferred deletion
-    deferred_deletion: AtomicBool,
+    deferred_deletion: bool,
     /// Shared metadata
     meta: Arc<S3MetaData<S>>,
 }
@@ -72,7 +71,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
         parent: u64,
         name: &str,
         full_path: String,
-        attr: Arc<RwLock<FileAttr>>,
+        attr: FileAttr,
         data: S3NodeData,
         s3_backend: Arc<S>,
         meta: Arc<S3MetaData<S>>,
@@ -85,10 +84,10 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
             attr,
             data,
             // open count set to 0 by creation
-            open_count: AtomicI64::new(0),
+            open_count: 0,
             // lookup count set to 1 by creation
-            lookup_count: AtomicI64::new(1),
-            deferred_deletion: AtomicBool::new(false),
+            lookup_count: 1,
+            deferred_deletion: false ,
             meta,
         }
     }
@@ -97,10 +96,10 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
     pub fn new_child_node_of_parent(
         parent: &Self,
         child_name: &str,
-        child_attr: Arc<RwLock<FileAttr>>,
+        child_attr: FileAttr,
         target_path: Option<PathBuf>,
     ) -> Self {
-        let data = match child_attr.read().kind {
+        let data = match child_attr.kind {
             SFlag::S_IFDIR => S3NodeData::Directory(BTreeMap::new()),
             SFlag::S_IFREG => {
                 S3NodeData::RegFile(Arc::<GlobalCache>::clone(&parent.meta.data_cache))
@@ -112,9 +111,9 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
                     panic!("type is S_IFLNK, but target_path is None");
                 }
             }
-            _ => panic!("unsupported type {:?}", child_attr.read().kind),
+            _ => panic!("unsupported type {:?}", child_attr.kind),
         };
-        let full_path = parent.absolute_path_of_child(child_name, child_attr.read().kind);
+        let full_path = parent.absolute_path_of_child(child_name, child_attr.kind);
         Self {
             s3_backend: Arc::clone(&parent.s3_backend),
             parent: parent.get_ino(),
@@ -123,10 +122,10 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
             attr: child_attr,
             data,
             // lookup count set to 0 for sync
-            open_count: AtomicI64::new(0),
+            open_count: 0,
             // open count set to 0 for sync
-            lookup_count: AtomicI64::new(0),
-            deferred_deletion: AtomicBool::new(false),
+            lookup_count: 0,
+            deferred_deletion: false,
             meta: Arc::clone(&parent.meta),
         }
     }
@@ -155,7 +154,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
             }
         }
         */
-        self.attr.write().clone_from(&new_attr);
+        self.attr.clone_from(&new_attr);
         old_attr
     }
 
@@ -204,7 +203,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
 
     /// Increase node lookup count
     fn inc_lookup_count(&self) -> i64 {
-        self.lookup_count.fetch_add(1, atomic::Ordering::Relaxed)
+        self.lookup_count + 1
     }
 
     /// Helper function to check need to load node data or not
@@ -260,7 +259,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
     /// Increase node open count
     fn inc_open_count(&self) -> i64 {
         // TODO: add the usage
-        self.open_count.fetch_add(1, atomic::Ordering::Relaxed)
+        self.open_count + 1
     }
 
     /// Open root node
@@ -276,7 +275,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
                 //todo: handle different type of error, key not exist, net err, etc.
                 debug!("read persit dir error {e}");
                 let now = SystemTime::now();
-                let attr = Arc::new(RwLock::new(FileAttr {
+                let attr = FileAttr {
                     ino: root_ino,
                     atime: now,
                     mtime: now,
@@ -284,7 +283,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
                     crtime: now,
                     kind: SFlag::S_IFDIR,
                     ..FileAttr::default()
-                }));
+                };
 
                 let root_node = Self::new(
                     root_ino,
@@ -304,7 +303,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
                         root_ino,
                         name,
                         "/".to_owned(),
-                        Arc::new(RwLock::new(attr)),
+                        attr,
                         data.new_s3_node_data_dir(),
                         s3_backend,
                         meta,
@@ -333,7 +332,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
             S3NodeData::SymLink(..) => panic!("forbidden to flush data for link"),
         };
 
-        let size = self.attr.read().size;
+        let size = self.attr.size;
         if self.need_load_file_data(0, size.cast()).await {
             let load_res = self.load_data(0, size.cast()).await;
             if let Err(e) = load_res {
@@ -431,7 +430,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
 
     #[inline]
     fn set_ino(&mut self, ino: INum) {
-        self.attr.write().ino = ino;
+        self.attr.ino = ino;
     }
 
     /// Get node fd
@@ -483,7 +482,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
     /// Get node attribute
     #[inline]
     fn get_attr(&self) -> FileAttr {
-        *self.attr.read()
+        self.attr
     }
 
     /// Set node attribute
@@ -500,34 +499,33 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
 
     /// Get node open count
     fn get_open_count(&self) -> i64 {
-        self.open_count.load(atomic::Ordering::Relaxed)
+        self.open_count
     }
 
     /// Decrease node open count
     fn dec_open_count(&self) -> i64 {
-        self.open_count.fetch_sub(1, atomic::Ordering::Relaxed)
+        self.open_count - 1 
     }
 
     /// Get node lookup count
     fn get_lookup_count(&self) -> i64 {
-        self.lookup_count.load(atomic::Ordering::Relaxed)
+        self.lookup_count 
     }
 
     /// Decrease node lookup count
     fn dec_lookup_count_by(&self, nlookup: u64) -> i64 {
         debug_assert!(nlookup < std::i64::MAX.cast());
-        self.lookup_count
-            .fetch_sub(nlookup.cast(), atomic::Ordering::Relaxed)
+        self.lookup_count - nlookup as i64
     }
 
     /// Mark node as deferred deletion
     fn mark_deferred_deletion(&self) {
-        self.deferred_deletion.store(true, Ordering::Relaxed);
+        self.deferred_deletion = true
     }
 
     /// If node is marked as deferred deletion
     fn is_deferred_deletion(&self) -> bool {
-        self.deferred_deletion.load(Ordering::Relaxed)
+        self.deferred_deletion
     }
 
     /// Load attribute
@@ -586,7 +584,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
     /// check whether to load directory entry data or not
     fn need_load_dir_data(&self) -> bool {
         debug_assert_eq!(
-            self.attr.read().kind,
+            self.attr.kind,
             SFlag::S_IFDIR,
             "fobidden to check non-directory node need load data or not",
         );
@@ -598,12 +596,12 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
     /// Check whether to load file content data or not
     async fn need_load_file_data(&self, offset: usize, len: usize) -> bool {
         debug_assert_eq!(
-            self.attr.read().kind,
+            self.attr.kind,
             SFlag::S_IFREG,
             "fobidden to check non-file node need load data or not",
         );
 
-        if offset >= self.attr.read().size.cast() {
+        if offset >= self.attr.size.cast() {
             return false;
         }
 
@@ -660,7 +658,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
         }
 
         // get symbol file attribute
-        let child_attr = Arc::new(RwLock::new(FileAttr {
+        let child_attr = FileAttr {
             ino: inum,
             kind: SFlag::S_IFLNK,
             size: target_path
@@ -671,7 +669,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
             blocks: 0,
             perm: 0o777,
             ..FileAttr::now()
-        }));
+        };
 
         let target_path = {
             // insert new entry to parent directory
@@ -679,7 +677,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
                 // child_attr.ino,
                 child_symlink_name.to_owned(),
                 // SFlag::S_IFLNK,
-                Arc::clone(&child_attr),
+                child_attr,
             );
             let dir_data_mut = self.get_dir_data_mut();
             let previous_value = dir_data_mut.insert(child_symlink_name.to_owned(), entry);
@@ -703,7 +701,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
     async fn load_child_symlink(
         &self,
         child_symlink_name: &str,
-        child_attr: Arc<RwLock<FileAttr>>,
+        child_attr: FileAttr,
     ) -> anyhow::Result<Self> {
         let absolute_path = self.absolute_path_with_child(child_symlink_name);
 
@@ -736,7 +734,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
     async fn open_child_dir(
         &self,
         child_dir_name: &str,
-        child_attr: Arc<RwLock<FileAttr>>,
+        child_attr: FileAttr,
     ) -> anyhow::Result<Self> {
         // lookup count and open count are increased to 1 by creation
         let full_path = format!("{}{}/", self.full_path, child_dir_name);
@@ -780,16 +778,16 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
         }
 
         // get new directory attribute
-        let child_attr = Arc::new(RwLock::new(FileAttr {
+        let child_attr = FileAttr {
             ino: inum,
             kind: SFlag::S_IFDIR,
             perm: fs_util::parse_mode_bits(mode.bits()),
             ..FileAttr::now()
-        }));
-        debug_assert_eq!(SFlag::S_IFDIR, child_attr.read().kind);
+        };
+        debug_assert_eq!(SFlag::S_IFDIR, child_attr.kind);
 
         // insert new entry to parent directory
-        let entry = DirEntry::new(child_dir_name.to_owned(), Arc::clone(&child_attr));
+        let entry = DirEntry::new(child_dir_name.to_owned(), child_attr);
 
         let dir_data_mut = self.get_dir_data_mut();
         let previous_value = dir_data_mut.insert(child_dir_name.to_owned(), entry);
@@ -816,7 +814,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
     async fn open_child_file(
         &self,
         child_file_name: &str,
-        child_attr: Arc<RwLock<FileAttr>>,
+        child_attr: FileAttr,
         _oflags: OFlag,
         global_cache: Arc<GlobalCache>,
     ) -> anyhow::Result<Self> {
@@ -856,17 +854,17 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
         }
 
         // get new file attribute
-        let child_attr = Arc::new(RwLock::new(FileAttr {
+        let child_attr = FileAttr {
             ino: inum,
             kind: SFlag::S_IFREG,
             perm: fs_util::parse_mode_bits(mode.bits()),
             size: 0,
             blocks: 0,
             ..FileAttr::now()
-        }));
-        debug_assert_eq!(SFlag::S_IFREG, child_attr.read().kind);
+        };
+        debug_assert_eq!(SFlag::S_IFREG, child_attr.kind);
 
-        let entry = DirEntry::new(child_file_name.to_owned(), Arc::clone(&child_attr));
+        let entry = DirEntry::new(child_file_name.to_owned(), child_attr);
 
         let dir_data_mut = self.get_dir_data_mut();
         // insert new entry to parent directory
@@ -912,9 +910,8 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
                     global_cache.round_up(offset.overflow_sub(aligned_offset).overflow_add(len));
 
                 let new_len =
-                    if new_len_tmp.overflow_add(aligned_offset) > self.attr.read().size.cast() {
+                    if new_len_tmp.overflow_add(aligned_offset) > self.attr.size.cast() {
                         self.attr
-                            .read()
                             .size
                             .cast::<usize>()
                             .overflow_sub(aligned_offset)
@@ -1127,7 +1124,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
         let written_size = data.len();
 
         {
-            let mut attr_write = self.attr.write();
+            let mut attr_write = self.attr;
             // update the attribute of the written file
             attr_write.size = std::cmp::max(
                 attr_write.size,
@@ -1135,7 +1132,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
             );
         }
 
-        debug!("file {:?} size = {:?}", self.name, self.attr.read().size);
+        debug!("file {:?} size = {:?}", self.name, self.attr.size);
         self.update_mtime_ctime_to_now();
         //FileAttr changed, remember to persist the directory after calling this fn
 

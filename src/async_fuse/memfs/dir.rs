@@ -11,13 +11,11 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::io::RawFd;
 use std::path::Path;
 use std::ptr::NonNull;
-use std::sync::Arc;
 
 use libc::ino_t;
 use memchr::memchr;
 use nix::fcntl::OFlag;
 use nix::sys::stat::{Mode, SFlag};
-use parking_lot::RwLock;
 
 use super::fs_util::FileAttr;
 
@@ -120,17 +118,17 @@ pub struct DirEntry {
     /// The entry name
     name: String,
     /// File attr
-    file_attr: Arc<RwLock<FileAttr>>,
+    file_attr: FileAttr,
 }
 
 impl DirEntry {
     /// Create `DirEntry`
-    pub const fn new(name: String, file_attr: Arc<RwLock<FileAttr>>) -> Self {
+    pub const fn new(name: String, file_attr: FileAttr) -> Self {
         Self { name, file_attr }
     }
     /// Returns the inode number (`d_ino`) of the underlying `dirent`.
     pub fn ino(&self) -> ino_t {
-        self.file_attr.read().ino
+        self.file_attr.ino
     }
 
     /// Returns the bare file name of this directory entry without any other leading path component.
@@ -139,16 +137,17 @@ impl DirEntry {
     }
 
     /// Return the ref of file attr arc
-    pub fn file_attr_arc_ref(&self) -> &Arc<RwLock<FileAttr>> {
+    pub fn file_attr_ref(&self) -> &FileAttr {
         &self.file_attr
     }
+
     /// Returns the type of this directory entry, if known.
     ///
     /// See platform `readdir(3)` or `dirent(5)` manpage for when the file type is known;
     /// notably, some Linux filesystems don't implement this. The caller should use `stat` or
     /// `fstat` if this returns `None`.
     pub fn entry_type(&self) -> SFlag {
-        self.file_attr.read().kind
+        self.file_attr.kind
     }
 
     /// Build `DirEntry` from `libc::dirent64`
@@ -179,11 +178,11 @@ impl DirEntry {
 
         Self {
             name,
-            file_attr: Arc::new(RwLock::new(FileAttr {
+            file_attr: FileAttr {
                 ino,
                 kind: entry_type,
                 ..FileAttr::now()
-            })),
+            },
         }
     }
 }
