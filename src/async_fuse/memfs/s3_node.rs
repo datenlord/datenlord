@@ -8,6 +8,10 @@ use super::node::Node;
 use super::persist;
 use super::s3_metadata::S3MetaData;
 use super::s3_wrapper::S3BackEnd;
+use super::serial::{
+    dir_entry_to_serial, file_attr_to_serial, serial_to_file_attr, DeserialS3NodeArgs,
+    SerialFileAttr, SerialNode, SerialNodeData,
+};
 use super::SetAttrParam;
 use crate::async_fuse::fuse::fuse_reply::{AsIoVec, StatFsParam};
 use crate::async_fuse::fuse::protocol::INum;
@@ -24,13 +28,13 @@ use std::collections::BTreeMap;
 use std::collections::VecDeque;
 use std::os::unix::io::RawFd;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{self, AtomicBool, AtomicI64, Ordering,AtomicUsize};
+use std::sync::atomic::{self, AtomicBool, AtomicI64, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::SystemTime;
 use tokio::sync::RwLockWriteGuard;
 
 /// S3's available fd count
-static GLOBAL_S3_FD_CNT: AtomicUsize = AtomicUsize::new(4);
+static GLOBAL_S3_FD_CNT: AtomicU32 = AtomicU32::new(4);
 
 /// A file node data or a directory node data
 #[derive(Debug)]
@@ -42,6 +46,23 @@ pub enum S3NodeData {
     /// Symlink target data
     // SymLink(Box<SymLinkData>),
     SymLink(PathBuf),
+}
+
+impl S3NodeData {
+    /// Serializes the node data
+    pub fn serial(&self) -> SerialNodeData {
+        match *self {
+            Self::Directory(ref dir) => {
+                let mut serial_dir = BTreeMap::new();
+                for (name, dir_entry) in dir {
+                    serial_dir.insert(name.clone(), dir_entry_to_serial(dir_entry));
+                }
+                SerialNodeData::Directory(serial_dir)
+            }
+            Self::RegFile(_) => SerialNodeData::File,
+            Self::SymLink(ref target) => SerialNodeData::SymLink(target.clone()),
+        }
+    }
 }
 
 /// A file node or a directory node
@@ -74,6 +95,7 @@ pub struct S3Node<S: S3BackEnd + Sync + Send + 'static> {
 }
 
 impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
+    #[allow(clippy::too_many_arguments)]
     /// Create `S3Node`
     fn new(
         parent: u64,
@@ -83,8 +105,8 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
         data: S3NodeData,
         s3_backend: Arc<S>,
         etcd_client: &Arc<EtcdDelegate>,
-        k8s_node_id: &String,
-        k8s_volume_info: &String,
+        k8s_node_id: &str,
+        k8s_volume_info: &str,
     ) -> Self {
         Self {
             s3_backend,
@@ -99,8 +121,53 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
             lookup_count: AtomicI64::new(1),
             deferred_deletion: AtomicBool::new(false),
             etcd_client: Arc::clone(etcd_client),
-            k8s_node_id: k8s_node_id.clone(),
-            k8s_volume_info: k8s_volume_info.clone(),
+            k8s_node_id: k8s_node_id.to_owned(),
+            k8s_volume_info: k8s_volume_info.to_owned(),
+        }
+    }
+
+    #[allow(dead_code, clippy::too_many_arguments)]
+    /// Create `S3Node`
+    fn deserilize_new(
+        parent: u64,
+        name: &str,
+        full_path: String,
+        attr: &SerialFileAttr,
+        data: SerialNodeData,
+        open_count: i64,
+        lookup_count: i64,
+        deferred_deletion: bool,
+        arg: &DeserialS3NodeArgs<S>,
+    ) -> Self {
+        Self {
+            s3_backend: Arc::clone(&arg.s3_backend),
+            parent,
+            full_path,
+            name: name.to_owned(),
+            attr: Arc::new(RwLock::new(serial_to_file_attr(attr))),
+            data: data.deserialize_s3(Arc::clone(&arg.data_cache)),
+            // open count set to 0 by creation
+            open_count: AtomicI64::new(open_count),
+            // lookup count set to 1 by creation
+            lookup_count: AtomicI64::new(lookup_count),
+            deferred_deletion: AtomicBool::new(deferred_deletion),
+            etcd_client: Arc::clone(&arg.etcd_client),
+            k8s_node_id: arg.k8s_node_id.clone(),
+            k8s_volume_info: arg.k8s_volume_info.clone(),
+        }
+    }
+
+    /// This function is used to create a new `S3Node` by module `serial`
+    pub fn prepare_serial_info(&self) -> SerialNode {
+        SerialNode {
+            parent: self.parent,
+            name: self.name.clone(),
+            full_path: self.full_path.clone(),
+            attr: file_attr_to_serial(&self.attr.read().clone()),
+            data: self.data.serial(),
+            open_count: self.open_count.load(Ordering::SeqCst),
+            lookup_count: self.lookup_count.load(Ordering::SeqCst),
+            deferred_deletion: self.deferred_deletion.load(Ordering::SeqCst),
         }
     }
 
@@ -181,10 +248,11 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
         self.full_path = full_path;
     }
 
+    #[allow(clippy::unused_self)]
     /// Get new fd
     fn new_fd(&self) -> u32 {
         // Add global fd counter
-        GLOBAL_S3_FD_CNT.fetch_add(1, Ordering::SeqCst) as u32
+        GLOBAL_S3_FD_CNT.fetch_add(1, Ordering::SeqCst)
     }
 
     /// Get absolute path of a child file
