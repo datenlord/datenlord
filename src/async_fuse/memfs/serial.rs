@@ -1,6 +1,10 @@
+use super::cache::GlobalCache;
 use super::dir::DirEntry;
 use super::fs_util::FileAttr;
+use super::s3_node::S3NodeData;
+use super::s3_wrapper::S3BackEnd;
 use crate::async_fuse::fuse::protocol::INum;
+use crate::common::etcd_delegate::EtcdDelegate;
 use nix::sys::stat::SFlag;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
@@ -73,26 +77,58 @@ pub enum SerialNodeData {
     SymLink(PathBuf),
 }
 
+impl SerialNodeData {
+    /// Deserializes the node data
+    pub fn deserialize_s3(self, data_cache: Arc<GlobalCache>) -> S3NodeData {
+        match self {
+            SerialNodeData::Directory(dir) => {
+                let mut dir_entry_map = BTreeMap::new();
+                for (name, entry) in dir {
+                    dir_entry_map.insert(name, serial_to_dir_entry(&entry));
+                }
+                S3NodeData::Directory(dir_entry_map)
+            }
+            SerialNodeData::File => S3NodeData::RegFile(data_cache),
+            SerialNodeData::SymLink(path) => S3NodeData::SymLink(path),
+        }
+    }
+}
 /// TODO: We should discuss the design about persist
 /// Serializable 'Node'
 #[derive(Serialize, Deserialize, Debug)]
 pub struct SerialNode {
     /// Parent node i-number
-    parent: u64,
+    pub(crate) parent: u64,
     /// S3Node name
-    name: String,
+    pub(crate) name: String,
     /// Full path of S3Node
-    full_path: String,
+    pub(crate) full_path: String,
     /// Node attribute
-    attr: SerialFileAttr,
+    pub(crate) attr: SerialFileAttr,
     /// Node data
-    data: SerialNodeData,
+    pub(crate) data: SerialNodeData,
     /// S3Node open counter
-    open_count: i64,
+    pub(crate) open_count: i64,
     /// S3Node lookup counter
-    lookup_count: i64,
+    pub(crate) lookup_count: i64,
     /// If S3Node has been marked as deferred deletion
-    deferred_delete: bool,
+    pub(crate) deferred_deletion: bool,
+}
+
+#[allow(dead_code)]
+#[derive(Debug)]
+/// Deserializable 'Node' arguments
+pub struct DeserialS3NodeArgs<S: S3BackEnd + Sync + Send + 'static> {
+    /// The s3 backend
+    pub(crate) s3_backend: Arc<S>,
+    /// The etcd client
+    pub(crate) etcd_client: Arc<EtcdDelegate>,
+    /// The k8s node id
+    pub(crate) k8s_node_id: String,
+    /// The k8s volume info
+    pub(crate) k8s_volume_info: String,
+    /// The global cache(for file data)
+    pub(crate) data_cache: Arc<GlobalCache>,
 }
 
 /// Convert `SFlag` to `SerialSFlag`
