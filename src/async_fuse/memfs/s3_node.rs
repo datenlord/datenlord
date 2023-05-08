@@ -24,10 +24,13 @@ use std::collections::BTreeMap;
 use std::collections::VecDeque;
 use std::os::unix::io::RawFd;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{self, AtomicBool, AtomicI64, Ordering};
+use std::sync::atomic::{self, AtomicBool, AtomicI64, Ordering,AtomicUsize};
 use std::sync::Arc;
 use std::time::SystemTime;
 use tokio::sync::RwLockWriteGuard;
+
+/// S3's available fd count
+static GLOBAL_S3_FD_CNT: AtomicUsize = AtomicUsize::new(4);
 
 /// A file node data or a directory node data
 #[derive(Debug)]
@@ -62,8 +65,12 @@ pub struct S3Node<S: S3BackEnd + Sync + Send + 'static> {
     lookup_count: AtomicI64,
     /// If S3Node has been marked as deferred deletion
     deferred_deletion: AtomicBool,
-    /// Shared metadata
-    meta: Arc<S3MetaData<S>>,
+    /// Etcd client
+    etcd_client: Arc<EtcdDelegate>,
+    /// K8s node id
+    k8s_node_id: String,
+    /// K8S volume_info
+    k8s_volume_info: String,
 }
 
 impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
@@ -75,7 +82,9 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
         attr: Arc<RwLock<FileAttr>>,
         data: S3NodeData,
         s3_backend: Arc<S>,
-        meta: Arc<S3MetaData<S>>,
+        etcd_client: &Arc<EtcdDelegate>,
+        k8s_node_id: &String,
+        k8s_volume_info: &String,
     ) -> Self {
         Self {
             s3_backend,
@@ -89,7 +98,9 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
             // lookup count set to 1 by creation
             lookup_count: AtomicI64::new(1),
             deferred_deletion: AtomicBool::new(false),
-            meta,
+            etcd_client: Arc::clone(etcd_client),
+            k8s_node_id: k8s_node_id.clone(),
+            k8s_volume_info: k8s_volume_info.clone(),
         }
     }
 
@@ -99,12 +110,11 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
         child_name: &str,
         child_attr: Arc<RwLock<FileAttr>>,
         target_path: Option<PathBuf>,
+        data_cache: &Arc<GlobalCache>,
     ) -> Self {
         let data = match child_attr.read().kind {
             SFlag::S_IFDIR => S3NodeData::Directory(BTreeMap::new()),
-            SFlag::S_IFREG => {
-                S3NodeData::RegFile(Arc::<GlobalCache>::clone(&parent.meta.data_cache))
-            }
+            SFlag::S_IFREG => S3NodeData::RegFile(Arc::<GlobalCache>::clone(data_cache)),
             SFlag::S_IFLNK => {
                 if let Some(path) = target_path {
                     S3NodeData::SymLink(path)
@@ -127,7 +137,9 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
             // open count set to 0 for sync
             lookup_count: AtomicI64::new(0),
             deferred_deletion: AtomicBool::new(false),
-            meta: Arc::clone(&parent.meta),
+            etcd_client: Arc::clone(&parent.etcd_client),
+            k8s_node_id: parent.k8s_node_id.clone(),
+            k8s_volume_info: parent.k8s_volume_info.clone(),
         }
     }
 
@@ -171,7 +183,8 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
 
     /// Get new fd
     fn new_fd(&self) -> u32 {
-        self.meta.cur_fd.fetch_add(1, atomic::Ordering::SeqCst)
+        // Add global fd counter
+        GLOBAL_S3_FD_CNT.fetch_add(1, Ordering::SeqCst) as u32
     }
 
     /// Get absolute path of a child file
@@ -293,7 +306,9 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
                     attr,
                     S3NodeData::Directory(BTreeMap::new()),
                     s3_backend,
-                    meta,
+                    &meta.etcd_client,
+                    &meta.node_id,
+                    &meta.volume_info,
                 );
 
                 Ok(root_node)
@@ -307,7 +322,9 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
                         Arc::new(RwLock::new(attr)),
                         data.new_s3_node_data_dir(),
                         s3_backend,
-                        meta,
+                        &meta.etcd_client,
+                        &meta.node_id,
+                        &meta.volume_info,
                     );
                     debug!("Success to load root dir.");
                     Ok(root_node)
@@ -695,7 +712,9 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
             child_attr,
             S3NodeData::SymLink(target_path),
             Arc::clone(&self.s3_backend),
-            Arc::clone(&self.meta),
+            &self.etcd_client,
+            &self.k8s_node_id,
+            &self.k8s_volume_info,
         ))
     }
 
@@ -728,7 +747,9 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
             child_attr,
             S3NodeData::SymLink(target_path),
             Arc::clone(&self.s3_backend),
-            Arc::clone(&self.meta),
+            &self.etcd_client,
+            &self.k8s_node_id,
+            &self.k8s_volume_info,
         ))
     }
 
@@ -755,7 +776,9 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
             child_attr,
             dirdata,
             Arc::clone(&self.s3_backend),
-            Arc::clone(&self.meta),
+            &self.etcd_client,
+            &self.k8s_node_id,
+            &self.k8s_volume_info,
         );
 
         Ok(child_node)
@@ -805,7 +828,9 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
             child_attr,
             S3NodeData::Directory(BTreeMap::new()),
             Arc::clone(&self.s3_backend),
-            Arc::clone(&self.meta),
+            &self.etcd_client,
+            &self.k8s_node_id,
+            &self.k8s_volume_info,
         );
 
         self.update_mtime_ctime_to_now();
@@ -827,7 +852,9 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
             child_attr,
             S3NodeData::RegFile(global_cache),
             Arc::clone(&self.s3_backend),
-            Arc::clone(&self.meta),
+            &self.etcd_client,
+            &self.k8s_node_id,
+            &self.k8s_volume_info,
         ))
     }
 
@@ -882,7 +909,9 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
             child_attr,
             S3NodeData::RegFile(global_cache),
             Arc::clone(&self.s3_backend),
-            Arc::clone(&self.meta),
+            &self.etcd_client,
+            &self.k8s_node_id,
+            &self.k8s_volume_info,
         ))
     }
 
@@ -893,9 +922,9 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
             S3NodeData::Directory(..) => {
                 // TODO: really read dir from S3
                 let entries = match dist_client::load_dir(
-                    Arc::<EtcdDelegate>::clone(&self.meta.etcd_client),
-                    &self.meta.node_id,
-                    &self.meta.volume_info,
+                    Arc::<EtcdDelegate>::clone(&self.etcd_client),
+                    &self.k8s_node_id,
+                    &self.k8s_volume_info,
                     &self.full_path,
                 )
                 .await?
@@ -924,9 +953,9 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
 
                 // dist_client::read_data() won't get lock at remote, OK to put here.
                 let file_data_vec = match dist_client::read_data(
-                    Arc::<EtcdDelegate>::clone(&self.meta.etcd_client),
-                    &self.meta.node_id,
-                    &self.meta.volume_info,
+                    Arc::<EtcdDelegate>::clone(&self.etcd_client),
+                    &self.k8s_node_id,
+                    &self.k8s_volume_info,
                     &self.full_path,
                     aligned_offset
                         .overflow_div(global_cache.get_align().cast())
