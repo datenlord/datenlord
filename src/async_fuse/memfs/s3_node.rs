@@ -146,9 +146,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
             name: name.to_owned(),
             attr: Arc::new(RwLock::new(serial_to_file_attr(attr))),
             data: data.deserialize_s3(Arc::clone(&arg.data_cache)),
-            // open count set to 0 by creation
             open_count: AtomicI64::new(open_count),
-            // lookup count set to 1 by creation
             lookup_count: AtomicI64::new(lookup_count),
             deferred_deletion: AtomicBool::new(deferred_deletion),
             etcd_client: Arc::clone(&arg.etcd_client),
