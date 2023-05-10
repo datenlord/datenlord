@@ -49,7 +49,7 @@ const S3_INFO_DELIMITER: char = ';';
 #[allow(dead_code)]
 pub struct S3MetaData<S: S3BackEnd + Send + Sync + 'static> {
     /// S3 backend
-    s3_backend: Arc<S>,
+    pub(crate) s3_backend: Arc<S>,
     /// Etcd client
     pub(crate) etcd_client: Arc<EtcdDelegate>,
     /// The cache to hold opened directories and files
@@ -61,9 +61,9 @@ pub struct S3MetaData<S: S3BackEnd + Send + Sync + 'static> {
     /// Current available fd, it'll increase after using
     pub(crate) cur_fd: AtomicU32,
     /// Current service id
-    pub(crate) node_id: String,
+    pub(crate) node_id: Arc<str>,
     /// Volume Info
-    pub(crate) volume_info: String,
+    pub(crate) volume_info: Arc<str>,
     /// Full path and node mapping
     pub(crate) path2inum: RwLock<BTreeMap<String, INum>>,
     /// Fuse fd
@@ -111,6 +111,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
             Arc::<EtcdDelegate>::clone(&etcd_arc),
             node_id,
         ));
+
         let meta = Arc::new(Self {
             s3_backend: Arc::clone(&s3_backend),
             cache: RwLock::new(BTreeMap::new()),
@@ -118,8 +119,8 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
             data_cache: Arc::<GlobalCache>::clone(&data_cache),
             inode_state: InodeState::new(),
             cur_fd: AtomicU32::new(4),
-            node_id: node_id.to_owned(),
-            volume_info: volume_info.to_owned(),
+            node_id: Arc::<str>::from(node_id.to_owned()),
+            volume_info: Arc::<str>::from(volume_info.to_owned()),
             path2inum: RwLock::new(BTreeMap::new()),
             fuse_fd: Mutex::new(-1_i32),
             persist_handle,
@@ -334,7 +335,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         // inode is cached, so we should remove the path mark
         // We dont need to sync for the unmark
         let etcd_client = Arc::clone(&self.etcd_client);
-        let volume = self.volume_info.clone();
+        let volume = Arc::clone(&self.volume_info);
         tokio::spawn(async move {
             let vol = volume;
             etcd::unmark_fullpath_with_ino_in_etcd(etcd_client, &vol, full_path).await;

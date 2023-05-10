@@ -1,7 +1,7 @@
-use super::INum;
+use super::{s3_node::S3Node, s3_wrapper::S3BackEnd, INum, S3MetaData};
+use crate::common::error::{Context, DatenLordResult};
 use async_trait::async_trait;
 use core::fmt::Debug;
-use datenlord::common::error::{Context, DatenLordResult};
 use etcd_client::TxnCmp;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -22,6 +22,23 @@ pub enum ValueType {
     INum(INum),
     ///
     Attr(SerialFileAttr),
+}
+
+impl ValueType {
+    #[allow(dead_code)]
+    /// Turn the `ValueType` into `SerialNode` then into `S3Node`.
+    // Notice : If the value is not `ValueType::Node`, it will panic
+    pub fn into_s3_node<S: S3BackEnd + Send + Sync + 'static>(
+        self,
+        meta: &S3MetaData<S>,
+    ) -> S3Node<S> {
+        match self {
+            ValueType::Node(node) => S3Node::from_serial_node(node, meta),
+            ValueType::DirEntry(_) | ValueType::INum(_) | ValueType::Attr(_) => {
+                panic!("expect ValueType::Node but get {self:?}");
+            }
+        }
+    }
 }
 
 /// The `KeyType` is used to locate the value in the distributed K/V storage.
@@ -57,6 +74,7 @@ impl KeyType {
 pub trait MetaTxn {
     /// Get the value by the key.
     /// Notice : do not get the same key twice in one transaction.
+    #[must_use]
     async fn get(&mut self, key: &KeyType) -> DatenLordResult<Option<ValueType>>;
     /// Set the value by the key.
     async fn set(&mut self, key: &KeyType, value: &ValueType) -> DatenLordResult<()>;
@@ -220,6 +238,7 @@ impl EtcdKVEngine {
 }
 
 #[allow(unused_macros)]
+#[macro_export]
 /// add comment about why use macro here not closure
 macro_rules! retry_txn {
     ($retry_num : expr ,$logic: block) => {{
@@ -263,6 +282,7 @@ impl KVEngine for EtcdKVEngine {
 mod test {
 
     use super::*;
+    use crate::common::error::DatenLordError;
 
     const ETCD_ADDRESS: &str = "localhost:2379";
 
@@ -361,8 +381,6 @@ mod test {
         second_handle.await.unwrap();
         third_handle.await.unwrap();
     }
-
-    use datenlord::common::error::DatenLordError;
 
     #[tokio::test]
     async fn test_txn_retry() {

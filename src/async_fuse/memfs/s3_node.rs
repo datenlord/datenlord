@@ -9,8 +9,7 @@ use super::persist;
 use super::s3_metadata::S3MetaData;
 use super::s3_wrapper::S3BackEnd;
 use super::serial::{
-    dir_entry_to_serial, file_attr_to_serial, serial_to_file_attr, DeserialS3NodeArgs,
-    SerialFileAttr, SerialNode, SerialNodeData,
+    dir_entry_to_serial, file_attr_to_serial, serial_to_file_attr, SerialNode, SerialNodeData,
 };
 use super::SetAttrParam;
 use crate::async_fuse::fuse::fuse_reply::{AsIoVec, StatFsParam};
@@ -89,9 +88,9 @@ pub struct S3Node<S: S3BackEnd + Sync + Send + 'static> {
     /// Etcd client
     etcd_client: Arc<EtcdDelegate>,
     /// K8s node id
-    k8s_node_id: String,
+    k8s_node_id: Arc<str>,
     /// K8S volume_info
-    k8s_volume_info: String,
+    k8s_volume_info: Arc<str>,
 }
 
 impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
@@ -105,8 +104,8 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
         data: S3NodeData,
         s3_backend: Arc<S>,
         etcd_client: &Arc<EtcdDelegate>,
-        k8s_node_id: &str,
-        k8s_volume_info: &str,
+        k8s_node_id: &Arc<str>,
+        k8s_volume_info: &Arc<str>,
     ) -> Self {
         Self {
             s3_backend,
@@ -121,46 +120,38 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
             lookup_count: AtomicI64::new(1),
             deferred_deletion: AtomicBool::new(false),
             etcd_client: Arc::clone(etcd_client),
-            k8s_node_id: k8s_node_id.to_owned(),
-            k8s_volume_info: k8s_volume_info.to_owned(),
+            k8s_node_id: Arc::clone(k8s_node_id),
+            k8s_volume_info: Arc::clone(k8s_volume_info),
         }
     }
 
-    #[allow(dead_code, clippy::too_many_arguments)]
+    #[allow(dead_code)]
     /// Create `S3Node`
-    fn deserilize_new(
-        parent: u64,
-        name: &str,
-        full_path: String,
-        attr: &SerialFileAttr,
-        data: SerialNodeData,
-        open_count: i64,
-        lookup_count: i64,
-        deferred_deletion: bool,
-        arg: &DeserialS3NodeArgs<S>,
-    ) -> Self {
+    pub fn from_serial_node(serial_node: SerialNode, meta: &S3MetaData<S>) -> Self {
         Self {
-            s3_backend: Arc::clone(&arg.s3_backend),
-            parent,
-            full_path,
-            name: name.to_owned(),
-            attr: Arc::new(RwLock::new(serial_to_file_attr(attr))),
-            data: data.deserialize_s3(Arc::clone(&arg.data_cache)),
-            open_count: AtomicI64::new(open_count),
-            lookup_count: AtomicI64::new(lookup_count),
-            deferred_deletion: AtomicBool::new(deferred_deletion),
-            etcd_client: Arc::clone(&arg.etcd_client),
-            k8s_node_id: arg.k8s_node_id.clone(),
-            k8s_volume_info: arg.k8s_volume_info.clone(),
+            s3_backend: Arc::clone(&meta.s3_backend),
+            parent: serial_node.parent,
+            full_path: serial_node.full_path,
+            name: serial_node.name,
+            attr: Arc::new(RwLock::new(serial_to_file_attr(&serial_node.attr))),
+            data: serial_node
+                .data
+                .into_s3_nodedata(Arc::clone(&meta.data_cache)),
+            open_count: AtomicI64::new(serial_node.open_count),
+            lookup_count: AtomicI64::new(serial_node.lookup_count),
+            deferred_deletion: AtomicBool::new(serial_node.deferred_deletion),
+            etcd_client: Arc::clone(&meta.etcd_client),
+            k8s_node_id: Arc::clone(&meta.node_id),
+            k8s_volume_info: Arc::clone(&meta.volume_info),
         }
     }
 
     /// This function is used to create a new `S3Node` by module `serial`
-    pub fn prepare_serial_info(&self) -> SerialNode {
+    pub fn into_serial_node(self) -> SerialNode {
         SerialNode {
             parent: self.parent,
-            name: self.name.clone(),
-            full_path: self.full_path.clone(),
+            name: self.name,
+            full_path: self.full_path,
             attr: file_attr_to_serial(&self.attr.read().clone()),
             data: self.data.serial(),
             open_count: self.open_count.load(Ordering::SeqCst),
@@ -203,8 +194,8 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
             lookup_count: AtomicI64::new(0),
             deferred_deletion: AtomicBool::new(false),
             etcd_client: Arc::clone(&parent.etcd_client),
-            k8s_node_id: parent.k8s_node_id.clone(),
-            k8s_volume_info: parent.k8s_volume_info.clone(),
+            k8s_node_id: Arc::clone(&parent.k8s_node_id),
+            k8s_volume_info: Arc::clone(&parent.k8s_volume_info),
         }
     }
 
