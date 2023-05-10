@@ -2,9 +2,7 @@ use super::cache::GlobalCache;
 use super::dir::DirEntry;
 use super::fs_util::FileAttr;
 use super::s3_node::S3NodeData;
-use super::s3_wrapper::S3BackEnd;
 use crate::async_fuse::fuse::protocol::INum;
-use crate::common::etcd_delegate::EtcdDelegate;
 use nix::sys::stat::SFlag;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
@@ -79,7 +77,7 @@ pub enum SerialNodeData {
 
 impl SerialNodeData {
     /// Deserializes the node data
-    pub fn deserialize_s3(self, data_cache: Arc<GlobalCache>) -> S3NodeData {
+    pub fn into_s3_nodedata(self, data_cache: Arc<GlobalCache>) -> S3NodeData {
         match self {
             SerialNodeData::Directory(dir) => {
                 let mut dir_entry_map = BTreeMap::new();
@@ -113,22 +111,6 @@ pub struct SerialNode {
     pub(crate) lookup_count: i64,
     /// If S3Node has been marked as deferred deletion
     pub(crate) deferred_deletion: bool,
-}
-
-#[allow(dead_code)]
-#[derive(Debug)]
-/// Deserializable 'Node' arguments
-pub struct DeserialS3NodeArgs<S: S3BackEnd + Sync + Send + 'static> {
-    /// The s3 backend
-    pub(crate) s3_backend: Arc<S>,
-    /// The etcd client
-    pub(crate) etcd_client: Arc<EtcdDelegate>,
-    /// The k8s node id
-    pub(crate) k8s_node_id: String,
-    /// The k8s volume info
-    pub(crate) k8s_volume_info: String,
-    /// The global cache(for file data)
-    pub(crate) data_cache: Arc<GlobalCache>,
 }
 
 /// Convert `SFlag` to `SerialSFlag`
