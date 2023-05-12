@@ -19,6 +19,7 @@ use crate::async_fuse::fuse::file_system::FsAsyncResultSender;
 use crate::async_fuse::fuse::fuse_reply::FuseDeleteNotification;
 use crate::async_fuse::fuse::protocol::{FuseAttr, INum, FUSE_ROOT_ID};
 use crate::async_fuse::util;
+use crate::common::error::{DatenLordError, DatenLordResult};
 use crate::common::etcd_delegate::EtcdDelegate;
 use anyhow::Context;
 use async_trait::async_trait;
@@ -203,7 +204,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         mode: u32,
         node_type: SFlag,
         target_path: Option<&Path>,
-    ) -> anyhow::Result<(Duration, FuseAttr, u64)> {
+    ) -> DatenLordResult<(Duration, FuseAttr, u64)> {
         // pre-check
         let (parent_full_path, full_path, new_node_attr, fuse_attr) = {
             let mut cache = self.cache.write().await;
@@ -215,9 +216,9 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
             if !is_new {
                 // inum created by others or exist in remote cache
                 //todo delete parent node cache to update parent dir content
-                return Err(anyhow::anyhow!("create_node_helper() failed to create node, ino alloc failed, \
+                return Err(DatenLordError::from(anyhow::anyhow!("create_node_helper() failed to create node, ino alloc failed, \
                     the node of name={:?} already exists under parent directory of ino={} and name={:?}",
-                    node_name, parent, parent_node.get_name()));
+                    node_name, parent, parent_node.get_name())));
             }
 
             let parent_name = parent_node.get_name().to_owned();
@@ -351,7 +352,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         parent: INum,
         node_name: &str,
         node_type: SFlag,
-    ) -> anyhow::Result<()> {
+    ) -> DatenLordResult<()> {
         debug!(
             "remove_node_helper() about to remove parent ino={:?}, \
             child_name={:?}, child_type={:?}",
@@ -370,15 +371,12 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         &self,
         parent: INum,
         child_name: &str,
-    ) -> anyhow::Result<(Duration, FuseAttr, u64)> {
+    ) -> DatenLordResult<(Duration, FuseAttr, u64)> {
         let pre_check_res = self.lookup_pre_check(parent, child_name).await;
         let (ino, child_type, child_attr) = match pre_check_res {
             Ok((ino, child_type, child_attr)) => (ino, child_type, child_attr),
             Err(e) => {
-                debug!(
-                    "lookup() failed to pre-check, the error is: {}",
-                    crate::common::util::format_anyhow_error(&e),
-                );
+                debug!("lookup() failed to pre-check, the error is: {}", e);
                 return Err(e);
             }
         };
@@ -477,7 +475,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
     }
 
     /// Rename helper to exchange on disk
-    async fn rename_exchange_helper(&self, param: RenameParam) -> anyhow::Result<()> {
+    async fn rename_exchange_helper(&self, param: RenameParam) -> DatenLordResult<()> {
         let old = param.old_parent;
         let new = param.new_parent;
         self.rename_exchange_local(&param).await?;
@@ -488,7 +486,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
     }
 
     /// Rename helper to move on disk, it may replace destination entry
-    async fn rename_may_replace_helper(&self, param: RenameParam) -> anyhow::Result<()> {
+    async fn rename_may_replace_helper(&self, param: RenameParam) -> DatenLordResult<()> {
         let old = param.old_parent;
         let new = param.new_parent;
         self.rename_may_replace_local(&param, false).await?;
@@ -505,7 +503,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         fh: u64,
         _datasync: bool,
         // reply: ReplyEmpty,
-    ) -> anyhow::Result<()> {
+    ) -> DatenLordResult<()> {
         let mut cache = self.cache().write().await;
         let inode = cache.get_mut(&ino).unwrap_or_else(|| {
             panic!(
@@ -527,7 +525,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         offset: i64,
         data: Vec<u8>,
         flags: u32,
-    ) -> anyhow::Result<usize> {
+    ) -> DatenLordResult<usize> {
         let data_len = data.len();
         let (result, full_path, parent_ino) = {
             let mut cache = self.cache().write().await;
@@ -607,7 +605,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
         parent: INum,
         node_name: &str,
         cache: &'b mut RwLockWriteGuard<BTreeMap<INum, <Self as MetaData>::N>>,
-    ) -> anyhow::Result<&'b mut <Self as MetaData>::N> {
+    ) -> DatenLordResult<&'b mut <Self as MetaData>::N> {
         let parent_node = cache.get_mut(&parent).unwrap_or_else(|| {
             panic!(
                 "create_node_pre_check() found fs is inconsistent, \
@@ -655,7 +653,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
         &self,
         ino: INum,
         from_remote: bool,
-    ) -> anyhow::Result<()> {
+    ) -> DatenLordResult<()> {
         // remove entry from parent i-node
         let mut cache = self.cache.write().await;
         let inode = cache.get(&ino).unwrap_or_else(|| {
@@ -742,7 +740,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
         &self,
         parent: INum,
         name: &str,
-    ) -> anyhow::Result<(INum, SFlag, Arc<SyncRwLock<FileAttr>>)> {
+    ) -> DatenLordResult<(INum, SFlag, Arc<SyncRwLock<FileAttr>>)> {
         // lookup child ino and type first
         let cache = self.cache.read().await;
         let parent_node = cache.get(&parent).unwrap_or_else(|| {
@@ -785,7 +783,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
         new_parent: INum,
         new_name: &str,
         no_replace: bool,
-    ) -> anyhow::Result<(RawFd, INum, RawFd, Option<INum>)> {
+    ) -> DatenLordResult<(RawFd, INum, RawFd, Option<INum>)> {
         let cache = self.cache.read().await;
         let old_parent_node = cache.get(&old_parent).unwrap_or_else(|| {
             panic!(
@@ -898,7 +896,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
     }
 
     /// Rename exchange on local node
-    async fn rename_exchange_local(&self, param: &RenameParam) -> anyhow::Result<()> {
+    async fn rename_exchange_local(&self, param: &RenameParam) -> DatenLordResult<()> {
         let old_parent = param.old_parent;
         let old_name = param.old_name.as_str();
         let new_parent = param.new_parent;
@@ -918,10 +916,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
                 (old_parent_fd, old_entry_ino, new_parent_fd, new_entry_ino)
             }
             Err(e) => {
-                debug!(
-                    "rename() pre-check failed, the error is: {}",
-                    crate::common::util::format_anyhow_error(&e)
-                );
+                debug!("rename() pre-check failed, the error is: {}", e);
                 return Err(e);
             }
         };
@@ -997,7 +992,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
         &self,
         param: &RenameParam,
         from_remote: bool,
-    ) -> anyhow::Result<()> {
+    ) -> DatenLordResult<()> {
         let old_parent = param.old_parent;
         let old_name = &param.old_name;
         let new_parent = param.new_parent;
@@ -1017,10 +1012,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
                 (old_parent_fd, old_entry_ino, new_parent_fd, new_entry_ino)
             }
             Err(e) => {
-                debug!(
-                    "rename() pre-check failed, the error is: {}",
-                    crate::common::util::format_anyhow_error(&e)
-                );
+                debug!("rename() pre-check failed, the error is: {}", e);
                 return Err(e);
             }
         };
@@ -1082,7 +1074,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
         node_name: &str,
         node_type: SFlag,
         from_remote: bool,
-    ) -> anyhow::Result<()> {
+    ) -> DatenLordResult<()> {
         debug!(
             "remove_node_local() about to remove parent ino={:?}, \
             child_name={:?}, child_type={:?}",

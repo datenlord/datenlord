@@ -15,7 +15,9 @@ use super::SetAttrParam;
 use crate::async_fuse::fuse::fuse_reply::{AsIoVec, StatFsParam};
 use crate::async_fuse::fuse::protocol::INum;
 use crate::async_fuse::metrics;
+use crate::common::error::{DatenLordError, DatenLordResult};
 use crate::common::etcd_delegate::EtcdDelegate;
+use anyhow::anyhow;
 use async_trait::async_trait;
 use clippy_utilities::{Cast, OverflowArithmetic};
 use log::debug;
@@ -340,7 +342,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
         name: &str,
         s3_backend: Arc<S>,
         meta: Arc<S3MetaData<S>>,
-    ) -> anyhow::Result<Self> {
+    ) -> DatenLordResult<Self> {
         match persist::read_persisted_dir(&s3_backend, "/".to_owned()).await {
             Err(e) => {
                 //todo: handle different type of error, key not exist, net err, etc.
@@ -388,14 +390,14 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
                 }
                 Err(e) => {
                     log::error!("Root node persist lack of attr info {e}.");
-                    Err(e)
+                    Err(DatenLordError::from(e))
                 }
             },
         }
     }
 
     /// flush all data of a node
-    async fn flush_all_data(&mut self) -> anyhow::Result<()> {
+    async fn flush_all_data(&mut self) -> DatenLordResult<()> {
         if self.is_deferred_deletion() {
             return Ok(());
         }
@@ -414,20 +416,31 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
                 debug!(
                     "failed to load data for file {} while flushing data, the error is: {}",
                     self.get_name(),
-                    crate::common::util::format_anyhow_error(&e),
+                    e,
                 );
                 return Err(e);
             }
         }
 
-        self.s3_backend
+        let put_result = self
+            .s3_backend
             .put_data_vec(
                 &self.full_path,
                 data_cache.get_file_cache(self.full_path.as_bytes(), 0, size.cast()),
             )
-            .await?;
+            .await;
 
-        Ok(())
+        match put_result {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                debug!(
+                    "flush_all_data() failed to flush data for file {}, the error is: {}",
+                    self.get_name(),
+                    e,
+                );
+                Err(DatenLordError::from(anyhow!(e)))
+            }
+        }
     }
 }
 
@@ -605,7 +618,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
     }
 
     /// Load attribute
-    async fn load_attribute(&mut self) -> anyhow::Result<FileAttr> {
+    async fn load_attribute(&mut self) -> DatenLordResult<FileAttr> {
         let (content_len, last_modified) = self
             .s3_backend
             .get_meta(&self.full_path)
@@ -643,7 +656,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
     }
 
     /// Duplicate fd
-    async fn dup_fd(&self, _oflags: OFlag) -> anyhow::Result<RawFd> {
+    async fn dup_fd(&self, _oflags: OFlag) -> DatenLordResult<RawFd> {
         self.inc_open_count();
         Ok(self.new_fd().cast())
     }
@@ -710,7 +723,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
         inum: INum,
         child_symlink_name: &str,
         target_path: PathBuf,
-    ) -> anyhow::Result<Self> {
+    ) -> DatenLordResult<Self> {
         let absolute_path = self.absolute_path_with_child(child_symlink_name);
         let dir_data = self.get_dir_data();
         debug_assert!(
@@ -780,7 +793,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
         &self,
         child_symlink_name: &str,
         child_attr: Arc<RwLock<FileAttr>>,
-    ) -> anyhow::Result<Self> {
+    ) -> DatenLordResult<Self> {
         let absolute_path = self.absolute_path_with_child(child_symlink_name);
 
         let target_path = PathBuf::from(
@@ -815,7 +828,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
         &self,
         child_dir_name: &str,
         child_attr: Arc<RwLock<FileAttr>>,
-    ) -> anyhow::Result<Self> {
+    ) -> DatenLordResult<Self> {
         // lookup count and open count are increased to 1 by creation
         let full_path = format!("{}{}/", self.full_path, child_dir_name);
         let dirdata = match persist::read_persisted_dir(&self.s3_backend, full_path.clone()).await {
@@ -847,7 +860,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
         inum: INum,
         child_dir_name: &str,
         mode: Mode,
-    ) -> anyhow::Result<Self> {
+    ) -> DatenLordResult<Self> {
         let absolute_path = self.absolute_dir_with_child(child_dir_name);
         let dir_data = self.get_dir_data();
         // TODO return error
@@ -901,7 +914,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
         child_attr: Arc<RwLock<FileAttr>>,
         _oflags: OFlag,
         global_cache: Arc<GlobalCache>,
-    ) -> anyhow::Result<Self> {
+    ) -> DatenLordResult<Self> {
         Ok(Self::new(
             self.get_ino(),
             child_file_name,
@@ -923,7 +936,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
         oflags: OFlag,
         mode: Mode,
         global_cache: Arc<GlobalCache>,
-    ) -> anyhow::Result<Self> {
+    ) -> DatenLordResult<Self> {
         let absolute_path = self.absolute_path_with_child(child_file_name);
         let dir_data = self.get_dir_data();
         debug_assert!(
@@ -974,7 +987,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
 
     /// Load data from directory, file or symlink target.
     /// The `offset` and `len` is used for regular file
-    async fn load_data(&mut self, offset: usize, len: usize) -> anyhow::Result<usize> {
+    async fn load_data(&mut self, offset: usize, len: usize) -> DatenLordResult<usize> {
         match self.data {
             S3NodeData::Directory(..) => {
                 // TODO: really read dir from S3
@@ -1034,8 +1047,10 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
                             Ok(a) => a,
                             Err(e) => {
                                 let anyhow_err: anyhow::Error = e.into();
-                                return Err(anyhow_err
-                                    .context("load_data() failed to load file content data"));
+                                return Err(DatenLordError::from(
+                                    anyhow_err
+                                        .context("load_data() failed to load file content data"),
+                                ));
                             }
                         }
                     }
@@ -1090,7 +1105,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
     }
 
     /// Unlink directory entry from both cache and disk
-    async fn unlink_entry(&mut self, child_name: &str) -> anyhow::Result<DirEntry> {
+    async fn unlink_entry(&mut self, child_name: &str) -> DatenLordResult<DirEntry> {
         let dir_data = self.get_dir_data_mut();
         let removed_entry = dir_data.remove(child_name).unwrap_or_else(|| {
             panic!(
@@ -1143,7 +1158,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
 
     /// Fake data for statefs
     /// TODO: handle some important data from S3 storage
-    async fn statefs(&self) -> anyhow::Result<StatFsParam> {
+    async fn statefs(&self) -> DatenLordResult<StatFsParam> {
         Ok(StatFsParam {
             blocks: 10_000_000_000,
             bfree: 10_000_000_000,
@@ -1176,7 +1191,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
         data: Vec<u8>,
         _oflags: OFlag,
         _write_to_disk: bool,
-    ) -> anyhow::Result<usize> {
+    ) -> DatenLordResult<usize> {
         let this: &Self = self;
 
         let ino = this.get_ino();
@@ -1187,7 +1202,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
                     "read() failed to load file data of ino={} and name={:?}, the error is: {}",
                     ino,
                     self.get_name(),
-                    crate::common::util::format_anyhow_error(&e),
+                    e,
                 );
                 return Err(e);
             }
@@ -1243,7 +1258,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
         self.dec_open_count();
     }
 
-    async fn setattr_precheck(&self, param: SetAttrParam) -> anyhow::Result<(bool, FileAttr)> {
+    async fn setattr_precheck(&self, param: SetAttrParam) -> DatenLordResult<(bool, FileAttr)> {
         let mut attr = self.get_attr();
 
         let st_now = SystemTime::now();

@@ -8,6 +8,7 @@ use super::SetAttrParam;
 use crate::async_fuse::fuse::fuse_reply::{AsIoVec, StatFsParam};
 use crate::async_fuse::fuse::protocol::INum;
 use crate::async_fuse::metrics;
+use crate::common::error::DatenLordResult;
 use anyhow::Context;
 use async_trait::async_trait;
 use clippy_utilities::{Cast, OverflowArithmetic};
@@ -63,11 +64,11 @@ pub trait Node: Sized {
     /// Decrease node lookup count
     fn dec_lookup_count_by(&self, nlookup: u64) -> i64;
     /// Load node attr
-    async fn load_attribute(&mut self) -> anyhow::Result<FileAttr>;
+    async fn load_attribute(&mut self) -> DatenLordResult<FileAttr>;
     /// Flush node data
     async fn flush(&mut self, ino: INum, fh: u64);
     /// Duplicate fd
-    async fn dup_fd(&self, oflags: OFlag) -> anyhow::Result<RawFd>;
+    async fn dup_fd(&self, oflags: OFlag) -> DatenLordResult<RawFd>;
     /// Check whether a node is an empty file or an empty directory
     fn is_node_data_empty(&self) -> bool;
     /// check whether to load directory entry data or not
@@ -82,26 +83,26 @@ pub trait Node: Sized {
         inum: INum,
         child_symlink_name: &str,
         target_path: PathBuf,
-    ) -> anyhow::Result<Self>;
+    ) -> DatenLordResult<Self>;
     /// Read symlink itself in a directory, not follow symlink
     async fn load_child_symlink(
         &self,
         child_symlink_name: &str,
         child_attr: Arc<RwLock<FileAttr>>,
-    ) -> anyhow::Result<Self>;
+    ) -> DatenLordResult<Self>;
     /// Open sub-directory in a directory
     async fn open_child_dir(
         &self,
         child_dir_name: &str,
         child_attr: Arc<RwLock<FileAttr>>,
-    ) -> anyhow::Result<Self>;
+    ) -> DatenLordResult<Self>;
     /// Create sub-directory in a directory
     async fn create_child_dir(
         &mut self,
         inum: INum,
         child_dir_name: &str,
         mode: Mode,
-    ) -> anyhow::Result<Self>;
+    ) -> DatenLordResult<Self>;
     /// Open file in a directory
     async fn open_child_file(
         &self,
@@ -109,7 +110,7 @@ pub trait Node: Sized {
         child_attr: Arc<RwLock<FileAttr>>,
         oflags: OFlag,
         global_cache: Arc<GlobalCache>,
-    ) -> anyhow::Result<Self>;
+    ) -> DatenLordResult<Self>;
     /// Create file in a directory
     async fn create_child_file(
         &mut self,
@@ -118,21 +119,21 @@ pub trait Node: Sized {
         oflags: OFlag,
         mode: Mode,
         global_cache: Arc<GlobalCache>,
-    ) -> anyhow::Result<Self>;
+    ) -> DatenLordResult<Self>;
     /// Load data from directory, file or symlink target.
-    async fn load_data(&mut self, offset: usize, len: usize) -> anyhow::Result<usize>;
+    async fn load_data(&mut self, offset: usize, len: usize) -> DatenLordResult<usize>;
     /// Insert directory entry for rename()
     fn insert_entry_for_rename(&mut self, child_entry: DirEntry) -> Option<DirEntry>;
     /// Remove directory entry from cache only for rename()
     fn remove_entry_for_rename(&mut self, child_name: &str) -> Option<DirEntry>;
     /// Unlink directory entry from both cache and disk
-    async fn unlink_entry(&mut self, child_name: &str) -> anyhow::Result<DirEntry>;
+    async fn unlink_entry(&mut self, child_name: &str) -> DatenLordResult<DirEntry>;
     /// Read directory
     fn read_dir(&self, func: &mut dyn FnMut(&BTreeMap<String, DirEntry>) -> usize) -> usize;
     /// Get symlink target path
     fn get_symlink_target(&self) -> &Path;
     /// Get fs stat
-    async fn statefs(&self) -> anyhow::Result<StatFsParam>;
+    async fn statefs(&self) -> DatenLordResult<StatFsParam>;
     /// Get file data
     async fn get_file_data(&self, offset: usize, len: usize) -> Vec<IoMemBlock>;
     /// Write to file
@@ -143,13 +144,13 @@ pub trait Node: Sized {
         data: Vec<u8>,
         oflags: OFlag,
         write_to_disk: bool,
-    ) -> anyhow::Result<usize>;
+    ) -> DatenLordResult<usize>;
     /// Close file
     async fn close(&mut self, ino: INum, fh: u64, flush: bool);
     /// Close dir
     async fn closedir(&self, ino: INum, fh: u64);
     /// Precheck before set attr
-    async fn setattr_precheck(&self, param: SetAttrParam) -> anyhow::Result<(bool, FileAttr)>;
+    async fn setattr_precheck(&self, param: SetAttrParam) -> DatenLordResult<(bool, FileAttr)>;
     /// Mark as deferred deletion
     fn mark_deferred_deletion(&self);
     /// If node is marked as deferred deletion
@@ -363,7 +364,7 @@ impl DefaultNode {
         &mut self,
         child_symlink_name: &str,
         target_path_opt: Option<PathBuf>, // If not None, create symlink
-    ) -> anyhow::Result<Self> {
+    ) -> DatenLordResult<Self> {
         let ino = self.get_ino();
         let fd = self.fd;
         let dir_data = self.get_dir_data_mut();
@@ -459,7 +460,7 @@ impl DefaultNode {
         name: &str,
         path: &str,
         meta: Arc<DefaultMetaData>,
-    ) -> anyhow::Result<Self> {
+    ) -> DatenLordResult<Self> {
         let dir_fd = fs_util::open_dir(Path::new(path)).await?;
         let mut attr = fs_util::load_attr(dir_fd).await?;
         attr.ino = root_ino; // replace root ino with 1
@@ -601,7 +602,7 @@ impl Node for DefaultNode {
     }
 
     /// Load attribute
-    async fn load_attribute(&mut self) -> anyhow::Result<FileAttr> {
+    async fn load_attribute(&mut self) -> DatenLordResult<FileAttr> {
         let attr = fs_util::load_attr(self.fd).await.context(format!(
             "load_attribute() failed to get the attribute of the node ino={}",
             self.get_ino(),
@@ -650,7 +651,7 @@ impl Node for DefaultNode {
     }
 
     /// Duplicate fd
-    async fn dup_fd(&self, oflags: OFlag) -> anyhow::Result<RawFd> {
+    async fn dup_fd(&self, oflags: OFlag) -> DatenLordResult<RawFd> {
         let raw_fd = self.fd;
         let ino = self.get_ino();
         let new_fd = tokio::task::spawn_blocking(move || unistd::dup(raw_fd))
@@ -742,7 +743,7 @@ impl Node for DefaultNode {
         _inum: INum,
         child_symlink_name: &str,
         target_path: PathBuf,
-    ) -> anyhow::Result<Self> {
+    ) -> DatenLordResult<Self> {
         let ino = self.get_ino();
         let fd = self.fd;
         let dir_data = self.get_dir_data_mut();
@@ -813,7 +814,7 @@ impl Node for DefaultNode {
         &self,
         child_symlink_name: &str,
         child_attr: Arc<RwLock<FileAttr>>,
-    ) -> anyhow::Result<Self> {
+    ) -> DatenLordResult<Self> {
         let ino = self.get_ino();
         let fd = self.fd;
 
@@ -867,7 +868,7 @@ impl Node for DefaultNode {
         &self,
         child_dir_name: &str,
         child_attr: Arc<RwLock<FileAttr>>,
-    ) -> anyhow::Result<Self> {
+    ) -> DatenLordResult<Self> {
         let ino = self.get_ino();
         let fd = self.fd;
 
@@ -911,7 +912,7 @@ impl Node for DefaultNode {
         _inum: INum,
         child_dir_name: &str,
         mode: Mode,
-    ) -> anyhow::Result<Self> {
+    ) -> DatenLordResult<Self> {
         let ino = self.get_ino();
         let fd = self.fd;
         let dir_data = self.get_dir_data_mut();
@@ -979,7 +980,7 @@ impl Node for DefaultNode {
         child_attr: Arc<RwLock<FileAttr>>,
         oflags: OFlag,
         global_cache: Arc<GlobalCache>,
-    ) -> anyhow::Result<Self> {
+    ) -> DatenLordResult<Self> {
         let ino = self.get_ino();
         let fd = self.fd;
         let child_file_name_string = child_file_name.to_owned();
@@ -1024,7 +1025,7 @@ impl Node for DefaultNode {
         oflags: OFlag,
         mode: Mode,
         global_cache: Arc<GlobalCache>,
-    ) -> anyhow::Result<Self> {
+    ) -> DatenLordResult<Self> {
         let ino = self.get_ino();
         let fd = self.fd;
         let dir_data = self.get_dir_data_mut();
@@ -1077,7 +1078,7 @@ impl Node for DefaultNode {
 
     /// Load data from directory, file or symlink target.
     /// The `offset` and `len` is used for regular file
-    async fn load_data(&mut self, offset: usize, len: usize) -> anyhow::Result<usize> {
+    async fn load_data(&mut self, offset: usize, len: usize) -> DatenLordResult<usize> {
         match self.data {
             DefaultNodeData::Directory(..) => {
                 // let dir_entry_map = self.load_dir_data_helper().await?;
@@ -1171,7 +1172,7 @@ impl Node for DefaultNode {
     }
 
     /// Unlink directory entry from both cache and disk
-    async fn unlink_entry(&mut self, child_name: &str) -> anyhow::Result<DirEntry> {
+    async fn unlink_entry(&mut self, child_name: &str) -> DatenLordResult<DirEntry> {
         let dir_data = self.get_dir_data_mut();
         let removed_entry = dir_data.remove(child_name).unwrap_or_else(|| {
             panic!(
@@ -1239,7 +1240,7 @@ impl Node for DefaultNode {
     }
 
     /// Get fs stat
-    async fn statefs(&self) -> anyhow::Result<StatFsParam> {
+    async fn statefs(&self) -> DatenLordResult<StatFsParam> {
         let fd = self.fd;
         tokio::task::spawn_blocking(move || {
             let file = unsafe { std::fs::File::from_raw_fd(fd) };
@@ -1283,7 +1284,7 @@ impl Node for DefaultNode {
         data: Vec<u8>,
         oflags: OFlag,
         write_to_disk: bool,
-    ) -> anyhow::Result<usize> {
+    ) -> DatenLordResult<usize> {
         let this: &Self = self;
 
         let ino = this.get_ino();
@@ -1294,7 +1295,7 @@ impl Node for DefaultNode {
                     "read() failed to load file data of ino={} and name={:?}, the error is: {}",
                     ino,
                     self.get_name(),
-                    crate::common::util::format_anyhow_error(&e),
+                    e,
                 );
                 return Err(e);
             }
@@ -1418,7 +1419,7 @@ impl Node for DefaultNode {
 
     /// Precheck before set attr
     #[allow(clippy::too_many_lines)]
-    async fn setattr_precheck(&self, param: SetAttrParam) -> anyhow::Result<(bool, FileAttr)> {
+    async fn setattr_precheck(&self, param: SetAttrParam) -> DatenLordResult<(bool, FileAttr)> {
         let fd = self.get_fd();
         let mut attr = self.get_attr();
 
@@ -1588,28 +1589,38 @@ pub fn rename_fullpath_recursive(
 
 #[cfg(test)]
 mod test {
-    use anyhow::{bail, Context};
+    use anyhow::Context;
     use nix::fcntl::{self, FcntlArg, OFlag};
     use nix::sys::stat::Mode;
     use nix::unistd;
     // use std::fs::File;
     // use std::io::prelude::*;
     // use std::os::unix::io::FromRawFd;
+    use crate::common::error::{DatenLordError, DatenLordResult};
     use std::path::Path;
 
     #[test]
-    fn test_dup_fd() -> anyhow::Result<()> {
+    fn test_dup_fd() -> DatenLordResult<()> {
         let path = Path::new("/tmp/dup_fd_test.txt");
         let oflags = OFlag::O_CREAT | OFlag::O_TRUNC | OFlag::O_RDWR;
         let res = fcntl::open(path, oflags, Mode::from_bits_truncate(644));
         let fd = match res {
             Ok(fd) => fd,
-            Err(e) => bail!("failed to open file {:?}, the error is: {}", path, e),
+            Err(e) => {
+                return Err(DatenLordError::from(anyhow::anyhow!(
+                    "failed to open file {:?}, the error is: {}",
+                    path,
+                    e,
+                )));
+            }
         };
         let res = unistd::unlink(path);
         if let Err(e) = res {
             unistd::close(fd)?;
-            bail!("failed to unlink file, the error is: {}", e);
+            return Err(DatenLordError::from(anyhow::anyhow!(
+                "failed to unlink file, the error is: {}",
+                e
+            )));
         }
 
         let dup_fd = unistd::dup(fd).context("failed to dup fd")?;
@@ -1637,7 +1648,9 @@ mod test {
             let mut buffer: Vec<u8> = std::iter::repeat(0_u8).take(file_content.len()).collect();
             let read_size = unistd::read(fd, &mut buffer)?;
             assert_eq!(read_size, file_content.len(), "read size not match");
-            let content = String::from_utf8(buffer)?;
+            let content = String::from_utf8(buffer).unwrap_or_else(|e| {
+                panic!("failed to convert buffer to string, the error is: {e}")
+            });
             assert_eq!(content, file_content, "file content not match");
             unistd::close(fd)?;
         }

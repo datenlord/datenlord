@@ -29,7 +29,6 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
-use anyhow::Context;
 use async_trait::async_trait;
 use clippy_utilities::{Cast, OverflowArithmetic};
 use log::{debug, warn};
@@ -46,6 +45,7 @@ use crate::async_fuse::fuse::fuse_reply::{
 };
 use crate::async_fuse::fuse::fuse_request::Request;
 use crate::async_fuse::fuse::protocol::{INum, FUSE_ROOT_ID};
+use crate::common::error::{Context, DatenLordResult};
 use crate::common::etcd_delegate::EtcdDelegate;
 use cache::IoMemBlock;
 use dir::DirEntry;
@@ -172,7 +172,7 @@ impl<M: MetaData + Send + Sync + 'static> MemFs<M> {
     }
 
     /// Read content check
-    fn read_helper(content: Vec<IoMemBlock>, size: usize) -> anyhow::Result<Vec<IoMemBlock>> {
+    fn read_helper(content: Vec<IoMemBlock>, size: usize) -> DatenLordResult<Vec<IoMemBlock>> {
         if content.iter().filter(|c| !c.can_convert()).count() > 0 {
             return super::util::build_error_result_from_errno(
                 Errno::EIO,
@@ -227,9 +227,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
                 debug!(
                     "lookup() failed to find the node name={:?} under parent ino={}, \
                         the error is: {}",
-                    name,
-                    parent,
-                    crate::common::util::format_anyhow_error(&e),
+                    name, parent, e,
                 );
                 reply.error(e).await
             }
@@ -285,18 +283,17 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         // TODO: handle open flags
         // <https://pubs.opengroup.org/onlinepubs/9699919799/functions/open.html>
         // let open_res = if let SFlag::S_IFLNK = node.get_type() {
-        //     node.open_symlink_target(o_flags).await.context(format!(
+        //     node.open_symlink_target(o_flags).await.add_context(format!(
         //         "open() failed to open symlink target={:?} with flags={}",
         //         node.get_symlink_target(),
         //         flags,
         //     ))
         // } else {
-        let dup_res = node.dup_fd(o_flags).await.context(format!(
-            "open() failed to duplicate the fd of file name={:?} and ino={}",
+        let dup_res: DatenLordResult<RawFd> = node.dup_fd(o_flags).await.add_context(format!(
+            "open() failed to duplicate the file handler of ino={} and name={:?}",
+            ino,
             node.get_name(),
-            node.get_ino(),
         ));
-        // };
         match dup_res {
             Ok(new_fd) => {
                 debug!(
@@ -306,10 +303,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
                 reply.opened(new_fd, flags).await
             }
             Err(e) => {
-                debug!(
-                    "open() failed, the error is: {}",
-                    crate::common::util::format_anyhow_error(&e)
-                );
+                debug!("open() failed, the error is: {}", e);
                 reply.error(e).await
             }
         }
@@ -423,7 +417,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
                     "setattr() failed to set the attribute of ino={} and name={:?}, the error is: {}",
                     ino,
                     inode.get_name(),
-                    crate::common::util::format_anyhow_error(&e),
+                    e,
                 );
                 reply.error(e).await
             }
@@ -449,7 +443,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
             .metadata
             .create_node_helper(parent, name, mode, SFlag::S_IFREG, None)
             .await
-            .context(format!(
+            .add_context(format!(
                 "mknod() failed to create an i-node name={name:?} and mode={mode:?} under parent ino={parent},",
             ));
         match mknod_res {
@@ -461,7 +455,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
                     name,
                     mode,
                     parent,
-                    crate::common::util::format_anyhow_error(&e),
+                    e,
                 );
                 reply.error(e).await
             }
@@ -485,7 +479,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
             .metadata
             .create_node_helper(parent, name, mode, SFlag::S_IFDIR, None)
             .await
-            .context(format!(
+            .add_context(format!(
                 "mkdir() failed to create a directory name={name:?} and mode={mode:?} under parent ino={parent}",
             ));
         match mkdir_res {
@@ -497,7 +491,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
                     name,
                     mode,
                     parent,
-                    crate::common::util::format_anyhow_error(&e),
+                    e,
                 );
                 reply.error(e).await
             }
@@ -540,7 +534,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
             .metadata
             .remove_node_helper(parent, name, entry_type)
             .await
-            .context(format!(
+            .add_context(format!(
                 "unlink() failed to remove file name={name:?} under parent ino={parent}",
             ));
         match unlink_res {
@@ -549,9 +543,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
                 debug!(
                     "unlink() failed to remove file name={:?} under parent ino={}, \
                         the error is: {}",
-                    name,
-                    parent,
-                    crate::common::util::format_anyhow_error(&e),
+                    name, parent, e,
                 );
                 reply.error(e).await
             }
@@ -574,7 +566,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
             .metadata
             .remove_node_helper(parent, dir_name, SFlag::S_IFDIR)
             .await
-            .context(format!(
+            .add_context(format!(
                 "rmdir() failed to remove sub-directory name={dir_name:?} under parent ino={parent}",
             ));
         match rmdir_res {
@@ -583,9 +575,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
                 debug!(
                     "rmdir() failed to remove sub-directory name={:?} under parent ino={}, \
                             the error is: {}",
-                    dir_name,
-                    parent,
-                    crate::common::util::format_anyhow_error(&e),
+                    dir_name, parent, e,
                 );
                 reply.error(e).await
             }
@@ -623,10 +613,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         match rename_res {
             Ok(()) => reply.ok().await,
             Err(e) => {
-                debug!(
-                    "rename() failed, the error is: {}",
-                    crate::common::util::format_anyhow_error(&e)
-                );
+                debug!("rename() failed, the error is: {}", e);
                 reply.error(e).await
             }
         }
@@ -678,7 +665,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
                     "read() failed to load file data of ino={} and name={:?}, the error is: {}",
                     ino,
                     inode.get_name(),
-                    crate::common::util::format_anyhow_error(&e),
+                    e,
                 );
                 return reply.error(e).await;
             }
@@ -700,7 +687,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
                     "read() failed to read from the file of ino={} and name={:?}, the error is: {}",
                     ino,
                     inode.get_name(),
-                    crate::common::util::format_anyhow_error(&e),
+                    e,
                 );
                 reply.error(e).await
             }
@@ -751,9 +738,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
                 debug!(
                     "write() failed to write to the file of ino={} at offset={}, \
                         the error is: {}",
-                    ino,
-                    offset,
-                    crate::common::util::format_anyhow_error(&e),
+                    ino, offset, e,
                 );
                 reply.error(e).await
             }
@@ -860,10 +845,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         match self.metadata.fsync_helper(ino, fh, datasync).await {
             Ok(()) => reply.ok().await,
             Err(e) => {
-                debug!(
-                    "fsync() failed, the error is: {}",
-                    crate::common::util::format_anyhow_error(&e)
-                );
+                debug!("fsync() failed, the error is: {}", e);
                 reply.error(e).await
             }
         }
@@ -906,7 +888,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
                     "opendir() failed to duplicate the file handler of ino={} and name={:?} with flags={:?}, \
                         the error is: {}",
                     ino, inode.get_name(), o_flags,
-                    crate::common::util::format_anyhow_error(&e)
+                    e
                 );
                 reply.error(e).await
             }
@@ -970,7 +952,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
                         the error is: {}",
                     ino,
                     inode.get_name(),
-                    crate::common::util::format_anyhow_error(&e)
+                    e
                 );
                 return reply.error(e).await;
             }
@@ -1037,10 +1019,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         match self.metadata.fsync_helper(ino, fh, datasync).await {
             Ok(()) => reply.ok().await,
             Err(e) => {
-                debug!(
-                    "fsyncdir() failed, the error is: {}",
-                    crate::common::util::format_anyhow_error(&e)
-                );
+                debug!("fsyncdir() failed, the error is: {}", e);
                 reply.error(e).await
             }
         }
@@ -1063,7 +1042,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
             );
         });
 
-        let statfs_res = inode.statefs().await.context(format!(
+        let statfs_res = inode.statefs().await.add_context(format!(
             "statfs() failed to run statvfs() of ino={} and name={:?}",
             ino,
             inode.get_name(),
@@ -1081,7 +1060,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
                     "statfs() failed to read the statvfs of ino={} and name={:?}, the error is: {}",
                     ino,
                     inode.get_name(),
-                    crate::common::util::format_anyhow_error(&e)
+                    e
                 );
                 reply.error(e).await
             }
@@ -1132,7 +1111,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
             Some(target_path),
         )
         .await
-        .context(format!(
+        .add_context(format!(
             "symlink() failed to create a symlink name={name:?} to target path={target_path:?} under parent ino={parent}",
         ));
         match symlink_res {
@@ -1144,7 +1123,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
                     name,
                     target_path,
                     parent,
-                    crate::common::util::format_anyhow_error(&e),
+                    e,
                 );
                 reply.error(e).await
             }

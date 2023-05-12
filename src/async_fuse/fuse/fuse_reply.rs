@@ -218,25 +218,36 @@ impl ReplyRaw {
         .await
     }
 
+    #[allow(clippy::wildcard_enum_match_arm)]
     /// Send error response to FUSE kernel
-    async fn send_error(self, err: anyhow::Error) -> nix::Result<usize> {
-        let error_code = if let Some(nix_err) = err.root_cause().downcast_ref::<nix::Error>() {
-            if *nix_err == nix::errno::Errno::UnknownErrno {
-                panic!(
-                    "should not send nix::errno::Errno::UnknownErrno to FUSE kernel, \
-                            the error is: {}",
-                    crate::common::util::format_anyhow_error(&err),
-                );
-            } else {
-                nix_err
+    async fn send_error(self, err: DatenLordError) -> nix::Result<usize> {
+        match err {
+            DatenLordError::InternalErr { source, context } => {
+                let error_code = if let Some(nix_err) =
+                    source.root_cause().downcast_ref::<nix::Error>()
+                {
+                    if *nix_err == nix::errno::Errno::UnknownErrno {
+                        panic!(
+                            "should not send nix::errno::Errno::UnknownErrno to FUSE kernel, \
+                                    the error is: {} ,context is : {:?}",
+                            crate::common::util::format_anyhow_error(&source),
+                            context,
+                        );
+                    } else {
+                        nix_err
+                    }
+                } else {
+                    panic!(
+                            "should not send non-nix error to FUSE kernel, the error is: {},context is : {:?}",
+                            crate::common::util::format_anyhow_error(&source),context,
+                        );
+                };
+                self.send_error_code(*error_code).await
             }
-        } else {
-            panic!(
-                "should not send non-nix error to FUSE kernel, the error is: {}",
-                crate::common::util::format_anyhow_error(&err),
-            );
-        };
-        self.send_error_code(*error_code).await
+            err => {
+                panic!("should not send non-internal error to FUSE kernel ,the error is : {err}",);
+            }
+        }
     }
 }
 
@@ -275,13 +286,15 @@ impl_fuse_reply_new_for! {
     ReplyXTimes,
 }
 
+use crate::common::error::DatenLordError;
+
 /// Impl fuse reply error
 macro_rules! impl_fuse_reply_error_for{
     {$($t:ty,)+} => {
         $(impl $t {
             #[allow(dead_code)]
             /// fuse reply error
-            pub async fn error(self, err: anyhow::Error) -> nix::Result<usize> {
+            pub async fn error(self, err: DatenLordError) -> nix::Result<usize> {
                 self.reply.send_error(err).await
             }
 
