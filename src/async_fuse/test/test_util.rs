@@ -1,11 +1,11 @@
-use crate::async_fuse::fuse::file_system;
+use crate::async_fuse::fuse::{file_system, session};
 use crate::common::etcd_delegate::EtcdDelegate;
 use log::{debug, info}; // warn, error
 use std::fs;
 use std::path::Path;
 use std::time::Duration;
 
-use crate::async_fuse::fuse::{mount, session::Session};
+use crate::async_fuse::fuse::mount;
 use crate::async_fuse::memfs;
 use crate::async_fuse::memfs::s3_wrapper::DoNothingImpl;
 
@@ -55,7 +55,7 @@ pub async fn setup(mount_dir: &Path, is_s3: bool) -> anyhow::Result<tokio::task:
                     TEST_VOLUME_INFO,
                 )
                 .await?;
-                let ss = Session::new(mount_point, fs, fs_ctrl).await?;
+                let ss = session::new_session_of_memfs(mount_point, fs, fs_ctrl).await?;
                 ss.run().await?;
             } else {
                 let (fs, fs_ctrl): (
@@ -74,7 +74,7 @@ pub async fn setup(mount_dir: &Path, is_s3: bool) -> anyhow::Result<tokio::task:
                     TEST_VOLUME_INFO,
                 )
                 .await?;
-                let ss = Session::new(mount_point, fs, fs_ctrl).await?;
+                let ss = session::new_session_of_memfs(mount_point, fs, fs_ctrl).await?;
                 ss.run().await?;
             };
 

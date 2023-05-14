@@ -51,7 +51,7 @@ use cache::IoMemBlock;
 use dir::DirEntry;
 use dist::server::CacheServer;
 pub use metadata::DefaultMetaData;
-use metadata::MetaData;
+pub use metadata::MetaData;
 use node::Node;
 pub use s3_metadata::S3MetaData;
 use serde::{Deserialize, Serialize};
