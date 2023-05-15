@@ -237,6 +237,7 @@ async fn update_dir<S: S3BackEnd + Send + Sync + 'static>(
                 &args.child_name,
                 Arc::clone(&child_attr),
                 args.target_path,
+                &meta.data_cache,
             );
 
             let child_ino = child_node.get_ino();

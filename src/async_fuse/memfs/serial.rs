@@ -1,5 +1,7 @@
+use super::cache::GlobalCache;
 use super::dir::DirEntry;
 use super::fs_util::FileAttr;
+use super::s3_node::S3NodeData;
 use crate::async_fuse::fuse::protocol::INum;
 use nix::sys::stat::SFlag;
 use parking_lot::RwLock;
@@ -73,26 +75,42 @@ pub enum SerialNodeData {
     SymLink(PathBuf),
 }
 
+impl SerialNodeData {
+    /// Deserializes the node data
+    pub fn into_s3_nodedata(self, data_cache: Arc<GlobalCache>) -> S3NodeData {
+        match self {
+            SerialNodeData::Directory(dir) => {
+                let mut dir_entry_map = BTreeMap::new();
+                for (name, entry) in dir {
+                    dir_entry_map.insert(name, serial_to_dir_entry(&entry));
+                }
+                S3NodeData::Directory(dir_entry_map)
+            }
+            SerialNodeData::File => S3NodeData::RegFile(data_cache),
+            SerialNodeData::SymLink(path) => S3NodeData::SymLink(path),
+        }
+    }
+}
 /// TODO: We should discuss the design about persist
 /// Serializable 'Node'
 #[derive(Serialize, Deserialize, Debug)]
 pub struct SerialNode {
     /// Parent node i-number
-    parent: u64,
+    pub(crate) parent: u64,
     /// S3Node name
-    name: String,
+    pub(crate) name: String,
     /// Full path of S3Node
-    full_path: String,
+    pub(crate) full_path: String,
     /// Node attribute
-    attr: SerialFileAttr,
+    pub(crate) attr: SerialFileAttr,
     /// Node data
-    data: SerialNodeData,
+    pub(crate) data: SerialNodeData,
     /// S3Node open counter
-    open_count: i64,
+    pub(crate) open_count: i64,
     /// S3Node lookup counter
-    lookup_count: i64,
+    pub(crate) lookup_count: i64,
     /// If S3Node has been marked as deferred deletion
-    deferred_delete: bool,
+    pub(crate) deferred_deletion: bool,
 }
 
 /// Convert `SFlag` to `SerialSFlag`
@@ -187,5 +205,121 @@ pub const fn serial_to_file_attr(attr: &SerialFileAttr) -> FileAttr {
         gid: attr.gid,
         rdev: attr.rdev,
         flags: attr.flags,
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod test {
+
+    use super::*;
+
+    #[test]
+    fn test_entrytype_serialize() {
+        /// Test `entry_type_to_serial` and `serial_to_entry_type`
+        /// `entry_type_to_serial` and `serial_to_entry_type` should be a pair of inverse functions
+        /// We will test all the possible entry types (currently just three types)
+        use super::entry_type_to_serial;
+        use super::serial_to_entry_type;
+        use nix::sys::stat::SFlag;
+        let entry_types = vec![SFlag::S_IFDIR, SFlag::S_IFREG, SFlag::S_IFLNK];
+        for entry_type_before in entry_types {
+            let serial_entry_type = entry_type_to_serial(entry_type_before);
+            let entry_type_after = serial_to_entry_type(&serial_entry_type);
+            assert_eq!(entry_type_before, entry_type_after);
+        }
+    }
+
+    use rand::Rng;
+    use std::time::SystemTime;
+
+    // Helper function to create a FileAttr instance for testing
+    fn create_file_attr() -> FileAttr {
+        let mut rng = rand::thread_rng();
+
+        FileAttr {
+            ino: rng.gen(),
+            size: rng.gen(),
+            blocks: rng.gen(),
+            atime: SystemTime::now(),
+            mtime: SystemTime::now(),
+            ctime: SystemTime::now(),
+            crtime: SystemTime::now(),
+            kind: SFlag::S_IFREG,
+            perm: rng.gen(),
+            nlink: rng.gen(),
+            uid: rng.gen(),
+            gid: rng.gen(),
+            rdev: rng.gen(),
+            flags: rng.gen(),
+        }
+    }
+
+    // Test for file_attr_to_serial function
+    #[test]
+    fn test_file_attr_to_serial() {
+        let file_attr = create_file_attr();
+        let serial_file_attr = file_attr_to_serial(&file_attr);
+
+        assert_eq!(file_attr.ino, serial_file_attr.ino);
+        assert_eq!(file_attr.size, serial_file_attr.size);
+        assert_eq!(file_attr.blocks, serial_file_attr.blocks);
+        assert_eq!(file_attr.atime, serial_file_attr.atime);
+        assert_eq!(file_attr.mtime, serial_file_attr.mtime);
+        assert_eq!(file_attr.ctime, serial_file_attr.ctime);
+        assert_eq!(file_attr.crtime, serial_file_attr.crtime);
+        // test if the sesrial_file_attr's kind is SerialSFlag::Reg
+        if let SerialSFlag::Reg = serial_file_attr.kind {
+        } else {
+            panic!("serial_file_attr's kind should be SerialSFlag::Reg");
+        }
+        assert_eq!(file_attr.perm, serial_file_attr.perm);
+        assert_eq!(file_attr.nlink, serial_file_attr.nlink);
+        assert_eq!(file_attr.uid, serial_file_attr.uid);
+        assert_eq!(file_attr.gid, serial_file_attr.gid);
+        assert_eq!(file_attr.rdev, serial_file_attr.rdev);
+        assert_eq!(file_attr.flags, serial_file_attr.flags);
+    }
+
+    // Return true for equal
+    fn fileattr_equal(left: &FileAttr, right: &FileAttr) -> bool {
+        left.ino == right.ino
+            && left.size == right.size
+            && left.blocks == right.blocks
+            && left.atime == right.atime
+            && left.mtime == right.mtime
+            && left.ctime == right.ctime
+            && left.crtime == right.crtime
+            && left.kind == right.kind
+            && left.perm == right.perm
+            && left.nlink == right.nlink
+            && left.uid == right.uid
+            && left.gid == right.gid
+            && left.rdev == right.rdev
+            && left.flags == right.flags
+    }
+
+    // Test for serial_to_file_attr function
+    #[test]
+    fn test_serial_to_file_attr() {
+        let file_attr = create_file_attr();
+        let serial_file_attr = file_attr_to_serial(&file_attr);
+        let converted_file_attr = serial_to_file_attr(&serial_file_attr);
+        assert!(fileattr_equal(&file_attr, &converted_file_attr));
+    }
+
+    #[test]
+    fn test_direntry_serialize() {
+        let test_name = String::from("test_a_really_long_name");
+        let test_file_attr = create_file_attr();
+        let direntry = DirEntry::new(test_name.clone(), Arc::new(RwLock::new(test_file_attr)));
+        let serial_direntry: SerialDirEntry = dir_entry_to_serial(&direntry);
+        assert_eq!(test_name, serial_direntry.name);
+        let direntry_after = serial_to_dir_entry(&serial_direntry);
+        assert_eq!(test_name, direntry_after.entry_name());
+        assert!(fileattr_equal(
+            &test_file_attr,
+            &direntry_after.file_attr_arc_ref().read()
+        ));
     }
 }

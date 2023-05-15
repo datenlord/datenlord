@@ -7,6 +7,7 @@ mod fs_util;
 /// manage inode related, inum allocation and recycle
 mod inode;
 /// The KV engine module
+#[macro_use]
 mod kv_engine;
 /// fs metadata module
 mod metadata;
