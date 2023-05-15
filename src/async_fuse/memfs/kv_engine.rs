@@ -11,6 +11,8 @@ use std::sync::Arc;
 
 use super::serial::{SerialDirEntry, SerialFileAttr, SerialNode};
 
+pub const DEFAULT_TXN_RETRY_TIMES: u32 = 3;
+
 /// The `ValueType` is used to provide support for metadata.
 #[derive(Serialize, Deserialize, Debug)]
 pub enum ValueType {
@@ -77,7 +79,7 @@ pub trait MetaTxn {
     #[must_use]
     async fn get(&mut self, key: &KeyType) -> DatenLordResult<Option<ValueType>>;
     /// Set the value by the key.
-    async fn set(&mut self, key: &KeyType, value: &ValueType) -> DatenLordResult<()>;
+    async fn set(&mut self, key: &KeyType, value: &ValueType);
     /// Delete the value by the key.
     async fn delete(&mut self, key: &KeyType) -> DatenLordResult<()>;
     /// Commit the transaction.
@@ -87,10 +89,9 @@ pub trait MetaTxn {
 }
 
 /// To support different K/V storage engines, we need to a trait to abstract the K/V storage engine.
-#[async_trait]
 pub trait KVEngine: Send + Sync + Debug {
     /// Create a new transaction.
-    async fn new_meta_txn(&self) -> Box<dyn MetaTxn + Send>;
+    fn new_meta_txn(&self) -> Box<dyn MetaTxn + Send>;
 }
 
 /// The `etcd`'s transaction impl.
@@ -152,11 +153,13 @@ impl MetaTxn for EtcdTxn {
         }
     }
 
-    async fn set(&mut self, key: &KeyType, value: &ValueType) -> DatenLordResult<()> {
+    async fn set(&mut self, key: &KeyType, value: &ValueType) {
         let key = key.get_key();
-        let value = serde_json::to_vec(value)?;
+        // Because the ValueType derives the serde::Serialize
+        // This unwrap will not panic.
+        let value = serde_json::to_vec(value)
+            .unwrap_or_else(|value| panic!("failed to serialize value to json,value = {value:?}"));
         self.buffer.insert(key, Some(value));
-        Ok(())
     }
 
     async fn delete(&mut self, key: &KeyType) -> DatenLordResult<()> {
@@ -240,9 +243,10 @@ impl EtcdKVEngine {
 #[allow(unused_macros)]
 #[macro_export]
 /// add comment about why use macro here not closure
+/// the logic should end with a transaction commit
 macro_rules! retry_txn {
     ($retry_num : expr ,$logic: block) => {{
-        // result is Option<DatenLordResult<()>>
+        // result is DatenLordResult<()>
         let mut result: DatenLordResult<()> =
             Err(DatenLordError::TransactionRetryLimitExceededErr {
                 context: vec![
@@ -270,9 +274,8 @@ macro_rules! retry_txn {
     }};
 }
 
-#[async_trait]
 impl KVEngine for EtcdKVEngine {
-    async fn new_meta_txn(&self) -> Box<dyn MetaTxn + Send> {
+    fn new_meta_txn(&self) -> Box<dyn MetaTxn + Send> {
         Box::new(EtcdTxn::new(self.client.clone()))
     }
 }
@@ -291,12 +294,12 @@ mod test {
         let client = EtcdKVEngine::new_for_local_test(vec![ETCD_ADDRESS.to_owned()])
             .await
             .unwrap();
-        let mut txn = client.new_meta_txn().await;
+        let mut txn = client.new_meta_txn();
         let key = KeyType::Path2INum(String::from("/"));
         let value = ValueType::INum(12);
-        txn.set(&key, &value).await.unwrap();
+        txn.set(&key, &value).await;
         txn.commit().await.unwrap();
-        let mut txn = client.new_meta_txn().await;
+        let mut txn = client.new_meta_txn();
         let value = txn.get(&key).await.unwrap();
         if let Some(ValueType::INum(num)) = value {
             assert_eq!(num, 12);
@@ -316,13 +319,13 @@ mod test {
         let client = EtcdKVEngine::new_for_local_test(vec![ETCD_ADDRESS.to_owned()])
             .await
             .unwrap();
-        let mut first_txn = client.new_meta_txn().await;
+        let mut first_txn = client.new_meta_txn();
         let key1 = KeyType::Path2INum(String::from("/"));
         let value1 = ValueType::INum(12);
         let key2 = KeyType::Path2INum(String::from("/a"));
         let value2 = ValueType::INum(13);
-        first_txn.set(&key1, &value1).await.unwrap();
-        first_txn.set(&key2, &value2).await.unwrap();
+        first_txn.set(&key1, &value1).await;
+        first_txn.set(&key2, &value2).await;
         first_txn.commit().await.unwrap();
         drop(client);
         // use two thread to do the second and third txn
@@ -334,7 +337,7 @@ mod test {
                 let client = EtcdKVEngine::new_for_local_test(vec![ETCD_ADDRESS.to_owned()])
                     .await
                     .unwrap();
-                let mut second_txn = client.new_meta_txn().await;
+                let mut second_txn = client.new_meta_txn();
                 let key1 = KeyType::Path2INum(String::from("/"));
                 let value1 = second_txn.get(&key1).await.unwrap();
                 assert!(value1.is_some());
@@ -368,12 +371,12 @@ mod test {
             let client = EtcdKVEngine::new_for_local_test(vec![ETCD_ADDRESS.to_owned()])
                 .await
                 .unwrap();
-            let mut third_txn = client.new_meta_txn().await;
+            let mut third_txn = client.new_meta_txn();
             // wait for the second read first key and send the signal
             first_step_rx.recv().await.unwrap();
             let key1 = KeyType::Path2INum(String::from("/"));
             let value1 = ValueType::INum(14);
-            third_txn.set(&key1, &value1).await.unwrap();
+            third_txn.set(&key1, &value1).await;
             third_txn.commit().await.unwrap();
             // send the signal to the second txn
             second_step_tx.send(()).await.unwrap();
@@ -388,7 +391,7 @@ mod test {
             let client = EtcdKVEngine::new_for_local_test(vec![ETCD_ADDRESS.to_owned()])
                 .await
                 .unwrap();
-            let mut txn = client.new_meta_txn().await;
+            let mut txn = client.new_meta_txn();
             let key = KeyType::Path2INum(String::from("/"));
             let _ = txn.get(&key).await.unwrap();
             txn.commit().await

@@ -18,6 +18,9 @@ use crate::async_fuse::fuse::file_system::FsAsyncResultSender;
 #[cfg(feature = "abi-7-18")]
 use crate::async_fuse::fuse::fuse_reply::FuseDeleteNotification;
 use crate::async_fuse::fuse::protocol::{FuseAttr, INum, FUSE_ROOT_ID};
+use crate::async_fuse::memfs::kv_engine::{
+    EtcdKVEngine, KVEngine, KeyType, MetaTxn, ValueType, DEFAULT_TXN_RETRY_TIMES,
+};
 use crate::async_fuse::util;
 use crate::common::error::{DatenLordError, DatenLordResult};
 use crate::common::etcd_delegate::EtcdDelegate;
@@ -69,6 +72,8 @@ pub struct S3MetaData<S: S3BackEnd + Send + Sync + 'static> {
     pub(crate) path2inum: RwLock<BTreeMap<String, INum>>,
     /// Fuse fd
     fuse_fd: Mutex<RawFd>,
+    /// KV Engine
+    kv_engine: Arc<dyn KVEngine>,
     /// Persist handle
     persist_handle: PersistHandle,
 }
@@ -113,6 +118,8 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
             node_id,
         ));
 
+        let kv_engine = EtcdKVEngine::new_kv_engine(etcd_arc.get_client_clone());
+
         let meta = Arc::new(Self {
             s3_backend: Arc::clone(&s3_backend),
             cache: RwLock::new(BTreeMap::new()),
@@ -125,6 +132,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
             path2inum: RwLock::new(BTreeMap::new()),
             fuse_fd: Mutex::new(-1_i32),
             persist_handle,
+            kv_engine,
         });
 
         let server = CacheServer::new(
@@ -134,16 +142,30 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
             Arc::<Self>::clone(&meta),
         );
 
-        let root_inode = S3Node::open_root_node(FUSE_ROOT_ID, "/", s3_backend, Arc::clone(&meta))
-            .await
-            .context("failed to open FUSE root node")
-            .unwrap_or_else(|e| {
-                panic!("{}", e);
-            });
-
-        let full_path = root_inode.full_path().to_owned();
-        meta.cache.write().await.insert(FUSE_ROOT_ID, root_inode);
-        meta.path2inum.write().await.insert(full_path, FUSE_ROOT_ID);
+        let txn_result = retry_txn!(DEFAULT_TXN_RETRY_TIMES, {
+            let root_inode =
+                S3Node::open_root_node(FUSE_ROOT_ID, "/", s3_backend.clone(), Arc::clone(&meta))
+                    .await
+                    .context("failed to open FUSE root node")
+                    .unwrap_or_else(|e| {
+                        panic!("{}", e);
+                    });
+            let full_path = root_inode.full_path().to_owned();
+            let mut txn = meta.kv_engine.new_meta_txn();
+            // insert two K/V pairs into KV engine
+            // 1. FUSE_ROOT_ID -> root_inode
+            let key = KeyType::INum2Node(FUSE_ROOT_ID);
+            let value = ValueType::Node(root_inode.into_serial_node());
+            txn.set(&key, &value).await;
+            // 2. full_path -> FUSE_ROOT_ID
+            let key = KeyType::Path2INum(full_path);
+            let value = ValueType::INum(FUSE_ROOT_ID);
+            txn.set(&key, &value).await;
+            txn.commit().await
+        });
+        txn_result.unwrap_or_else(|e| {
+            panic!("failed to insert root node into KV engine, err: {e:?}");
+        });
 
         (meta, Some(server), async_tasks)
     }
@@ -372,105 +394,70 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         parent: INum,
         child_name: &str,
     ) -> DatenLordResult<(Duration, FuseAttr, u64)> {
-        let pre_check_res = self.lookup_pre_check(parent, child_name).await;
-        let (ino, child_type, child_attr) = match pre_check_res {
-            Ok((ino, child_type, child_attr)) => (ino, child_type, child_attr),
-            Err(e) => {
-                debug!("lookup() failed to pre-check, the error is: {}", e);
-                return Err(e);
-            }
-        };
-
         let ttl = Duration::new(MY_TTL_SEC, 0);
-        {
-            // cache hit
-            let cache = self.cache.read().await;
-            if let Some(node) = cache.get(&ino) {
-                debug!(
-                    "lookup_helper() cache hit when searching i-node of \
-                        ino={} and name={:?} under parent ino={}",
-                    ino, child_name, parent,
-                );
-                let attr = node.lookup_attr();
-                let fuse_attr = fs_util::convert_to_fuse_attr(attr);
-                debug!(
-                    "lookup_helper() successfully found in cache the i-node of \
-                        ino={} name={:?} under parent ino={}, the attr={:?}",
-                    ino, child_name, parent, &attr,
-                );
-                return Ok((ttl, fuse_attr, MY_GENERATION));
-            }
-        }
-        {
-            // cache miss
-            debug!(
-                "lookup_helper() cache missed when searching parent ino={} \
-                    and i-node of ino={} and name={:?}",
-                parent, ino, child_name,
-            );
-            let (mut child_node, parent_name) = {
-                let cache = self.cache.read().await;
-                let parent_node = cache.get(&parent).unwrap_or_else(|| {
-                    panic!(
-                        "lookup_helper() found fs is inconsistent, \
-                        parent i-node of ino={parent} should be in cache",
-                    );
-                });
-                let parent_name = parent_node.get_name().to_owned();
-                let child_node = match child_type {
-                    SFlag::S_IFDIR => parent_node
-                        .open_child_dir(child_name, child_attr)
-                        .await
-                        .context(format!(
-                            "lookup_helper() failed to open sub-directory name={child_name:?} \
-                            under parent directory of ino={parent} and name={parent_name:?}",
-                        ))?,
-                    SFlag::S_IFREG => {
-                        let oflags = OFlag::O_RDWR;
-                        parent_node
-                            .open_child_file(
-                                child_name,
-                                child_attr,
-                                oflags,
-                                Arc::<GlobalCache>::clone(&self.data_cache),
-                            )
-                            .await
-                            .context(format!(
-                            "lookup_helper() failed to open child file name={child_name:?} with flags={oflags:?} \
-                                under parent directory of ino={parent} and name={parent_name:?}",
-                        ))?
-                    }
-                    SFlag::S_IFLNK => parent_node
-                        .load_child_symlink(child_name, child_attr)
-                        .await
-                        .context(format!(
-                            "lookup_helper() failed to read child symlink name={child_name:?} \
-                                under parent directory of ino={parent} and name={parent_name:?}",
-                        ))?,
-                    _ => panic!("lookup_helper() found unsupported file type={child_type:?}",),
-                };
-                (child_node, parent_name)
+        let result: &mut Option<FuseAttr> = &mut None;
+        let txn_result = retry_txn!(DEFAULT_TXN_RETRY_TIMES, {
+            let mut txn = self.kv_engine.new_meta_txn();
+            let pre_check_res = self.lookup_pre_check(&mut txn, parent, child_name).await;
+            let (ino, _, _) = match pre_check_res {
+                Ok((ino, child_type, child_attr)) => (ino, child_type, child_attr),
+                Err(e) => {
+                    debug!("lookup() failed to pre-check, the error is: {}", e);
+                    return Err(e);
+                }
             };
-
-            debug_assert_eq!(ino, child_node.get_ino());
-            child_node.set_ino(ino);
-            let child_ino = ino;
-            let attr = child_node.lookup_attr();
-            let full_path = child_node.full_path().to_owned();
-            {
-                let mut cache = self.cache.write().await;
-                cache.insert(child_ino, child_node);
+            // pre-check success, the child exists
+            // get the child node
+            let child_inum_key = KeyType::INum2Node(ino);
+            let get_result = txn.get(&child_inum_key).await;
+            let child_node = match get_result {
+                Ok(option_value) => {
+                    // If we get None here, it means the child node is deleted(inconsistent)
+                    // and we should retry
+                    let value = match option_value {
+                        Some(value) => value,
+                        None => {
+                            debug!(
+                                "lookup() found the child ino={} is deleted(inconsistent)",
+                                ino
+                            );
+                            continue;
+                        }
+                    };
+                    value
+                }
+                Err(err) => {
+                    debug!(
+                        "lookup() failed to get the child ino={} from kv-engine, \
+                            the error is: {}",
+                        ino, err
+                    );
+                    continue;
+                }
             }
-
-            self.path2inum.write().await.insert(full_path, child_ino);
-
+            .into_s3_node(self);
+            let attr = child_node.lookup_attr();
             let fuse_attr = fs_util::convert_to_fuse_attr(attr);
             debug!(
-                "lookup_helper() successfully found the i-node of ino={} and name={:?} \
-                under parent of ino={} and name={:?}",
-                child_ino, child_name, parent, parent_name,
+                "lookup_helper() successfully found in cache the i-node of \
+                ino={} name={:?} under parent ino={}, the attr={:?}",
+                ino, child_name, parent, &attr,
             );
-            Ok((ttl, fuse_attr, MY_GENERATION))
+            *result = Some(fuse_attr);
+            txn.commit().await
+        });
+
+        match txn_result {
+            Ok(_) => {
+                let fuse_attr = result
+                    .take()
+                    .unwrap_or_else(|| panic!("The txn_result is Ok, but the result is None"));
+                return Ok((ttl, fuse_attr, MY_GENERATION));
+            }
+            Err(e) => {
+                debug!("lookup_helper() failed to commit txn, the error is: {}", e);
+                return Err(e);
+            }
         }
     }
 
@@ -738,17 +725,22 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
     /// Lookup helper function to pre-check
     async fn lookup_pre_check(
         &self,
+        txn: &mut Box<dyn MetaTxn + Send>,
         parent: INum,
         name: &str,
     ) -> DatenLordResult<(INum, SFlag, Arc<SyncRwLock<FileAttr>>)> {
         // lookup child ino and type first
-        let cache = self.cache.read().await;
-        let parent_node = cache.get(&parent).unwrap_or_else(|| {
-            panic!(
-                "lookup_helper() found fs is inconsistent, \
+        // 1. Try get the parent node
+        let parent_node = txn.get(&KeyType::INum2Node(parent)).await.unwrap();
+        // If doesn't exist, panic
+        let parent_node = parent_node
+            .unwrap_or_else(|| {
+                panic!(
+                    "lookup_helper() found fs is inconsistent, \
                         the parent i-node of ino={parent} should be in cache",
-            );
-        });
+                );
+            })
+            .into_s3_node(self);
         if let Some(child_entry) = parent_node.get_entry(name) {
             let ino = child_entry.ino();
             let child_type = child_entry.entry_type();
