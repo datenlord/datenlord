@@ -45,6 +45,7 @@ use crate::async_fuse::fuse::fuse_reply::{
 };
 use crate::async_fuse::fuse::fuse_request::Request;
 use crate::async_fuse::fuse::protocol::{INum, FUSE_ROOT_ID};
+use crate::async_fuse::memfs::kv_engine::KeyType;
 use crate::common::error::{Context, DatenLordResult};
 use crate::common::etcd_delegate::EtcdDelegate;
 use cache::IoMemBlock;
@@ -384,40 +385,18 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         if 0 == valid {
             warn!("setattr() enountered valid=0, the req={:?}", req);
         };
-        let mut cache = self.metadata.cache().write().await;
-        let inode = cache.get_mut(&ino).unwrap_or_else(|| {
-            panic!(
-                "setattr() found fs is inconsistent, \
-                    the i-node of ino={ino} should be in cache",
-            );
-        });
-        let ttl = Duration::new(MY_TTL_SEC, 0);
-
-        let set_res = inode.setattr_precheck(param).await;
-        match set_res {
-            Ok((attr_changed, file_attr)) => {
-                if attr_changed {
-                    inode.set_attr(file_attr);
-                    debug!(
-                        "setattr() successfully set the attribute of ino={} and name={:?}, the set attr={:?}",
-                        ino, inode.get_name(), file_attr,
-                    );
-                } else {
-                    warn!(
-                        "setattr() did not change any attribute of ino={} and name={:?}",
-                        ino,
-                        inode.get_name(),
-                    );
-                }
-                let fuse_attr = fs_util::convert_to_fuse_attr(file_attr);
+        match self.metadata.setattr(ino, param).await {
+            Ok((ttl, fuse_attr)) => {
+                debug!(
+                    "setattr() successfully set the attribute of ino={}  the set attr={:?}",
+                    ino, fuse_attr,
+                );
                 reply.attr(ttl, fuse_attr).await
             }
             Err(e) => {
                 debug!(
-                    "setattr() failed to set the attribute of ino={} and name={:?}, the error is: {}",
-                    ino,
-                    inode.get_name(),
-                    e,
+                    "setattr() failed to set the attribute of ino={} the error is: {}",
+                    ino, e,
                 );
                 reply.error(e).await
             }

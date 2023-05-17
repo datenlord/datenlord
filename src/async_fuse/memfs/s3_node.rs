@@ -4,6 +4,7 @@ use super::cache::{GlobalCache, IoMemBlock};
 use super::dir::DirEntry;
 use super::dist::client as dist_client;
 use super::fs_util::{self, FileAttr};
+use super::kv_engine::{KeyType, MetaTxn, ValueType};
 use super::node::Node;
 use super::persist;
 use super::s3_metadata::S3MetaData;
@@ -441,6 +442,14 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
                 Err(DatenLordError::from(anyhow!(e)))
             }
         }
+    }
+
+    /// Sync the node to kv engine
+    /// The change won't be visible to other nodes until the transaction is committed.
+    pub async fn sync_to_txn(self, txn: &mut Box<dyn MetaTxn + Send>) {
+        let inum_key = KeyType::INum2Node(self.attr.read().ino);
+        let serial_node = self.into_serial_node();
+        txn.set(&inum_key, &ValueType::Node(serial_node)).await;
     }
 }
 
@@ -1264,6 +1273,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
         let st_now = SystemTime::now();
         let mut attr_changed = false;
         let mut mtime_ctime_changed = false;
+
         if let Some(mode_bits) = param.mode {
             attr.perm = fs_util::parse_mode_bits(mode_bits);
             debug!(
@@ -1277,6 +1287,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
             attr.ctime = st_now;
             attr_changed = true;
         }
+
         if param.u_id.is_some() || param.g_id.is_some() {
             if let Some(raw_uid) = param.u_id {
                 attr.uid = raw_uid;
@@ -1288,6 +1299,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
             attr.ctime = st_now;
             attr_changed = true;
         }
+
         if let Some(file_size) = param.size {
             attr.size = file_size;
             attr.mtime = st_now;
@@ -1295,6 +1307,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
             mtime_ctime_changed = true;
             attr_changed = true;
         }
+
         if param.a_time.is_some() || param.m_time.is_some() {
             if mtime_ctime_changed {
                 panic!("setattr_helper() cannot change atime and mtime explicitly in the mean while with truncate");
@@ -1311,6 +1324,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
                 attr_changed = true;
             }
         }
+
         // TODO: change lock owner
         // #[cfg(feature = "abi-7-9")]
         // let lock_owner = param.lock_owner;

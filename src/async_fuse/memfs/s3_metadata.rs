@@ -14,6 +14,7 @@ use super::s3_node::{self, S3Node};
 use super::s3_wrapper::S3BackEnd;
 use super::serial;
 use super::RenameParam;
+use super::SetAttrParam;
 use crate::async_fuse::fuse::file_system::FsAsyncResultSender;
 #[cfg(feature = "abi-7-18")]
 use crate::async_fuse::fuse::fuse_reply::FuseDeleteNotification;
@@ -29,6 +30,7 @@ use async_trait::async_trait;
 use clippy_utilities::{Cast, OverflowArithmetic};
 use itertools::Itertools;
 use log::debug;
+use log::warn;
 use nix::errno::Errno;
 use nix::fcntl::OFlag;
 use nix::sys::stat::SFlag;
@@ -173,6 +175,69 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
     /// Get metadata cache
     fn cache(&self) -> &RwLock<BTreeMap<INum, Self::N>> {
         &self.cache
+    }
+
+    /// Get metadata kV Engine
+    fn kv_engine(&self) -> &Arc<dyn KVEngine> {
+        &self.kv_engine
+    }
+
+    /// Impl setattr for S3MetaData
+    /// First, we obtain the corresponding inode from the kv_engine using the ino.
+    /// Then, we set the relevant attr. Finally, we write back the modified inode.
+    /// This is a read-modify-write model.
+    async fn setattr(
+        &self,
+        ino: u64,
+        param: SetAttrParam,
+    ) -> DatenLordResult<(Duration, FuseAttr)> {
+        let ttl = Duration::new(MY_TTL_SEC, 0);
+        let mut result = None;
+        let txn_result = retry_txn!(DEFAULT_TXN_RETRY_TIMES, {
+            let txn = self.kv_engine.new_meta_txn();
+            let inum_key = KeyType::INum2Node(ino);
+            let get_result = txn.get(&inum_key).await;
+
+            let inode = match get_result {
+                Ok(Some(node)) => node.into_s3_node(self),
+                Ok(None) => {
+                    panic!(
+                        "setattr() found fs is inconsistent, \
+                        the i-node of ino={ino} should be in cache",
+                    );
+                }
+                Err(err) => {
+                    panic!(
+                        "setattr() get inode failed , \
+                        the i-node of ino={ino} should be in cache error={err}",
+                    );
+                }
+            };
+
+            let set_attr_res = inode.setattr_precheck(param).await;
+            match set_attr_res {
+                Ok((attr_changed, file_attr)) => {
+                    if attr_changed {
+                        inode.set_attr(file_attr);
+                        debug!(
+                        "setattr() successfully set the attribute of ino={} and name={:?}, the set attr={:?}",
+                        ino, inode.get_name(), file_attr,
+                    );
+                    } else {
+                        warn!(
+                            "setattr() did not change any attribute of ino={} and name={:?}",
+                            ino,
+                            inode.get_name(),
+                        );
+                    }
+                    let fuse_attr = fs_util::convert_to_fuse_attr(file_attr);
+                    result = Some(fuse_attr);
+                }
+                Err(e) => return Err(e),
+            }
+            txn.commit().await
+        });
+        Ok((ttl, result.unwrap()))
     }
 
     /// Set fuse fd into `MetaData`
@@ -388,6 +453,11 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
     }
 
     /// Helper function to lookup
+    /// Firstly, we obtain the parent node via the parent inum through the key-value (kv) engine.
+    ///  We then check whether the directory's hash table contains child_name.
+    /// If it does not, the function returns.
+    /// If it does, we once again use the kv engine to obtain child_node and subsequently return the corresponding fuse_attr."
+    /// Note that we do not use transactions to ensure the consistency between the two 'get' operations.
     #[allow(clippy::too_many_lines)]
     async fn lookup_helper(
         &self,
@@ -395,70 +465,53 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         child_name: &str,
     ) -> DatenLordResult<(Duration, FuseAttr, u64)> {
         let ttl = Duration::new(MY_TTL_SEC, 0);
-        let result: &mut Option<FuseAttr> = &mut None;
-        let txn_result = retry_txn!(DEFAULT_TXN_RETRY_TIMES, {
-            let mut txn = self.kv_engine.new_meta_txn();
-            let pre_check_res = self.lookup_pre_check(&mut txn, parent, child_name).await;
-            let (ino, _, _) = match pre_check_res {
-                Ok((ino, child_type, child_attr)) => (ino, child_type, child_attr),
-                Err(e) => {
-                    debug!("lookup() failed to pre-check, the error is: {}", e);
-                    return Err(e);
-                }
-            };
-            // pre-check success, the child exists
-            // get the child node
-            let child_inum_key = KeyType::INum2Node(ino);
-            let get_result = txn.get(&child_inum_key).await;
-            let child_node = match get_result {
-                Ok(option_value) => {
-                    // If we get None here, it means the child node is deleted(inconsistent)
-                    // and we should retry
-                    let value = match option_value {
-                        Some(value) => value,
-                        None => {
-                            debug!(
-                                "lookup() found the child ino={} is deleted(inconsistent)",
-                                ino
-                            );
-                            continue;
-                        }
-                    };
-                    value
-                }
-                Err(err) => {
-                    debug!(
-                        "lookup() failed to get the child ino={} from kv-engine, \
-                            the error is: {}",
-                        ino, err
-                    );
-                    continue;
-                }
-            }
-            .into_s3_node(self);
-            let attr = child_node.lookup_attr();
-            let fuse_attr = fs_util::convert_to_fuse_attr(attr);
-            debug!(
-                "lookup_helper() successfully found in cache the i-node of \
-                ino={} name={:?} under parent ino={}, the attr={:?}",
-                ino, child_name, parent, &attr,
-            );
-            *result = Some(fuse_attr);
-            txn.commit().await
-        });
-
-        match txn_result {
-            Ok(_) => {
-                let fuse_attr = result
-                    .take()
-                    .unwrap_or_else(|| panic!("The txn_result is Ok, but the result is None"));
-                return Ok((ttl, fuse_attr, MY_GENERATION));
-            }
+        // The txn won't be committed , we just use it to get the node from kv engine
+        let mut txn = self.kv_engine.new_meta_txn();
+        let pre_check_res = self.lookup_pre_check(&mut txn, parent, child_name).await;
+        let (ino, _, _) = match pre_check_res {
+            Ok((ino, child_type, child_attr)) => (ino, child_type, child_attr),
             Err(e) => {
-                debug!("lookup_helper() failed to commit txn, the error is: {}", e);
+                debug!("lookup() failed to pre-check, the error is: {}", e);
                 return Err(e);
             }
+        };
+        // pre-check success, the child exists
+        // get the child node
+        let child_inum_key = KeyType::INum2Node(ino);
+        let get_result = txn.get(&child_inum_key).await;
+        let child_node = match get_result {
+            Ok(option_value) => {
+                // If we get None here, it means the child node is deleted(inconsistent)
+                // and we should retry
+                let value = match option_value {
+                    Some(value) => value,
+                    None => {
+                        // lookup() didn't find anything, this is normal
+                        return util::build_error_result_from_errno(
+                            Errno::ENOENT,
+                            format!(
+                                "lookup_helper() failed to find the file name={:?} \
+                        under parent directory of ino={} ",
+                                child_name, parent
+                            ),
+                        );
+                    }
+                };
+                value
+            }
+            Err(err) => {
+                return Err(err);
+            }
         }
+        .into_s3_node(self);
+        let attr = child_node.lookup_attr();
+        let fuse_attr = fs_util::convert_to_fuse_attr(attr);
+        debug!(
+            "lookup_helper() successfully found in cache the i-node of \
+                ino={} name={:?} under parent ino={}, the attr={:?}",
+            ino, child_name, parent, &attr,
+        );
+        Ok((ttl, fuse_attr, MY_GENERATION))
     }
 
     /// Rename helper to exchange on disk
@@ -505,6 +558,9 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
     }
 
     /// Helper function to write data
+    /// Consistency issues are not considered in this function.
+    /// The use of txn here is merely for convenience.
+    /// This is read-modify-write operation.
     async fn write_helper(
         &self,
         ino: u64,
@@ -514,33 +570,46 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         flags: u32,
     ) -> DatenLordResult<usize> {
         let data_len = data.len();
-        let (result, full_path, parent_ino) = {
-            let mut cache = self.cache().write().await;
-            let inode = cache.get_mut(&ino).unwrap_or_else(|| {
-                panic!(
-                    "write() found fs is inconsistent, \
-                     the inode ino={ino} is not in cache"
-                );
-            });
-            let parent_ino = inode.get_parent_ino();
+        let context: Option<(Result<usize, DatenLordError>, String, u64)> = None;
+        let txn_result = retry_txn!(DEFAULT_TXN_RETRY_TIMES, {
+            let mut txn = self.kv_engine.new_meta_txn();
+            let context = Some({
+                let inum_key = KeyType::INum2Node(ino);
+                let inode = match txn.get(&inum_key).await {
+                    Ok(Some(value)) => value.into_s3_node(self),
+                    Ok(None) => {
+                        panic!(
+                            "write() found fs is inconsistent, \
+                         the inode ino={ino} is not in cache"
+                        );
+                    }
+                    Err(err) => {
+                        return Err(err);
+                    }
+                };
+                let parent_ino = inode.get_parent_ino();
 
-            debug!(
-                "write_helper() about to write {} byte data to file of ino={} \
-                and name {:?} at offset={}",
-                data.len(),
-                ino,
-                inode.get_name(),
-                offset
-            );
-            let o_flags = fs_util::parse_oflag(flags);
-            let write_to_disk = true;
-            let res = inode
-                .write_file(fh, offset, data, o_flags, write_to_disk)
-                .await;
-            (res, inode.get_full_path().to_owned(), parent_ino)
-        };
+                debug!(
+                    "write_helper() about to write {} byte data to file of ino={} \
+                    and name {:?} at offset={}",
+                    data.len(),
+                    ino,
+                    inode.get_name(),
+                    offset
+                );
+
+                let o_flags = fs_util::parse_oflag(flags);
+                let write_to_disk = true;
+                let res = inode
+                    .write_file(fh, offset, data, o_flags, write_to_disk)
+                    .await;
+                inode.sync_to_txn(&mut txn);
+                (res, inode.get_full_path().to_owned(), parent_ino)
+            });
+            txn.commit().await
+        })?;
+        let (result, full_path, parent_ino) = context.take().unwrap();
         self.invalidate_remote(&full_path, offset, data_len).await;
-        self.sync_attr_remote(&full_path).await;
         // update dir
         let cache = self.cache().write().await;
         let parent = cache.get(&parent_ino).unwrap_or_else(|| {

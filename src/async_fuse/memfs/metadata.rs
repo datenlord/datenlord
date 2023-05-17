@@ -2,8 +2,9 @@ use super::cache::GlobalCache;
 use super::dir::DirEntry;
 use super::dist::server::CacheServer;
 use super::fs_util::{self, FileAttr};
+use super::kv_engine::KVEngine;
 use super::node::{self, DefaultNode, Node};
-use super::RenameParam;
+use super::{RenameParam, SetAttrParam};
 use crate::async_fuse::fuse::file_system::FsAsyncResultSender;
 use crate::async_fuse::fuse::protocol::{FuseAttr, INum, FUSE_ROOT_ID};
 use crate::async_fuse::util;
@@ -87,6 +88,13 @@ pub trait MetaData {
     // TODO: Should hide this implementation detail
     /// Get metadata cache
     fn cache(&self) -> &RwLock<BTreeMap<INum, Self::N>>;
+
+    /// Get metadata's KV Engine
+    fn kv_engine(&self) -> &Arc<dyn KVEngine>;
+
+    /// setattr
+    async fn setattr(&self, ino: u64, param: SetAttrParam)
+        -> DatenLordResult<(Duration, FuseAttr)>;
 
     /// Try to delete node that is marked as deferred deletion
     async fn try_delete_node(&self, ino: INum) -> bool;

@@ -18,7 +18,7 @@ pub const DEFAULT_TXN_RETRY_TIMES: u32 = 3;
 pub enum ValueType {
     /// SerialNode
     Node(SerialNode),
-    /// SerailDirEntry
+    /// SerialDirEntry
     DirEntry(SerialDirEntry),
     /// INum
     INum(INum),
@@ -27,7 +27,7 @@ pub enum ValueType {
 }
 
 impl ValueType {
-    #[allow(dead_code)]
+    #[must_use]
     /// Turn the `ValueType` into `SerialNode` then into `S3Node`.
     // Notice : If the value is not `ValueType::Node`, it will panic
     pub fn into_s3_node<S: S3BackEnd + Send + Sync + 'static>(
@@ -38,6 +38,16 @@ impl ValueType {
             ValueType::Node(node) => S3Node::from_serial_node(node, meta),
             ValueType::DirEntry(_) | ValueType::INum(_) | ValueType::Attr(_) => {
                 panic!("expect ValueType::Node but get {self:?}");
+            }
+        }
+    }
+
+    #[must_use]
+    pub fn into_inum(self) -> INum {
+        match self {
+            ValueType::INum(i) => i,
+            ValueType::Node(_) | ValueType::DirEntry(_) | ValueType::Attr(_) => {
+                panic!("expect ValueType::INum but get {self:?}");
             }
         }
     }
