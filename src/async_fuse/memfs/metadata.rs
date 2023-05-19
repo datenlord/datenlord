@@ -4,8 +4,10 @@ use super::dist::server::CacheServer;
 use super::fs_util::{self, FileAttr};
 use super::node::{self, DefaultNode, Node};
 use super::RenameParam;
+use crate::async_fuse::fuse::file_system::FsAsyncResultSender;
 use crate::async_fuse::fuse::protocol::{FuseAttr, INum, FUSE_ROOT_ID};
 use crate::async_fuse::util;
+use crate::common::error::DatenLordResult;
 use crate::common::etcd_delegate::EtcdDelegate;
 use anyhow::Context;
 use async_trait::async_trait;
@@ -22,6 +24,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{Mutex, RwLock, RwLockWriteGuard};
+use tokio::task::JoinHandle;
 
 /// The time-to-live seconds of FUSE attributes
 const MY_TTL_SEC: u64 = 3600; // TODO: should be a long value, say 1 hour
@@ -35,6 +38,7 @@ pub trait MetaData {
     type N: Node + Send + Sync + 'static;
 
     /// Create `MetaData`
+    #[allow(clippy::too_many_arguments)]
     async fn new(
         root_path: &str,
         capacity: usize,
@@ -43,7 +47,8 @@ pub trait MetaData {
         etcd_client: EtcdDelegate,
         node_id: &str,
         volume_info: &str,
-    ) -> (Arc<Self>, Option<CacheServer>);
+        fs_async_sender: FsAsyncResultSender,
+    ) -> (Arc<Self>, Option<CacheServer>, Vec<JoinHandle<()>>);
 
     /// Helper function to create node
     async fn create_node_helper(
@@ -53,7 +58,7 @@ pub trait MetaData {
         mode: u32,
         node_type: SFlag,
         target_path: Option<&Path>,
-    ) -> anyhow::Result<(Duration, FuseAttr, u64)>;
+    ) -> DatenLordResult<(Duration, FuseAttr, u64)>;
 
     /// Helper function to remove node
     async fn remove_node_helper(
@@ -61,23 +66,23 @@ pub trait MetaData {
         parent: INum,
         node_name: &str,
         node_type: SFlag,
-    ) -> anyhow::Result<()>;
+    ) -> DatenLordResult<()>;
 
     /// Helper function to lookup
     async fn lookup_helper(
         &self,
         parent: INum,
         name: &str,
-    ) -> anyhow::Result<(Duration, FuseAttr, u64)>;
+    ) -> DatenLordResult<(Duration, FuseAttr, u64)>;
 
     /// Rename helper to exchange on disk
-    async fn rename_exchange_helper(&self, param: RenameParam) -> anyhow::Result<()>;
+    async fn rename_exchange_helper(&self, param: RenameParam) -> DatenLordResult<()>;
 
     /// Rename helper to move on disk, it may replace destination entry
-    async fn rename_may_replace_helper(&self, param: RenameParam) -> anyhow::Result<()>;
+    async fn rename_may_replace_helper(&self, param: RenameParam) -> DatenLordResult<()>;
 
     /// Helper function of fsync
-    async fn fsync_helper(&self, ino: u64, fh: u64, datasync: bool) -> anyhow::Result<()>;
+    async fn fsync_helper(&self, ino: u64, fh: u64, datasync: bool) -> DatenLordResult<()>;
 
     // TODO: Should hide this implementation detail
     /// Get metadata cache
@@ -94,10 +99,13 @@ pub trait MetaData {
         offset: i64,
         data: Vec<u8>,
         flags: u32,
-    ) -> anyhow::Result<usize>;
+    ) -> DatenLordResult<usize>;
 
     /// Set fuse fd into `MetaData`
     async fn set_fuse_fd(&self, fuse_fd: RawFd);
+
+    /// Stop all async tasks
+    fn stop_all_async_tasks(&self);
 }
 
 /// File system in-memory meta-data
@@ -112,6 +120,8 @@ pub struct DefaultMetaData {
     data_cache: Arc<GlobalCache>,
     /// Fuse fd
     fuse_fd: Mutex<RawFd>,
+    /// Send async result to session
+    fs_async_sender: FsAsyncResultSender,
 }
 
 #[async_trait]
@@ -126,7 +136,8 @@ impl MetaData for DefaultMetaData {
         _: EtcdDelegate,
         _: &str,
         _: &str,
-    ) -> (Arc<Self>, Option<CacheServer>) {
+        fs_async_sender: FsAsyncResultSender,
+    ) -> (Arc<Self>, Option<CacheServer>, Vec<JoinHandle<()>>) {
         let root_path = Path::new(root_path)
             .canonicalize()
             .with_context(|| format!("failed to canonicalize the mount path={root_path:?}"))
@@ -142,6 +153,7 @@ impl MetaData for DefaultMetaData {
             cache: RwLock::new(BTreeMap::new()),
             data_cache: Arc::new(GlobalCache::new_with_capacity(capacity)),
             fuse_fd: Mutex::new(-1_i32),
+            fs_async_sender,
         });
 
         let root_inode =
@@ -153,7 +165,7 @@ impl MetaData for DefaultMetaData {
                 });
         meta.cache.write().await.insert(FUSE_ROOT_ID, root_inode);
 
-        (meta, None)
+        (meta, None, vec![])
     }
 
     /// Get metadata cache
@@ -216,7 +228,7 @@ impl MetaData for DefaultMetaData {
         mode: u32,
         node_type: SFlag,
         target_path: Option<&Path>,
-    ) -> anyhow::Result<(Duration, FuseAttr, u64)> {
+    ) -> DatenLordResult<(Duration, FuseAttr, u64)> {
         // pre-check
         let mut cache = self.cache.write().await;
         let parent_node = Self::create_node_pre_check(parent, node_name, &mut cache)
@@ -312,7 +324,7 @@ impl MetaData for DefaultMetaData {
         parent: INum,
         node_name: &str,
         node_type: SFlag,
-    ) -> anyhow::Result<()> {
+    ) -> DatenLordResult<()> {
         let node_ino: INum;
         {
             // pre-checks
@@ -407,15 +419,12 @@ impl MetaData for DefaultMetaData {
         &self,
         parent: INum,
         child_name: &str,
-    ) -> anyhow::Result<(Duration, FuseAttr, u64)> {
+    ) -> DatenLordResult<(Duration, FuseAttr, u64)> {
         let pre_check_res = self.lookup_pre_check(parent, child_name).await;
         let (ino, child_type, child_attr) = match pre_check_res {
             Ok((ino, child_type, child_attr)) => (ino, child_type, child_attr),
             Err(e) => {
-                debug!(
-                    "lookup() failed to pre-check, the error is: {}",
-                    crate::common::util::format_anyhow_error(&e),
-                );
+                debug!("lookup() failed to pre-check, the error is: {}", e);
                 return Err(e);
             }
         };
@@ -501,7 +510,7 @@ impl MetaData for DefaultMetaData {
     }
 
     /// Rename helper to exchange on disk
-    async fn rename_exchange_helper(&self, param: RenameParam) -> anyhow::Result<()> {
+    async fn rename_exchange_helper(&self, param: RenameParam) -> DatenLordResult<()> {
         let old_parent = param.old_parent;
         let old_name = param.old_name.as_str();
         let new_parent = param.new_parent;
@@ -521,10 +530,7 @@ impl MetaData for DefaultMetaData {
                 (old_parent_fd, old_entry_ino, new_parent_fd, new_entry_ino)
             }
             Err(e) => {
-                debug!(
-                    "rename() pre-check failed, the error is: {}",
-                    crate::common::util::format_anyhow_error(&e)
-                );
+                debug!("rename() pre-check failed, the error is: {}", e);
                 return Err(e);
             }
         };
@@ -602,7 +608,7 @@ impl MetaData for DefaultMetaData {
     }
 
     /// Rename helper to move on disk, it may replace destination entry
-    async fn rename_may_replace_helper(&self, param: RenameParam) -> anyhow::Result<()> {
+    async fn rename_may_replace_helper(&self, param: RenameParam) -> DatenLordResult<()> {
         let old_parent = param.old_parent;
         let old_name = param.old_name;
         let new_parent = param.new_parent;
@@ -622,10 +628,7 @@ impl MetaData for DefaultMetaData {
                 (old_parent_fd, old_entry_ino, new_parent_fd, new_entry_ino)
             }
             Err(e) => {
-                debug!(
-                    "rename() pre-check failed, the error is: {}",
-                    crate::common::util::format_anyhow_error(&e)
-                );
+                debug!("rename() pre-check failed, the error is: {}", e);
                 return Err(e);
             }
         };
@@ -706,7 +709,7 @@ impl MetaData for DefaultMetaData {
         fh: u64,
         datasync: bool,
         // reply: ReplyEmpty,
-    ) -> anyhow::Result<()> {
+    ) -> DatenLordResult<()> {
         // TODO: handle datasync
         #[cfg(target_os = "linux")]
         {
@@ -750,7 +753,7 @@ impl MetaData for DefaultMetaData {
         offset: i64,
         data: Vec<u8>,
         flags: u32,
-    ) -> anyhow::Result<usize> {
+    ) -> DatenLordResult<usize> {
         let mut cache = self.cache().write().await;
         let inode = cache.get_mut(&ino).unwrap_or_else(|| {
             panic!(
@@ -772,6 +775,9 @@ impl MetaData for DefaultMetaData {
             .write_file(fh, offset, data, o_flags, write_to_disk)
             .await
     }
+
+    /// Stop all async tasks
+    fn stop_all_async_tasks(&self) {}
 }
 
 impl DefaultMetaData {
@@ -783,7 +789,7 @@ impl DefaultMetaData {
         parent: INum,
         node_name: &str,
         cache: &'b mut RwLockWriteGuard<BTreeMap<INum, <Self as MetaData>::N>>,
-    ) -> anyhow::Result<&'b mut <Self as MetaData>::N> {
+    ) -> DatenLordResult<&'b mut <Self as MetaData>::N> {
         let parent_node = cache.get_mut(&parent).unwrap_or_else(|| {
             panic!(
                 "create_node_pre_check() found fs is inconsistent, \
@@ -827,7 +833,7 @@ impl DefaultMetaData {
     }
 
     /// Helper function to delete or deferred delete node
-    async fn may_deferred_delete_node_helper(&self, ino: INum) -> anyhow::Result<()> {
+    async fn may_deferred_delete_node_helper(&self, ino: INum) -> DatenLordResult<()> {
         // remove entry from parent i-node
         let mut cache = self.cache.write().await;
         let inode = cache.get(&ino).unwrap_or_else(|| {
@@ -901,7 +907,7 @@ impl DefaultMetaData {
         &self,
         parent: INum,
         name: &str,
-    ) -> anyhow::Result<(INum, SFlag, Arc<SyncRwLock<FileAttr>>)> {
+    ) -> DatenLordResult<(INum, SFlag, Arc<SyncRwLock<FileAttr>>)> {
         // lookup child ino and type first
         let cache = self.cache.read().await;
         let parent_node = cache.get(&parent).unwrap_or_else(|| {
@@ -944,7 +950,7 @@ impl DefaultMetaData {
         new_parent: INum,
         new_name: &str,
         no_replace: bool,
-    ) -> anyhow::Result<(RawFd, INum, RawFd, Option<INum>)> {
+    ) -> DatenLordResult<(RawFd, INum, RawFd, Option<INum>)> {
         let cache = self.cache.read().await;
         let old_parent_node = cache.get(&old_parent).unwrap_or_else(|| {
             panic!(

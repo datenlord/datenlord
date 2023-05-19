@@ -3,7 +3,6 @@
 use grpcio::RpcStatusCode;
 use std::path::PathBuf;
 use thiserror::Error;
-
 /// `DatenLord` Result type
 pub type DatenLordResult<T> = Result<T, DatenLordError>;
 /// `DatenLord` error code
@@ -194,12 +193,35 @@ pub enum DatenLordError {
         context: Vec<String>,
     },
 
+    /// Error caused by module kv_engine's MetaTxn retry limit exceeded
+    #[error("TransactionRetryLimitExceededErr, context is {:#?}", .context)]
+    TransactionRetryLimitExceededErr {
+        /// Context of the error
+        context: Vec<String>,
+    },
+
+    /// Error caused by datenlord's internal logic
+    #[error("InternalErr, the error is {:?} context is {:#?}", .source,.context)]
+    InternalErr {
+        /// Error srouce
+        source: anyhow::Error,
+        /// Context of the error
+        context: Vec<String>,
+    },
+
     /// API is not implemented
     #[error("Not implemented, context is {:#?}", .context)]
     Unimplemented {
         /// Context of the error
         context: Vec<String>,
     },
+    // /// Error when doing s3 operation.
+    // #[error("S3 error: {0}")]
+    // S3Error(s3_wrapper::S3Error),
+
+    // ///
+    // #[error("persist error: {0}")]
+    // PersistError(persist::PersistError),
 }
 
 /// Add context to `DatenLordResult`
@@ -280,6 +302,8 @@ impl DatenLordError {
                 GrpcioErr,
                 SerdeJsonErr,
                 JoinErr,
+                TransactionRetryLimitExceededErr,
+                InternalErr,
                 Unimplemented
             ]
         );
@@ -321,6 +345,7 @@ implement_from!(std::time::SystemTimeError, SystemTimeErr);
 implement_from!(grpcio::Error, GrpcioErr);
 implement_from!(serde_json::Error, SerdeJsonErr);
 implement_from!(tokio::task::JoinError, JoinErr);
+implement_from!(anyhow::Error, InternalErr);
 
 impl From<DatenLordError> for RpcStatusCode {
     #[inline]
@@ -336,6 +361,8 @@ impl From<DatenLordError> for RpcStatusCode {
             | DatenLordError::SystemTimeErr { .. }
             | DatenLordError::SerdeJsonErr { .. }
             | DatenLordError::WalkdirErr { .. }
+            | DatenLordError::TransactionRetryLimitExceededErr { .. }
+            | DatenLordError::InternalErr { .. }
             | DatenLordError::JoinErr { .. } => Self::INTERNAL,
             DatenLordError::GrpcioErr { source, .. } => match source {
                 grpcio::Error::RpcFailure(ref s) => s.code(),

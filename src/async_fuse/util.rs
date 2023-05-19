@@ -6,7 +6,7 @@ use std::mem::MaybeUninit;
 use std::os::raw::{c_char, c_int};
 use std::{io, ptr, slice};
 
-use anyhow::Context;
+use crate::common::error::{DatenLordError, DatenLordResult};
 use memchr::memchr;
 use nix::errno::Errno;
 use nix::sys::stat::SFlag;
@@ -23,8 +23,10 @@ pub fn format_nix_error(error: nix::Error) -> String {
 /// # Errors
 ///
 /// Return the built `Err(anyhow::Error(..))`
-pub fn build_error_result_from_errno<T>(error_code: Errno, err_msg: String) -> anyhow::Result<T> {
-    Err(error_code).context(err_msg)
+pub fn build_error_result_from_errno<T>(error_code: Errno, err_msg: String) -> DatenLordResult<T> {
+    Err(DatenLordError::from(
+        anyhow::Error::new(error_code).context(err_msg),
+    ))
 }
 
 /// Convert `nix::errno::Errno` to `c_int`

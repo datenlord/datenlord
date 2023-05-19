@@ -5,13 +5,19 @@ use super::dir::DirEntry;
 use super::dist::client as dist_client;
 use super::fs_util::{self, FileAttr};
 use super::node::Node;
+use super::persist;
 use super::s3_metadata::S3MetaData;
 use super::s3_wrapper::S3BackEnd;
+use super::serial::{
+    dir_entry_to_serial, file_attr_to_serial, serial_to_file_attr, SerialNode, SerialNodeData,
+};
 use super::SetAttrParam;
 use crate::async_fuse::fuse::fuse_reply::{AsIoVec, StatFsParam};
 use crate::async_fuse::fuse::protocol::INum;
 use crate::async_fuse::metrics;
+use crate::common::error::{DatenLordError, DatenLordResult};
 use crate::common::etcd_delegate::EtcdDelegate;
+use anyhow::anyhow;
 use async_trait::async_trait;
 use clippy_utilities::{Cast, OverflowArithmetic};
 use log::debug;
@@ -23,10 +29,13 @@ use std::collections::BTreeMap;
 use std::collections::VecDeque;
 use std::os::unix::io::RawFd;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{self, AtomicBool, AtomicI64, Ordering};
+use std::sync::atomic::{self, AtomicBool, AtomicI64, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::SystemTime;
 use tokio::sync::RwLockWriteGuard;
+
+/// S3's available fd count
+static GLOBAL_S3_FD_CNT: AtomicU32 = AtomicU32::new(4);
 
 /// A file node data or a directory node data
 #[derive(Debug)]
@@ -38,6 +47,23 @@ pub enum S3NodeData {
     /// Symlink target data
     // SymLink(Box<SymLinkData>),
     SymLink(PathBuf),
+}
+
+impl S3NodeData {
+    /// Serializes the node data
+    pub fn serial(&self) -> SerialNodeData {
+        match *self {
+            Self::Directory(ref dir) => {
+                let mut serial_dir = BTreeMap::new();
+                for (name, dir_entry) in dir {
+                    serial_dir.insert(name.clone(), dir_entry_to_serial(dir_entry));
+                }
+                SerialNodeData::Directory(serial_dir)
+            }
+            Self::RegFile(_) => SerialNodeData::File,
+            Self::SymLink(ref target) => SerialNodeData::SymLink(target.clone()),
+        }
+    }
 }
 
 /// A file node or a directory node
@@ -61,11 +87,16 @@ pub struct S3Node<S: S3BackEnd + Sync + Send + 'static> {
     lookup_count: AtomicI64,
     /// If S3Node has been marked as deferred deletion
     deferred_deletion: AtomicBool,
-    /// Shared metadata
-    meta: Arc<S3MetaData<S>>,
+    /// Etcd client
+    etcd_client: Arc<EtcdDelegate>,
+    /// K8s node id
+    k8s_node_id: Arc<str>,
+    /// K8S volume_info
+    k8s_volume_info: Arc<str>,
 }
 
 impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
+    #[allow(clippy::too_many_arguments)]
     /// Create `S3Node`
     fn new(
         parent: u64,
@@ -74,7 +105,9 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
         attr: Arc<RwLock<FileAttr>>,
         data: S3NodeData,
         s3_backend: Arc<S>,
-        meta: Arc<S3MetaData<S>>,
+        etcd_client: &Arc<EtcdDelegate>,
+        k8s_node_id: &Arc<str>,
+        k8s_volume_info: &Arc<str>,
     ) -> Self {
         Self {
             s3_backend,
@@ -88,7 +121,44 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
             // lookup count set to 1 by creation
             lookup_count: AtomicI64::new(1),
             deferred_deletion: AtomicBool::new(false),
-            meta,
+            etcd_client: Arc::clone(etcd_client),
+            k8s_node_id: Arc::clone(k8s_node_id),
+            k8s_volume_info: Arc::clone(k8s_volume_info),
+        }
+    }
+
+    #[allow(dead_code)]
+    /// Create `S3Node`
+    pub fn from_serial_node(serial_node: SerialNode, meta: &S3MetaData<S>) -> Self {
+        Self {
+            s3_backend: Arc::clone(&meta.s3_backend),
+            parent: serial_node.parent,
+            full_path: serial_node.full_path,
+            name: serial_node.name,
+            attr: Arc::new(RwLock::new(serial_to_file_attr(&serial_node.attr))),
+            data: serial_node
+                .data
+                .into_s3_nodedata(Arc::clone(&meta.data_cache)),
+            open_count: AtomicI64::new(serial_node.open_count),
+            lookup_count: AtomicI64::new(serial_node.lookup_count),
+            deferred_deletion: AtomicBool::new(serial_node.deferred_deletion),
+            etcd_client: Arc::clone(&meta.etcd_client),
+            k8s_node_id: Arc::clone(&meta.node_id),
+            k8s_volume_info: Arc::clone(&meta.volume_info),
+        }
+    }
+
+    /// This function is used to create a new `S3Node` by module `serial`
+    pub fn into_serial_node(self) -> SerialNode {
+        SerialNode {
+            parent: self.parent,
+            name: self.name,
+            full_path: self.full_path,
+            attr: file_attr_to_serial(&self.attr.read().clone()),
+            data: self.data.serial(),
+            open_count: self.open_count.load(Ordering::SeqCst),
+            lookup_count: self.lookup_count.load(Ordering::SeqCst),
+            deferred_deletion: self.deferred_deletion.load(Ordering::SeqCst),
         }
     }
 
@@ -98,12 +168,11 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
         child_name: &str,
         child_attr: Arc<RwLock<FileAttr>>,
         target_path: Option<PathBuf>,
+        data_cache: &Arc<GlobalCache>,
     ) -> Self {
         let data = match child_attr.read().kind {
             SFlag::S_IFDIR => S3NodeData::Directory(BTreeMap::new()),
-            SFlag::S_IFREG => {
-                S3NodeData::RegFile(Arc::<GlobalCache>::clone(&parent.meta.data_cache))
-            }
+            SFlag::S_IFREG => S3NodeData::RegFile(Arc::<GlobalCache>::clone(data_cache)),
             SFlag::S_IFLNK => {
                 if let Some(path) = target_path {
                     S3NodeData::SymLink(path)
@@ -126,7 +195,9 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
             // open count set to 0 for sync
             lookup_count: AtomicI64::new(0),
             deferred_deletion: AtomicBool::new(false),
-            meta: Arc::clone(&parent.meta),
+            etcd_client: Arc::clone(&parent.etcd_client),
+            k8s_node_id: Arc::clone(&parent.k8s_node_id),
+            k8s_volume_info: Arc::clone(&parent.k8s_volume_info),
         }
     }
 
@@ -168,9 +239,11 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
         self.full_path = full_path;
     }
 
+    #[allow(clippy::unused_self)]
     /// Get new fd
     fn new_fd(&self) -> u32 {
-        self.meta.cur_fd.fetch_add(1, atomic::Ordering::SeqCst)
+        // Add global fd counter
+        GLOBAL_S3_FD_CNT.fetch_add(1, Ordering::SeqCst)
     }
 
     /// Get absolute path of a child file
@@ -264,38 +337,67 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
 
     /// Open root node
     #[allow(clippy::unnecessary_wraps)]
-    pub(crate) fn open_root_node(
+    pub(crate) async fn open_root_node(
         root_ino: INum,
         name: &str,
         s3_backend: Arc<S>,
         meta: Arc<S3MetaData<S>>,
-    ) -> anyhow::Result<Self> {
-        let now = SystemTime::now();
-        let attr = Arc::new(RwLock::new(FileAttr {
-            ino: root_ino,
-            atime: now,
-            mtime: now,
-            ctime: now,
-            crtime: now,
-            kind: SFlag::S_IFDIR,
-            ..FileAttr::default()
-        }));
+    ) -> DatenLordResult<Self> {
+        match persist::read_persisted_dir(&s3_backend, "/".to_owned()).await {
+            Err(e) => {
+                //todo: handle different type of error, key not exist, net err, etc.
+                debug!("read persit dir error {e}");
+                let now = SystemTime::now();
+                let attr = Arc::new(RwLock::new(FileAttr {
+                    ino: root_ino,
+                    atime: now,
+                    mtime: now,
+                    ctime: now,
+                    crtime: now,
+                    kind: SFlag::S_IFDIR,
+                    ..FileAttr::default()
+                }));
 
-        let root_node = Self::new(
-            root_ino,
-            name,
-            "/".to_owned(),
-            attr,
-            S3NodeData::Directory(BTreeMap::new()),
-            s3_backend,
-            meta,
-        );
+                let root_node = Self::new(
+                    root_ino,
+                    name,
+                    "/".to_owned(),
+                    attr,
+                    S3NodeData::Directory(BTreeMap::new()),
+                    s3_backend,
+                    &meta.etcd_client,
+                    &meta.node_id,
+                    &meta.volume_info,
+                );
 
-        Ok(root_node)
+                Ok(root_node)
+            }
+            Ok(data) => match data.try_get_root_attr() {
+                Ok(attr) => {
+                    let root_node = Self::new(
+                        root_ino,
+                        name,
+                        "/".to_owned(),
+                        Arc::new(RwLock::new(attr)),
+                        data.new_s3_node_data_dir(),
+                        s3_backend,
+                        &meta.etcd_client,
+                        &meta.node_id,
+                        &meta.volume_info,
+                    );
+                    debug!("Success to load root dir.");
+                    Ok(root_node)
+                }
+                Err(e) => {
+                    log::error!("Root node persist lack of attr info {e}.");
+                    Err(DatenLordError::from(e))
+                }
+            },
+        }
     }
 
     /// flush all data of a node
-    async fn flush_all_data(&mut self) -> anyhow::Result<()> {
+    async fn flush_all_data(&mut self) -> DatenLordResult<()> {
         if self.is_deferred_deletion() {
             return Ok(());
         }
@@ -314,20 +416,31 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
                 debug!(
                     "failed to load data for file {} while flushing data, the error is: {}",
                     self.get_name(),
-                    crate::common::util::format_anyhow_error(&e),
+                    e,
                 );
                 return Err(e);
             }
         }
 
-        self.s3_backend
+        let put_result = self
+            .s3_backend
             .put_data_vec(
                 &self.full_path,
                 data_cache.get_file_cache(self.full_path.as_bytes(), 0, size.cast()),
             )
-            .await?;
+            .await;
 
-        Ok(())
+        match put_result {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                debug!(
+                    "flush_all_data() failed to flush data for file {}, the error is: {}",
+                    self.get_name(),
+                    e,
+                );
+                Err(DatenLordError::from(anyhow!(e)))
+            }
+        }
     }
 }
 
@@ -505,7 +618,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
     }
 
     /// Load attribute
-    async fn load_attribute(&mut self) -> anyhow::Result<FileAttr> {
+    async fn load_attribute(&mut self) -> DatenLordResult<FileAttr> {
         let (content_len, last_modified) = self
             .s3_backend
             .get_meta(&self.full_path)
@@ -543,7 +656,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
     }
 
     /// Duplicate fd
-    async fn dup_fd(&self, _oflags: OFlag) -> anyhow::Result<RawFd> {
+    async fn dup_fd(&self, _oflags: OFlag) -> DatenLordResult<RawFd> {
         self.inc_open_count();
         Ok(self.new_fd().cast())
     }
@@ -610,7 +723,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
         inum: INum,
         child_symlink_name: &str,
         target_path: PathBuf,
-    ) -> anyhow::Result<Self> {
+    ) -> DatenLordResult<Self> {
         let absolute_path = self.absolute_path_with_child(child_symlink_name);
         let dir_data = self.get_dir_data();
         debug_assert!(
@@ -669,7 +782,9 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
             child_attr,
             S3NodeData::SymLink(target_path),
             Arc::clone(&self.s3_backend),
-            Arc::clone(&self.meta),
+            &self.etcd_client,
+            &self.k8s_node_id,
+            &self.k8s_volume_info,
         ))
     }
 
@@ -678,7 +793,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
         &self,
         child_symlink_name: &str,
         child_attr: Arc<RwLock<FileAttr>>,
-    ) -> anyhow::Result<Self> {
+    ) -> DatenLordResult<Self> {
         let absolute_path = self.absolute_path_with_child(child_symlink_name);
 
         let target_path = PathBuf::from(
@@ -702,7 +817,9 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
             child_attr,
             S3NodeData::SymLink(target_path),
             Arc::clone(&self.s3_backend),
-            Arc::clone(&self.meta),
+            &self.etcd_client,
+            &self.k8s_node_id,
+            &self.k8s_volume_info,
         ))
     }
 
@@ -711,18 +828,27 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
         &self,
         child_dir_name: &str,
         child_attr: Arc<RwLock<FileAttr>>,
-    ) -> anyhow::Result<Self> {
+    ) -> DatenLordResult<Self> {
         // lookup count and open count are increased to 1 by creation
         let full_path = format!("{}{}/", self.full_path, child_dir_name);
-
+        let dirdata = match persist::read_persisted_dir(&self.s3_backend, full_path.clone()).await {
+            Ok(dir) => dir.new_s3_node_data_dir(),
+            Err(e) => {
+                debug!("failed to get dir data from s3, path:{full_path}, err:{e}");
+                // dir data not persisted init with empty
+                S3NodeData::Directory(BTreeMap::new())
+            }
+        };
         let child_node = Self::new(
             self.get_ino(),
             child_dir_name,
             full_path,
             child_attr,
-            S3NodeData::Directory(BTreeMap::new()),
+            dirdata,
             Arc::clone(&self.s3_backend),
-            Arc::clone(&self.meta),
+            &self.etcd_client,
+            &self.k8s_node_id,
+            &self.k8s_volume_info,
         );
 
         Ok(child_node)
@@ -734,7 +860,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
         inum: INum,
         child_dir_name: &str,
         mode: Mode,
-    ) -> anyhow::Result<Self> {
+    ) -> DatenLordResult<Self> {
         let absolute_path = self.absolute_dir_with_child(child_dir_name);
         let dir_data = self.get_dir_data();
         // TODO return error
@@ -772,7 +898,9 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
             child_attr,
             S3NodeData::Directory(BTreeMap::new()),
             Arc::clone(&self.s3_backend),
-            Arc::clone(&self.meta),
+            &self.etcd_client,
+            &self.k8s_node_id,
+            &self.k8s_volume_info,
         );
 
         self.update_mtime_ctime_to_now();
@@ -786,7 +914,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
         child_attr: Arc<RwLock<FileAttr>>,
         _oflags: OFlag,
         global_cache: Arc<GlobalCache>,
-    ) -> anyhow::Result<Self> {
+    ) -> DatenLordResult<Self> {
         Ok(Self::new(
             self.get_ino(),
             child_file_name,
@@ -794,7 +922,9 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
             child_attr,
             S3NodeData::RegFile(global_cache),
             Arc::clone(&self.s3_backend),
-            Arc::clone(&self.meta),
+            &self.etcd_client,
+            &self.k8s_node_id,
+            &self.k8s_volume_info,
         ))
     }
 
@@ -806,7 +936,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
         oflags: OFlag,
         mode: Mode,
         global_cache: Arc<GlobalCache>,
-    ) -> anyhow::Result<Self> {
+    ) -> DatenLordResult<Self> {
         let absolute_path = self.absolute_path_with_child(child_file_name);
         let dir_data = self.get_dir_data();
         debug_assert!(
@@ -849,20 +979,22 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
             child_attr,
             S3NodeData::RegFile(global_cache),
             Arc::clone(&self.s3_backend),
-            Arc::clone(&self.meta),
+            &self.etcd_client,
+            &self.k8s_node_id,
+            &self.k8s_volume_info,
         ))
     }
 
     /// Load data from directory, file or symlink target.
     /// The `offset` and `len` is used for regular file
-    async fn load_data(&mut self, offset: usize, len: usize) -> anyhow::Result<usize> {
+    async fn load_data(&mut self, offset: usize, len: usize) -> DatenLordResult<usize> {
         match self.data {
             S3NodeData::Directory(..) => {
                 // TODO: really read dir from S3
                 let entries = match dist_client::load_dir(
-                    Arc::<EtcdDelegate>::clone(&self.meta.etcd_client),
-                    &self.meta.node_id,
-                    &self.meta.volume_info,
+                    Arc::<EtcdDelegate>::clone(&self.etcd_client),
+                    &self.k8s_node_id,
+                    &self.k8s_volume_info,
                     &self.full_path,
                 )
                 .await?
@@ -891,9 +1023,9 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
 
                 // dist_client::read_data() won't get lock at remote, OK to put here.
                 let file_data_vec = match dist_client::read_data(
-                    Arc::<EtcdDelegate>::clone(&self.meta.etcd_client),
-                    &self.meta.node_id,
-                    &self.meta.volume_info,
+                    Arc::<EtcdDelegate>::clone(&self.etcd_client),
+                    &self.k8s_node_id,
+                    &self.k8s_volume_info,
                     &self.full_path,
                     aligned_offset
                         .overflow_div(global_cache.get_align().cast())
@@ -915,8 +1047,10 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
                             Ok(a) => a,
                             Err(e) => {
                                 let anyhow_err: anyhow::Error = e.into();
-                                return Err(anyhow_err
-                                    .context("load_data() failed to load file content data"));
+                                return Err(DatenLordError::from(
+                                    anyhow_err
+                                        .context("load_data() failed to load file content data"),
+                                ));
                             }
                         }
                     }
@@ -971,7 +1105,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
     }
 
     /// Unlink directory entry from both cache and disk
-    async fn unlink_entry(&mut self, child_name: &str) -> anyhow::Result<DirEntry> {
+    async fn unlink_entry(&mut self, child_name: &str) -> DatenLordResult<DirEntry> {
         let dir_data = self.get_dir_data_mut();
         let removed_entry = dir_data.remove(child_name).unwrap_or_else(|| {
             panic!(
@@ -1024,7 +1158,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
 
     /// Fake data for statefs
     /// TODO: handle some important data from S3 storage
-    async fn statefs(&self) -> anyhow::Result<StatFsParam> {
+    async fn statefs(&self) -> DatenLordResult<StatFsParam> {
         Ok(StatFsParam {
             blocks: 10_000_000_000,
             bfree: 10_000_000_000,
@@ -1057,7 +1191,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
         data: Vec<u8>,
         _oflags: OFlag,
         _write_to_disk: bool,
-    ) -> anyhow::Result<usize> {
+    ) -> DatenLordResult<usize> {
         let this: &Self = self;
 
         let ino = this.get_ino();
@@ -1068,7 +1202,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
                     "read() failed to load file data of ino={} and name={:?}, the error is: {}",
                     ino,
                     self.get_name(),
-                    crate::common::util::format_anyhow_error(&e),
+                    e,
                 );
                 return Err(e);
             }
@@ -1104,6 +1238,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
 
         debug!("file {:?} size = {:?}", self.name, self.attr.read().size);
         self.update_mtime_ctime_to_now();
+        //FileAttr changed, remember to persist the directory after calling this fn
 
         Ok(written_size)
     }
@@ -1123,7 +1258,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
         self.dec_open_count();
     }
 
-    async fn setattr_precheck(&self, param: SetAttrParam) -> anyhow::Result<(bool, FileAttr)> {
+    async fn setattr_precheck(&self, param: SetAttrParam) -> DatenLordResult<(bool, FileAttr)> {
         let mut attr = self.get_attr();
 
         let st_now = SystemTime::now();

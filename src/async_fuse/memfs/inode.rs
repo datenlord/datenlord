@@ -111,8 +111,8 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
         self.inode_state
             .inode_get_inum_by_fullpath(
                 fullpath,
-                self.node_id.as_str(),
-                self.volume_info.as_str(),
+                &self.node_id,
+                &self.volume_info,
                 &self.etcd_client,
             )
             .await

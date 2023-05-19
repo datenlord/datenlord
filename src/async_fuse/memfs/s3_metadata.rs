@@ -7,13 +7,19 @@ use super::fs_util::{self, FileAttr};
 use super::inode::InodeState;
 use super::metadata::MetaData;
 use super::node::Node;
+use super::persist::PersistDirContent;
+use super::persist::PersistHandle;
+use super::persist::PersistTask;
 use super::s3_node::{self, S3Node};
 use super::s3_wrapper::S3BackEnd;
+use super::serial;
 use super::RenameParam;
+use crate::async_fuse::fuse::file_system::FsAsyncResultSender;
 #[cfg(feature = "abi-7-18")]
 use crate::async_fuse::fuse::fuse_reply::FuseDeleteNotification;
 use crate::async_fuse::fuse::protocol::{FuseAttr, INum, FUSE_ROOT_ID};
 use crate::async_fuse::util;
+use crate::common::error::{DatenLordError, DatenLordResult};
 use crate::common::etcd_delegate::EtcdDelegate;
 use anyhow::Context;
 use async_trait::async_trait;
@@ -23,13 +29,14 @@ use log::debug;
 use nix::errno::Errno;
 use nix::fcntl::OFlag;
 use nix::sys::stat::SFlag;
-use parking_lot::RwLock as SyncRwLock; // conflict with tokio RwLock
+use parking_lot::RwLock as SyncRwLock;
 use std::collections::BTreeMap;
 use std::os::unix::io::RawFd;
 use std::path::Path;
 use std::sync::{atomic::AtomicU32, Arc};
 use std::time::Duration;
 use tokio::sync::{Mutex, RwLock, RwLockWriteGuard};
+use tokio::task::JoinHandle; // conflict with tokio RwLock
 
 /// The time-to-live seconds of FUSE attributes
 const MY_TTL_SEC: u64 = 3600; // TODO: should be a long value, say 1 hour
@@ -43,7 +50,7 @@ const S3_INFO_DELIMITER: char = ';';
 #[allow(dead_code)]
 pub struct S3MetaData<S: S3BackEnd + Send + Sync + 'static> {
     /// S3 backend
-    s3_backend: Arc<S>,
+    pub(crate) s3_backend: Arc<S>,
     /// Etcd client
     pub(crate) etcd_client: Arc<EtcdDelegate>,
     /// The cache to hold opened directories and files
@@ -55,13 +62,15 @@ pub struct S3MetaData<S: S3BackEnd + Send + Sync + 'static> {
     /// Current available fd, it'll increase after using
     pub(crate) cur_fd: AtomicU32,
     /// Current service id
-    pub(crate) node_id: String,
+    pub(crate) node_id: Arc<str>,
     /// Volume Info
-    pub(crate) volume_info: String,
+    pub(crate) volume_info: Arc<str>,
     /// Full path and node mapping
     pub(crate) path2inum: RwLock<BTreeMap<String, INum>>,
     /// Fuse fd
     fuse_fd: Mutex<RawFd>,
+    /// Persist handle
+    persist_handle: PersistHandle,
 }
 
 /// Parse S3 info
@@ -83,15 +92,19 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         etcd_client: EtcdDelegate,
         node_id: &str,
         volume_info: &str,
-    ) -> (Arc<Self>, Option<CacheServer>) {
+        fs_async_sender: FsAsyncResultSender,
+    ) -> (Arc<Self>, Option<CacheServer>, Vec<JoinHandle<()>>) {
         let (bucket_name, endpoint, access_key, secret_key) = parse_s3_info(s3_info);
         let s3_backend = Arc::new(
-            match S::new(bucket_name, endpoint, access_key, secret_key).await {
+            match S::new_backend(bucket_name, endpoint, access_key, secret_key).await {
                 Ok(s) => s,
                 Err(e) => panic!("{e:?}"),
             },
         );
-
+        let mut async_tasks = vec![];
+        let (persist_handle, persist_join_handle) =
+            PersistTask::spawn(Arc::clone(&s3_backend), fs_async_sender);
+        async_tasks.push(persist_join_handle);
         let etcd_arc = Arc::new(etcd_client);
         let data_cache = Arc::new(GlobalCache::new_dist_with_bz_and_capacity(
             10_485_760, // 10 * 1024 * 1024
@@ -99,6 +112,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
             Arc::<EtcdDelegate>::clone(&etcd_arc),
             node_id,
         ));
+
         let meta = Arc::new(Self {
             s3_backend: Arc::clone(&s3_backend),
             cache: RwLock::new(BTreeMap::new()),
@@ -106,10 +120,11 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
             data_cache: Arc::<GlobalCache>::clone(&data_cache),
             inode_state: InodeState::new(),
             cur_fd: AtomicU32::new(4),
-            node_id: node_id.to_owned(),
-            volume_info: volume_info.to_owned(),
+            node_id: Arc::<str>::from(node_id.to_owned()),
+            volume_info: Arc::<str>::from(volume_info.to_owned()),
             path2inum: RwLock::new(BTreeMap::new()),
             fuse_fd: Mutex::new(-1_i32),
+            persist_handle,
         });
 
         let server = CacheServer::new(
@@ -120,6 +135,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         );
 
         let root_inode = S3Node::open_root_node(FUSE_ROOT_ID, "/", s3_backend, Arc::clone(&meta))
+            .await
             .context("failed to open FUSE root node")
             .unwrap_or_else(|e| {
                 panic!("{}", e);
@@ -129,7 +145,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         meta.cache.write().await.insert(FUSE_ROOT_ID, root_inode);
         meta.path2inum.write().await.insert(full_path, FUSE_ROOT_ID);
 
-        (meta, Some(server))
+        (meta, Some(server), async_tasks)
     }
 
     /// Get metadata cache
@@ -188,9 +204,9 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         mode: u32,
         node_type: SFlag,
         target_path: Option<&Path>,
-    ) -> anyhow::Result<(Duration, FuseAttr, u64)> {
+    ) -> DatenLordResult<(Duration, FuseAttr, u64)> {
         // pre-check
-        let (parent_full_path, full_path, child_attr, fuse_attr) = {
+        let (parent_full_path, full_path, new_node_attr, fuse_attr) = {
             let mut cache = self.cache.write().await;
             let parent_node = Self::create_node_pre_check(parent, node_name, &mut cache)
                 .context("create_node_helper() failed to pre check")?;
@@ -200,9 +216,9 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
             if !is_new {
                 // inum created by others or exist in remote cache
                 //todo delete parent node cache to update parent dir content
-                return Err(anyhow::anyhow!("create_node_helper() failed to create node, ino alloc failed, \
+                return Err(DatenLordError::from(anyhow::anyhow!("create_node_helper() failed to create node, ino alloc failed, \
                     the node of name={:?} already exists under parent directory of ino={} and name={:?}",
-                    node_name, parent, parent_node.get_name()));
+                    node_name, parent, parent_node.get_name())));
             }
 
             let parent_name = parent_node.get_name().to_owned();
@@ -293,21 +309,34 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
             let pnode = cache.get(&parent).unwrap_or_else(|| {
                 panic!("failed to get parent inode {parent:?}, parent name {parent_name:?}")
             });
-            (
-                pnode.full_path().to_owned(),
-                full_path,
-                new_node_attr,
-                fuse_attr,
-            )
-        };
+            let parent_full_path = pnode.full_path().to_owned();
 
-        self.sync_attr_remote(&parent_full_path).await;
-        self.sync_dir_remote(&parent_full_path, node_name, &child_attr, target_path)
-            .await;
+            (parent_full_path, full_path, new_node_attr, fuse_attr)
+        };
+        {
+            self.sync_attr_remote(&parent_full_path).await;
+            self.sync_dir_remote(&parent_full_path, node_name, &new_node_attr, target_path)
+                .await;
+            let cache = self.cache.read().await;
+            let pnode = cache.get(&parent).unwrap_or_else(|| {
+                panic!(
+                    "failed to get parent inode {parent:?}, parent fullpath {parent_full_path:?}"
+                )
+            });
+            // After sync to other，we should do async persist
+            self.persist_handle.mark_dirty(
+                parent,
+                PersistDirContent::new_from_cache(
+                    parent_full_path,
+                    pnode.get_dir_data(),
+                    serial::file_attr_to_serial(&pnode.get_attr()),
+                ),
+            );
+        }
         // inode is cached, so we should remove the path mark
         // We dont need to sync for the unmark
         let etcd_client = Arc::clone(&self.etcd_client);
-        let volume = self.volume_info.clone();
+        let volume = Arc::clone(&self.volume_info);
         tokio::spawn(async move {
             let vol = volume;
             etcd::unmark_fullpath_with_ino_in_etcd(etcd_client, &vol, full_path).await;
@@ -323,7 +352,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         parent: INum,
         node_name: &str,
         node_type: SFlag,
-    ) -> anyhow::Result<()> {
+    ) -> DatenLordResult<()> {
         debug!(
             "remove_node_helper() about to remove parent ino={:?}, \
             child_name={:?}, child_type={:?}",
@@ -332,6 +361,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         self.remove_node_local(parent, node_name, node_type, false)
             .await?;
         self.remove_remote(parent, node_name, node_type).await;
+        self.load_parent_from_cache_and_mark_dirty(parent).await;
         Ok(())
     }
 
@@ -341,15 +371,12 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         &self,
         parent: INum,
         child_name: &str,
-    ) -> anyhow::Result<(Duration, FuseAttr, u64)> {
+    ) -> DatenLordResult<(Duration, FuseAttr, u64)> {
         let pre_check_res = self.lookup_pre_check(parent, child_name).await;
         let (ino, child_type, child_attr) = match pre_check_res {
             Ok((ino, child_type, child_attr)) => (ino, child_type, child_attr),
             Err(e) => {
-                debug!(
-                    "lookup() failed to pre-check, the error is: {}",
-                    crate::common::util::format_anyhow_error(&e),
-                );
+                debug!("lookup() failed to pre-check, the error is: {}", e);
                 return Err(e);
             }
         };
@@ -448,16 +475,24 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
     }
 
     /// Rename helper to exchange on disk
-    async fn rename_exchange_helper(&self, param: RenameParam) -> anyhow::Result<()> {
+    async fn rename_exchange_helper(&self, param: RenameParam) -> DatenLordResult<()> {
+        let old = param.old_parent;
+        let new = param.new_parent;
         self.rename_exchange_local(&param).await?;
         self.rename_remote(param).await;
+        self.load_parent_from_cache_and_mark_dirty(old).await;
+        self.load_parent_from_cache_and_mark_dirty(new).await;
         Ok(())
     }
 
     /// Rename helper to move on disk, it may replace destination entry
-    async fn rename_may_replace_helper(&self, param: RenameParam) -> anyhow::Result<()> {
+    async fn rename_may_replace_helper(&self, param: RenameParam) -> DatenLordResult<()> {
+        let old = param.old_parent;
+        let new = param.new_parent;
         self.rename_may_replace_local(&param, false).await?;
         self.rename_remote(param).await;
+        self.load_parent_from_cache_and_mark_dirty(old).await;
+        self.load_parent_from_cache_and_mark_dirty(new).await;
         Ok(())
     }
 
@@ -468,7 +503,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         fh: u64,
         _datasync: bool,
         // reply: ReplyEmpty,
-    ) -> anyhow::Result<()> {
+    ) -> DatenLordResult<()> {
         let mut cache = self.cache().write().await;
         let inode = cache.get_mut(&ino).unwrap_or_else(|| {
             panic!(
@@ -490,9 +525,9 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         offset: i64,
         data: Vec<u8>,
         flags: u32,
-    ) -> anyhow::Result<usize> {
+    ) -> DatenLordResult<usize> {
         let data_len = data.len();
-        let (result, full_path) = {
+        let (result, full_path, parent_ino) = {
             let mut cache = self.cache().write().await;
             let inode = cache.get_mut(&ino).unwrap_or_else(|| {
                 panic!(
@@ -500,6 +535,8 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
                      the inode ino={ino} is not in cache"
                 );
             });
+            let parent_ino = inode.get_parent_ino();
+
             debug!(
                 "write_helper() about to write {} byte data to file of ino={} \
                 and name {:?} at offset={}",
@@ -513,22 +550,62 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
             let res = inode
                 .write_file(fh, offset, data, o_flags, write_to_disk)
                 .await;
-            (res, inode.get_full_path().to_owned())
+            (res, inode.get_full_path().to_owned(), parent_ino)
         };
         self.invalidate_remote(&full_path, offset, data_len).await;
         self.sync_attr_remote(&full_path).await;
+        // update dir
+        let cache = self.cache().write().await;
+        let parent = cache.get(&parent_ino).unwrap_or_else(|| {
+            panic!(
+                "write() found fs is inconsistent, \
+                        the inode ino={ino} is not in cache"
+            );
+        });
+        self.persist_handle.mark_dirty(
+            parent.get_ino(),
+            PersistDirContent::new_from_cache(
+                parent.full_path().to_owned(),
+                parent.get_dir_data(),
+                serial::file_attr_to_serial(&parent.get_attr()),
+            ),
+        );
         result
+    }
+    /// Stop all async tasks
+    fn stop_all_async_tasks(&self) {
+        self.persist_handle.system_end();
     }
 }
 
 impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
+    /// Get parent content from cache and do the persist operation.
+    /// This function will try to get the lock, so make sure there's no deadlock.
+    async fn load_parent_from_cache_and_mark_dirty(&self, parent: INum) {
+        let cache = self.cache.read().await;
+        let p = cache.get(&parent).unwrap_or_else(|| {
+            panic!(
+                "load_parent_from_cache_and_mark_dirty() found fs is inconsistent, \
+                    parent of ino={parent} should be in cache",
+            );
+        });
+        self.persist_handle.mark_dirty(
+            parent,
+            PersistDirContent::new_from_cache(
+                p.full_path().to_owned(),
+                p.get_dir_data(),
+                serial::file_attr_to_serial(&p.get_attr()),
+            ),
+        );
+    }
+
     /// The pre-check before create node
     #[allow(single_use_lifetimes)]
     fn create_node_pre_check<'b>(
         parent: INum,
         node_name: &str,
         cache: &'b mut RwLockWriteGuard<BTreeMap<INum, <Self as MetaData>::N>>,
-    ) -> anyhow::Result<&'b mut <Self as MetaData>::N> {
+    ) -> DatenLordResult<&'b mut <Self as MetaData>::N> {
         let parent_node = cache.get_mut(&parent).unwrap_or_else(|| {
             panic!(
                 "create_node_pre_check() found fs is inconsistent, \
@@ -576,7 +653,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
         &self,
         ino: INum,
         from_remote: bool,
-    ) -> anyhow::Result<()> {
+    ) -> DatenLordResult<()> {
         // remove entry from parent i-node
         let mut cache = self.cache.write().await;
         let inode = cache.get(&ino).unwrap_or_else(|| {
@@ -663,7 +740,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
         &self,
         parent: INum,
         name: &str,
-    ) -> anyhow::Result<(INum, SFlag, Arc<SyncRwLock<FileAttr>>)> {
+    ) -> DatenLordResult<(INum, SFlag, Arc<SyncRwLock<FileAttr>>)> {
         // lookup child ino and type first
         let cache = self.cache.read().await;
         let parent_node = cache.get(&parent).unwrap_or_else(|| {
@@ -706,7 +783,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
         new_parent: INum,
         new_name: &str,
         no_replace: bool,
-    ) -> anyhow::Result<(RawFd, INum, RawFd, Option<INum>)> {
+    ) -> DatenLordResult<(RawFd, INum, RawFd, Option<INum>)> {
         let cache = self.cache.read().await;
         let old_parent_node = cache.get(&old_parent).unwrap_or_else(|| {
             panic!(
@@ -819,7 +896,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
     }
 
     /// Rename exchange on local node
-    async fn rename_exchange_local(&self, param: &RenameParam) -> anyhow::Result<()> {
+    async fn rename_exchange_local(&self, param: &RenameParam) -> DatenLordResult<()> {
         let old_parent = param.old_parent;
         let old_name = param.old_name.as_str();
         let new_parent = param.new_parent;
@@ -839,10 +916,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
                 (old_parent_fd, old_entry_ino, new_parent_fd, new_entry_ino)
             }
             Err(e) => {
-                debug!(
-                    "rename() pre-check failed, the error is: {}",
-                    crate::common::util::format_anyhow_error(&e)
-                );
+                debug!("rename() pre-check failed, the error is: {}", e);
                 return Err(e);
             }
         };
@@ -918,7 +992,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
         &self,
         param: &RenameParam,
         from_remote: bool,
-    ) -> anyhow::Result<()> {
+    ) -> DatenLordResult<()> {
         let old_parent = param.old_parent;
         let old_name = &param.old_name;
         let new_parent = param.new_parent;
@@ -938,10 +1012,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
                 (old_parent_fd, old_entry_ino, new_parent_fd, new_entry_ino)
             }
             Err(e) => {
-                debug!(
-                    "rename() pre-check failed, the error is: {}",
-                    crate::common::util::format_anyhow_error(&e)
-                );
+                debug!("rename() pre-check failed, the error is: {}", e);
                 return Err(e);
             }
         };
@@ -1003,7 +1074,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
         node_name: &str,
         node_type: SFlag,
         from_remote: bool,
-    ) -> anyhow::Result<()> {
+    ) -> DatenLordResult<()> {
         debug!(
             "remove_node_local() about to remove parent ino={:?}, \
             child_name={:?}, child_type={:?}",

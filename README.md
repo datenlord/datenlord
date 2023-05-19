@@ -1,6 +1,7 @@
 # DatenLord
 
 [![Join the chat at https://gitter.im/datenlord/datenlord](https://badges.gitter.im/datenlord/datenlord.svg)](https://gitter.im/datenlord/datenlord?utm_source=badge&utm_medium=badge&utm_campaign=pr-badge&utm_content=badge)
+[![codecov](https://codecov.io/gh/datenlord/datenlord/branch/master/graph/badge.svg)](https://codecov.io/gh/datenlord/datenlord)
 
 ----
 *DatenLord* is a next-generation cloud-native distributed storage platform, which aims to meet the performance-critical storage needs from next-generation cloud-native applications, such as microservice, serverless, AI, etc. On one hand, DatenLord is designed to be a cloud-native storage system, which itself is distributed, fault-tolerant, and graceful upgrade. These cloud-native features make DatenLord easy to use and easy to maintain. On the other hand, DatenLord is designed as an application-orientated storage system, in that DatenLord is optimized for many performance-critical scenarios, such as databases, AI machine learning, big data. Meanwhile, DatenLord provides high-performance storage service for containers, which facilitates stateful applications running on top of Kubernetes (K8S). The high performance of DatenLord is achieved by leveraging the most recent technology revolution in hardware and software, such as NVMe, non-volatile memory, asynchronous programming, and the native Linux asynchronous IO support. 
