@@ -129,16 +129,38 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
 
     #[allow(dead_code)]
     /// Create `S3Node`
-    pub fn from_serial_node(serial_node: SerialNode, meta: &S3MetaData<S>) -> Self {
+    pub async fn from_serial_node(serial_node: SerialNode, meta: &S3MetaData<S>) -> Self {
+        // check if the node is a directory
+        // if it is a directory, we need to fetch it's children's file attributes
+        let dir_data: S3NodeData;
+        if let SerialNodeData::Directory(ref dir) = serial_node.data {
+            let mut dir_entries = BTreeMap::new();
+            for (name, serial_dir_entry) in dir {
+                let child_ino = serial_dir_entry.get_child_ino();
+                // Fetch the child node from kv
+                let child_node = meta.get_node_from_kv_engine(child_ino).await;
+                // If the child_node is None , it means it has been deleted,skip
+                if let Some(child_node) = child_node {
+                    let child_attr = child_node.attr.read().clone();
+                    dir_entries.insert(
+                        name.clone(),
+                        DirEntry::new(name.clone(), Arc::new(RwLock::new(child_attr))),
+                    );
+                }
+            }
+            dir_data = S3NodeData::Directory(dir_entries);
+        } else {
+            dir_data = serial_node
+                .data
+                .into_s3_nodedata(Arc::clone(&meta.data_cache));
+        }
         Self {
             s3_backend: Arc::clone(&meta.s3_backend),
             parent: serial_node.parent,
-            full_path: serial_node.full_path,
             name: serial_node.name,
+            full_path: serial_node.full_path,
             attr: Arc::new(RwLock::new(serial_to_file_attr(&serial_node.attr))),
-            data: serial_node
-                .data
-                .into_s3_nodedata(Arc::clone(&meta.data_cache)),
+            data: dir_data,
             open_count: AtomicI64::new(serial_node.open_count),
             lookup_count: AtomicI64::new(serial_node.lookup_count),
             deferred_deletion: AtomicBool::new(serial_node.deferred_deletion),
