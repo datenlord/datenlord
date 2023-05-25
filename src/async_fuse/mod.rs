@@ -13,6 +13,8 @@ pub mod metrics;
 pub mod proactor;
 pub mod util;
 
+use memfs::kv_engine::EtcdKVEngine;
+
 /// Start async-fuse
 pub async fn start_async_fuse(
     etcd_delegate: EtcdDelegate,
@@ -48,7 +50,7 @@ pub async fn start_async_fuse(
         }
         VolumeType::S3 => {
             let (fs, fs_controller): (
-                memfs::MemFs<memfs::S3MetaData<S3BackEndImpl>>,
+                memfs::MemFs<memfs::S3MetaData<S3BackEndImpl, EtcdKVEngine>>,
                 FsController,
             ) = memfs::MemFs::new(
                 &args.volume_info,
@@ -66,7 +68,7 @@ pub async fn start_async_fuse(
         }
         VolumeType::None => {
             let (fs, fs_controller): (
-                memfs::MemFs<memfs::S3MetaData<DoNothingImpl>>,
+                memfs::MemFs<memfs::S3MetaData<DoNothingImpl, EtcdKVEngine>>,
                 FsController,
             ) = memfs::MemFs::new(
                 &args.volume_info,

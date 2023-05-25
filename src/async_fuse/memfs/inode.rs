@@ -8,6 +8,8 @@ use std::ops::Add;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
+use super::kv_engine::KVEngine;
+
 // Check the inode number management design at here ：https://github.com/datenlord/datenlord/issues/349
 
 /// Inode management related state.
@@ -104,7 +106,7 @@ impl InodeState {
     }
 }
 
-impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
+impl<S: S3BackEnd + Send + Sync + 'static, K: KVEngine + 'static> S3MetaData<S, K> {
     /// alloc global conflict free inum for a path
     #[inline]
     pub(crate) async fn inode_get_inum_by_fullpath(&self, fullpath: &str) -> (INum, bool) {
