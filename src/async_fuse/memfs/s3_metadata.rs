@@ -11,6 +11,7 @@ use super::node::Node;
 use super::persist::PersistDirContent;
 use super::persist::PersistHandle;
 use super::persist::PersistTask;
+use super::s3_node::S3NodeWrap;
 use super::s3_node::{self, S3Node};
 use super::s3_wrapper::S3BackEnd;
 use super::serial;
@@ -588,7 +589,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
     #[allow(dead_code)]
     #[allow(clippy::unwrap_used)]
     /// Get a node from kv engine by inum
-    pub async fn get_node_from_kv_engine(&self, inum: INum) -> Option<S3Node<S>> {
+    pub async fn get_node_from_kv_engine(&self, inum: INum) -> Option<S3NodeWrap<S>> {
         let inum_key = KeyType::INum2Node(inum).get_key();
         let raw_data = self.kv_engine.get(&inum_key).await.unwrap_or_else(|e| {
             panic!(
@@ -598,16 +599,18 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
         });
         let raw_data = raw_data.as_ref()?;
         // deserialize node
-        Some(
+        Some(S3NodeWrap::new(
             serde_json::from_slice::<ValueType>(raw_data)
                 .unwrap_or_else(|e| {
                     panic!(
-                "get_node_from_kv_engine() failed to deserialize node of ino={inum} from kv engine, \
-                        error={e:?}"
-            );
+                        "get_node_from_kv_engine() failed to deserialize node of ino={inum} from \
+                        kv engine, error={e:?}"
+                    );
                 })
-                .into_s3_node(self),
-        )
+                .into_s3_node(self)
+                .await,
+            self,
+        ))
     }
 
     #[allow(dead_code)]
