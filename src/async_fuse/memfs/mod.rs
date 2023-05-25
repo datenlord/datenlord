@@ -8,7 +8,7 @@ mod fs_util;
 mod inode;
 /// The KV engine module
 #[macro_use]
-mod kv_engine;
+pub mod kv_engine;
 /// fs metadata module
 mod metadata;
 mod node;

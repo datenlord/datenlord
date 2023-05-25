@@ -101,19 +101,19 @@ pub struct S3Node<S: S3BackEnd + Sync + Send + 'static> {
 /// If the node is dirty, it will be synced to the metadata before drop
 #[allow(dead_code)]
 #[derive(Debug)]
-pub struct S3NodeWrap<'a, S: S3BackEnd + Sync + Send + 'static> {
+pub struct S3NodeWrap<'a, S: S3BackEnd + Sync + Send + 'static, K: KVEngine + 'static> {
     ///Inner S3Node
     node: S3Node<S>,
     /// Mark if the node is dirty
     dirty: bool,
     /// ref to the metadata
-    meta: &'a S3MetaData<S>,
+    meta: &'a S3MetaData<S, K>,
 }
 
-impl<S: S3BackEnd + Sync + Send + 'static> S3NodeWrap<'_, S> {
+impl<S: S3BackEnd + Sync + Send + 'static, K: KVEngine + 'static> S3NodeWrap<'_, S, K> {
     #[allow(dead_code)]
     /// Create `S3NodeWrap`
-    pub fn new(node: S3Node<S>, meta: &S3MetaData<S>) -> S3NodeWrap<S> {
+    pub fn new(node: S3Node<S>, meta: &S3MetaData<S, K>) -> S3NodeWrap<S, K> {
         S3NodeWrap {
             node,
             dirty: false,
@@ -123,23 +123,23 @@ impl<S: S3BackEnd + Sync + Send + 'static> S3NodeWrap<'_, S> {
 
     #[allow(dead_code)]
     /// Get immutable reference to the node
-    pub fn get_node(&self) -> &S3Node<S> {
+    pub fn as_ref(&self) -> &S3Node<S> {
         &self.node
     }
 
     #[allow(dead_code)]
     /// Get mutable reference to the node
-    pub fn get_node_mut(&mut self) -> &mut S3Node<S> {
+    pub fn as_mut_ref(&mut self) -> &mut S3Node<S> {
         self.dirty = true;
         &mut self.node
     }
 }
 
-impl<S: S3BackEnd + Sync + Send + 'static> Drop for S3NodeWrap<'_, S> {
+impl<S: S3BackEnd + Sync + Send + 'static, K: KVEngine + 'static> Drop for S3NodeWrap<'_, S, K> {
     fn drop(&mut self) {
         if self.dirty {
             let inum = self.node.get_ino();
-            let kv_engine = Arc::<dyn KVEngine>::clone(&self.meta.kv_engine);
+            let kv_engine = Arc::clone(&self.meta.kv_engine);
             let serial_node = self.node.to_serial_node();
             let fut = async move {
                 let inum_key = KeyType::INum2Node(inum).get_key();
@@ -210,15 +210,14 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
     This is crucial in enabling recursive async behavior in Rust.
     For more information, see https://rust-lang.github.io/async-book/07_workarounds/04_recursion.html
     */
-    pub fn from_serial_node(
+    pub fn from_serial_node<K: KVEngine + 'static>(
         serial_node: SerialNode,
-        meta: &S3MetaData<S>,
+        meta: &S3MetaData<S, K>,
     ) -> BoxFuture<'_, S3Node<S>> {
         async move {
             // check if the node is a directory
             // if it is a directory, we need to fetch it's children's file attributes
-            let dir_data: S3NodeData;
-            if let SerialNodeData::Directory(ref dir) = serial_node.data {
+            let dir_data = if let SerialNodeData::Directory(ref dir) = serial_node.data {
                 let mut dir_entries = BTreeMap::new();
                 for (name, serial_dir_entry) in dir {
                     let child_ino = serial_dir_entry.get_child_ino();
@@ -226,19 +225,19 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
                     let child_node = meta.get_node_from_kv_engine(child_ino).await;
                     // If the child_node is None , it means it has been deleted,skip
                     if let Some(child_node) = child_node {
-                        let child_attr = *child_node.get_node().attr.read();
+                        let child_attr = *child_node.as_ref().attr.read();
                         dir_entries.insert(
                             name.clone(),
                             DirEntry::new(name.clone(), Arc::new(RwLock::new(child_attr))),
                         );
                     }
                 }
-                dir_data = S3NodeData::Directory(dir_entries);
+                S3NodeData::Directory(dir_entries)
             } else {
-                dir_data = serial_node
+                serial_node
                     .data
-                    .into_s3_nodedata(Arc::clone(&meta.data_cache));
-            }
+                    .into_s3_nodedata(Arc::clone(&meta.data_cache))
+            };
             Self {
                 s3_backend: Arc::clone(&meta.s3_backend),
                 parent: serial_node.parent,
@@ -460,11 +459,11 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
 
     /// Open root node
     #[allow(clippy::unnecessary_wraps)]
-    pub(crate) async fn open_root_node(
+    pub(crate) async fn open_root_node<K: KVEngine + 'static>(
         root_ino: INum,
         name: &str,
         s3_backend: Arc<S>,
-        meta: Arc<S3MetaData<S>>,
+        meta: Arc<S3MetaData<S, K>>,
     ) -> DatenLordResult<Self> {
         match persist::read_persisted_dir(&s3_backend, "/".to_owned()).await {
             Err(e) => {

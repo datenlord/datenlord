@@ -5,7 +5,7 @@ use super::dist::etcd;
 use super::dist::server::CacheServer;
 use super::fs_util::{self, FileAttr};
 use super::inode::InodeState;
-use super::kv_engine::{EtcdKVEngine, KVEngine, KeyType, ValueType};
+use super::kv_engine::{KVEngine, KeyType, ValueType};
 use super::metadata::MetaData;
 use super::node::Node;
 use super::persist::PersistDirContent;
@@ -50,7 +50,7 @@ const S3_INFO_DELIMITER: char = ';';
 /// File system in-memory meta-data
 #[derive(Debug)]
 #[allow(dead_code)]
-pub struct S3MetaData<S: S3BackEnd + Send + Sync + 'static> {
+pub struct S3MetaData<S: S3BackEnd + Send + Sync + 'static, K: KVEngine + 'static> {
     /// S3 backend
     pub(crate) s3_backend: Arc<S>,
     /// Etcd client
@@ -74,7 +74,7 @@ pub struct S3MetaData<S: S3BackEnd + Send + Sync + 'static> {
     /// Persist handle
     persist_handle: PersistHandle,
     /// KV engine
-    pub(crate) kv_engine: Arc<dyn KVEngine>,
+    pub(crate) kv_engine: Arc<K>,
 }
 
 /// Parse S3 info
@@ -85,7 +85,7 @@ fn parse_s3_info(info: &str) -> (&str, &str, &str, &str) {
 }
 
 #[async_trait]
-impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
+impl<S: S3BackEnd + Sync + Send + 'static, K: KVEngine + 'static> MetaData for S3MetaData<S, K> {
     type N = S3Node<S>;
 
     async fn new(
@@ -117,7 +117,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
             node_id,
         ));
 
-        let kv_engine = EtcdKVEngine::new_kv_engine(etcd_arc.get_inner_client_clone());
+        let kv_engine = Arc::new(K::new(etcd_arc.get_inner_client_clone()));
 
         let meta = Arc::new(Self {
             s3_backend: Arc::clone(&s3_backend),
@@ -585,11 +585,11 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
     }
 }
 
-impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
+impl<S: S3BackEnd + Send + Sync + 'static, K: KVEngine + 'static> S3MetaData<S, K> {
     #[allow(dead_code)]
     #[allow(clippy::unwrap_used)]
     /// Get a node from kv engine by inum
-    pub async fn get_node_from_kv_engine(&self, inum: INum) -> Option<S3NodeWrap<S>> {
+    pub async fn get_node_from_kv_engine(&self, inum: INum) -> Option<S3NodeWrap<S, K>> {
         let inum_key = KeyType::INum2Node(inum).get_key();
         let raw_data = self.kv_engine.get(&inum_key).await.unwrap_or_else(|e| {
             panic!(
