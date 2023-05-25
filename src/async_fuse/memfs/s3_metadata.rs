@@ -73,7 +73,7 @@ pub struct S3MetaData<S: S3BackEnd + Send + Sync + 'static> {
     /// Persist handle
     persist_handle: PersistHandle,
     /// KV engine
-    kv_engine: Arc<dyn KVEngine>,
+    pub(crate) kv_engine: Arc<dyn KVEngine>,
 }
 
 /// Parse S3 info
