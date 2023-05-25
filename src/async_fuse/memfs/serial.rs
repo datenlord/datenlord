@@ -20,6 +20,8 @@ pub struct SerialDirEntry {
 }
 
 impl SerialDirEntry {
+    #[must_use]
+    /// Get the child inode number
     pub fn get_child_ino(&self) -> INum {
         self.file_attr.get_ino()
     }
@@ -59,6 +61,8 @@ pub struct SerialFileAttr {
 }
 
 impl SerialFileAttr {
+    #[must_use]
+    /// Get the inode number
     pub fn get_ino(&self) -> INum {
         self.ino
     }

@@ -28,12 +28,12 @@ impl ValueType {
     #[allow(dead_code)]
     /// Turn the `ValueType` into `SerialNode` then into `S3Node`.
     // Notice : If the value is not `ValueType::Node`, it will panic
-    pub fn into_s3_node<S: S3BackEnd + Send + Sync + 'static>(
+    pub async fn into_s3_node<S: S3BackEnd + Send + Sync + 'static>(
         self,
         meta: &S3MetaData<S>,
     ) -> S3Node<S> {
         match self {
-            ValueType::Node(node) => S3Node::from_serial_node(node, meta),
+            ValueType::Node(node) => S3Node::from_serial_node(node, meta).await,
             ValueType::DirEntry(_) | ValueType::INum(_) | ValueType::Attr(_) => {
                 panic!("expect ValueType::Node but get {self:?}");
             }
