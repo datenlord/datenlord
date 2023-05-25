@@ -5,6 +5,7 @@ use super::dist::etcd;
 use super::dist::server::CacheServer;
 use super::fs_util::{self, FileAttr};
 use super::inode::InodeState;
+use super::kv_engine::{EtcdKVEngine, KVEngine, KeyType, ValueType};
 use super::metadata::MetaData;
 use super::node::Node;
 use super::persist::PersistDirContent;
@@ -71,6 +72,8 @@ pub struct S3MetaData<S: S3BackEnd + Send + Sync + 'static> {
     fuse_fd: Mutex<RawFd>,
     /// Persist handle
     persist_handle: PersistHandle,
+    /// KV engine
+    kv_engine: Arc<dyn KVEngine>,
 }
 
 /// Parse S3 info
@@ -113,6 +116,8 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
             node_id,
         ));
 
+        let kv_engine = EtcdKVEngine::new_kv_engine(etcd_arc.get_inner_client_clone());
+
         let meta = Arc::new(Self {
             s3_backend: Arc::clone(&s3_backend),
             cache: RwLock::new(BTreeMap::new()),
@@ -125,6 +130,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
             path2inum: RwLock::new(BTreeMap::new()),
             fuse_fd: Mutex::new(-1_i32),
             persist_handle,
+            kv_engine,
         });
 
         let server = CacheServer::new(
@@ -579,6 +585,114 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
 }
 
 impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
+    #[allow(dead_code)]
+    #[allow(clippy::unwrap_used)]
+    /// Get a node from kv engine by inum
+    pub async fn get_node_from_kv_engine(&self, inum: INum) -> Option<S3Node<S>> {
+        let inum_key = KeyType::INum2Node(inum).get_key();
+        let raw_data = self.kv_engine.get(&inum_key).await.unwrap_or_else(|e| {
+            panic!(
+                "get_node_from_kv_engine() failed to get node of ino={inum} from kv engine, \
+                        error={e:?}"
+            );
+        });
+        let raw_data = raw_data.as_ref()?;
+        // deserialize node
+        Some(
+            serde_json::from_slice::<ValueType>(raw_data)
+                .unwrap_or_else(|e| {
+                    panic!(
+                "get_node_from_kv_engine() failed to deserialize node of ino={inum} from kv engine, \
+                        error={e:?}"
+            );
+                })
+                .into_s3_node(self),
+        )
+    }
+
+    #[allow(dead_code)]
+    /// Set node to kv engine use inum
+    pub async fn set_node_to_kv_engine(&self, inum: INum, node: S3Node<S>) {
+        let inum_key = KeyType::INum2Node(inum).get_key();
+        let node_value = serde_json::to_vec::<ValueType>(&ValueType::Node(node.into_serial_node()))
+            .unwrap_or_else(|e| {
+                panic!(
+                    "set_node_to_kv_engine() failed to serialize node of ino={inum} to kv engine, \
+                        error={e:?}"
+                );
+            });
+        self.kv_engine
+            .set(&inum_key, &node_value)
+            .await
+            .unwrap_or_else(|e| {
+                panic!(
+                    "set_node_to_kv_engine() failed to set node of ino={inum} to kv engine, \
+                        error={e:?}"
+                );
+            });
+    }
+
+    /// Remove node from kv engine use inum
+    pub async fn remove_node_from_kv_engine(&self, inum: INum) {
+        let inum_key = KeyType::INum2Node(inum).get_key();
+        self.kv_engine.delete(&inum_key).await.unwrap_or_else(|e| {
+            panic!(
+                "remove_node_from_kv_engine() failed to remove node of ino={inum} from kv engine, \
+                        error={e:?}"
+            );
+        });
+    }
+
+    #[allow(dead_code)]
+    #[allow(clippy::unwrap_used)]
+    /// Get inum from kv engine use full path
+    pub async fn get_inum_from_kv_engine(&self, full_path: &str) -> Option<INum> {
+        let full_path_key = KeyType::Path2INum(full_path.to_owned()).get_key();
+        let raw_data = self
+            .kv_engine
+            .get(&full_path_key)
+            .await
+            .unwrap_or_else(|e| {
+                panic!(
+                    "get_inum_from_kv_engine() failed to get inum of full_path={full_path} from kv engine, \
+                    error={e:?}"
+                );
+            });
+        let raw_data = raw_data.as_ref()?;
+        // deserialize inum
+        Some(
+            serde_json::from_slice::<ValueType>(raw_data).unwrap_or_else(|e| {
+                panic!(
+                    "get_inum_from_kv_engine() failed to deserialize inum of full_path={full_path} from kv engine, \
+                        error={e:?}"
+                );
+            }).into_inum()
+        )
+    }
+
+    #[allow(dead_code)]
+    /// Set inum to kv engine use full path
+    async fn set_inum_to_kv_engine(&self, full_path: &str, inum: INum) {
+        let full_path_key = KeyType::Path2INum(full_path.to_owned()).get_key();
+        let inum_value = serde_json::to_vec::<ValueType>(&ValueType::INum(inum)).unwrap_or_else(
+            |e| {
+                panic!(
+                    "set_inum_to_kv_engine() failed to serialize inum of full_path={full_path} to kv engine, \
+                        error={e:?}"
+                );
+            },
+        );
+        self.kv_engine
+            .set(&full_path_key, &inum_value)
+            .await
+            .unwrap_or_else(|e| {
+                panic!(
+                    "set_inum_to_kv_engine() failed to set inum of full_path={full_path} to kv engine, \
+                        error={e:?}"
+                );
+            });
+    }
+
     /// Get parent content from cache and do the persist operation.
     /// This function will try to get the lock, so make sure there's no deadlock.
     async fn load_parent_from_cache_and_mark_dirty(&self, parent: INum) {

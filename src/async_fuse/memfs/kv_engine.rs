@@ -16,11 +16,11 @@ use super::serial::{SerialDirEntry, SerialFileAttr, SerialNode};
 pub enum ValueType {
     /// SerialNode
     Node(SerialNode),
-    /// SerailDirEntry
+    /// SerialDirEntry
     DirEntry(SerialDirEntry),
     /// INum
     INum(INum),
-    ///
+    /// FileAttr
     Attr(SerialFileAttr),
 }
 
@@ -39,6 +39,18 @@ impl ValueType {
             }
         }
     }
+
+    #[allow(dead_code)]
+    /// Turn the `ValueType` into `INum`.
+    // Notice : If the value is not `ValueType::INum`, it will panic
+    pub fn into_inum(self) -> INum {
+        match self {
+            ValueType::INum(i) => i,
+            ValueType::Node(_) | ValueType::DirEntry(_) | ValueType::Attr(_) => {
+                panic!("expect ValueType::INum but get {self:?}");
+            }
+        }
+    }
 }
 
 /// The `KeyType` is used to locate the value in the distributed K/V storage.
@@ -47,19 +59,19 @@ impl ValueType {
 /// And you need to add a new match arm to the `get_key` function , make sure the key is unique.
 #[allow(dead_code)]
 pub enum KeyType {
-    /// INum -> SerailNode
+    /// INum -> SerialNode
     INum2Node(INum),
     /// INum -> DirEntry
     INum2DirEntry(INum),
     /// Path -> Inum
     Path2INum(String),
-    /// INum -> SerailFileAttr
+    /// INum -> SerialFileAttr
     INum2Attr(INum),
 }
 
 impl KeyType {
     /// Get the key in bytes.
-    fn get_key(&self) -> Vec<u8> {
+    pub fn get_key(&self) -> Vec<u8> {
         match *self {
             KeyType::INum2Node(ref i) => format!("I{i}").into_bytes(),
             KeyType::INum2DirEntry(ref i) => format!("D{i}").into_bytes(),
@@ -91,6 +103,15 @@ pub trait MetaTxn {
 pub trait KVEngine: Send + Sync + Debug {
     /// Create a new transaction.
     async fn new_meta_txn(&self) -> Box<dyn MetaTxn + Send>;
+
+    /// Get the value by the key from the distributed K/V storage.
+    async fn get(&self, key: &[u8]) -> DatenLordResult<Option<Vec<u8>>>;
+
+    /// Set the value by the key from the distributed K/V storage.
+    async fn set(&self, key: &[u8], value: &[u8]) -> DatenLordResult<()>;
+
+    /// Delete the value by the key from the distributed K/V storage.
+    async fn delete(&self, key: &[u8]) -> DatenLordResult<()>;
 }
 
 /// The `etcd`'s transaction impl.
@@ -275,6 +296,48 @@ impl KVEngine for EtcdKVEngine {
     async fn new_meta_txn(&self) -> Box<dyn MetaTxn + Send> {
         Box::new(EtcdTxn::new(self.client.clone()))
     }
+
+    async fn get(&self, key: &[u8]) -> DatenLordResult<Option<Vec<u8>>> {
+        let req = etcd_client::EtcdGetRequest::new(key);
+        let mut resp = self
+            .client
+            .kv()
+            .get(req)
+            .await
+            .with_context(|| format!("failed to get GetResponse from etcd, key={key:?}"))?;
+
+        let kvs = resp.take_kvs();
+        // we don't expect to have multiple values for one key
+        debug_assert!(kvs.len() <= 1, "multiple values for one key");
+        if let Some(kv) = kvs.get(0) {
+            let value = kv.value();
+            Ok(Some(value.to_vec()))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Set the value by the key from the distributed K/V storage.
+    async fn set(&self, key: &[u8], value: &[u8]) -> DatenLordResult<()> {
+        let req = etcd_client::EtcdPutRequest::new(key, value);
+        self.client
+            .kv()
+            .put(req)
+            .await
+            .with_context(|| format!("failed to get PutResponse from etcd, key={key:?}"))?;
+        Ok(())
+    }
+
+    /// Delete the value by the key from the distributed K/V storage.
+    async fn delete(&self, key: &[u8]) -> DatenLordResult<()> {
+        let req = etcd_client::EtcdDeleteRequest::new(etcd_client::KeyRange::key(key));
+        self.client
+            .kv()
+            .delete(req)
+            .await
+            .with_context(|| format!("failed to get DeleteResponse from etcd, key={key:?}"))?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -291,18 +354,15 @@ mod test {
         let client = EtcdKVEngine::new_for_local_test(vec![ETCD_ADDRESS.to_owned()])
             .await
             .unwrap();
-        let mut txn = client.new_meta_txn().await;
-        let key = KeyType::Path2INum(String::from("/"));
-        let value = ValueType::INum(12);
-        txn.set(&key, &value).await.unwrap();
-        txn.commit().await.unwrap();
-        let mut txn = client.new_meta_txn().await;
-        let value = txn.get(&key).await.unwrap();
-        if let Some(ValueType::INum(num)) = value {
-            assert_eq!(num, 12);
-        } else {
-            panic!("wrong value type {value:?}");
-        }
+        // insert a key , and then get it , and then delete it, and then get it again
+        let key = b"test_key";
+        let value = b"test_value";
+        client.set(key, value).await.unwrap();
+        let get_value = client.get(key).await.unwrap().unwrap();
+        assert_eq!(get_value, value.to_vec());
+        client.delete(key).await.unwrap();
+        let get_value = client.get(key).await.unwrap();
+        assert!(get_value.is_none());
     }
 
     #[tokio::test]
