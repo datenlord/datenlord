@@ -384,43 +384,10 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         if 0 == valid {
             warn!("setattr() enountered valid=0, the req={:?}", req);
         };
-        let mut cache = self.metadata.cache().write().await;
-        let inode = cache.get_mut(&ino).unwrap_or_else(|| {
-            panic!(
-                "setattr() found fs is inconsistent, \
-                    the i-node of ino={ino} should be in cache",
-            );
-        });
-        let ttl = Duration::new(MY_TTL_SEC, 0);
-
-        let set_res = inode.setattr_precheck(param).await;
+        let set_res = self.metadata.setattr_helper(ino, param).await;
         match set_res {
-            Ok((attr_changed, file_attr)) => {
-                if attr_changed {
-                    inode.set_attr(file_attr);
-                    debug!(
-                        "setattr() successfully set the attribute of ino={} and name={:?}, the set attr={:?}",
-                        ino, inode.get_name(), file_attr,
-                    );
-                } else {
-                    warn!(
-                        "setattr() did not change any attribute of ino={} and name={:?}",
-                        ino,
-                        inode.get_name(),
-                    );
-                }
-                let fuse_attr = fs_util::convert_to_fuse_attr(file_attr);
-                reply.attr(ttl, fuse_attr).await
-            }
-            Err(e) => {
-                debug!(
-                    "setattr() failed to set the attribute of ino={} and name={:?}, the error is: {}",
-                    ino,
-                    inode.get_name(),
-                    e,
-                );
-                reply.error(e).await
-            }
+            Ok((ttl, fuse_attr)) => reply.attr(ttl, fuse_attr).await,
+            Err(e) => reply.error(e).await,
         }
     }
 
@@ -507,37 +474,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         reply: ReplyEmpty,
     ) -> nix::Result<usize> {
         debug!("unlink(parent={}, name={:?}, req={:?}", parent, name, req,);
-        let entry_type = {
-            let cache = self.metadata.cache().read().await;
-            let parent_node = cache.get(&parent).unwrap_or_else(|| {
-                panic!(
-                    "unlink() found fs is inconsistent, \
-                        parent of ino={parent} should be in cache before remove its child",
-                );
-            });
-            let child_entry = parent_node.get_entry(name).unwrap_or_else(|| {
-                panic!(
-                    "unlink() found fs is inconsistent, \
-                        the child entry name={name:?} to remove is not under parent of ino={parent}",
-                );
-            });
-            let entry_type = child_entry.entry_type();
-            debug_assert_ne!(
-                SFlag::S_IFDIR,
-                entry_type,
-                "unlink() should not remove sub-directory name={name:?} under parent ino={parent}",
-            );
-            entry_type
-        };
-
-        let unlink_res = self
-            .metadata
-            .remove_node_helper(parent, name, entry_type)
-            .await
-            .add_context(format!(
-                "unlink() failed to remove file name={name:?} under parent ino={parent}",
-            ));
-        match unlink_res {
+        match self.metadata.unlink(parent, name).await {
             Ok(()) => reply.ok().await,
             Err(e) => {
                 debug!(
