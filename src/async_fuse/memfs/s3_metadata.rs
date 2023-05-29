@@ -1,4 +1,5 @@
 use super::cache::GlobalCache;
+use super::cache::IoMemBlock;
 use super::dir::DirEntry;
 use super::dist::client as dist_client;
 use super::dist::etcd;
@@ -16,9 +17,12 @@ use super::s3_node::{self, S3Node};
 use super::s3_wrapper::S3BackEnd;
 use super::serial;
 use super::RenameParam;
+use super::SetAttrParam;
 use crate::async_fuse::fuse::file_system::FsAsyncResultSender;
 #[cfg(feature = "abi-7-18")]
 use crate::async_fuse::fuse::fuse_reply::FuseDeleteNotification;
+use crate::async_fuse::fuse::fuse_reply::ReplyDirectory;
+use crate::async_fuse::fuse::fuse_reply::StatFsParam;
 use crate::async_fuse::fuse::protocol::{FuseAttr, INum, FUSE_ROOT_ID};
 use crate::async_fuse::util;
 use crate::common::error::{DatenLordError, DatenLordResult};
@@ -28,12 +32,14 @@ use async_trait::async_trait;
 use clippy_utilities::{Cast, OverflowArithmetic};
 use itertools::Itertools;
 use log::debug;
+use log::warn;
 use nix::errno::Errno;
 use nix::fcntl::OFlag;
 use nix::sys::stat::SFlag;
 use parking_lot::RwLock as SyncRwLock;
 use std::collections::BTreeMap;
 use std::os::unix::io::RawFd;
+use std::os::unix::prelude::OsStringExt;
 use std::path::Path;
 use std::sync::{atomic::AtomicU32, Arc};
 use std::time::Duration;
@@ -87,6 +93,326 @@ fn parse_s3_info(info: &str) -> (&str, &str, &str, &str) {
 #[async_trait]
 impl<S: S3BackEnd + Sync + Send + 'static, K: KVEngine + 'static> MetaData for S3MetaData<S, K> {
     type N = S3Node<S>;
+
+    async fn release(&self, ino: u64, fh: u64, _flags: u32, _lock_owner: u64, flush: bool) {
+        {
+            // TODO: handle lock_owner
+            let mut cache = self.cache().write().await;
+            let inode = cache.get_mut(&ino).unwrap_or_else(|| {
+                panic!(
+                    "relese() found fs is inconsistent, \
+                     the inode ino={ino} is not in cache"
+                );
+            });
+            inode.close(ino, fh, flush).await;
+            debug!(
+                "release() successfully closed the file handler={} of ino={} and name={:?}",
+                fh,
+                ino,
+                inode.get_name(),
+            );
+        }
+        self.try_delete_node(ino).await;
+    }
+
+    async fn readdir(
+        &self,
+        ino: u64,
+        _fh: u64,
+        offset: i64,
+        mut reply: ReplyDirectory,
+    ) -> nix::Result<usize> {
+        let mut readdir_helper = |data: &BTreeMap<String, DirEntry>| -> usize {
+            let mut num_child_entries = 0;
+            for (i, (child_name, child_entry)) in data.iter().enumerate().skip(offset.cast()) {
+                let child_ino = child_entry.ino();
+                reply.add(
+                    child_ino,
+                    offset.overflow_add(i.cast()).overflow_add(1), // i + 1 means the index of the next entry
+                    child_entry.entry_type(),
+                    child_name,
+                );
+                num_child_entries = num_child_entries.overflow_add(1);
+                debug!(
+                    "readdir() found one child of ino={}, name={:?}, offset={}, and entry={:?} \
+                        under the directory of ino={}",
+                    child_ino,
+                    child_name,
+                    offset.overflow_add(i.cast()).overflow_add(1),
+                    child_entry,
+                    ino,
+                );
+            }
+            num_child_entries
+        };
+
+        let mut cache = self.cache().write().await;
+        let inode = cache.get_mut(&ino).unwrap_or_else(|| {
+            panic!(
+                "relese() found fs is inconsistent, \
+                 the inode ino={ino} is not in cache"
+            );
+        });
+        if inode.need_load_dir_data() {
+            let load_res = inode.load_data(0_usize, 0_usize).await;
+            if let Err(e) = load_res {
+                debug!(
+                    "readdir() failed to load the data for directory of ino={} and name={:?}, \
+                        the error is: {}",
+                    ino,
+                    inode.get_name(),
+                    e
+                );
+                return reply.error(e).await;
+            }
+        }
+        let num_child_entries = inode.read_dir(&mut readdir_helper);
+        debug!(
+            "readdir() successfully read {} entries \
+                under the directory of ino={} and name={:?}",
+            num_child_entries,
+            ino,
+            inode.get_name(),
+        );
+        reply.ok().await
+    }
+
+    async fn opendir(&self, ino: u64, flags: u32) -> DatenLordResult<RawFd> {
+        let cache = self.cache().read().await;
+        let node = cache.get(&ino).unwrap_or_else(|| {
+            panic!(
+                "opendir() found fs is inconsistent, \
+                    the i-node of ino={ino} should be in cache",
+            );
+        });
+        let o_flags = fs_util::parse_oflag(flags);
+        node.dup_fd(o_flags).await
+    }
+
+    async fn readlink(&self, ino: u64) -> Vec<u8> {
+        let cache = self.cache().read().await;
+        let node = cache.get(&ino).unwrap_or_else(|| {
+            panic!(
+                "readlink() found fs is inconsistent, \
+                    the i-node of ino={ino} should be in cache",
+            );
+        });
+        node.get_symlink_target().as_os_str().to_owned().into_vec()
+    }
+
+    async fn statfs(&self, ino: u64) -> DatenLordResult<StatFsParam> {
+        let cache = self.cache().read().await;
+        let node = cache.get(&ino).unwrap_or_else(|| {
+            panic!(
+                "statfs() found fs is inconsistent, \
+                    the i-node of ino={ino} should be in cache",
+            );
+        });
+        node.statefs().await
+    }
+
+    async fn flush(&self, ino: u64, fh: u64) {
+        let mut cache = self.cache().write().await;
+        let node = cache.get_mut(&ino).unwrap_or_else(|| {
+            panic!(
+                "flush() found fs is inconsistent, \
+                    the i-node of ino={ino} should be in cache",
+            );
+        });
+        node.flush(ino, fh).await;
+    }
+
+    async fn releasedir(&self, ino: u64, fh: u64) {
+        {
+            let cache = self.cache().read().await;
+            let node = cache.get(&ino).unwrap_or_else(|| {
+                panic!(
+                    "releasedir() found fs is inconsistent, \
+                    the i-node of ino={ino} should be in cache",
+                );
+            });
+            node.closedir(ino, fh).await;
+        }
+        self.try_delete_node(ino).await;
+    }
+
+    async fn read_helper(
+        &self,
+        ino: INum,
+        _fh: u64,
+        offset: i64,
+        size: u32,
+    ) -> DatenLordResult<Vec<IoMemBlock>> {
+        let mut cache = self.cache().write().await;
+        let inode = cache.get_mut(&ino).unwrap_or_else(|| {
+            panic!(
+                "read() found fs is inconsistent, \
+                 the inode ino={ino} is not in cache"
+            );
+        });
+
+        let size: u64 =
+            if offset.cast::<u64>().overflow_add(size.cast::<u64>()) > inode.get_attr().size {
+                inode.get_attr().size.overflow_sub(offset.cast::<u64>())
+            } else {
+                size.cast()
+            };
+
+        // let node_type = node.get_type();
+        // let file_data = if SFlag::S_IFREG == node_type {
+        if inode.need_load_file_data(offset.cast(), size.cast()).await {
+            let load_res = inode.load_data(offset.cast(), size.cast()).await;
+            if let Err(e) = load_res {
+                debug!(
+                    "read() failed to load file data of ino={} and name={:?}, the error is: {}",
+                    ino,
+                    inode.get_name(),
+                    e,
+                );
+                return Err(e);
+            }
+        }
+        return Ok(inode.get_file_data(offset.cast(), size.cast()).await);
+    }
+
+    async fn open(&self, ino: u64, flags: u32) -> DatenLordResult<RawFd> {
+        let cache = self.cache().read().await;
+        let node = cache.get(&ino).unwrap_or_else(|| {
+            panic!(
+                "open() found fs is inconsistent, \
+                    the i-node of ino={ino} should be in cache",
+            );
+        });
+        let o_flags = fs_util::parse_oflag(flags);
+        // TODO: handle open flags
+        // <https://pubs.opengroup.org/onlinepubs/9699919799/functions/open.html>
+        // let open_res = if let SFlag::S_IFLNK = node.get_type() {
+        //     node.open_symlink_target(o_flags).await.add_context(format!(
+        //         "open() failed to open symlink target={:?} with flags={}",
+        //         node.get_symlink_target(),
+        //         flags,
+        //     ))
+        // } else {
+        node.dup_fd(o_flags).await
+    }
+
+    async fn getattr(&self, ino: u64) -> DatenLordResult<(Duration, FuseAttr)> {
+        let cache = self.cache().read().await;
+        let inode = cache.get(&ino).unwrap_or_else(|| {
+            panic!(
+                "getattr() found fs is inconsistent, \
+                 the inode ino={ino} is not in cache"
+            );
+        });
+        let attr = inode.get_attr();
+        debug!(
+            "getattr() cache hit when searching the attribute of ino={} and name={:?}",
+            ino,
+            inode.get_name(),
+        );
+        let ttl = Duration::new(MY_TTL_SEC, 0);
+        let fuse_attr = fs_util::convert_to_fuse_attr(attr);
+        Ok((ttl, fuse_attr))
+    }
+
+    async fn forget(&self, ino: u64, nlookup: u64) {
+        let current_count: i64;
+        {
+            let cache = self.cache().read().await;
+            let inode = cache.get(&ino).unwrap_or_else(|| {
+                panic!(
+                    "forget() found fs is inconsistent, \
+                     the inode ino={ino} is not in cache"
+                );
+            });
+
+            let previous_count = inode.dec_lookup_count_by(nlookup);
+            current_count = inode.get_lookup_count();
+            debug_assert!(current_count >= 0);
+            debug_assert_eq!(
+                previous_count.overflow_sub(current_count),
+                nlookup.cast::<i64>()
+            ); // assert no race forget
+            debug!(
+                "forget() successfully reduced lookup count of ino={} and name={:?} from {} to {}",
+                ino,
+                inode.get_name(),
+                previous_count,
+                current_count,
+            );
+        }
+        self.try_delete_node(ino).await;
+    }
+
+    async fn setattr_helper(
+        &self,
+        ino: u64,
+        param: SetAttrParam,
+    ) -> DatenLordResult<(Duration, FuseAttr)> {
+        let ttl = Duration::new(MY_TTL_SEC, 0);
+        let mut cache = self.cache().write().await;
+        let inode = cache.get_mut(&ino).unwrap_or_else(|| {
+            panic!(
+                "setattr() found fs is inconsistent, \
+                    the i-node of ino={ino} should be in cache",
+            );
+        });
+
+        match inode.setattr_precheck(param).await {
+            Ok((attr_changed, file_attr)) => {
+                if attr_changed {
+                    inode.set_attr(file_attr);
+                    debug!(
+                        "setattr() successfully set the attribute of ino={} and name={:?}, the set attr={:?}",
+                        ino, inode.get_name(), file_attr,
+                    );
+                } else {
+                    warn!(
+                        "setattr() did not change any attribute of ino={} and name={:?}",
+                        ino,
+                        inode.get_name(),
+                    );
+                }
+                Ok((ttl, fs_util::convert_to_fuse_attr(file_attr)))
+            }
+            Err(e) => {
+                debug!(
+                    "setattr() failed to set the attribute of ino={} and name={:?}, the error is: {}",
+                    ino,
+                    inode.get_name(),
+                    e,
+                );
+                Err(e)
+            }
+        }
+    }
+
+    async fn unlink(&self, parent: INum, name: &str) -> DatenLordResult<()> {
+        let entry_type = {
+            let cache = self.cache().read().await;
+            let parent_node = cache.get(&parent).unwrap_or_else(|| {
+                panic!(
+                    "unlink() found fs is inconsistent, \
+                        parent of ino={parent} should be in cache before remove its child",
+                );
+            });
+            let child_entry = parent_node.get_entry(name).unwrap_or_else(|| {
+                panic!(
+                    "unlink() found fs is inconsistent, \
+                        the child entry name={name:?} to remove is not under parent of ino={parent}",
+                );
+            });
+            let entry_type = child_entry.entry_type();
+            debug_assert_ne!(
+                SFlag::S_IFDIR,
+                entry_type,
+                "unlink() should not remove sub-directory name={name:?} under parent ino={parent}",
+            );
+            entry_type
+        };
+
+        self.remove_node_helper(parent, name, entry_type).await
+    }
 
     async fn new(
         s3_info: &str,
