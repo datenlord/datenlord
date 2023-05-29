@@ -3,7 +3,7 @@ use super::dir::DirEntry;
 use super::dist::server::CacheServer;
 use super::fs_util::{self, FileAttr};
 use super::node::{self, DefaultNode, Node};
-use super::RenameParam;
+use super::{RenameParam, SetAttrParam};
 use crate::async_fuse::fuse::file_system::FsAsyncResultSender;
 use crate::async_fuse::fuse::protocol::{FuseAttr, INum, FUSE_ROOT_ID};
 use crate::async_fuse::util;
@@ -12,7 +12,7 @@ use crate::common::etcd_delegate::EtcdDelegate;
 use anyhow::Context;
 use async_trait::async_trait;
 use clippy_utilities::Cast;
-use log::debug;
+use log::{debug, warn};
 use nix::errno::Errno;
 use nix::fcntl::OFlag;
 use nix::sys::stat::SFlag;
@@ -106,6 +106,15 @@ pub trait MetaData {
 
     /// Stop all async tasks
     fn stop_all_async_tasks(&self);
+
+    /// Set Node's attribute
+    async fn setattr_helper(
+        &self,
+        ino: u64,
+        param: SetAttrParam,
+    ) -> DatenLordResult<(Duration, FuseAttr)>;
+
+    async fn unlink(&self, parent: INum, name: &str) -> DatenLordResult<()>;
 }
 
 /// File system in-memory meta-data
@@ -127,6 +136,76 @@ pub struct DefaultMetaData {
 #[async_trait]
 impl MetaData for DefaultMetaData {
     type N = DefaultNode;
+
+    async fn setattr_helper(
+        &self,
+        ino: u64,
+        param: SetAttrParam,
+    ) -> DatenLordResult<(Duration, FuseAttr)> {
+        let ttl = Duration::new(MY_TTL_SEC, 0);
+        let mut cache = self.cache().write().await;
+        let inode = cache.get_mut(&ino).unwrap_or_else(|| {
+            panic!(
+                "setattr() found fs is inconsistent, \
+                    the i-node of ino={ino} should be in cache",
+            );
+        });
+
+        match inode.setattr_precheck(param).await {
+            Ok((attr_changed, file_attr)) => {
+                if attr_changed {
+                    inode.set_attr(file_attr);
+                    debug!(
+                        "setattr() successfully set the attribute of ino={} and name={:?}, the set attr={:?}",
+                        ino, inode.get_name(), file_attr,
+                    );
+                } else {
+                    warn!(
+                        "setattr() did not change any attribute of ino={} and name={:?}",
+                        ino,
+                        inode.get_name(),
+                    );
+                }
+                Ok((ttl, fs_util::convert_to_fuse_attr(file_attr)))
+            }
+            Err(e) => {
+                debug!(
+                    "setattr() failed to set the attribute of ino={} and name={:?}, the error is: {}",
+                    ino,
+                    inode.get_name(),
+                    e,
+                );
+                Err(e)
+            }
+        }
+    }
+
+    async fn unlink(&self, parent: INum, name: &str) -> DatenLordResult<()> {
+        let entry_type = {
+            let cache = self.cache().read().await;
+            let parent_node = cache.get(&parent).unwrap_or_else(|| {
+                panic!(
+                    "unlink() found fs is inconsistent, \
+                        parent of ino={parent} should be in cache before remove its child",
+                );
+            });
+            let child_entry = parent_node.get_entry(name).unwrap_or_else(|| {
+                panic!(
+                    "unlink() found fs is inconsistent, \
+                        the child entry name={name:?} to remove is not under parent of ino={parent}",
+                );
+            });
+            let entry_type = child_entry.entry_type();
+            debug_assert_ne!(
+                SFlag::S_IFDIR,
+                entry_type,
+                "unlink() should not remove sub-directory name={name:?} under parent ino={parent}",
+            );
+            entry_type
+        };
+
+        self.remove_node_helper(parent, name, entry_type).await
+    }
 
     async fn new(
         root_path: &str,
