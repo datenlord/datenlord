@@ -3,6 +3,7 @@
 use grpcio::RpcStatusCode;
 use std::path::PathBuf;
 use thiserror::Error;
+
 /// `DatenLord` Result type
 pub type DatenLordResult<T> = Result<T, DatenLordError>;
 /// `DatenLord` error code

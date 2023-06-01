@@ -285,7 +285,7 @@ impl EtcdDelegate {
             //  https://github.com/etcd-io/etcd/issues/7115
             //  https://github.com/etcd-io/etcd/issues/6740
             //key does not exist when create revision is 0, check the links above
-            .when_create_revision(etcd_client::KeyRange::key(key.clone()), TxnCmp::Equal, 0)
+            .when_version(etcd_client::KeyRange::key(key.clone()), TxnCmp::Equal, 0)
             //key does not exist, insert kv
             .and_then(put_request)
             //key exists, return old value
