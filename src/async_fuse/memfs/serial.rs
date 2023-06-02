@@ -16,7 +16,15 @@ pub struct SerialDirEntry {
     /// The entry name
     name: String,
     /// File attr
-    file_attr: SerialFileAttr,
+    pub(crate) file_attr: SerialFileAttr,
+}
+
+impl SerialDirEntry {
+    #[must_use]
+    /// Get the child inode number
+    pub fn get_child_ino(&self) -> INum {
+        self.file_attr.get_ino()
+    }
 }
 
 /// Serializable `FileAttr`
@@ -50,6 +58,14 @@ pub struct SerialFileAttr {
     rdev: u32,
     /// Flags (macOS only, see chflags(2))
     flags: u32,
+}
+
+impl SerialFileAttr {
+    #[must_use]
+    /// Get the inode number
+    pub fn get_ino(&self) -> INum {
+        self.ino
+    }
 }
 
 /// Serializable `SFlag`

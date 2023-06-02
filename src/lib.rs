@@ -7,7 +7,7 @@
     bare_trait_objects,
     // box_pointers,
     // elided_lifetimes_in_paths, // allow anonymous lifetime
-    missing_copy_implementations,
+    // missing_copy_implementations, // Copy may cause unnecessary memory copy
     missing_debug_implementations,
     missing_docs, // TODO: add documents
     single_use_lifetimes, // TODO: fix lifetime names only used once
@@ -37,6 +37,10 @@
     clippy::multiple_crate_versions, // multi-version dependency crates is not able to fix
     clippy::panic, // allow debug_assert, panic in production code
     // clippy::panic_in_result_fn,
+    clippy::separated_literal_suffix, // conflict with unseparated_literal_suffix
+    clippy::shadow_unrelated, //it’s a common pattern in Rust code
+    clippy::shadow_reuse, //it’s a common pattern in Rust code
+    clippy::shadow_same, //it’s a common pattern in Rust code
     clippy::missing_errors_doc, // TODO: add error docs
     clippy::exhaustive_structs,
     clippy::exhaustive_enums,
