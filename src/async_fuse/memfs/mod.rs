@@ -22,15 +22,13 @@ pub mod s3_wrapper;
 /// Serializable types module
 pub mod serial;
 
-use std::collections::BTreeMap;
-use std::os::unix::ffi::OsStringExt;
 use std::os::unix::prelude::RawFd;
 use std::path::Path;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 
 use async_trait::async_trait;
-use clippy_utilities::{Cast, OverflowArithmetic};
+use clippy_utilities::Cast;
 use log::{debug, warn};
 use nix::errno::Errno;
 use nix::sys::stat::SFlag;
@@ -48,18 +46,13 @@ use crate::async_fuse::fuse::protocol::{INum, FUSE_ROOT_ID};
 use crate::common::error::{Context, DatenLordResult};
 use crate::common::etcd_delegate::EtcdDelegate;
 use cache::IoMemBlock;
-use dir::DirEntry;
 use dist::server::CacheServer;
 pub use metadata::DefaultMetaData;
 pub use metadata::MetaData;
-use node::Node;
 pub use s3_metadata::S3MetaData;
 use serde::{Deserialize, Serialize};
 
 use super::fuse::file_system::FsController;
-
-/// The time-to-live seconds of FUSE attributes
-const MY_TTL_SEC: u64 = 3600; // TODO: should be a long value, say 1 hour
 
 /// In-memory file system
 #[derive(Debug)]
@@ -238,29 +231,20 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
     async fn getattr(&self, req: &Request<'_>, reply: ReplyAttr) -> nix::Result<usize> {
         let ino = req.nodeid();
         debug!("getattr(ino={}, req={:?})", ino, req);
-
-        let cache = self.metadata.cache().read().await;
-        let inode = cache.get(&ino).unwrap_or_else(|| {
-            panic!(
-                "getattr() found fs is inconsistent, \
-                 the inode ino={ino} is not in cache"
-            );
-        });
-        let attr = inode.get_attr();
-        debug!(
-            "getattr() cache hit when searching the attribute of ino={} and name={:?}",
-            ino,
-            inode.get_name(),
-        );
-        let ttl = Duration::new(MY_TTL_SEC, 0);
-        let fuse_attr = fs_util::convert_to_fuse_attr(attr);
-        debug!(
-            "getattr() successfully got the attribute of ino={}, name={:?} and attr={:?}",
-            ino,
-            inode.get_name(),
-            attr,
-        );
-        reply.attr(ttl, fuse_attr).await
+        match self.metadata.getattr(ino).await {
+            Ok((ttl, fuse_attr)) => {
+                debug!(
+                    "getattr() successfully got the attr={:?} of ino={}",
+                    fuse_attr, ino,
+                );
+                reply.attr(ttl, fuse_attr).await
+            }
+            Err(err) => {
+                // In the previous version ,this panic will never happen.
+                // Later, we will
+                panic!("getattr() failed to get the attr of ino={ino}, the error is: {err}",);
+            }
+        }
     }
 
     /// Open a file.
@@ -275,30 +259,11 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         let ino = req.nodeid();
         debug!("open(ino={}, flags={}, req={:?})", ino, flags, req);
 
-        let cache = self.metadata.cache().read().await;
-        let node = cache.get(&ino).unwrap_or_else(|| {
-            panic!("open() found fs is inconsistent, the i-node of ino={ino} should be in cache",);
-        });
-        let o_flags = fs_util::parse_oflag(flags);
-        // TODO: handle open flags
-        // <https://pubs.opengroup.org/onlinepubs/9699919799/functions/open.html>
-        // let open_res = if let SFlag::S_IFLNK = node.get_type() {
-        //     node.open_symlink_target(o_flags).await.add_context(format!(
-        //         "open() failed to open symlink target={:?} with flags={}",
-        //         node.get_symlink_target(),
-        //         flags,
-        //     ))
-        // } else {
-        let dup_res: DatenLordResult<RawFd> = node.dup_fd(o_flags).await.add_context(format!(
-            "open() failed to duplicate the file handler of ino={} and name={:?}",
-            ino,
-            node.get_name(),
-        ));
-        match dup_res {
+        match self.metadata.open(ino, flags).await {
             Ok(new_fd) => {
                 debug!(
-                    "open() successfully duplicated the file handler of ino={} and name={:?}, fd={}, flags={:?}",
-                    ino, node.get_name(), new_fd, flags,
+                    "open() successfully duplicated the file handler of ino={} , fd={}, flags={:?}",
+                    ino, new_fd, flags,
                 );
                 reply.opened(new_fd, flags).await
             }
@@ -319,32 +284,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
     async fn forget(&self, req: &Request<'_>, nlookup: u64) {
         let ino = req.nodeid();
         debug!("forget(ino={}, nlookup={}, req={:?})", ino, nlookup, req,);
-        let current_count: i64;
-        {
-            let cache = self.metadata.cache().read().await;
-            let inode = cache.get(&ino).unwrap_or_else(|| {
-                panic!(
-                    "forget() found fs is inconsistent, \
-                     the inode ino={ino} is not in cache"
-                );
-            });
-
-            let previous_count = inode.dec_lookup_count_by(nlookup);
-            current_count = inode.get_lookup_count();
-            debug_assert!(current_count >= 0);
-            debug_assert_eq!(
-                previous_count.overflow_sub(current_count),
-                nlookup.cast::<i64>()
-            ); // assert no race forget
-            debug!(
-                "forget() successfully reduced lookup count of ino={} and name={:?} from {} to {}",
-                ino,
-                inode.get_name(),
-                previous_count,
-                current_count,
-            );
-        }
-        self.metadata.try_delete_node(ino).await;
+        self.metadata.forget(ino, nlookup).await;
     }
 
     /// Set file attributes.
@@ -384,43 +324,10 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         if 0 == valid {
             warn!("setattr() enountered valid=0, the req={:?}", req);
         };
-        let mut cache = self.metadata.cache().write().await;
-        let inode = cache.get_mut(&ino).unwrap_or_else(|| {
-            panic!(
-                "setattr() found fs is inconsistent, \
-                    the i-node of ino={ino} should be in cache",
-            );
-        });
-        let ttl = Duration::new(MY_TTL_SEC, 0);
-
-        let set_res = inode.setattr_precheck(param).await;
+        let set_res = self.metadata.setattr_helper(ino, param).await;
         match set_res {
-            Ok((attr_changed, file_attr)) => {
-                if attr_changed {
-                    inode.set_attr(file_attr);
-                    debug!(
-                        "setattr() successfully set the attribute of ino={} and name={:?}, the set attr={:?}",
-                        ino, inode.get_name(), file_attr,
-                    );
-                } else {
-                    warn!(
-                        "setattr() did not change any attribute of ino={} and name={:?}",
-                        ino,
-                        inode.get_name(),
-                    );
-                }
-                let fuse_attr = fs_util::convert_to_fuse_attr(file_attr);
-                reply.attr(ttl, fuse_attr).await
-            }
-            Err(e) => {
-                debug!(
-                    "setattr() failed to set the attribute of ino={} and name={:?}, the error is: {}",
-                    ino,
-                    inode.get_name(),
-                    e,
-                );
-                reply.error(e).await
-            }
+            Ok((ttl, fuse_attr)) => reply.attr(ttl, fuse_attr).await,
+            Err(e) => reply.error(e).await,
         }
     }
 
@@ -507,37 +414,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         reply: ReplyEmpty,
     ) -> nix::Result<usize> {
         debug!("unlink(parent={}, name={:?}, req={:?}", parent, name, req,);
-        let entry_type = {
-            let cache = self.metadata.cache().read().await;
-            let parent_node = cache.get(&parent).unwrap_or_else(|| {
-                panic!(
-                    "unlink() found fs is inconsistent, \
-                        parent of ino={parent} should be in cache before remove its child",
-                );
-            });
-            let child_entry = parent_node.get_entry(name).unwrap_or_else(|| {
-                panic!(
-                    "unlink() found fs is inconsistent, \
-                        the child entry name={name:?} to remove is not under parent of ino={parent}",
-                );
-            });
-            let entry_type = child_entry.entry_type();
-            debug_assert_ne!(
-                SFlag::S_IFDIR,
-                entry_type,
-                "unlink() should not remove sub-directory name={name:?} under parent ino={parent}",
-            );
-            entry_type
-        };
-
-        let unlink_res = self
-            .metadata
-            .remove_node_helper(parent, name, entry_type)
-            .await
-            .add_context(format!(
-                "unlink() failed to remove file name={name:?} under parent ino={parent}",
-            ));
-        match unlink_res {
+        match self.metadata.unlink(parent, name).await {
             Ok(()) => reply.ok().await,
             Err(e) => {
                 debug!(
@@ -640,54 +517,26 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
             ino, fh, offset, size, req,
         );
         debug_assert!(!offset.is_negative(), "offset={offset} cannot be negative");
-
-        let mut cache = self.metadata.cache().write().await;
-        let inode = cache.get_mut(&ino).unwrap_or_else(|| {
-            panic!(
-                "read() found fs is inconsistent, \
-                 the inode ino={ino} is not in cache"
-            );
-        });
-
-        let size: u64 =
-            if offset.cast::<u64>().overflow_add(size.cast::<u64>()) > inode.get_attr().size {
-                inode.get_attr().size.overflow_sub(offset.cast::<u64>())
-            } else {
-                size.cast()
-            };
-
-        // let node_type = node.get_type();
-        // let file_data = if SFlag::S_IFREG == node_type {
-        if inode.need_load_file_data(offset.cast(), size.cast()).await {
-            let load_res = inode.load_data(offset.cast(), size.cast()).await;
-            if let Err(e) = load_res {
-                debug!(
-                    "read() failed to load file data of ino={} and name={:?}, the error is: {}",
-                    ino,
-                    inode.get_name(),
-                    e,
-                );
+        let file_data = match self.metadata.read_helper(ino, fh, offset, size).await {
+            Ok(file_data) => file_data,
+            Err(e) => {
                 return reply.error(e).await;
             }
-        }
-        let file_data = inode.get_file_data(offset.cast(), size.cast()).await;
+        };
         debug!("file_data is {:?}", file_data);
         match Self::read_helper(file_data, size.cast()) {
             Ok(content) => {
                 debug!(
-                    "read() successfully read {} bytes from the file of ino={} and name={:?}",
+                    "read() successfully read {} bytes from the file of ino={}",
                     content.iter().map(AsIoVec::len).sum::<usize>(),
                     ino,
-                    inode.get_name(),
                 );
                 reply.data(content).await
             }
             Err(e) => {
                 debug!(
-                    "read() failed to read from the file of ino={} and name={:?}, the error is: {}",
-                    ino,
-                    inode.get_name(),
-                    e,
+                    "read() failed to read from the file of ino={}, the error is: {}",
+                    ino, e,
                 );
                 reply.error(e).await
             }
@@ -772,14 +621,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         // called multiple times for an open file, self must not really
         // close the file. This is important if used on a network
         // filesystem like NFS which flush the data/metadata on close()
-        let mut cache = self.metadata.cache().write().await;
-        let inode = cache.get_mut(&ino).unwrap_or_else(|| {
-            panic!(
-                "flush() found fs is inconsistent, \
-                 the inode ino={ino} is not in cache"
-            );
-        });
-        inode.flush(ino, fh).await;
+        self.metadata.flush(ino, fh).await;
         reply.ok().await
     }
 
@@ -805,24 +647,9 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
             "release(ino={}, fh={}, flags={}, lock_owner={}, flush={}, req={:?})",
             ino, fh, flags, lock_owner, flush, req,
         );
-        {
-            // TODO: handle lock_owner
-            let mut cache = self.metadata.cache().write().await;
-            let inode = cache.get_mut(&ino).unwrap_or_else(|| {
-                panic!(
-                    "relese() found fs is inconsistent, \
-                     the inode ino={ino} is not in cache"
-                );
-            });
-            inode.close(ino, fh, flush).await;
-            debug!(
-                "release() successfully closed the file handler={} of ino={} and name={:?}",
-                fh,
-                ino,
-                inode.get_name(),
-            );
-        }
-        self.metadata.try_delete_node(ino).await;
+        self.metadata
+            .release(ino, fh, flags, lock_owner, flush)
+            .await;
         reply.ok().await
     }
 
@@ -861,34 +688,21 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
     async fn opendir(&self, req: &Request<'_>, flags: u32, reply: ReplyOpen) -> nix::Result<usize> {
         let ino = req.nodeid();
         debug!("opendir(ino={}, flags={}, req={:?})", ino, flags, req,);
-        let cache = self.metadata.cache().read().await;
-        let inode = cache.get(&ino).unwrap_or_else(|| {
-            panic!(
-                "opendir() found fs is inconsistent, \
-                    the i-node of ino={ino} should be in cache",
-            );
-        });
-
         let o_flags = fs_util::parse_oflag(flags);
-        let dup_res = inode.dup_fd(o_flags).await;
-        match dup_res {
+        match self.metadata.opendir(ino, flags).await {
             Ok(new_fd) => {
                 debug!(
                     "opendir() successfully duplicated the file handler of \
-                        ino={} and name={:?} with flags={:?}, the new fd={}",
-                    ino,
-                    inode.get_name(),
-                    o_flags,
-                    new_fd,
+                        ino={}  with flags={:?}, the new fd={}",
+                    ino, o_flags, new_fd,
                 );
                 reply.opened(new_fd, flags).await
             }
             Err(e) => {
                 debug!(
-                    "opendir() failed to duplicate the file handler of ino={} and name={:?} with flags={:?}, \
+                    "opendir() failed to duplicate the file handler of ino={} with flags={:?}, \
                         the error is: {}",
-                    ino, inode.get_name(), o_flags,
-                    e
+                    ino, o_flags, e
                 );
                 reply.error(e).await
             }
@@ -905,7 +719,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         req: &Request<'_>,
         fh: u64,
         offset: i64,
-        mut reply: ReplyDirectory,
+        reply: ReplyDirectory,
     ) -> nix::Result<usize> {
         let ino = req.nodeid();
         debug!(
@@ -913,59 +727,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
             ino, fh, offset, req,
         );
 
-        let mut readdir_helper = |data: &BTreeMap<String, DirEntry>| -> usize {
-            let mut num_child_entries = 0;
-            for (i, (child_name, child_entry)) in data.iter().enumerate().skip(offset.cast()) {
-                let child_ino = child_entry.ino();
-                reply.add(
-                    child_ino,
-                    offset.overflow_add(i.cast()).overflow_add(1), // i + 1 means the index of the next entry
-                    child_entry.entry_type(),
-                    child_name,
-                );
-                num_child_entries = num_child_entries.overflow_add(1);
-                debug!(
-                    "readdir() found one child of ino={}, name={:?}, offset={}, and entry={:?} \
-                        under the directory of ino={}",
-                    child_ino,
-                    child_name,
-                    offset.overflow_add(i.cast()).overflow_add(1),
-                    child_entry,
-                    ino,
-                );
-            }
-            num_child_entries
-        };
-
-        let mut cache = self.metadata.cache().write().await;
-        let inode = cache.get_mut(&ino).unwrap_or_else(|| {
-            panic!(
-                "relese() found fs is inconsistent, \
-                 the inode ino={ino} is not in cache"
-            );
-        });
-        if inode.need_load_dir_data() {
-            let load_res = inode.load_data(0_usize, 0_usize).await;
-            if let Err(e) = load_res {
-                debug!(
-                    "readdir() failed to load the data for directory of ino={} and name={:?}, \
-                        the error is: {}",
-                    ino,
-                    inode.get_name(),
-                    e
-                );
-                return reply.error(e).await;
-            }
-        }
-        let num_child_entries = inode.read_dir(&mut readdir_helper);
-        debug!(
-            "readdir() successfully read {} entries \
-                under the directory of ino={} and name={:?}",
-            num_child_entries,
-            ino,
-            inode.get_name(),
-        );
-        reply.ok().await
+        self.metadata.readdir(ino, fh, offset, reply).await
     }
 
     /// Release an open directory.
@@ -985,17 +747,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
             ino, fh, flags, req,
         );
         // TODO: handle flags
-        {
-            let cache = self.metadata.cache().read().await;
-            let inode = cache.get(&ino).unwrap_or_else(|| {
-                panic!(
-                    "releasedir() found fs is inconsistent, \
-                     the inode ino={ino} is not in cache"
-                );
-            });
-            inode.closedir(ino, fh).await;
-        }
-        self.metadata.try_delete_node(ino).await;
+        self.metadata.releasedir(ino, fh).await;
         reply.ok().await
     }
 
@@ -1034,33 +786,18 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
             req.nodeid()
         };
         debug!("statfs(ino={}, req={:?})", ino, req);
-        let cache = self.metadata.cache().read().await;
-        let inode = cache.get(&ino).unwrap_or_else(|| {
-            panic!(
-                "statfs() found fs is inconsistent, \
-                    the i-node of ino={ino} should be in cache",
-            );
-        });
-
-        let statfs_res = inode.statefs().await.add_context(format!(
-            "statfs() failed to run statvfs() of ino={} and name={:?}",
-            ino,
-            inode.get_name(),
-        ));
-        match statfs_res {
+        match self.metadata.statfs(ino).await {
             Ok(statvfs) => {
                 debug!(
-                    "statfs() successfully read the statvfs of ino={} and name={:?}, the statvfs={:?}",
-                    ino, inode.get_name(), statvfs,
+                    "statfs() successfully read the statvfs of ino={} the statvfs={:?}",
+                    ino, statvfs,
                 );
                 reply.statfs(statvfs).await
             }
             Err(e) => {
                 debug!(
-                    "statfs() failed to read the statvfs of ino={} and name={:?}, the error is: {}",
-                    ino,
-                    inode.get_name(),
-                    e
+                    "statfs() failed to read the statvfs of ino={}  the error is: {}",
+                    ino, e
                 );
                 reply.error(e).await
             }
@@ -1071,23 +808,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
     async fn readlink(&self, req: &Request<'_>, reply: ReplyData) -> nix::Result<usize> {
         let ino = req.nodeid();
         debug!("readlink(ino={}, req={:?})", ino, req,);
-        let cache = self.metadata.cache().read().await;
-        let symlink_node = cache.get(&ino).unwrap_or_else(|| {
-            panic!(
-                "readlink() found fs is inconsistent, \
-                 the inode ino={ino} is not in cache"
-            );
-        });
-        let target_path = symlink_node.get_symlink_target();
-        debug!(
-            "readlink() successfully read the link of symlink node of ino={} and name={:?}, target_path={:?}",
-            ino,
-            symlink_node.get_name(),
-            target_path,
-        );
-        reply
-            .data(target_path.as_os_str().to_owned().into_vec())
-            .await
+        reply.data(self.metadata.readlink(ino).await).await
     }
 
     /// Create a symbolic link.
