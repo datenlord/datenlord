@@ -2,6 +2,7 @@
 pub mod client;
 /// Communication with etcd
 pub mod etcd;
+pub mod id_alloc;
 pub mod request;
 pub mod response;
 pub mod server;

@@ -2,10 +2,9 @@ use super::cache::GlobalCache;
 use super::cache::IoMemBlock;
 use super::dir::DirEntry;
 use super::dist::client as dist_client;
-use super::dist::etcd;
 use super::dist::server::CacheServer;
 use super::fs_util::{self, FileAttr};
-use super::inode::InodeState;
+use super::id_alloc_used::INumAllocator;
 use super::kv_engine::{KVEngine, KeyType, ValueType};
 use super::metadata::MetaData;
 use super::node::Node;
@@ -65,8 +64,6 @@ pub struct S3MetaData<S: S3BackEnd + Send + Sync + 'static, K: KVEngine + 'stati
     pub(crate) cache: RwLock<BTreeMap<INum, S3Node<S>>>,
     /// Global data cache
     pub(crate) data_cache: Arc<GlobalCache>,
-    /// inode related, inum alloc and recycle
-    pub(crate) inode_state: InodeState,
     /// Current available fd, it'll increase after using
     pub(crate) cur_fd: AtomicU32,
     /// Current service id
@@ -81,6 +78,8 @@ pub struct S3MetaData<S: S3BackEnd + Send + Sync + 'static, K: KVEngine + 'stati
     persist_handle: PersistHandle,
     /// KV engine
     pub(crate) kv_engine: Arc<K>,
+    /// Inum allocator
+    inum_allocator: INumAllocator<K>,
 }
 
 /// Parse S3 info
@@ -450,13 +449,13 @@ impl<S: S3BackEnd + Sync + Send + 'static, K: KVEngine + 'static> MetaData for S
             cache: RwLock::new(BTreeMap::new()),
             etcd_client: etcd_arc,
             data_cache: Arc::<GlobalCache>::clone(&data_cache),
-            inode_state: InodeState::new(),
             cur_fd: AtomicU32::new(4),
             node_id: Arc::<str>::from(node_id.to_owned()),
             volume_info: Arc::<str>::from(volume_info.to_owned()),
             path2inum: RwLock::new(BTreeMap::new()),
             fuse_fd: Mutex::new(-1_i32),
             persist_handle,
+            inum_allocator: INumAllocator::new(Arc::clone(&kv_engine)),
             kv_engine,
         });
 
@@ -539,13 +538,21 @@ impl<S: S3BackEnd + Sync + Send + 'static, K: KVEngine + 'static> MetaData for S
         target_path: Option<&Path>,
     ) -> DatenLordResult<(Duration, FuseAttr, u64)> {
         // pre-check
-        let (parent_full_path, full_path, new_node_attr, fuse_attr) = {
+        let (parent_full_path, new_node_attr, fuse_attr) = {
             let mut cache = self.cache.write().await;
             let parent_node = Self::create_node_pre_check(parent, node_name, &mut cache)
                 .context("create_node_helper() failed to pre check")?;
             let full_path = format!("{}{}", parent_node.full_path(), node_name);
             // check cluster conflict creating by trying to alloc ino
-            let (inum, is_new) = self.inode_get_inum_by_fullpath(full_path.as_str()).await;
+            let (inum, is_new) = self
+                .inum_allocator
+                .alloc_inum_for_fnode(&self.kv_engine, full_path.as_str())
+                .await
+                .with_context(|| {
+                    format!(
+                        "create_node_helper() failed to alloc ino for node of name={node_name:?}"
+                    )
+                })?;
             if !is_new {
                 // inum created by others or exist in remote cache
                 //todo delete parent node cache to update parent dir content
@@ -644,7 +651,7 @@ impl<S: S3BackEnd + Sync + Send + 'static, K: KVEngine + 'static> MetaData for S
             });
             let parent_full_path = pnode.full_path().to_owned();
 
-            (parent_full_path, full_path, new_node_attr, fuse_attr)
+            (parent_full_path, new_node_attr, fuse_attr)
         };
         {
             self.sync_attr_remote(&parent_full_path).await;
@@ -666,14 +673,6 @@ impl<S: S3BackEnd + Sync + Send + 'static, K: KVEngine + 'static> MetaData for S
                 ),
             );
         }
-        // inode is cached, so we should remove the path mark
-        // We dont need to sync for the unmark
-        let etcd_client = Arc::clone(&self.etcd_client);
-        let volume = Arc::clone(&self.volume_info);
-        tokio::spawn(async move {
-            let vol = volume;
-            etcd::unmark_fullpath_with_ino_in_etcd(etcd_client, &vol, full_path).await;
-        });
 
         let ttl = Duration::new(MY_TTL_SEC, 0);
         Ok((ttl, fuse_attr, MY_GENERATION))
@@ -916,40 +915,23 @@ impl<S: S3BackEnd + Send + Sync + 'static, K: KVEngine + 'static> S3MetaData<S, 
     #[allow(clippy::unwrap_used)]
     /// Get a node from kv engine by inum
     pub async fn get_node_from_kv_engine(&self, inum: INum) -> Option<S3NodeWrap<S, K>> {
-        let inum_key = KeyType::INum2Node(inum).get_key();
+        let inum_key = KeyType::INum2Node(inum);
         let raw_data = self.kv_engine.get(&inum_key).await.unwrap_or_else(|e| {
             panic!(
                 "get_node_from_kv_engine() failed to get node of ino={inum} from kv engine, \
                         error={e:?}"
             );
-        });
-        let raw_data = raw_data.as_ref()?;
+        })?;
+
         // deserialize node
-        Some(S3NodeWrap::new(
-            serde_json::from_slice::<ValueType>(raw_data)
-                .unwrap_or_else(|e| {
-                    panic!(
-                        "get_node_from_kv_engine() failed to deserialize node of ino={inum} from \
-                        kv engine, error={e:?}"
-                    );
-                })
-                .into_s3_node(self)
-                .await,
-            self,
-        ))
+        Some(S3NodeWrap::new(raw_data.into_s3_node(self).await, self))
     }
 
     #[allow(dead_code)]
     /// Set node to kv engine use inum
     pub async fn set_node_to_kv_engine(&self, inum: INum, node: S3Node<S>) {
-        let inum_key = KeyType::INum2Node(inum).get_key();
-        let node_value = serde_json::to_vec::<ValueType>(&ValueType::Node(node.into_serial_node()))
-            .unwrap_or_else(|e| {
-                panic!(
-                    "set_node_to_kv_engine() failed to serialize node of ino={inum} to kv engine, \
-                        error={e:?}"
-                );
-            });
+        let inum_key = KeyType::INum2Node(inum);
+        let node_value = ValueType::Node(node.into_serial_node());
         self.kv_engine
             .set(&inum_key, &node_value)
             .await
@@ -963,23 +945,26 @@ impl<S: S3BackEnd + Send + Sync + 'static, K: KVEngine + 'static> S3MetaData<S, 
 
     /// Remove node from kv engine use inum
     pub async fn remove_node_from_kv_engine(&self, inum: INum) {
-        let inum_key = KeyType::INum2Node(inum).get_key();
-        self.kv_engine.delete(&inum_key).await.unwrap_or_else(|e| {
-            panic!(
+        self.kv_engine
+            .delete(&KeyType::INum2Node(inum))
+            .await
+            .unwrap_or_else(|e| {
+                panic!(
                 "remove_node_from_kv_engine() failed to remove node of ino={inum} from kv engine, \
                         error={e:?}"
             );
-        });
+            });
     }
 
     #[allow(dead_code)]
     #[allow(clippy::unwrap_used)]
     /// Get inum from kv engine use full path
+    /// # Panics
+    /// If the key value is not matched
     pub async fn get_inum_from_kv_engine(&self, full_path: &str) -> Option<INum> {
-        let full_path_key = KeyType::Path2INum(full_path.to_owned()).get_key();
-        let raw_data = self
+        let res = self
             .kv_engine
-            .get(&full_path_key)
+            .get(&KeyType::Path2INum(full_path.to_owned()))
             .await
             .unwrap_or_else(|e| {
                 panic!(
@@ -987,32 +972,14 @@ impl<S: S3BackEnd + Send + Sync + 'static, K: KVEngine + 'static> S3MetaData<S, 
                     error={e:?}"
                 );
             });
-        let raw_data = raw_data.as_ref()?;
-        // deserialize inum
-        Some(
-            serde_json::from_slice::<ValueType>(raw_data).unwrap_or_else(|e| {
-                panic!(
-                    "get_inum_from_kv_engine() failed to deserialize inum of full_path={full_path} from kv engine, \
-                        error={e:?}"
-                );
-            }).into_inum()
-        )
+        res.map(ValueType::into_inum)
     }
 
     #[allow(dead_code)]
     /// Set inum to kv engine use full path
     async fn set_inum_to_kv_engine(&self, full_path: &str, inum: INum) {
-        let full_path_key = KeyType::Path2INum(full_path.to_owned()).get_key();
-        let inum_value = serde_json::to_vec::<ValueType>(&ValueType::INum(inum)).unwrap_or_else(
-            |e| {
-                panic!(
-                    "set_inum_to_kv_engine() failed to serialize inum of full_path={full_path} to kv engine, \
-                        error={e:?}"
-                );
-            },
-        );
         self.kv_engine
-            .set(&full_path_key, &inum_value)
+            .set(&KeyType::Path2INum(full_path.to_owned()), &ValueType::INum(inum))
             .await
             .unwrap_or_else(|e| {
                 panic!(
