@@ -5,12 +5,15 @@ use core::fmt::Debug;
 use etcd_client::TxnCmp;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::fmt;
+use std::fmt::Display;
+use std::{fmt, time::Duration};
+
+use std::sync::Arc;
 
 use super::serial::{SerialDirEntry, SerialFileAttr, SerialNode};
 
 /// The `ValueType` is used to provide support for metadata.
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Eq, PartialEq)]
 pub enum ValueType {
     /// SerialNode
     Node(SerialNode),
@@ -20,12 +23,14 @@ pub enum ValueType {
     INum(INum),
     /// FileAttr
     Attr(SerialFileAttr),
+    /// Next id allocate range begin
+    NextIdAllocateRangeBegin(u64),
 }
 
 impl ValueType {
-    #[allow(dead_code)]
+    #[allow(dead_code, clippy::wildcard_enum_match_arm)] // Allow wildcard because there should be only one enum branch matches one specific type.
     /// Turn the `ValueType` into `SerialNode` then into `S3Node`.
-    //// # Panics
+    /// # Panics
     /// Panics if `ValueType` is not `ValueType::Node`.
     pub async fn into_s3_node<S: S3BackEnd + Send + Sync + 'static, K: KVEngine + 'static>(
         self,
@@ -33,35 +38,45 @@ impl ValueType {
     ) -> S3Node<S> {
         match self {
             ValueType::Node(node) => S3Node::from_serial_node(node, meta).await,
-            ValueType::DirEntry(_) | ValueType::INum(_) | ValueType::Attr(_) => {
+            _ => {
                 panic!("expect ValueType::Node but get {self:?}");
             }
         }
     }
 
-    #[allow(dead_code)]
+    /// Turn the `ValueType` into `NextIdAllocateRangeBegin`.
+    /// # Panics
+    /// Panics if `ValueType` is not `ValueType::NextIdAllocateRangeBegin`.
+    #[allow(clippy::wildcard_enum_match_arm)] // Allow wildcard because there should be only one enum branch matches one specific type.
     #[must_use]
+    pub fn into_next_id_allocate_range_begin(self) -> u64 {
+        match self {
+            ValueType::NextIdAllocateRangeBegin(begin) => begin,
+            _ => panic!("expect ValueType::NextIdAllocateRangeBegin but get {self:?}"),
+        }
+    }
+
     /// Turn the `ValueType` into `INum`.
-    //// # Panics
+    /// # Panics
     /// Panics if `ValueType` is not `ValueType::INum`.
+    #[allow(clippy::wildcard_enum_match_arm)] // Allow wildcard because there should be only one enum branch matches one specific type.
+    #[must_use]
     pub fn into_inum(self) -> INum {
         match self {
-            ValueType::INum(i) => i,
-            ValueType::Node(_) | ValueType::DirEntry(_) | ValueType::Attr(_) => {
-                panic!("expect ValueType::INum but get {self:?}");
-            }
+            ValueType::INum(inum) => inum,
+            _ => panic!("expect ValueType::INum but get {self:?}"),
         }
     }
 }
 
-#[derive(Debug)]
 /// The `KeyType` is used to locate the value in the distributed K/V storage.
 /// Every key is prefixed with a string to indicate the type of the value.
 /// If you want to add a new type of value, you need to add a new variant to the enum.
 /// And you need to add a new match arm to the `get_key` function , make sure the key is unique.
 #[allow(dead_code)]
+#[derive(Debug, Eq, PartialEq)]
 pub enum KeyType {
-    /// INum -> SerialNode
+    /// INum -> SerailNode
     INum2Node(INum),
     /// INum -> DirEntry
     INum2DirEntry(INum),
@@ -69,17 +84,81 @@ pub enum KeyType {
     Path2INum(String),
     /// INum -> SerialFileAttr
     INum2Attr(INum),
+    /// IdAllocator value key
+    IdAllocatorValue {
+        /// the prefix of the key for different id type
+        unique_id: u8,
+    },
+}
+
+/// Lock key type the memfs used.
+#[derive(Debug, Eq, PartialEq)]
+pub enum LockKeyType {
+    /// IdAllocator lock key
+    IdAllocatorLock {
+        /// the prefix of the key for different id type
+        unique_id: u8,
+    },
+}
+
+impl Display for KeyType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match *self {
+            KeyType::INum2Node(ref i) => write!(f, "INum2Node{{i: {i}}}"),
+            KeyType::INum2DirEntry(ref i) => write!(f, "INum2DirEntry{{i: {i}}}"),
+            KeyType::Path2INum(ref p) => write!(f, "Path2INum{{p: {p}}}"),
+            KeyType::INum2Attr(ref i) => write!(f, "INum2Attr{{i: {i}}}"),
+            KeyType::IdAllocatorValue { unique_id } => {
+                write!(f, "IdAllocatorValue{{unique_id: {unique_id}}}")
+            }
+        }
+    }
+}
+
+impl Display for LockKeyType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match *self {
+            LockKeyType::IdAllocatorLock { unique_id } => {
+                write!(f, "IdAllocatorLock{{unique_id: {unique_id}}}")
+            }
+        }
+    }
+}
+
+/// Get key serialized data with prefix and key.
+#[inline]
+fn serialize_key<K: ?Sized + Serialize>(key_prefix: u16, key: &K) -> Vec<u8> {
+    let mut v = vec![];
+    bincode::serialize_into(&mut v, &key_prefix).unwrap_or_else(|e| {
+        panic!("serialize key prefix failed, err:{e}");
+    });
+    assert_eq!(v.len(), 2);
+    bincode::serialize_into(&mut v, key).unwrap_or_else(|e| {
+        panic!("serialize key failed, err:{e}");
+    });
+
+    v
 }
 
 impl KeyType {
-    #[must_use]
     /// Get the key in bytes.
+    #[must_use]
     pub fn get_key(&self) -> Vec<u8> {
         match *self {
-            KeyType::INum2Node(ref i) => format!("I{i}").into_bytes(),
-            KeyType::INum2DirEntry(ref i) => format!("D{i}").into_bytes(),
-            KeyType::Path2INum(ref p) => format!("P{p}").into_bytes(),
-            KeyType::INum2Attr(ref i) => format!("A{i}").into_bytes(),
+            KeyType::INum2Node(ref i) => serialize_key(0, i),
+            KeyType::INum2DirEntry(ref i) => serialize_key(1, i),
+            KeyType::Path2INum(ref p) => serialize_key(2, p),
+            KeyType::INum2Attr(ref i) => serialize_key(3, i),
+            KeyType::IdAllocatorValue { unique_id } => serialize_key(4, &unique_id),
+        }
+    }
+}
+
+impl LockKeyType {
+    /// Get the key in vec bytes.
+    fn get_key(&self) -> Vec<u8> {
+        match *self {
+            LockKeyType::IdAllocatorLock { unique_id } => serialize_key(100, &unique_id),
         }
     }
 }
@@ -108,15 +187,16 @@ pub trait KVEngine: Send + Sync + Debug {
     fn new(etcd_client: etcd_client::Client) -> Self;
     /// Create a new transaction.
     async fn new_meta_txn(&self) -> Box<dyn MetaTxn + Send>;
-
-    /// Get the value by the key from the distributed K/V storage.
-    async fn get(&self, key: &[u8]) -> DatenLordResult<Option<Vec<u8>>>;
-
-    /// Set the value by the key from the distributed K/V storage.
-    async fn set(&self, key: &[u8], value: &[u8]) -> DatenLordResult<()>;
-
-    /// Delete the value by the key from the distributed K/V storage.
-    async fn delete(&self, key: &[u8]) -> DatenLordResult<()>;
+    /// Distribute lock - lock
+    async fn lock(&self, key: &LockKeyType, timeout: Duration) -> DatenLordResult<()>;
+    /// Distribute lock - unlock
+    async fn unlock(&self, key: &LockKeyType) -> DatenLordResult<()>;
+    /// Get the value by the key.
+    async fn get(&self, key: &KeyType) -> DatenLordResult<Option<ValueType>>;
+    /// Set the value by the key.
+    async fn set(&self, key: &KeyType, value: &ValueType) -> DatenLordResult<Option<ValueType>>;
+    /// Delete the kv pair by the key.
+    async fn delete(&self, key: &KeyType) -> DatenLordResult<Option<ValueType>>;
 }
 
 /// The `etcd`'s transaction impl.
@@ -193,6 +273,9 @@ impl MetaTxn for EtcdTxn {
     }
 
     async fn commit(&mut self) -> DatenLordResult<bool> {
+        if self.version_map.is_empty() && self.buffer.is_empty() {
+            return Ok(true);
+        }
         let mut req: etcd_client::EtcdTxnRequest = etcd_client::EtcdTxnRequest::new();
         // add the version check
         for (key, value) in &self.version_map {
@@ -254,27 +337,41 @@ impl EtcdKVEngine {
         })?;
         Ok(EtcdKVEngine { client })
     }
+
+    #[allow(dead_code)]
+    #[must_use]
+    /// Create a new etcd kv engine.
+    pub fn new_kv_engine(etcd_client: etcd_client::Client) -> Arc<Self> {
+        Arc::new(EtcdKVEngine {
+            client: etcd_client,
+        })
+    }
 }
 
-#[allow(unused_macros)]
+/// break `retry_txn` result
+pub const RETRY_TXN_BREAK: DatenLordResult<bool> = Ok(true);
+
+#[allow(unused_macros, clippy::crate_in_macro_def)]
 #[macro_export]
-/// the logic should end with a transaction commit
+/// the logic should return a tuple (txn commit/cancel result, res)
+/// For example: `Ok((txn.commit().await,...))`
+/// For example: `Ok((BREAK_RETRY_TXN,...))`
 macro_rules! retry_txn {
     ($retry_num : expr ,$logic: block) => {{
-        // result is Option<DatenLordResult<()>>
-        let mut result: DatenLordResult<()> =
-            Err(DatenLordError::TransactionRetryLimitExceededErr {
-                context: vec![
-                    "Transaction retry failed due to exceeding the retry limit".to_owned()
-                ],
-            });
+        use crate::common::error::DatenLordError;
+
+        let mut result = Err(DatenLordError::TransactionRetryLimitExceededErr {
+            context: vec!["Transaction retry failed due to exceeding the retry limit".to_owned()],
+        });
         let mut attempts: u32 = 0;
 
         while attempts < $retry_num {
-            match { $logic } {
-                Ok(value) => {
-                    if value {
-                        result = Ok(());
+            attempts = attempts.wrapping_add(1);
+            let (commit_res, res) = { $logic };
+            match commit_res {
+                Ok(commit_res) => {
+                    if commit_res {
+                        result = Ok(res);
                         break;
                     }
                 }
@@ -283,7 +380,6 @@ macro_rules! retry_txn {
                     break;
                 }
             }
-            attempts = attempts.wrapping_add(1);
         }
         result
     }};
@@ -300,47 +396,97 @@ impl KVEngine for EtcdKVEngine {
     async fn new_meta_txn(&self) -> Box<dyn MetaTxn + Send> {
         Box::new(EtcdTxn::new(self.client.clone()))
     }
+    /// Distribute lock - lock
+    async fn lock(&self, key: &LockKeyType, timeout: Duration) -> DatenLordResult<()> {
+        let lease_id = self
+            .client
+            .lease()
+            .grant(etcd_client::EtcdLeaseGrantRequest::new(timeout))
+            .await
+            .with_context(|| {
+                format!(
+                    "failed to get LeaseGrantResponse from etcd, the timeout = {} ms",
+                    timeout.as_millis()
+                )
+            })?
+            .id();
 
-    async fn get(&self, key: &[u8]) -> DatenLordResult<Option<Vec<u8>>> {
-        let req = etcd_client::EtcdGetRequest::new(key);
+        let _ = self
+            .client
+            .lock()
+            .lock(etcd_client::EtcdLockRequest::new(key.get_key(), lease_id))
+            .await
+            .with_context(|| {
+                format!(
+                    "failed to get LockResponse from etcd, the lease id={lease_id}, key = {key}"
+                )
+            })?;
+
+        Ok(())
+    }
+    /// Distribute lock - unlock
+    async fn unlock(&self, key: &LockKeyType) -> DatenLordResult<()> {
+        self.client
+            .lock()
+            .unlock(etcd_client::EtcdUnlockRequest::new(key.get_key()))
+            .await
+            .with_context(|| {
+                format!("failed to get UnlockResponse from etcd, the lease key={key:?}",)
+            })?;
+
+        Ok(())
+    }
+
+    /// Get the value by the key.
+    async fn get(&self, key: &KeyType) -> DatenLordResult<Option<ValueType>> {
+        let req = etcd_client::EtcdRangeRequest::new(etcd_client::KeyRange::key(key.get_key()));
+        let mut resp = self.client.kv().range(req).await.with_context(|| {
+            format!("failed to get RangeResponse of one key-value pair from etcd, the key={key:?}")
+        })?;
+
+        let kvs = resp.take_kvs();
+        match kvs.get(0) {
+            Some(kv) => Ok(Some(serde_json::from_slice::<ValueType>(kv.value()).with_context(||{
+                "failed to deserialize value from bytes, KVEngine's value supposed to be `ValueType`".to_owned()
+            })?)),
+            None => Ok(None),
+        }
+    }
+    /// Set the value by the key.
+    async fn set(&self, key: &KeyType, value: &ValueType) -> DatenLordResult<Option<ValueType>> {
+        let serial_value = serde_json::to_vec(value)
+            .with_context(|| format!("failed to serialize value={value:?} to bytes"))?;
+        let mut req = etcd_client::EtcdPutRequest::new(key.get_key(), serial_value);
+        req.set_prev_kv(true); // Return previous value
         let mut resp = self
             .client
             .kv()
-            .get(req)
+            .put(req)
             .await
-            .with_context(|| format!("failed to get GetResponse from etcd, key={key:?}"))?;
-
-        let kvs = resp.take_kvs();
-        // we don't expect to have multiple values for one key
-        debug_assert!(kvs.len() <= 1, "multiple values for one key");
-        if let Some(kv) = kvs.get(0) {
-            let value = kv.value();
-            Ok(Some(value.to_vec()))
+            .with_context(|| format!("failed to get PutResponse from etcd for key={key:?}"))?;
+        if let Some(pre_kv) = resp.take_prev_kv() {
+            let decoded_value: ValueType = serde_json::from_slice(pre_kv.value())?;
+            Ok(Some(decoded_value))
         } else {
             Ok(None)
         }
     }
 
-    /// Set the value by the key from the distributed K/V storage.
-    async fn set(&self, key: &[u8], value: &[u8]) -> DatenLordResult<()> {
-        let req = etcd_client::EtcdPutRequest::new(key, value);
-        self.client
-            .kv()
-            .put(req)
-            .await
-            .with_context(|| format!("failed to get PutResponse from etcd, key={key:?}"))?;
-        Ok(())
-    }
-
-    /// Delete the value by the key from the distributed K/V storage.
-    async fn delete(&self, key: &[u8]) -> DatenLordResult<()> {
-        let req = etcd_client::EtcdDeleteRequest::new(etcd_client::KeyRange::key(key));
-        self.client
-            .kv()
-            .delete(req)
-            .await
-            .with_context(|| format!("failed to get DeleteResponse from etcd, key={key:?}"))?;
-        Ok(())
+    /// Delete the kv pair by the key.
+    async fn delete(&self, key: &KeyType) -> DatenLordResult<Option<ValueType>> {
+        let mut req =
+            etcd_client::EtcdDeleteRequest::new(etcd_client::KeyRange::key(key.get_key()));
+        req.set_prev_kv(true); // Return previous value
+        let mut resp =
+            self.client.kv().delete(req).await.with_context(|| {
+                format!("failed to get DeleteResponse from etcd for key={key:?}")
+            })?;
+        if let Some(pre_kv) = resp.take_prev_kvs().into_iter().next() {
+            let decoded_value: ValueType = serde_json::from_slice(pre_kv.value())?;
+            Ok(Some(decoded_value))
+        } else {
+            Ok(None)
+        }
     }
 }
 
@@ -354,18 +500,26 @@ mod test {
     const ETCD_ADDRESS: &str = "localhost:2379";
 
     #[tokio::test]
+    async fn test_key_serial() {
+        let key = KeyType::INum2Attr(1).get_key();
+        assert_eq!(key.len(), 10);
+        let key = KeyType::IdAllocatorValue { unique_id: 0 }.get_key();
+        assert_eq!(key.len(), 3);
+    }
+
+    #[tokio::test]
     async fn test_connect_local() {
         let client = EtcdKVEngine::new_for_local_test(vec![ETCD_ADDRESS.to_owned()])
             .await
             .unwrap();
         // insert a key , and then get it , and then delete it, and then get it again
-        let key = b"test_key";
-        let value = b"test_value";
-        client.set(key, value).await.unwrap();
-        let get_value = client.get(key).await.unwrap().unwrap();
-        assert_eq!(get_value, value.to_vec());
-        client.delete(key).await.unwrap();
-        let get_value = client.get(key).await.unwrap();
+        let key = KeyType::Path2INum("test_key".to_owned());
+        let value = ValueType::INum(123);
+        client.set(&key, &value).await.unwrap();
+        let get_value = client.get(&key).await.unwrap().unwrap();
+        assert_eq!(get_value, value);
+        client.delete(&key).await.unwrap();
+        let get_value = client.get(&key).await.unwrap();
         assert!(get_value.is_none());
     }
 
@@ -419,7 +573,7 @@ mod test {
                 } else {
                     panic!("wrong value type");
                 }
-                second_txn.commit().await
+                (second_txn.commit().await, ())
             });
             assert!(result.is_err());
             // check if the err is TransactionRetryLimitExceededErr
@@ -455,7 +609,7 @@ mod test {
             let mut txn = client.new_meta_txn().await;
             let key = KeyType::Path2INum(String::from("/"));
             let _ = txn.get(&key).await.unwrap();
-            txn.commit().await
+            (txn.commit().await, ())
         });
         result.unwrap();
     }

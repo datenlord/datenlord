@@ -142,16 +142,8 @@ impl<S: S3BackEnd + Sync + Send + 'static, K: KVEngine + 'static> Drop for S3Nod
             let kv_engine = Arc::clone(&self.meta.kv_engine);
             let serial_node = self.node.to_serial_node();
             let fut = async move {
-                let inum_key = KeyType::INum2Node(inum).get_key();
-                let node_value = serde_json::to_vec::<ValueType>(&ValueType::Node(serial_node))
-                    .unwrap_or_else(|e| {
-                        panic!(
-                            "set_node_to_kv_engine() failed to serialize node of ino={inum} to kv engine, \
-                                error={e:?}"
-                        );
-                    });
                 kv_engine
-                    .set(&inum_key, &node_value)
+                    .set(&KeyType::INum2Node(inum), &ValueType::Node(serial_node))
                     .await
                     .unwrap_or_else(|e| {
                         panic!(

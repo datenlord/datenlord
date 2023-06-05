@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use std::{sync::Arc, time::SystemTime};
 
 /// Serializable `DirEntry`
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Eq, PartialEq)]
 pub struct SerialDirEntry {
     /// The entry name
     name: String,
@@ -28,7 +28,7 @@ impl SerialDirEntry {
 }
 
 /// Serializable `FileAttr`
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, Eq, PartialEq)]
 pub struct SerialFileAttr {
     /// Inode number
     ino: INum,
@@ -69,7 +69,7 @@ impl SerialFileAttr {
 }
 
 /// Serializable `SFlag`
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, Eq, PartialEq)]
 pub enum SerialSFlag {
     /// Regular file
     Reg,
@@ -81,7 +81,7 @@ pub enum SerialSFlag {
 
 /// In order to derive Serialize and Deserialize,
 /// Replace the 'BTreeMap<String, `DirEntry`>' with 'HashMap<String, `SerialDirEntry`>'
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Eq, PartialEq)]
 pub enum SerialNodeData {
     /// Directory data
     Directory(BTreeMap<String, SerialDirEntry>),
@@ -109,7 +109,7 @@ impl SerialNodeData {
 }
 /// TODO: We should discuss the design about persist
 /// Serializable 'Node'
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Eq, PartialEq)]
 pub struct SerialNode {
     /// Parent node i-number
     pub(crate) parent: u64,

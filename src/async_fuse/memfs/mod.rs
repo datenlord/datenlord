@@ -4,8 +4,7 @@ mod dir;
 /// distributed communication module
 pub mod dist;
 mod fs_util;
-/// manage inode related, inum allocation and recycle
-mod inode;
+mod id_alloc_used;
 /// The KV engine module
 #[macro_use]
 pub mod kv_engine;
