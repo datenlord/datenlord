@@ -2,6 +2,7 @@ use super::cache::{GlobalCache, IoMemBlock};
 use super::dir::DirEntry;
 use super::dist::server::CacheServer;
 use super::fs_util::{self, FileAttr};
+use super::kv_engine::KVEngineType;
 use super::node::{self, DefaultNode, Node};
 use super::{RenameParam, SetAttrParam};
 use crate::async_fuse::fuse::file_system::FsAsyncResultSender;
@@ -47,6 +48,7 @@ pub trait MetaData {
         ip: &str,
         port: &str,
         etcd_client: EtcdDelegate,
+        kv_engine: Arc<KVEngineType>,
         node_id: &str,
         volume_info: &str,
         fs_async_sender: FsAsyncResultSender,
@@ -511,6 +513,7 @@ impl MetaData for DefaultMetaData {
         _: &str,
         _: &str,
         _: EtcdDelegate,
+        _: Arc<KVEngineType>,
         _: &str,
         _: &str,
         fs_async_sender: FsAsyncResultSender,

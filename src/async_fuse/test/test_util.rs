@@ -1,8 +1,10 @@
 use crate::async_fuse::fuse::{file_system, session};
+use crate::async_fuse::memfs::kv_engine::{KVEngine, KVEngineType};
 use crate::common::etcd_delegate::EtcdDelegate;
 use log::{debug, info}; // warn, error
 use std::fs;
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Duration;
 
 use crate::async_fuse::fuse::mount;
@@ -41,6 +43,7 @@ pub async fn setup(mount_dir: &Path, is_s3: bool) -> anyhow::Result<tokio::task:
     let fs_task = tokio::task::spawn(async move {
         async fn run_fs(mount_point: &Path, is_s3: bool) -> anyhow::Result<()> {
             let etcd_delegate = EtcdDelegate::new(vec![TEST_ETCD_ENDPOINT.to_owned()]).await?;
+            let kv_engine = Arc::new(KVEngineType::new(vec![TEST_ETCD_ENDPOINT.to_owned()]).await?);
             if is_s3 {
                 let (fs, fs_ctrl): (
                     memfs::MemFs<memfs::S3MetaData<DoNothingImpl>>,
@@ -51,6 +54,7 @@ pub async fn setup(mount_dir: &Path, is_s3: bool) -> anyhow::Result<tokio::task:
                     TEST_NODE_IP,
                     TEST_PORT,
                     etcd_delegate,
+                    kv_engine,
                     TEST_NODE_ID,
                     TEST_VOLUME_INFO,
                 )
@@ -70,6 +74,7 @@ pub async fn setup(mount_dir: &Path, is_s3: bool) -> anyhow::Result<tokio::task:
                     TEST_NODE_IP,
                     TEST_PORT,
                     etcd_delegate.clone(),
+                    Arc::<KVEngineType>::clone(&kv_engine),
                     TEST_NODE_ID,
                     TEST_VOLUME_INFO,
                 )

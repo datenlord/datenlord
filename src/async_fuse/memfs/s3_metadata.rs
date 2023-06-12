@@ -420,6 +420,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         ip: &str,
         port: &str,
         etcd_client: EtcdDelegate,
+        kv_engine: Arc<KVEngineType>,
         node_id: &str,
         volume_info: &str,
         fs_async_sender: FsAsyncResultSender,
@@ -439,11 +440,9 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         let data_cache = Arc::new(GlobalCache::new_dist_with_bz_and_capacity(
             10_485_760, // 10 * 1024 * 1024
             capacity,
-            Arc::<EtcdDelegate>::clone(&etcd_arc),
+            Arc::clone(&kv_engine),
             node_id,
         ));
-
-        let kv_engine = Arc::new(KVEngineType::new(etcd_arc.get_inner_client_clone()));
 
         let meta = Arc::new(Self {
             s3_backend: Arc::clone(&s3_backend),
@@ -1598,7 +1597,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
             .unwrap_or_else(|| panic!("failed to find inum={inum:?} path={full_path:?} from cache"))
             .get_attr();
         if let Err(e) = dist_client::push_attr(
-            Arc::<EtcdDelegate>::clone(&self.etcd_client),
+            &self.kv_engine,
             &self.node_id,
             &self.volume_info,
             full_path,
@@ -1619,7 +1618,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
         target_path: Option<&Path>,
     ) {
         if let Err(e) = dist_client::update_dir(
-            Arc::<EtcdDelegate>::clone(&self.etcd_client),
+            &self.kv_engine,
             &self.node_id,
             &self.volume_info,
             parent,
@@ -1635,13 +1634,8 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
 
     /// Sync rename request to other nodes
     async fn rename_remote(&self, args: RenameParam) {
-        if let Err(e) = dist_client::rename(
-            Arc::<EtcdDelegate>::clone(&self.etcd_client),
-            &self.node_id,
-            &self.volume_info,
-            args,
-        )
-        .await
+        if let Err(e) =
+            dist_client::rename(&self.kv_engine, &self.node_id, &self.volume_info, args).await
         {
             panic!("failed to sync rename request to others, error: {e}");
         }
@@ -1650,7 +1644,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
     /// Sync remove request to other nodes
     async fn remove_remote(&self, parent: INum, child_name: &str, child_type: SFlag) {
         if let Err(e) = dist_client::remove(
-            Arc::<EtcdDelegate>::clone(&self.etcd_client),
+            &self.kv_engine,
             &self.node_id,
             &self.volume_info,
             parent,
@@ -1666,7 +1660,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
     /// Invalidate cache from other nodes
     async fn invalidate_remote(&self, full_path: &str, offset: i64, len: usize) {
         if let Err(e) = dist_client::invalidate(
-            Arc::<EtcdDelegate>::clone(&self.etcd_client),
+            &self.kv_engine,
             &self.node_id,
             &self.volume_info,
             full_path,
