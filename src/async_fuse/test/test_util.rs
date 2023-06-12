@@ -1,5 +1,4 @@
 use crate::async_fuse::fuse::{file_system, session};
-use crate::async_fuse::memfs::kv_engine::EtcdKVEngine;
 use crate::common::etcd_delegate::EtcdDelegate;
 use log::{debug, info}; // warn, error
 use std::fs;
@@ -44,7 +43,7 @@ pub async fn setup(mount_dir: &Path, is_s3: bool) -> anyhow::Result<tokio::task:
             let etcd_delegate = EtcdDelegate::new(vec![TEST_ETCD_ENDPOINT.to_owned()]).await?;
             if is_s3 {
                 let (fs, fs_ctrl): (
-                    memfs::MemFs<memfs::S3MetaData<DoNothingImpl, EtcdKVEngine>>,
+                    memfs::MemFs<memfs::S3MetaData<DoNothingImpl>>,
                     file_system::FsController,
                 ) = memfs::MemFs::new(
                     TEST_VOLUME_INFO,
@@ -60,7 +59,7 @@ pub async fn setup(mount_dir: &Path, is_s3: bool) -> anyhow::Result<tokio::task:
                 ss.run().await?;
             } else {
                 let (fs, fs_ctrl): (
-                    memfs::MemFs<memfs::S3MetaData<DoNothingImpl, EtcdKVEngine>>,
+                    memfs::MemFs<memfs::S3MetaData<DoNothingImpl>>,
                     file_system::FsController,
                 ) = memfs::MemFs::new(
                     mount_point

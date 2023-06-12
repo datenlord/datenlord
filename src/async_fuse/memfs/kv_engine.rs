@@ -8,6 +8,10 @@ use std::collections::HashMap;
 use std::fmt::Display;
 use std::{fmt, time::Duration};
 
+/// The `KVEngineType` is used to provide support for metadata.
+/// We use this alias to avoid tem
+pub type KVEngineType = EtcdKVEngine;
+
 use std::sync::Arc;
 
 use super::serial::{SerialDirEntry, SerialFileAttr, SerialNode};
@@ -32,9 +36,9 @@ impl ValueType {
     /// Turn the `ValueType` into `SerialNode` then into `S3Node`.
     /// # Panics
     /// Panics if `ValueType` is not `ValueType::Node`.
-    pub async fn into_s3_node<S: S3BackEnd + Send + Sync + 'static, K: KVEngine + 'static>(
+    pub async fn into_s3_node<S: S3BackEnd + Send + Sync + 'static>(
         self,
-        meta: &S3MetaData<S, K>,
+        meta: &S3MetaData<S>,
     ) -> S3Node<S> {
         match self {
             ValueType::Node(node) => S3Node::from_serial_node(node, meta).await,
