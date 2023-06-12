@@ -117,7 +117,7 @@ impl<K: KVEngine + 'static> DistIdAllocator<K> {
         let next = range_begin.add(range);
 
         self.kv_engine
-            .set(&value_key, &ValueType::NextIdAllocateRangeBegin(next))
+            .set(&value_key, &ValueType::NextIdAllocateRangeBegin(next), None)
             .await
             .with_context(|| format!("failed to set id allocator range, key is {value_key:?}"))?;
 
