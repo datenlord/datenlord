@@ -186,6 +186,47 @@ pub trait MetaTxn {
     async fn commit(&mut self) -> DatenLordResult<bool>;
 }
 
+/// The option of 'set' operation
+#[allow(dead_code)]
+#[derive(Debug, Eq, PartialEq)]
+pub struct SetOption {
+    pub(crate) lease: Option<i64>,
+    pub(crate) prev_kv: bool,
+}
+
+impl SetOption {
+    #[allow(dead_code)]
+    #[must_use]
+    fn new() -> Self {
+        Self {
+            lease: None,
+            prev_kv: false,
+        }
+    }
+
+    #[allow(dead_code)]
+    #[must_use]
+    fn with_lease(mut self, lease: i64) -> Self {
+        self.lease = Some(lease);
+        self
+    }
+
+    #[allow(dead_code)]
+    #[must_use]
+    fn with_prev_kv(mut self) -> Self {
+        self.prev_kv = true;
+        self
+    }
+}
+
+/// The option of 'delete' operation
+#[allow(dead_code)]
+#[derive(Debug, Eq, PartialEq)]
+pub struct DeleteOption {
+    pub(crate) prev_kv: bool,
+    pub(crate) range_end: Option<Vec<u8>>,
+}
+
 /// To support different K/V storage engines, we need to a trait to abstract the K/V storage engine.
 #[async_trait]
 pub trait KVEngine: Send + Sync + Debug {
@@ -200,9 +241,39 @@ pub trait KVEngine: Send + Sync + Debug {
     /// Get the value by the key.
     async fn get(&self, key: &KeyType) -> DatenLordResult<Option<ValueType>>;
     /// Set the value by the key.
-    async fn set(&self, key: &KeyType, value: &ValueType) -> DatenLordResult<Option<ValueType>>;
+    async fn set(
+        &self,
+        key: &KeyType,
+        value: &ValueType,
+        option: Option<SetOption>,
+    ) -> DatenLordResult<Option<ValueType>>;
     /// Delete the kv pair by the key.
-    async fn delete(&self, key: &KeyType) -> DatenLordResult<Option<ValueType>>;
+    async fn delete(
+        &self,
+        key: &KeyType,
+        option: Option<DeleteOption>,
+    ) -> DatenLordResult<Option<ValueType>>;
+}
+
+/// The version of the key.
+type KvVersion = i64;
+
+/// Convert u64 seceond to i64
+fn conv_u64_sec_2_i64(sec: u64) -> i64 {
+    sec.try_into()
+        .unwrap_or_else(|e| panic!("ttl timeout_sec should < MAX_I64, err:{e}"))
+}
+
+/// Fix ttl, ttl should be > 0
+fn check_ttl(sec: i64) -> DatenLordResult<i64> {
+    if sec <= 0 {
+        Err(DatenLordError::KVEngineErr {
+            source: KVEngineError::WrongTimeoutArg,
+            context: vec!["Timeout arg for kv should be >= 1 second".to_owned()],
+        })
+    } else {
+        Ok(sec)
+    }
 }
 
 /// The version of the key.
@@ -466,7 +537,13 @@ impl KVEngine for EtcdKVEngine {
         }
     }
     /// Set the value by the key.
-    async fn set(&self, key: &KeyType, value: &ValueType) -> DatenLordResult<Option<ValueType>> {
+    async fn set(
+        &self,
+        key: &KeyType,
+        value: &ValueType,
+        _option: Option<SetOption>,
+    ) -> DatenLordResult<Option<ValueType>> {
+        // TODO : add option support
         let serial_value = serde_json::to_vec(value)
             .with_context(|| format!("failed to serialize value={value:?} to bytes"))?;
         let mut client = self.client.clone();
@@ -528,10 +605,10 @@ mod test {
         // insert a key , and then get it , and then delete it, and then get it again
         let key = KeyType::Path2INum("test_key".to_owned());
         let value = ValueType::INum(123);
-        client.set(&key, &value).await.unwrap();
+        client.set(&key, &value, None).await.unwrap();
         let get_value = client.get(&key).await.unwrap().unwrap();
         assert_eq!(get_value, value);
-        client.delete(&key).await.unwrap();
+        client.delete(&key, None).await.unwrap();
         let get_value = client.get(&key).await.unwrap();
         assert!(get_value.is_none());
     }

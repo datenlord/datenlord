@@ -143,7 +143,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Drop for S3NodeWrap<'_, S> {
             let serial_node = self.node.to_serial_node();
             let fut = async move {
                 kv_engine
-                    .set(&KeyType::INum2Node(inum), &ValueType::Node(serial_node))
+                    .set(&KeyType::INum2Node(inum), &ValueType::Node(serial_node),None)
                     .await
                     .unwrap_or_else(|e| {
                         panic!(

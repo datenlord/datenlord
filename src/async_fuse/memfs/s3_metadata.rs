@@ -934,7 +934,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
         let inum_key = KeyType::INum2Node(inum);
         let node_value = ValueType::Node(node.into_serial_node());
         self.kv_engine
-            .set(&inum_key, &node_value)
+            .set(&inum_key, &node_value, None)
             .await
             .unwrap_or_else(|e| {
                 panic!(
@@ -947,7 +947,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
     /// Remove node from kv engine use inum
     pub async fn remove_node_from_kv_engine(&self, inum: INum) {
         self.kv_engine
-            .delete(&KeyType::INum2Node(inum))
+            .delete(&KeyType::INum2Node(inum), None)
             .await
             .unwrap_or_else(|e| {
                 panic!(
@@ -980,7 +980,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
     /// Set inum to kv engine use full path
     async fn set_inum_to_kv_engine(&self, full_path: &str, inum: INum) {
         self.kv_engine
-            .set(&KeyType::Path2INum(full_path.to_owned()), &ValueType::INum(inum))
+            .set(&KeyType::Path2INum(full_path.to_owned()), &ValueType::INum(inum),None)
             .await
             .unwrap_or_else(|e| {
                 panic!(
