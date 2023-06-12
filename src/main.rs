@@ -65,6 +65,7 @@ mod common;
 mod csi;
 
 use crate::common::etcd_delegate::EtcdDelegate;
+use async_fuse::memfs::kv_engine::{KVEngine, KVEngineType};
 use clap::{Arg, ArgMatches, Command};
 use csi::meta_data::MetaData;
 use csi::scheduler_extender::SchdulerExtender;
@@ -588,6 +589,7 @@ async fn main() -> anyhow::Result<()> {
             let md = Arc::new(metadata);
 
             let etcd_delegate = EtcdDelegate::new(get_etcd_address_vec(matches)).await?;
+            let kv_engine = Arc::new(KVEngineType::new(get_etcd_address_vec(matches)).await?);
             let node_id = get_node_id(matches);
             let ip_address = get_ip_address(matches, &node_id);
             let mount_dir = get_mount_dir(matches);
@@ -611,7 +613,8 @@ async fn main() -> anyhow::Result<()> {
             };
             let async_fuse_thread = tokio::task::spawn(async move {
                 if let Err(e) =
-                    async_fuse::start_async_fuse(etcd_delegate.clone(), &async_args).await
+                    async_fuse::start_async_fuse(etcd_delegate.clone(), kv_engine, &async_args)
+                        .await
                 {
                     panic!("failed to start async fuse, error is {e:?}");
                 }
@@ -639,6 +642,7 @@ async fn main() -> anyhow::Result<()> {
         }
         Some((START_ASYNC_FUSE, matches)) => {
             let etcd_delegate = EtcdDelegate::new(get_etcd_address_vec(matches)).await?;
+            let kv_engine = Arc::new(KVEngineType::new(get_etcd_address_vec(matches)).await?);
             let node_id = get_node_id(matches);
             let ip_address = get_ip_address(matches, &node_id);
             let mount_dir = get_mount_dir(matches);
@@ -652,7 +656,9 @@ async fn main() -> anyhow::Result<()> {
                 volume_info: get_volume_info(matches).to_owned(),
             };
 
-            if let Err(e) = async_fuse::start_async_fuse(etcd_delegate, &async_args).await {
+            if let Err(e) =
+                async_fuse::start_async_fuse(etcd_delegate, kv_engine, &async_args).await
+            {
                 panic!("failed to start async fuse, error is {e:?}");
             }
         }

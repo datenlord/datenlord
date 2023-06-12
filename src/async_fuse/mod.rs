@@ -1,10 +1,11 @@
 //! FUSE async implementation
 
 use self::fuse::file_system::FsController;
+use self::memfs::kv_engine::KVEngineType;
 use crate::async_fuse::fuse::session;
 use crate::{common::etcd_delegate::EtcdDelegate, AsyncFuseArgs, VolumeType};
 use memfs::s3_wrapper::{DoNothingImpl, S3BackEndImpl};
-// use std::sync::Arc;
+use std::sync::Arc;
 
 pub mod fuse;
 pub mod memfs;
@@ -16,18 +17,19 @@ pub mod util;
 /// Start async-fuse
 pub async fn start_async_fuse(
     etcd_delegate: EtcdDelegate,
+    kv_engine: Arc<KVEngineType>,
     args: &AsyncFuseArgs,
 ) -> anyhow::Result<()> {
     metrics::start_metrics_server();
 
     memfs::dist::etcd::register_node_id(
-        &etcd_delegate,
+        &kv_engine,
         &args.node_id,
         &args.ip_address.to_string(),
         &args.server_port,
     )
     .await?;
-    memfs::dist::etcd::register_volume(&etcd_delegate, &args.node_id, &args.volume_info).await?;
+    memfs::dist::etcd::register_volume(&kv_engine, &args.node_id, &args.volume_info).await?;
     let mount_point = std::path::Path::new(&args.mount_dir);
     match args.volume_type {
         VolumeType::Local => {
@@ -38,6 +40,7 @@ pub async fn start_async_fuse(
                     &args.ip_address.to_string(),
                     &args.server_port,
                     etcd_delegate,
+                    kv_engine,
                     &args.node_id,
                     &args.volume_info,
                 )
@@ -56,6 +59,7 @@ pub async fn start_async_fuse(
                 &args.ip_address.to_string(),
                 &args.server_port,
                 etcd_delegate,
+                kv_engine,
                 &args.node_id,
                 &args.volume_info,
             )
@@ -74,6 +78,7 @@ pub async fn start_async_fuse(
                 &args.ip_address.to_string(),
                 &args.server_port,
                 etcd_delegate,
+                kv_engine,
                 &args.node_id,
                 &args.volume_info,
             )

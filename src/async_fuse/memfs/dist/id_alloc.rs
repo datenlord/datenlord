@@ -101,7 +101,7 @@ impl<K: KVEngine + 'static> DistIdAllocator<K> {
 
         // Lock before rewrite
         self.kv_engine
-            .lock(&lock_key, Duration::from_secs(ID_ALLOC_TIMEOUT_SEC))
+            .lock(&lock_key, Duration::from_secs(ID_ALLOC_TIMEOUT_SEC), None)
             .await
             .with_context(|| format!("failed to lock id allocator range, key is {lock_key:?}"))?;
 

@@ -7,7 +7,7 @@ use log::debug;
 use nix::sys::uio::IoVec;
 // TODO: use smol RwLock
 use super::dist::{etcd, request::Index};
-use crate::common::etcd_delegate::EtcdDelegate;
+use super::kv_engine::KVEngineType;
 use clippy_utilities::{Cast, OverflowArithmetic};
 use parking_lot::{Mutex, RwLock};
 use priority_queue::PriorityQueue;
@@ -48,7 +48,7 @@ pub struct GlobalCache {
     /// Count of block size in a bucket
     bucket_size_in_block: usize,
     /// Etcd client, only distributed fs need this
-    etcd_client: Option<Arc<EtcdDelegate>>,
+    kv_engine: Option<Arc<KVEngineType>>,
     /// Node Id, only distributed fs need this
     node_id: Option<String>,
 }
@@ -74,7 +74,7 @@ impl GlobalCache {
             capacity: GLOBAL_CACHE_DEFAULT_CAPACITY,
             block_size: MEMORY_BLOCK_SIZE_IN_BYTE,
             bucket_size_in_block: MEMORY_BUCKET_VEC_SIZE,
-            etcd_client: None,
+            kv_engine: None,
             node_id: None,
         }
     }
@@ -89,7 +89,7 @@ impl GlobalCache {
             capacity,
             block_size: MEMORY_BLOCK_SIZE_IN_BYTE,
             bucket_size_in_block: MEMORY_BUCKET_VEC_SIZE,
-            etcd_client: None,
+            kv_engine: None,
             node_id: None,
         }
     }
@@ -104,7 +104,7 @@ impl GlobalCache {
             capacity,
             block_size,
             bucket_size_in_block: MEMORY_BUCKET_VEC_SIZE,
-            etcd_client: None,
+            kv_engine: None,
             node_id: None,
         }
     }
@@ -115,7 +115,7 @@ impl GlobalCache {
     pub(crate) fn new_dist_with_bz_and_capacity(
         block_size: usize,
         capacity: usize,
-        etcd_client: Arc<EtcdDelegate>,
+        kv_engine: Arc<KVEngineType>,
         node_id: &str,
     ) -> Self {
         Self {
@@ -125,7 +125,7 @@ impl GlobalCache {
             capacity,
             block_size,
             bucket_size_in_block: MEMORY_BUCKET_VEC_SIZE,
-            etcd_client: Some(etcd_client),
+            kv_engine: Some(kv_engine),
             node_id: Some(node_id.to_owned()),
         }
     }
@@ -481,9 +481,9 @@ impl GlobalCache {
     ) {
         let exist = self.write_or_update_helper(file_name, offset, len, buf, overwrite);
         if !exist {
-            if let Some(ref etcd) = self.etcd_client {
+            if let Some(ref kv_engine) = self.kv_engine {
                 if let Some(ref id) = self.node_id {
-                    if let Err(e) = etcd::add_node_to_file_list(etcd, id, file_name).await {
+                    if let Err(e) = etcd::add_node_to_file_list(kv_engine, id, file_name).await {
                         panic!("Cannot add node {id} to file {file_name:?} node list, error: {e}");
                     }
                 }
@@ -679,9 +679,9 @@ impl GlobalCache {
 
     /// Remove file cache
     pub(crate) async fn remove_file_cache(&self, file_name: &[u8]) -> bool {
-        if let Some(ref etcd) = self.etcd_client {
+        if let Some(ref kv_engine) = self.kv_engine {
             if let Some(ref id) = self.node_id {
-                if let Err(e) = etcd::remove_node_from_file_list(etcd, id, file_name).await {
+                if let Err(e) = etcd::remove_node_from_file_list(kv_engine, id, file_name).await {
                     panic!("Cannot remove node {id} to file {file_name:?} node list, error: {e}");
                 }
             }

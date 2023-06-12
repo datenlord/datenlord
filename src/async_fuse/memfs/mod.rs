@@ -51,6 +51,8 @@ pub use metadata::MetaData;
 pub use s3_metadata::S3MetaData;
 use serde::{Deserialize, Serialize};
 
+use self::kv_engine::KVEngineType;
+
 use super::fuse::file_system::FsController;
 
 /// In-memory file system
@@ -136,12 +138,14 @@ pub struct FileLockParam {
 
 impl<M: MetaData + Send + Sync + 'static> MemFs<M> {
     /// Create `FileSystem`
+    #[allow(clippy::too_many_arguments)]
     pub async fn new(
         mount_point: &str,
         capacity: usize,
         ip: &str,
         port: &str,
         etcd_client: EtcdDelegate,
+        kv_engine: Arc<KVEngineType>,
         node_id: &str,
         volume_info: &str,
     ) -> anyhow::Result<(Self, FsController)> {
@@ -152,6 +156,7 @@ impl<M: MetaData + Send + Sync + 'static> MemFs<M> {
             ip,
             port,
             etcd_client,
+            kv_engine,
             node_id,
             volume_info,
             sender,

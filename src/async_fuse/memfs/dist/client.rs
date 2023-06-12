@@ -1,4 +1,5 @@
 use crate::async_fuse::fuse::protocol::INum;
+use crate::async_fuse::memfs::kv_engine::KVEngineType;
 use crate::async_fuse::memfs::RenameParam;
 
 use super::super::dir::DirEntry;
@@ -8,7 +9,6 @@ use super::etcd;
 use super::request::{self, Index};
 use super::response;
 use super::tcp;
-use crate::common::etcd_delegate::EtcdDelegate;
 use log::debug;
 use nix::sys::stat::SFlag;
 use std::collections::BTreeMap;
@@ -18,7 +18,7 @@ use tokio::net::TcpStream;
 
 /// Send message to all other nodes
 async fn send_to_others<F, T>(
-    etcd_client: Arc<EtcdDelegate>,
+    kv_engine: &Arc<KVEngineType>,
     node_id: &str,
     volume_info: &str,
     data: &[u8],
@@ -30,18 +30,9 @@ where
     T: Send,
 {
     let mut result: anyhow::Result<T> = default;
-    if let Ok(nodes) = etcd::get_volume_nodes(
-        Arc::<EtcdDelegate>::clone(&etcd_client),
-        node_id,
-        volume_info,
-    )
-    .await
-    {
+    if let Ok(nodes) = etcd::get_volume_nodes(kv_engine, node_id, volume_info).await {
         for other_id in nodes {
-            if let Ok(ref ip_and_port) =
-                etcd::get_node_ip_and_port(Arc::<EtcdDelegate>::clone(&etcd_client), &other_id)
-                    .await
-            {
+            if let Ok(ref ip_and_port) = etcd::get_node_ip_and_port(kv_engine, &other_id).await {
                 let mut one_result = Vec::new();
                 let mut stream = TcpStream::connect(ip_and_port)
                     .await
@@ -63,7 +54,7 @@ where
 
 /// Load dir data from remote
 pub async fn load_dir(
-    etcd_client: Arc<EtcdDelegate>,
+    kv_engine: &Arc<KVEngineType>,
     node_id: &str,
     volume_info: &str,
     path: &str,
@@ -80,7 +71,7 @@ pub async fn load_dir(
         };
     let default: Option<BTreeMap<String, DirEntry>> = None;
     send_to_others(
-        etcd_client,
+        kv_engine,
         node_id,
         volume_info,
         &request::load_dir(path),
@@ -92,7 +83,7 @@ pub async fn load_dir(
 
 /// Update dir data to remote
 pub async fn update_dir(
-    etcd_client: Arc<EtcdDelegate>,
+    kv_engine: &Arc<KVEngineType>,
     node_id: &str,
     volume_info: &str,
     parent: &str,
@@ -104,7 +95,7 @@ pub async fn update_dir(
     let do_nothing = |_: &[u8]| -> (bool, anyhow::Result<()>) { (false, Ok(())) };
 
     send_to_others(
-        etcd_client,
+        kv_engine,
         node_id,
         volume_info,
         &request::update_dir(parent, child, child_attr, target_path),
@@ -117,7 +108,7 @@ pub async fn update_dir(
 #[allow(dead_code)]
 /// Remove dir entry from remote
 pub async fn remove_dir_entry(
-    etcd_client: Arc<EtcdDelegate>,
+    kv_engine: &Arc<KVEngineType>,
     node_id: &str,
     volume_info: &str,
     parent: &str,
@@ -127,7 +118,7 @@ pub async fn remove_dir_entry(
     let do_nothing = |_: &[u8]| -> (bool, anyhow::Result<()>) { (false, Ok(())) };
 
     send_to_others(
-        etcd_client,
+        kv_engine,
         node_id,
         volume_info,
         &request::remove_dir_entry(parent, child),
@@ -139,7 +130,7 @@ pub async fn remove_dir_entry(
 
 /// Get attr from remote
 pub async fn get_attr(
-    etcd_client: Arc<EtcdDelegate>,
+    kv_engine: &Arc<KVEngineType>,
     node_id: &str,
     volume_info: &str,
     path: &str,
@@ -155,7 +146,7 @@ pub async fn get_attr(
     };
     let default: Option<FileAttr> = None;
     send_to_others(
-        etcd_client,
+        kv_engine,
         node_id,
         volume_info,
         &request::get_file_attr(path),
@@ -167,7 +158,7 @@ pub async fn get_attr(
 
 /// Push attr to remote
 pub async fn push_attr(
-    etcd_client: Arc<EtcdDelegate>,
+    kv_engine: &Arc<KVEngineType>,
     node_id: &str,
     volume_info: &str,
     path: &str,
@@ -177,7 +168,7 @@ pub async fn push_attr(
     let do_nothing = |_: &[u8]| -> (bool, anyhow::Result<()>) { (false, Ok(())) };
 
     send_to_others(
-        etcd_client,
+        kv_engine,
         node_id,
         volume_info,
         &request::push_file_attr(path, serial::file_attr_to_serial(attr)),
@@ -189,7 +180,7 @@ pub async fn push_attr(
 
 /// Invalidate file cache to remote
 pub async fn invalidate(
-    etcd_client: Arc<EtcdDelegate>,
+    kv_engine: &Arc<KVEngineType>,
     node_id: &str,
     volume_info: &str,
     path: &str,
@@ -202,7 +193,7 @@ pub async fn invalidate(
     let invalid_req = request::invalidate(path.as_bytes().to_vec(), vec![Index::Range(start, end)]);
 
     send_to_others(
-        etcd_client,
+        kv_engine,
         node_id,
         volume_info,
         &invalid_req,
@@ -214,7 +205,7 @@ pub async fn invalidate(
 
 /// Read data from remote
 pub async fn read_data(
-    etcd_client: Arc<EtcdDelegate>,
+    kv_engine: &Arc<KVEngineType>,
     node_id: &str,
     volume_info: &str,
     path: &str,
@@ -224,18 +215,9 @@ pub async fn read_data(
     debug!("read_data {} start {} end {}", path, start, end);
     let check = request::check_available(path.as_bytes().to_vec(), vec![Index::Range(start, end)]);
     let read_data = request::read(path.as_bytes().to_vec(), vec![Index::Range(start, end)]);
-    if let Ok(nodes) = etcd::get_volume_nodes(
-        Arc::<EtcdDelegate>::clone(&etcd_client),
-        node_id,
-        volume_info,
-    )
-    .await
-    {
+    if let Ok(nodes) = etcd::get_volume_nodes(kv_engine, node_id, volume_info).await {
         for other_id in nodes {
-            if let Ok(ref ip_and_port) =
-                etcd::get_node_ip_and_port(Arc::<EtcdDelegate>::clone(&etcd_client), &other_id)
-                    .await
-            {
+            if let Ok(ref ip_and_port) = etcd::get_node_ip_and_port(kv_engine, &other_id).await {
                 {
                     let mut result = Vec::new();
                     let mut stream = TcpStream::connect(ip_and_port)
@@ -268,7 +250,7 @@ pub async fn read_data(
 
 /// Rename file request to remote
 pub async fn rename(
-    etcd_client: Arc<EtcdDelegate>,
+    kv_engine: &Arc<KVEngineType>,
     node_id: &str,
     volume_info: &str,
     rename_param: RenameParam,
@@ -277,7 +259,7 @@ pub async fn rename(
     let do_nothing = |_: &[u8]| -> (bool, anyhow::Result<()>) { (false, Ok(())) };
 
     send_to_others(
-        etcd_client,
+        kv_engine,
         node_id,
         volume_info,
         &request::rename(rename_param),
@@ -289,7 +271,7 @@ pub async fn rename(
 
 /// Remove file request to remote
 pub async fn remove(
-    etcd_client: Arc<EtcdDelegate>,
+    kv_engine: &Arc<KVEngineType>,
     node_id: &str,
     volume_info: &str,
     parent: INum,
@@ -303,7 +285,7 @@ pub async fn remove(
     let do_nothing = |_: &[u8]| -> (bool, anyhow::Result<()>) { (false, Ok(())) };
 
     send_to_others(
-        etcd_client,
+        kv_engine,
         node_id,
         volume_info,
         &request::remove(parent, child_name, child_type),

@@ -1,38 +1,30 @@
-use crate::common::error::Context;
-use crate::common::etcd_delegate::EtcdDelegate;
+use crate::async_fuse::memfs::kv_engine::{
+    self, KVEngine, KVEngineType, KeyType, LockKeyType, ValueType,
+};
+use crate::common::error::{Context, DatenLordResult};
 use log::debug;
 use std::collections::HashSet;
 use std::sync::Arc;
-/// ETCD node id counter key
-const ETCD_NODE_ID_COUNTER_KEY: &str = "datenlord_node_id_counter";
-/// ETCD node ip and port info
-const ETCD_NODE_IP_PORT_PREFIX: &str = "datenlord_node_ip_info_";
-/// ETCD volume information lock
-const ETCD_VOLUME_INFO_LOCK: &str = "datenlord_volume_info_lock";
-/// ETCD volume information prefix
-const ETCD_VOLUME_INFO_PREFIX: &str = "datenlord_volume_info_";
-/// ETCD file node list lock prefix
-const ETCD_FILE_NODE_LIST_LOCK_PREFIX: &str = "datenlord_file_node_list_lock_";
-/// ETCD file node list prefix
-const ETCD_FILE_NODE_LIST_PREFIX: &str = "datenlord_file_node_list_";
+use std::time::Duration;
 
 /// Register current node to etcd.
 /// The registered information contains IP.
 pub async fn register_node_id(
-    etcd_client: &EtcdDelegate,
+    kv_engine: &Arc<KVEngineType>,
     node_id: &str,
     node_ipaddr: &str,
     port: &str,
-) -> anyhow::Result<()> {
-    etcd_client
-        .write_or_update_kv(
-            format!("{ETCD_NODE_IP_PORT_PREFIX}{node_id}").as_str(),
-            &format!("{node_ipaddr}:{port}"),
+) -> DatenLordResult<()> {
+    kv_engine
+        .set(
+            &KeyType::NodeIpPort(node_id.to_owned()),
+            &ValueType::String(format!("{node_ipaddr}:{port}")),
+            None,
         )
         .await
         .with_context(|| {
             format!(
-                "Update Node Ip address failed, node_id:{node_id}, node_ipaddr: {node_ipaddr}, port: {port}"
+                "Fail to register node {node_id} to etcd, node_ipaddr:{node_ipaddr}, port:{port}",
             )
         })?;
 
@@ -41,43 +33,37 @@ pub async fn register_node_id(
 
 /// Get ip address and port of a node
 pub async fn get_node_ip_and_port(
-    etcd_client: Arc<EtcdDelegate>,
+    kv_engine: &Arc<KVEngineType>,
     node_id: &str,
-) -> anyhow::Result<String> {
-    let ip_and_port = etcd_client
-        .get_at_most_one_value(format!("{ETCD_NODE_IP_PORT_PREFIX}{node_id}"))
-        .await
-        .with_context(|| {
-            format!("Fail to get Node Ip address and port information, node_id:{node_id}")
-        })?;
-
-    if let Some(ip_and_port) = ip_and_port {
+) -> DatenLordResult<String> {
+    let ip_and_port = kv_engine
+        .get(&KeyType::NodeIpPort(node_id.to_owned()))
+        .await?;
+    if let Some(value) = ip_and_port {
+        let ip_and_port = value.into_string();
         debug!("node {} ip and port is {}", node_id, ip_and_port);
         Ok(ip_and_port)
     } else {
         debug!("node {} missing ip and port information", node_id);
-        Err(anyhow::Error::msg(format!(
-            "Ip and port is not registered for Node {node_id}"
-        )))
+        panic!("Ip and port is not registered for Node {node_id}")
     }
 }
 
 /// Register volume information, add the volume to `node_id` list mapping
 pub async fn register_volume(
-    etcd_client: &EtcdDelegate,
+    kv_engine: &Arc<KVEngineType>,
     node_id: &str,
     volume_info: &str,
 ) -> anyhow::Result<()> {
-    let lock_key = etcd_client
-        .lock(ETCD_VOLUME_INFO_LOCK.as_bytes(), 10)
-        .await
-        .with_context(|| "lock fail while register volume")?;
+    let _lock_key = kv_engine
+        .lock(&LockKeyType::VolumeInfoLock, Duration::from_secs(10), None)
+        .await?;
 
-    let volume_info_key = format!("{ETCD_VOLUME_INFO_PREFIX}{volume_info}");
-    let volume_node_list: Option<Vec<u8>> = etcd_client
-        .get_at_most_one_value(volume_info_key.as_str())
-        .await
-        .with_context(|| format!("get {volume_info_key} from etcd fail"))?;
+    let _volume_info_key = volume_info.to_owned();
+    let volume_node_list = kv_engine
+        .get(&KeyType::VolumeInfo(volume_info.to_owned()))
+        .await?
+        .map(kv_engine::ValueType::into_raw);
 
     /*
     let new_volume_node_list = if let Some(node_list) = volume_node_list {
@@ -123,34 +109,34 @@ pub async fn register_volume(
         panic!("fail to serialize node list for volume {volume_info:?}, error: {e}")
     });
 
-    etcd_client
-        .write_or_update_kv(volume_info_key.as_str(), &volume_node_list_bin)
-        .await
-        .with_context(|| {
-            format!(
-                "Update Volume to Node Id mapping failed, volume:{volume_info}, node id: {node_id}"
-            )
-        })?;
+    kv_engine
+        .set(
+            &KeyType::VolumeInfo(volume_info.to_owned()),
+            &ValueType::Raw(volume_node_list_bin.clone()),
+            None,
+        )
+        .await?;
 
-    etcd_client
-        .unlock(lock_key)
+    kv_engine
+        .unlock(&LockKeyType::VolumeInfoLock)
         .await
         .with_context(|| "unlock fail while register volume")?;
+
     Ok(())
 }
 
 /// Get node list related to a volume, execluding the input `node_ide` as its the local node id.
 /// This function is used to sync metadata, the inode information.
 pub async fn get_volume_nodes(
-    etcd_client: Arc<EtcdDelegate>,
+    kv_engine: &Arc<KVEngineType>,
     node_id: &str,
     volume_info: &str,
 ) -> anyhow::Result<HashSet<String>> {
-    let volume_info_key = format!("{ETCD_VOLUME_INFO_PREFIX}{volume_info}");
-    let volume_node_list: Option<Vec<u8>> = etcd_client
-        .get_at_most_one_value(volume_info_key.as_str())
-        .await
-        .with_context(|| format!("get {volume_info_key} from etcd fail"))?;
+    let volume_info_key = volume_info.to_owned();
+    let volume_node_list: Option<Vec<u8>> = kv_engine
+        .get(&KeyType::VolumeInfo(volume_info_key.clone()))
+        .await?
+        .map(kv_engine::ValueType::into_raw);
 
     let new_volume_node_list = if let Some(node_list) = volume_node_list {
         let mut node_set: HashSet<String> = bincode::deserialize(node_list.as_slice())
@@ -175,29 +161,32 @@ pub async fn get_volume_nodes(
 
 /// Modify node list of a file
 async fn modify_file_node_list<F: Fn(Option<Vec<u8>>) -> HashSet<String>>(
-    etcd_client: &EtcdDelegate,
+    kv_engine: &Arc<KVEngineType>,
     file_name: &[u8],
     fun: F,
 ) -> anyhow::Result<()>
 where
     F: Send,
 {
-    let mut file_lock_key = ETCD_FILE_NODE_LIST_LOCK_PREFIX.as_bytes().to_vec();
-    file_lock_key.extend_from_slice(file_name);
+    let file_lock_key = file_name.to_vec();
 
-    let lock_key = etcd_client
-        .lock(file_lock_key.as_slice(), 10)
+    // FIXME : lock key should be a string
+    let _lock_key = kv_engine
+        .lock(
+            &LockKeyType::FileNodeListLock(file_lock_key.clone()),
+            Duration::from_secs(10),
+            None,
+        )
         .await
         .with_context(|| "lock fail update file node list")?;
 
-    let mut node_list_key = ETCD_FILE_NODE_LIST_PREFIX.as_bytes().to_vec();
-    node_list_key.extend_from_slice(file_name);
+    let node_list_key = file_name.to_vec();
     let node_list_key_clone = node_list_key.clone();
 
-    let node_list: Option<Vec<u8>> = etcd_client
-        .get_at_most_one_value(node_list_key)
-        .await
-        .with_context(|| format!("get {ETCD_NODE_ID_COUNTER_KEY} from etcd fail"))?;
+    let node_list: Option<Vec<u8>> = kv_engine
+        .get(&KeyType::FileNodeList(node_list_key))
+        .await?
+        .map(kv_engine::ValueType::into_raw);
 
     let new_node_list = fun(node_list);
 
@@ -205,16 +194,17 @@ where
         panic!("fail to serialize node list for file {file_name:?}, error: {e}")
     });
 
-    let node_list_key_clone_2 = node_list_key_clone.clone();
-    etcd_client
-        .write_or_update_kv(node_list_key_clone, &node_list_bin)
-        .await
-        .with_context(|| {
-            format!("update {node_list_key_clone_2:?} to value {node_list_bin:?} failed")
-        })?;
+    let _node_list_key_clone_2 = node_list_key_clone.clone();
+    kv_engine
+        .set(
+            &KeyType::FileNodeList(node_list_key_clone),
+            &ValueType::Raw(node_list_bin.clone()),
+            None,
+        )
+        .await?;
 
-    etcd_client
-        .unlock(lock_key)
+    kv_engine
+        .unlock(&LockKeyType::FileNodeListLock(file_lock_key))
         .await
         .with_context(|| "unlock fail while update file node list")?;
 
@@ -223,7 +213,7 @@ where
 
 /// Add a node to node list of a file
 pub async fn add_node_to_file_list(
-    etcd_client: &EtcdDelegate,
+    kv_engine: &Arc<KVEngineType>,
     node_id: &str,
     file_name: &[u8],
 ) -> anyhow::Result<()> {
@@ -249,12 +239,12 @@ pub async fn add_node_to_file_list(
         )
     };
 
-    modify_file_node_list(etcd_client, file_name, add_node_fun).await
+    modify_file_node_list(kv_engine, file_name, add_node_fun).await
 }
 
 /// Remove a node to node list of a file
 pub async fn remove_node_from_file_list(
-    etcd_client: &EtcdDelegate,
+    kv_engine: &Arc<KVEngineType>,
     node_id: &str,
     file_name: &[u8],
 ) -> anyhow::Result<()> {
@@ -276,5 +266,5 @@ pub async fn remove_node_from_file_list(
         }
     };
 
-    modify_file_node_list(etcd_client, file_name, remove_node_fun).await
+    modify_file_node_list(kv_engine, file_name, remove_node_fun).await
 }
