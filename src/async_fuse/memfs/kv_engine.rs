@@ -1,14 +1,14 @@
 use super::{s3_node::S3Node, s3_wrapper::S3BackEnd, INum, S3MetaData};
-use crate::common::error::{Context, DatenLordResult};
+use crate::common::async_fuse_error::KVEngineError;
+use crate::common::error::{Context, DatenLordError, DatenLordResult};
 use async_trait::async_trait;
 use core::fmt::Debug;
-use etcd_client::TxnCmp;
+use etcd_client::{Compare, CompareOp, DeleteOptions, LockOptions, PutOptions, Txn, TxnOp};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt::Display;
-use std::{fmt, time::Duration};
-
 use std::sync::Arc;
+use std::{fmt, time::Duration};
 
 use super::serial::{SerialDirEntry, SerialFileAttr, SerialNode};
 
@@ -199,6 +199,27 @@ pub trait KVEngine: Send + Sync + Debug {
     async fn delete(&self, key: &KeyType) -> DatenLordResult<Option<ValueType>>;
 }
 
+/// The version of the key.
+type KvVersion = i64;
+
+/// Convert u64 seceond to i64
+fn conv_u64_sec_2_i64(sec: u64) -> i64 {
+    sec.try_into()
+        .unwrap_or_else(|e| panic!("ttl timeout_sec should < MAX_I64, err:{e}"))
+}
+
+/// Fix ttl, ttl should be > 0
+fn check_ttl(sec: i64) -> DatenLordResult<i64> {
+    if sec <= 0 {
+        Err(DatenLordError::KVEngineErr {
+            source: KVEngineError::WrongTimeoutArg,
+            context: vec!["Timeout arg for kv should be >= 1 second".to_owned()],
+        })
+    } else {
+        Ok(sec)
+    }
+}
+
 /// The `etcd`'s transaction impl.
 /// The txn won't do anything until commit is called.
 /// Write operations are buffered until commit is called.
@@ -206,7 +227,7 @@ struct EtcdTxn {
     /// The etcd client.
     client: etcd_client::Client,
     /// The key is the key in bytes, the value is the version of the key.
-    version_map: HashMap<Vec<u8>, usize>,
+    version_map: HashMap<Vec<u8>, KvVersion>,
     /// Store the write operations in the buffer.
     buffer: HashMap<Vec<u8>, Option<Vec<u8>>>,
 }
@@ -236,14 +257,12 @@ impl MetaTxn for EtcdTxn {
             "get the key twice in the same transaction"
         );
         // Fetch the value from `etcd`
-        let req = etcd_client::EtcdGetRequest::new(key.clone());
-        let mut resp = self
+        let resp = self
             .client
-            .kv()
-            .get(req)
+            .get(key.clone(), None)
             .await
-            .with_context(|| format!("failed to get GetResponse from etcd, key={key:?}"))?;
-        let kvs = resp.take_kvs();
+            .with_context(|| "failed to get at `MetaTxn::get`".to_owned())?;
+        let kvs = resp.kvs();
         // we don't expect to have multiple values for one key
         assert!(kvs.len() <= 1, "multiple values for one key");
         if let Some(kv) = kvs.get(0) {
@@ -253,7 +272,7 @@ impl MetaTxn for EtcdTxn {
             Ok(Some(serde_json::from_slice(value)?))
         } else {
             // update the version_map
-            self.version_map.insert(key.clone(), 0);
+            self.version_map.insert(key, 0);
             Ok(None)
         }
     }
@@ -276,34 +295,35 @@ impl MetaTxn for EtcdTxn {
         if self.version_map.is_empty() && self.buffer.is_empty() {
             return Ok(true);
         }
-        let mut req: etcd_client::EtcdTxnRequest = etcd_client::EtcdTxnRequest::new();
-        // add the version check
-        for (key, value) in &self.version_map {
-            let version = *value;
-            req = req.when_version(
-                etcd_client::KeyRange::key(key.clone()),
-                TxnCmp::Equal,
-                version,
-            );
-        }
-        // add the write operations
-        for (key, value) in &self.buffer {
-            if let Some(ref value) = *value {
-                let put_req = etcd_client::EtcdPutRequest::new(key.clone(), value.clone());
-                req = req.and_then(put_req);
-            } else {
-                let delete_req =
-                    etcd_client::EtcdDeleteRequest::new(etcd_client::KeyRange::key(key.clone()));
-                req = req.and_then(delete_req);
-            }
-        }
+
         let resp = self
             .client
-            .kv()
-            .txn(req)
+            .txn(
+                Txn::new()
+                    .when(
+                        self.version_map
+                            .iter()
+                            .map(|(key, version)| {
+                                Compare::version(key.clone(), CompareOp::Equal, *version)
+                            })
+                            .collect::<Vec<Compare>>(),
+                    )
+                    .and_then(
+                        self.buffer
+                            .iter()
+                            .map(|(key, value)| {
+                                if let Some(ref value) = *value {
+                                    TxnOp::put(key.clone(), value.clone(), None)
+                                } else {
+                                    TxnOp::delete(key.clone(), None)
+                                }
+                            })
+                            .collect::<Vec<TxnOp>>(),
+                    ),
+            )
             .await
-            .with_context(|| "failed to get TxnResponse from etcd".to_owned())?;
-        Ok(resp.is_success())
+            .with_context(|| "failed to do txn operation at `MetaTxn::commit`".to_owned())?;
+        Ok(resp.succeeded())
     }
 }
 
@@ -325,16 +345,11 @@ impl EtcdKVEngine {
     #[allow(dead_code)]
     /// For local test, we need to create a new etcd kv engine locally.
     async fn new_for_local_test(etcd_address_vec: Vec<String>) -> DatenLordResult<Self> {
-        let client = etcd_client::Client::connect(etcd_client::ClientConfig::new(
-            etcd_address_vec.clone(),
-            None,
-            64,
-            true,
-        ))
-        .await
-        .with_context(|| {
-            format!("failed to build etcd client to addresses={etcd_address_vec:?}")
-        })?;
+        let client = etcd_client::Client::connect(etcd_address_vec.clone(), None)
+            .await
+            .with_context(|| {
+                format!("failed to connect to etcd, the etcd address={etcd_address_vec:?}")
+            })?;
         Ok(EtcdKVEngine { client })
     }
 
@@ -397,54 +412,46 @@ impl KVEngine for EtcdKVEngine {
         Box::new(EtcdTxn::new(self.client.clone()))
     }
     /// Distribute lock - lock
-    async fn lock(&self, key: &LockKeyType, timeout: Duration) -> DatenLordResult<()> {
-        let lease_id = self
-            .client
-            .lease()
-            .grant(etcd_client::EtcdLeaseGrantRequest::new(timeout))
+    /// - `timeout_sec` should be >=1s
+    async fn lock(&self, key: &LockKeyType, timeout_sec: Duration) -> DatenLordResult<()> {
+        let mut client = self.client.clone();
+        let timeout_sec = check_ttl(conv_u64_sec_2_i64(timeout_sec.as_secs()))
+            .with_context(|| "timeout_sec should be >=1s, please fix the call".to_owned())?;
+
+        let lease_id = client
+            .lease_grant(timeout_sec, None)
             .await
-            .with_context(|| {
-                format!(
-                    "failed to get LeaseGrantResponse from etcd, the timeout = {} ms",
-                    timeout.as_millis()
-                )
-            })?
+            .with_context(|| "failed to get lease at `MetaTxn::lock`".to_owned())?
             .id();
 
-        let _ = self
-            .client
-            .lock()
-            .lock(etcd_client::EtcdLockRequest::new(key.get_key(), lease_id))
+        let _ = client
+            .lock(key.get_key(), Some(LockOptions::new().with_lease(lease_id)))
             .await
-            .with_context(|| {
-                format!(
-                    "failed to get LockResponse from etcd, the lease id={lease_id}, key = {key}"
-                )
-            })?;
+            .with_context(|| "failed to lock at `MetaTxn::lock`".to_owned())?;
 
         Ok(())
     }
+
     /// Distribute lock - unlock
     async fn unlock(&self, key: &LockKeyType) -> DatenLordResult<()> {
-        self.client
-            .lock()
-            .unlock(etcd_client::EtcdUnlockRequest::new(key.get_key()))
+        let mut client = self.client.clone();
+        client
+            .unlock(key.get_key())
             .await
-            .with_context(|| {
-                format!("failed to get UnlockResponse from etcd, the lease key={key:?}",)
-            })?;
+            .with_context(|| "failed to unlock at `MetaTxn::unlock`".to_owned())?;
 
         Ok(())
     }
 
     /// Get the value by the key.
     async fn get(&self, key: &KeyType) -> DatenLordResult<Option<ValueType>> {
-        let req = etcd_client::EtcdRangeRequest::new(etcd_client::KeyRange::key(key.get_key()));
-        let mut resp = self.client.kv().range(req).await.with_context(|| {
-            format!("failed to get RangeResponse of one key-value pair from etcd, the key={key:?}")
-        })?;
+        let mut client = self.client.clone();
+        let resp = client
+            .get(key.get_key(), None)
+            .await
+            .with_context(|| format!("failed to get at `MetaTxn::get`, key={key:?}"))?;
 
-        let kvs = resp.take_kvs();
+        let kvs = resp.kvs();
         match kvs.get(0) {
             Some(kv) => Ok(Some(serde_json::from_slice::<ValueType>(kv.value()).with_context(||{
                 "failed to deserialize value from bytes, KVEngine's value supposed to be `ValueType`".to_owned()
@@ -456,15 +463,16 @@ impl KVEngine for EtcdKVEngine {
     async fn set(&self, key: &KeyType, value: &ValueType) -> DatenLordResult<Option<ValueType>> {
         let serial_value = serde_json::to_vec(value)
             .with_context(|| format!("failed to serialize value={value:?} to bytes"))?;
-        let mut req = etcd_client::EtcdPutRequest::new(key.get_key(), serial_value);
-        req.set_prev_kv(true); // Return previous value
-        let mut resp = self
-            .client
-            .kv()
-            .put(req)
+        let mut client = self.client.clone();
+        let mut resp = client
+            .put(
+                key.get_key(),
+                serial_value,
+                Some(PutOptions::new().with_prev_key()),
+            )
             .await
-            .with_context(|| format!("failed to get PutResponse from etcd for key={key:?}"))?;
-        if let Some(pre_kv) = resp.take_prev_kv() {
+            .with_context(|| "failed to put at `MetaTxn::set`".to_owned())?;
+        if let Some(pre_kv) = resp.take_prev_key() {
             let decoded_value: ValueType = serde_json::from_slice(pre_kv.value())?;
             Ok(Some(decoded_value))
         } else {
@@ -474,14 +482,13 @@ impl KVEngine for EtcdKVEngine {
 
     /// Delete the kv pair by the key.
     async fn delete(&self, key: &KeyType) -> DatenLordResult<Option<ValueType>> {
-        let mut req =
-            etcd_client::EtcdDeleteRequest::new(etcd_client::KeyRange::key(key.get_key()));
-        req.set_prev_kv(true); // Return previous value
-        let mut resp =
-            self.client.kv().delete(req).await.with_context(|| {
-                format!("failed to get DeleteResponse from etcd for key={key:?}")
-            })?;
-        if let Some(pre_kv) = resp.take_prev_kvs().into_iter().next() {
+        let resp = self
+            .client
+            .kv_client()
+            .delete(key.get_key(), Some(DeleteOptions::new().with_prev_key()))
+            .await
+            .with_context(|| format!("failed to get DeleteResponse from etcd for key={key:?}"))?;
+        if let Some(pre_kv) = resp.prev_kvs().first() {
             let decoded_value: ValueType = serde_json::from_slice(pre_kv.value())?;
             Ok(Some(decoded_value))
         } else {

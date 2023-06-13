@@ -1,8 +1,9 @@
 //! `DatenLord` Error Code
-
+use super::async_fuse_error::KVEngineError;
 use grpcio::RpcStatusCode;
 use std::path::PathBuf;
 use thiserror::Error;
+
 /// `DatenLord` Result type
 pub type DatenLordResult<T> = Result<T, DatenLordError>;
 /// `DatenLord` error code
@@ -114,7 +115,16 @@ pub enum DatenLordError {
     #[error("EtcdClientErr, the error is {:?}, context is {:#?}", .source, .context)]
     EtcdClientErr {
         /// Error source
-        source: etcd_client::EtcdError,
+        source: etcd_client::Error,
+        /// Context of the error
+        context: Vec<String>,
+    },
+
+    /// Error caused by async_fuse::memfs::kv_engine
+    #[error("EtcdClientErr, the error is {:?}, context is {:#?}", .source, .context)]
+    KVEngineErr {
+        /// Error source
+        source: KVEngineError,
         /// Context of the error
         context: Vec<String>,
     },
@@ -294,6 +304,7 @@ impl DatenLordError {
                 ArgumentOutOfRange,
                 StripPrefixErr,
                 EtcdClientErr,
+                KVEngineErr,
                 BincodeErr,
                 NixErr,
                 MountErr,
@@ -338,7 +349,7 @@ macro_rules! implement_from {
 implement_from!(std::io::Error, IoErr);
 implement_from!(walkdir::Error, WalkdirErr);
 implement_from!(std::path::StripPrefixError, StripPrefixErr);
-implement_from!(etcd_client::EtcdError, EtcdClientErr);
+implement_from!(etcd_client::Error, EtcdClientErr);
 implement_from!(bincode::Error, BincodeErr);
 implement_from!(nix::Error, NixErr);
 implement_from!(std::time::SystemTimeError, SystemTimeErr);
@@ -363,6 +374,7 @@ impl From<DatenLordError> for RpcStatusCode {
             | DatenLordError::WalkdirErr { .. }
             | DatenLordError::TransactionRetryLimitExceededErr { .. }
             | DatenLordError::InternalErr { .. }
+            | DatenLordError::KVEngineErr { .. }
             | DatenLordError::JoinErr { .. } => Self::INTERNAL,
             DatenLordError::GrpcioErr { source, .. } => match source {
                 grpcio::Error::RpcFailure(ref s) => s.code(),
