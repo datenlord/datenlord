@@ -6,14 +6,25 @@ use clippy_utilities::OverflowArithmetic;
 use core::fmt;
 use core::fmt::Debug;
 use core::time::Duration;
-use etcd_client::{EtcdLeaseGrantRequest, EventType, KeyRange, TxnCmp, TxnOpResponse};
+use etcd_client::TxnOpResponse::Put;
+use etcd_client::{
+    Compare, CompareOp, DeleteOptions, EventType, GetOptions, LockOptions, PutOptions, Txn, TxnOp,
+    TxnOpResponse,
+};
 use log::debug;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
+use std::vec;
 
 /// version of kv for transaction verify
-pub type KvVersion = usize;
+/// TODO(xiaguan) : is i6s right ?
+pub type KvVersion = i64;
 
+/// Convert u64 seceond to i64
+fn conv_u64_sec_2_i64(sec: u64) -> i64 {
+    sec.try_into()
+        .unwrap_or_else(|e| panic!("ttl timeout_sec should < MAX_I64, err:{e}"))
+}
 /// The client to communicate with etcd
 #[allow(missing_debug_implementations)] // etcd_client::Client doesn't impl Debug
 #[derive(Clone)]
@@ -38,17 +49,11 @@ impl EtcdDelegate {
     #[inline]
     pub async fn new(etcd_address_vec: Vec<String>) -> DatenLordResult<Self> {
         let end_point = etcd_address_vec.clone();
-        let etcd_rs_client = etcd_client::Client::connect(etcd_client::ClientConfig::new(
-            etcd_address_vec.clone(),
-            None,
-            // TODO: cache size should come from parameter
-            64,
-            true,
-        ))
-        .await
-        .with_context(|| {
-            format!("failed to build etcd client to addresses={etcd_address_vec:?}")
-        })?;
+        let etcd_rs_client = etcd_client::Client::connect(etcd_address_vec.clone(), None)
+            .await
+            .with_context(|| {
+                format!("failed to connect to etcd, the etcd address={etcd_address_vec:?}")
+            })?;
         Ok(Self {
             etcd_rs_client,
             end_point,
@@ -57,28 +62,24 @@ impl EtcdDelegate {
 
     /// Lock a name with time out
     #[inline]
-    pub async fn lock(&self, name: &[u8], timeout: u64) -> DatenLordResult<Vec<u8>> {
-        let lease_id = self
-            .etcd_rs_client
-            .lease()
-            .grant(etcd_client::EtcdLeaseGrantRequest::new(
-                Duration::from_secs(timeout),
-            ))
+    pub async fn lock(&self, name: &[u8], timeout_sec: u64) -> DatenLordResult<Vec<u8>> {
+        let timeout_sec = if timeout_sec == 0 { 1 } else { timeout_sec };
+        let mut etcd_rs_client = self.etcd_rs_client.clone();
+        let lease_id = etcd_rs_client
+            .lease_grant(conv_u64_sec_2_i64(timeout_sec), None)
             .await
-            .with_context(|| {
-                format!("failed to get LeaseGrantResponse from etcd, the timeout={timeout}")
-            })?
+            .with_context(|| "failed to get lease id from etcd when lock".to_owned())?
             .id();
 
-        let key = self
-            .etcd_rs_client
-            .lock()
-            .lock(etcd_client::EtcdLockRequest::new(name, lease_id))
+        let options = LockOptions::new().with_lease(lease_id);
+
+        // TODO(xiaguan) : into_vec
+        let key = etcd_rs_client
+            .lock(name, Some(options))
             .await
-            .with_context(|| {
-                format!("failed to get LockResponse from etcd, the lease id={lease_id}")
-            })?
-            .take_key();
+            .with_context(|| format!("failed to get lock from etcd, the lock name={name:?}"))?
+            .key()
+            .to_vec();
 
         Ok(key)
     }
@@ -86,18 +87,11 @@ impl EtcdDelegate {
     /// Unlock with the key, which comes from the lock operation
     #[inline]
     pub async fn unlock<T: Into<Vec<u8>> + Clone + Send>(&self, key: T) -> DatenLordResult<()> {
-        let key_clone = key.clone();
-        self.etcd_rs_client
-            .lock()
-            .unlock(etcd_client::EtcdUnlockRequest::new(key_clone))
+        let mut etcd_rs_client = self.etcd_rs_client.clone();
+        etcd_rs_client
+            .unlock(key)
             .await
-            .with_context(|| {
-                format!(
-                    "failed to get UnlockResponse from etcd, the lease key={:?}",
-                    key.into()
-                )
-            })?;
-
+            .with_context(|| "failed to unlock from etcd".to_owned())?;
         Ok(())
     }
 
@@ -106,15 +100,13 @@ impl EtcdDelegate {
         &self,
         key: K,
     ) -> DatenLordResult<Option<(T, KvVersion)>> {
-        let key_clone = key.clone();
-        let req = etcd_client::EtcdRangeRequest::new(etcd_client::KeyRange::key(key));
-        let mut resp = self.etcd_rs_client.kv().range(req).await.with_context(|| {
-            format!(
-                "failed to get RangeResponse of one key-value pair from etcd, the key={key_clone:?}"
-            )
-        })?;
-
-        let kvs = resp.take_kvs();
+        let resp = self
+            .etcd_rs_client
+            .kv_client()
+            .get(key, None)
+            .await
+            .with_context(|| "failed to get one key-value pair from etcd".to_owned())?;
+        let kvs = resp.kvs();
 
         match kvs.get(0) {
             Some(kv) => Ok(Some((
@@ -137,71 +129,54 @@ impl EtcdDelegate {
         prev_version: KvVersion,
         expire: Option<Duration>,
     ) -> DatenLordResult<Option<(T, KvVersion)>> {
+        let mut etcd_rs_client = self.etcd_rs_client.clone();
         let bin_value = bincode::serialize(value)
             .with_context(|| format!("failed to encode {value:?} to binary"))?;
-        let mut put_request = etcd_client::EtcdPutRequest::new(key.clone(), bin_value);
-        if let Some(dur) = expire {
-            put_request.set_lease(
-                self.etcd_rs_client
-                    .lease()
-                    .grant(EtcdLeaseGrantRequest::new(dur))
+        let put_options = match expire {
+            Some(expire) => PutOptions::new().with_prev_key().with_lease(
+                etcd_rs_client
+                    .lease_grant(conv_u64_sec_2_i64(expire.as_secs()), None)
                     .await
                     .with_context(|| {
-                        format!(
-                            "failed to get LeaseGrantResponse from etcd, the timeout={}",
-                            dur.as_secs()
-                        )
+                        "failed to get lease id at `write_to_etcd_with_version`".to_owned()
                     })?
                     .id(),
-            );
+            ),
+            None => PutOptions::new().with_prev_key(),
         };
-        let txn_req = etcd_client::EtcdTxnRequest::new()
-            // etcd：chack key exist in txn
-            //  https://etcd.io/docs/v3.4/learning/api/
-            //  https://github.com/etcd-io/etcd/issues/7115
-            //  https://github.com/etcd-io/etcd/issues/6740
-            //key does not exist when create revision is 0, check the links above
-            .when_version(
-                etcd_client::KeyRange::key(key.clone()),
-                TxnCmp::Equal,
-                prev_version,
-            )
-            //key does not exist, insert kv
-            .and_then(put_request)
-            //key exists, return old value
-            .or_else(etcd_client::EtcdRangeRequest::new(
-                etcd_client::KeyRange::key(key.clone()),
-            ));
-        let txn_res = self
-            .etcd_rs_client
-            .kv()
-            .txn(txn_req)
-            .await
-            .with_context(|| {
-                format!("failed to get PutResponse from etcd for key={key:?}, value={value:?}",)
-            })?;
 
-        if txn_res.is_success() {
+        let txn = Txn::new()
+            .when(vec![Compare::version(
+                key.clone(),
+                CompareOp::Equal,
+                prev_version,
+            )])
+            .and_then(vec![TxnOp::put(key.clone(), bin_value, Some(put_options))])
+            .or_else(vec![TxnOp::get(key.clone(), None)]);
+
+        let txn_res = etcd_rs_client.txn(txn).await.with_context(|| {
+            "failed to execute txn operation at `write_to_etcd_with_version`".to_owned()
+        })?;
+
+        if txn_res.succeeded() {
             //key does not exist, insert kv
             Ok(None)
         } else {
-            let mut resp_ = txn_res.get_responses();
+            let mut resp_ = txn_res.op_responses();
+            // let mut resp_ = txn_res.get_responses();
             assert_eq!(resp_.len(), 1, "txn response length should be 1");
             match resp_.pop().unwrap_or_else(|| {
                 panic!("txn response length should be 1 and pop should not fail")
             }) {
-                TxnOpResponse::Range(mut resp) => {
-                    let kvs = resp.take_kvs();
+                TxnOpResponse::Get(resp) => {
+                    let kvs = resp.kvs();
                     let kv_first = kvs.get(0).unwrap_or_else(|| panic!("kv res must be sz>0"));
                     //key exists
                     let decoded_value: T = util::decode_from_bytes(kv_first.value())?;
                     Ok(Some((decoded_value, kv_first.version())))
                 }
-                TxnOpResponse::Put(_) | TxnOpResponse::Delete(_) | TxnOpResponse::Txn(_) => {
+                Put(_) | TxnOpResponse::Delete(_) | TxnOpResponse::Txn(_) => {
                     panic!("txn response should be RangeResponse");
-                }
-                _ => {
-                    panic!("new op unconsidered");
                 }
             }
         }
@@ -218,41 +193,37 @@ impl EtcdDelegate {
         value: &T,
         expire: Option<Duration>,
     ) -> DatenLordResult<Option<(T, KvVersion)>> {
-        let key_clone = key.clone();
+        let mut etcd_rs_client = self.etcd_rs_client.clone();
         let bin_value = bincode::serialize(value)
             .with_context(|| format!("failed to encode {value:?} to binary"))?;
-        let mut req = etcd_client::EtcdPutRequest::new(key, bin_value);
-        req.set_prev_kv(true); // Return previous value
-        if let Some(expire) = expire {
-            req.set_lease(
-                self.etcd_rs_client
-                    .lease()
-                    .grant(EtcdLeaseGrantRequest::new(expire))
-                    .await
-                    .with_context(|| {
-                        format!(
-                            "failed to get LeaseGrantResponse from etcd, the timeout={} s",
-                            expire.as_secs()
-                        )
-                    })?
+        // let mut req = etcd_client::EtcdPutRequest::new(key, bin_value);
+        let put_options = match expire {
+            Some(expire) => PutOptions::new().with_prev_key().with_lease(
+                etcd_rs_client
+                    .lease_grant(conv_u64_sec_2_i64(expire.as_secs()), None)
+                    .await?
                     .id(),
-            );
-        }
-
-        let mut resp = self.etcd_rs_client.kv().put(req).await.with_context(|| {
-            format!("failed to get PutResponse from etcd for key={key_clone:?}, value={value:?}")
-        })?;
-        if let Some(pre_kv) = resp.take_prev_kv() {
-            let decoded_value: T = util::decode_from_bytes(pre_kv.value())?;
-            Ok(Some((decoded_value, pre_kv.version())))
+            ),
+            None => PutOptions::new().with_prev_key(),
+        };
+        let resp = self
+            .etcd_rs_client
+            .kv_client()
+            .put(key.clone(), bin_value, Some(put_options))
+            .await
+            .with_context(|| "failed to put at `write_to_etcd`".to_owned())?;
+        if let Some(prev_kv) = resp.prev_key() {
+            let decoded_value = util::decode_from_bytes(prev_kv.value())?;
+            Ok(Some((decoded_value, prev_kv.version())))
         } else {
             Ok(None)
         }
     }
 
-    /// - if key exist, don't insert, return the old value
-    /// - if key not exist, insert, return None
-    /// - `expire`: auto delete after expire
+    /// Write a key value pair to etcd when there's no key
+    // - if key exist, don't insert, return the old value
+    // - if key not exist, insert, return None
+    // - `expire`: auto delete after expire
     async fn write_to_etcd_if_none<
         T: DeserializeOwned + Serialize + Clone + Debug + Send + Sync,
         K: Into<Vec<u8>> + Debug + Clone + Send,
@@ -262,66 +233,52 @@ impl EtcdDelegate {
         value: &T,
         expire: Option<Duration>,
     ) -> DatenLordResult<Option<(T, KvVersion)>> {
+        let mut etcd_rs_client = self.etcd_rs_client.clone();
         let bin_value = bincode::serialize(value)
             .with_context(|| format!("failed to encode {value:?} to binary"))?;
-        let mut put_request = etcd_client::EtcdPutRequest::new(key.clone(), bin_value);
-        if let Some(dur) = expire {
-            put_request.set_lease(
-                self.etcd_rs_client
-                    .lease()
-                    .grant(EtcdLeaseGrantRequest::new(dur))
+        // let mut req = etcd_client::EtcdPutRequest::new(key, bin_value);
+        let put_options = match expire {
+            Some(expire) => PutOptions::new().with_prev_key().with_lease(
+                etcd_rs_client
+                    .lease_grant(conv_u64_sec_2_i64(expire.as_secs()), None)
                     .await
-                    .with_context(|| {
-                        format!(
-                            "failed to get LeaseGrantResponse from etcd, the timeout={}",
-                            dur.as_secs()
-                        )
-                    })?
+                    .with_context(|| "failed to grant lease at `write_to_etcd_if_none`".to_owned())?
                     .id(),
-            );
+            ),
+            None => PutOptions::new().with_prev_key(),
         };
-        let txn_req = etcd_client::EtcdTxnRequest::new()
-            // etcd：chack key exist in txn
-            //  https://github.com/etcd-io/etcd/issues/7115
-            //  https://github.com/etcd-io/etcd/issues/6740
-            //key does not exist when create revision is 0, check the links above
-            .when_create_revision(etcd_client::KeyRange::key(key.clone()), TxnCmp::Equal, 0)
-            //key does not exist, insert kv
-            .and_then(put_request)
-            //key exists, return old value
-            .or_else(etcd_client::EtcdRangeRequest::new(
-                etcd_client::KeyRange::key(key.clone()),
-            ));
-        let txn_res = self
-            .etcd_rs_client
-            .kv()
-            .txn(txn_req)
-            .await
-            .with_context(|| {
-                format!("failed to get PutResponse from etcd for key={key:?}, value={value:?}",)
-            })?;
 
-        if txn_res.is_success() {
+        // etcd：chack key exist in txn
+        //  https://github.com/etcd-io/etcd/issues/7115
+        //  https://github.com/etcd-io/etcd/issues/6740
+        let txn = Txn::new()
+            .when(vec![Compare::version(key.clone(), CompareOp::Equal, 0)])
+            .and_then(vec![TxnOp::put(key.clone(), bin_value, Some(put_options))])
+            .or_else(vec![TxnOp::get(key.clone(), None)]);
+
+        let txn_res = etcd_rs_client
+            .txn(txn)
+            .await
+            .with_context(|| "failed to do txn at `write_to_etcd_if_none`".to_owned())?;
+
+        if txn_res.succeeded() {
             //key does not exist, insert kv
             Ok(None)
         } else {
-            let mut resp_ = txn_res.get_responses();
+            let mut resp_ = txn_res.op_responses();
             assert_eq!(resp_.len(), 1, "txn response length should be 1");
             match resp_.pop().unwrap_or_else(|| {
                 panic!("txn response length should be 1 and pop should not fail")
             }) {
-                TxnOpResponse::Range(mut resp) => {
-                    let kvs = resp.take_kvs();
+                TxnOpResponse::Get(resp) => {
+                    let kvs = resp.kvs();
                     let kv_first = kvs.get(0).unwrap_or_else(|| panic!("kv res must be sz>0"));
                     //key exists
                     let decoded_value: T = util::decode_from_bytes(kv_first.value())?;
                     Ok(Some((decoded_value, kv_first.version())))
                 }
-                TxnOpResponse::Put(_) | TxnOpResponse::Delete(_) | TxnOpResponse::Txn(_) => {
+                Put(_) | TxnOpResponse::Delete(_) | TxnOpResponse::Txn(_) => {
                     panic!("txn response should be RangeResponse");
-                }
-                _ => {
-                    panic!("new op unconsidered");
                 }
             }
         }
@@ -332,39 +289,41 @@ impl EtcdDelegate {
         &self,
         key: &str,
     ) -> DatenLordResult<Vec<(T, KvVersion)>> {
-        let mut req = etcd_client::EtcdDeleteRequest::new(etcd_client::KeyRange::key(key));
-        req.set_prev_kv(true);
-        let mut resp = self
+        let resp = self
             .etcd_rs_client
-            .kv()
-            .delete(req)
+            .kv_client()
+            .delete(key, Some(DeleteOptions::new().with_prev_key()))
             .await
-            .with_context(|| format!("failed to get DeleteResponse from etcd for key={key:?}"))?;
+            .with_context(|| "failed to delete at `delete_from_etcd`".to_owned())?;
 
-        if resp.has_prev_kvs() {
-            let deleted_value_list = resp.take_prev_kvs();
-
+        if resp.prev_kvs().is_empty() {
+            Ok(Vec::new())
+        } else {
+            let deleted_value_list = resp.prev_kvs();
             let mut result_vec = Vec::with_capacity(deleted_value_list.len());
             for kv in deleted_value_list {
                 let decoded_value: T = util::decode_from_bytes(kv.value())?;
                 result_vec.push((decoded_value, kv.version()));
             }
             Ok(result_vec)
-        } else {
-            Ok(Vec::new())
         }
     }
 
     /// Get key-value list from etcd
     #[inline]
     pub async fn get_list<T: DeserializeOwned>(&self, prefix: &str) -> DatenLordResult<Vec<T>> {
-        let req = etcd_client::EtcdRangeRequest::new(etcd_client::KeyRange::prefix(prefix));
-        let mut resp =
-            self.etcd_rs_client.kv().range(req).await.with_context(|| {
-                format!("failed to get RangeResponse from etcd for key={prefix:?}")
-            })?;
-        let mut result_vec = Vec::with_capacity(resp.count());
-        for kv in resp.take_kvs() {
+        let resp = self
+            .etcd_rs_client
+            .kv_client()
+            .get(prefix, Some(GetOptions::new().with_prefix()))
+            .await
+            .with_context(|| "failed to get at `get_list`".to_owned())?;
+        let mut result_vec = Vec::with_capacity(
+            resp.count()
+                .try_into()
+                .unwrap_or_else(|e| panic!("resp.count() should be > 0, err:{e}")),
+        );
+        for kv in resp.kvs() {
             let decoded_value: T = util::decode_from_bytes(kv.value())?;
             result_vec.push(decoded_value);
         }
@@ -380,7 +339,9 @@ impl EtcdDelegate {
         &self,
         key: K,
     ) -> DatenLordResult<Option<(T, KvVersion)>> {
-        let value = self.get_one_kv_async(key).await?;
+        let value = self.get_one_kv_async(key).await.with_context(|| {
+            "failed to `get_one_kv_async` at `get_at_most_one_value_with_version`".to_owned()
+        })?;
         Ok(value)
     }
 
@@ -393,7 +354,9 @@ impl EtcdDelegate {
         &self,
         key: K,
     ) -> DatenLordResult<Option<T>> {
-        let value = self.get_one_kv_async(key).await?;
+        let value = self.get_one_kv_async(key).await.with_context(|| {
+            "failed to `get_one_kv_async` at `get_at_most_one_value`".to_owned()
+        })?;
         Ok(value.map(|(v, _)| v))
     }
 
@@ -409,7 +372,13 @@ impl EtcdDelegate {
         key: &str,
         value: &T,
     ) -> DatenLordResult<(T, KvVersion)> {
-        let write_res = self.write_to_etcd(key, value, None).await?;
+        let write_res = self
+            .write_to_etcd(key, value, None)
+            .await
+            .with_context(|| {
+                "failed to `write_to_etcd` at `update_existing_kv_and_return_with_version`"
+                    .to_owned()
+            })?;
         if let Some(pre_value) = write_res {
             Ok(pre_value)
         } else {
@@ -431,6 +400,10 @@ impl EtcdDelegate {
     ) -> DatenLordResult<T> {
         self.update_existing_kv_and_return_with_version(key, value)
             .await
+            .with_context(|| {
+                "failed to `update_existing_kv_and_return_with_version` at `update_existing_kv`"
+                    .to_owned()
+            })
             .map(|(v, _)| v)
     }
 
@@ -444,7 +417,10 @@ impl EtcdDelegate {
         key: &str,
         value: &T,
     ) -> DatenLordResult<()> {
-        let write_res = self.write_to_etcd(key, value, None).await?;
+        let write_res = self
+            .write_to_etcd(key, value, None)
+            .await
+            .with_context(|| "failed to `write_to_etcd` at `write_new_kv`".to_owned())?;
         if let Some(pre_value) = write_res {
             panic!(
                 "failed to write new key vaule pair, the key={key} exists in etcd, \
@@ -469,6 +445,9 @@ impl EtcdDelegate {
     ) -> DatenLordResult<Option<T>> {
         self.write_to_etcd_if_none(key, value, expire)
             .await
+            .with_context(|| {
+                "failed to `write_to_etcd_if_none` at `write_new_kv_no_panic`".to_owned()
+            })
             .map(|v| v.map(|(v, _)| v))
     }
 
@@ -484,7 +463,12 @@ impl EtcdDelegate {
         value: &T,
         expire: Option<Duration>,
     ) -> DatenLordResult<Option<(T, KvVersion)>> {
-        self.write_to_etcd_if_none(key, value, expire).await
+        self.write_to_etcd_if_none(key, value, expire)
+            .await
+            .with_context(|| {
+                "failed to `write_to_etcd_if_none` at `write_new_kv_no_panic_return_with_version`"
+                    .to_owned()
+            })
     }
 
     /// Write key value pair to etcd, if key exists, update it
@@ -498,7 +482,10 @@ impl EtcdDelegate {
         value: &T,
     ) -> DatenLordResult<()> {
         let key_clone = key.clone();
-        let write_res = self.write_to_etcd(key, value, None).await?;
+        let write_res = self
+            .write_to_etcd(key, value, None)
+            .await
+            .with_context(|| "failed to `write_to_etcd` at `write_or_update_kv`".to_owned())?;
         if let Some(pre_value) = write_res {
             debug!(
                 "key={:?} exists in etcd, the previous value={:?}, update it",
@@ -521,7 +508,12 @@ impl EtcdDelegate {
         expire: Duration,
     ) -> DatenLordResult<()> {
         let key_clone = key.clone();
-        let write_res = self.write_to_etcd(key, value, Some(expire)).await?;
+        let write_res = self
+            .write_to_etcd(key, value, Some(expire))
+            .await
+            .with_context(|| {
+                "failed to `write_to_etcd` at `write_or_update_kv_with_timeout`".to_owned()
+            })?;
         if let Some(pre_value) = write_res {
             debug!(
                 "key={:?} exists in etcd, the previous value={:?}, update it",
@@ -546,6 +538,10 @@ impl EtcdDelegate {
     ) -> DatenLordResult<Option<(T, KvVersion)>> {
         self.write_to_etcd_with_version(key, value, version, expire)
             .await
+            .with_context(|| {
+                "failed to `write_to_etcd_with_version` at `write_or_update_kv_with_version`"
+                    .to_owned()
+            })
     }
 
     /// Delete an existing key value pair from etcd
@@ -559,7 +555,10 @@ impl EtcdDelegate {
         &self,
         key: &str,
     ) -> DatenLordResult<(T, KvVersion)> {
-        let mut deleted_value_vec = self.delete_from_etcd(key).await?;
+        let mut deleted_value_vec = self.delete_from_etcd(key).await.with_context(|| {
+            "failed to `delete_from_etcd` at `delete_exact_one_value_return_with_version`"
+                .to_owned()
+        })?;
         debug_assert_eq!(
             deleted_value_vec.len(),
             1,
@@ -584,6 +583,10 @@ impl EtcdDelegate {
     ) -> DatenLordResult<T> {
         self.delete_exact_one_value_return_with_version(key)
             .await
+            .with_context(|| {
+                "failed to `delete_exact_one_value_return_with_version` at `delete_exact_one_value`"
+                    .to_owned()
+            })
             .map(|(v, _)| v)
     }
 
@@ -598,7 +601,9 @@ impl EtcdDelegate {
         &self,
         key: &str,
     ) -> DatenLordResult<Option<(T, KvVersion)>> {
-        let mut deleted_value_vec = self.delete_from_etcd(key).await?;
+        let mut deleted_value_vec = self.delete_from_etcd(key).await.with_context(|| {
+            "failed to `delete_from_etcd` at `delete_one_value_return_with_version`".to_owned()
+        })?;
         debug_assert!(
             deleted_value_vec.len() <= 1,
             "delete {} key value pairs for a single key={}, shouldn't delete more than one",
@@ -619,6 +624,9 @@ impl EtcdDelegate {
     ) -> DatenLordResult<Option<T>> {
         self.delete_one_value_return_with_version(key)
             .await
+            .with_context(|| {
+                "failed to `delete_one_value_return_with_version` at `delete_one_value`".to_owned()
+            })
             .map(|opt| opt.map(|(v, _)| v))
     }
 
@@ -626,13 +634,11 @@ impl EtcdDelegate {
     #[allow(dead_code)]
     #[inline]
     pub async fn delete_all(&self) -> DatenLordResult<()> {
-        let mut req = etcd_client::EtcdDeleteRequest::new(etcd_client::KeyRange::all());
-        req.set_prev_kv(false);
         self.etcd_rs_client
-            .kv()
-            .delete(req)
+            .kv_client()
+            .delete("", Some(DeleteOptions::new().with_all_keys()))
             .await
-            .add_context("failed to delete all data from etcd")?;
+            .with_context(|| "failed to `delete_all` at `delete_all`".to_owned())?;
         Ok(())
     }
 
@@ -649,54 +655,68 @@ impl EtcdDelegate {
     #[inline]
     #[allow(clippy::integer_arithmetic, clippy::arithmetic_side_effects)] // for the auto generate code from tokio select!
     pub async fn wait_key_delete(&self, name: &str) -> DatenLordResult<()> {
-        let receiver_opt = self.etcd_rs_client.watch(KeyRange::key(name)).await;
-        let mut receiver = match receiver_opt {
-            Ok(receiver) => receiver,
-            Err(e) => {
-                return Err(DatenLordError::EtcdClientErr {
-                    source: e,
-                    context: vec!["wait_key_delete receive watch failed".to_owned()],
-                });
-            }
-        };
+        let mut etcd_rs_client = self.etcd_rs_client.clone();
+        // let reciver_opt = self.etcd_rs_client.watch()
+        let res = etcd_rs_client.watch(name, None).await;
+        let (mut watcher, mut stream) =
+            res.with_context(|| format!("failed to `watch` at `wait_key_delete` for key={name}"))?;
 
         let (stop_wait_log_task_chan_tx, mut stop_wait_log_task_chan_rx) =
             tokio::sync::oneshot::channel::<()>();
-        let name_clone = name.to_owned();
-        let wait_log_task = tokio::spawn(async move {
-            let mut sec_cnt: i32 = 0;
-            loop {
-                tokio::select! {
-                    _ = tokio::time::sleep(Duration::from_secs(1)) => {
-                        sec_cnt=sec_cnt.overflow_add(1_i32);
-                        log::debug!("wait for dist lock {name_clone} for {sec_cnt} seconds, if this goes too long, there might be dead lock");
-                    }
-                    _ = &mut stop_wait_log_task_chan_rx => {
-                        break;
+        let wait_log_task = {
+            let name_clone = name.to_owned();
+            tokio::spawn(async move {
+                let mut sec_cnt: i32 = 0;
+                loop {
+                    tokio::select! {
+                        _ = tokio::time::sleep(Duration::from_secs(1)) => {
+                            sec_cnt=sec_cnt.overflow_add(1_i32);
+                            log::debug!("wait for dist lock {name_clone} for {sec_cnt} seconds, if this goes too long, there might be dead lock");
+                        }
+                        _ = &mut stop_wait_log_task_chan_rx => {
+                            break;
+                        }
                     }
                 }
-            }
-        });
+            })
+        };
 
-        // When we call this function,
-        //  there might be no key in it or someone just insert one into it.
-        // We might first receive a insert event.
-        // We need a loop to read until there's delete event.
+        // // When we call this function,
+        // //  there might be no key in it or someone just insert one into it.
+        // // We might first receive a insert event.
+        // // We need a loop to read until there's delete event.
         loop {
-            match receiver.recv().await {
-                Ok(mut ok) => {
-                    let events = ok.take_events();
-                    for e in &events {
-                        if let EventType::Delete = e.event_type() {
-                            stop_wait_log_task_chan_tx.send(()).unwrap_or_else(|_| {
-                                panic!("send failed, stop_wait_log_task_chan_rx was dropped?")
-                            });
-                            wait_log_task.await.unwrap_or_else(|_| {
-                                panic!("join wait log task failed");
-                            });
-
-                            return Ok(());
+            match stream.message().await {
+                Ok(ok) => {
+                    if let Some(response) = ok {
+                        if response.events().is_empty() {
+                            debug!("receive empty response, watch closed?");
+                            continue;
                         }
+                        for event in response.events() {
+                            if let Some(kv) = event.kv() {
+                                let watched_key = kv.key_str().unwrap_or_else(|e| {
+                                    panic!("Key here supposed to be str, err:{e}");
+                                });
+                                if watched_key == name {
+                                    if let EventType::Delete = event.event_type() {
+                                        stop_wait_log_task_chan_tx.send(()).unwrap_or_else(|_| {
+                                            panic!("send failed, stop_wait_log_task_chan_rx was dropped?")
+                                        });
+                                        wait_log_task.await.unwrap_or_else(|_| {
+                                            panic!("join wait log task failed");
+                                        });
+
+                                        watcher.cancel().await.with_context(||{
+                                            format!("failed to `cancel watch` at `wait_key_delete` for key={name}")
+                                        })?;
+                                        return Ok(());
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        panic!("receive empty response, watch closed?");
                     }
                 }
                 Err(err) => {
@@ -711,6 +731,10 @@ impl EtcdDelegate {
                     wait_log_task.await.unwrap_or_else(|_| {
                         panic!("join wait log task failed");
                     });
+                    watcher.cancel().await.with_context(|| {
+                        format!("failed to `cancel watch` at `wait_key_delete` for key={name}")
+                    })?;
+
                     return Err(DatenLordError::EtcdClientErr {
                         source: err,
                         context,
