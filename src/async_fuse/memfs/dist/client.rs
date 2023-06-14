@@ -5,7 +5,7 @@ use crate::async_fuse::memfs::RenameParam;
 use super::super::dir::DirEntry;
 use super::super::fs_util::FileAttr;
 use super::super::serial;
-use super::etcd;
+use super::kv_utils;
 use super::request::{self, Index};
 use super::response;
 use super::tcp;
@@ -30,9 +30,10 @@ where
     T: Send,
 {
     let mut result: anyhow::Result<T> = default;
-    if let Ok(nodes) = etcd::get_volume_nodes(kv_engine, node_id, volume_info).await {
+    if let Ok(nodes) = kv_utils::get_volume_nodes(kv_engine, node_id, volume_info).await {
         for other_id in nodes {
-            if let Ok(ref ip_and_port) = etcd::get_node_ip_and_port(kv_engine, &other_id).await {
+            if let Ok(ref ip_and_port) = kv_utils::get_node_ip_and_port(kv_engine, &other_id).await
+            {
                 let mut one_result = Vec::new();
                 let mut stream = TcpStream::connect(ip_and_port)
                     .await
@@ -215,9 +216,10 @@ pub async fn read_data(
     debug!("read_data {} start {} end {}", path, start, end);
     let check = request::check_available(path.as_bytes().to_vec(), vec![Index::Range(start, end)]);
     let read_data = request::read(path.as_bytes().to_vec(), vec![Index::Range(start, end)]);
-    if let Ok(nodes) = etcd::get_volume_nodes(kv_engine, node_id, volume_info).await {
+    if let Ok(nodes) = kv_utils::get_volume_nodes(kv_engine, node_id, volume_info).await {
         for other_id in nodes {
-            if let Ok(ref ip_and_port) = etcd::get_node_ip_and_port(kv_engine, &other_id).await {
+            if let Ok(ref ip_and_port) = kv_utils::get_node_ip_and_port(kv_engine, &other_id).await
+            {
                 {
                     let mut result = Vec::new();
                     let mut stream = TcpStream::connect(ip_and_port)
