@@ -22,14 +22,14 @@ pub async fn start_async_fuse(
 ) -> anyhow::Result<()> {
     metrics::start_metrics_server();
 
-    memfs::dist::etcd::register_node_id(
+    memfs::dist::kv_utils::register_node_id(
         &kv_engine,
         &args.node_id,
         &args.ip_address.to_string(),
         &args.server_port,
     )
     .await?;
-    memfs::dist::etcd::register_volume(&kv_engine, &args.node_id, &args.volume_info).await?;
+    memfs::dist::kv_utils::register_volume(&kv_engine, &args.node_id, &args.volume_info).await?;
     let mount_point = std::path::Path::new(&args.mount_dir);
     match args.volume_type {
         VolumeType::Local => {

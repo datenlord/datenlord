@@ -13,7 +13,7 @@ use crate::{
 };
 
 /// Id type
-#[derive(Debug)]
+#[derive(Debug, Eq, PartialEq, Clone)]
 pub enum IdType {
     /// inode number allocated when creating a file
     INum,
@@ -24,7 +24,9 @@ pub enum IdType {
 impl IdType {
     /// Convert to str for unique key
     /// The return value can't be same
-    fn to_unique_id(&self) -> u8 {
+    #[must_use]
+    #[inline]
+    pub fn to_unique_id(&self) -> u8 {
         match *self {
             IdType::INum => 0,
             IdType::Fd => 1,
@@ -92,16 +94,14 @@ impl<K: KVEngine + 'static> DistIdAllocator<K> {
     /// increase the inode number range begin in global cluster
     pub(crate) async fn fetch_add_id_next_range(&self, range: u64) -> DatenLordResult<(u64, u64)> {
         // Use cas to replace the lock
-        let lock_key = LockKeyType::IdAllocatorLock {
-            unique_id: self.id_type.to_unique_id(),
-        };
-        let value_key = KeyType::IdAllocatorValue {
-            unique_id: self.id_type.to_unique_id(),
-        };
+        // The cost of clone is low
+        let lock_key = LockKeyType::IdAllocatorLock(self.id_type.clone());
+        let value_key = KeyType::IdAllocatorValue(self.id_type.clone());
 
         // Lock before rewrite
-        self.kv_engine
-            .lock(&lock_key, Duration::from_secs(ID_ALLOC_TIMEOUT_SEC), None)
+        let lock_key = self
+            .kv_engine
+            .lock(&lock_key, Duration::from_secs(ID_ALLOC_TIMEOUT_SEC))
             .await
             .with_context(|| format!("failed to lock id allocator range, key is {lock_key:?}"))?;
 
@@ -122,7 +122,7 @@ impl<K: KVEngine + 'static> DistIdAllocator<K> {
             .with_context(|| format!("failed to set id allocator range, key is {value_key:?}"))?;
 
         self.kv_engine
-            .unlock(&lock_key)
+            .unlock(lock_key.clone())
             .await
             .with_context(|| format!("failed to unlock id allocator range, key is {lock_key:?}"))?;
         debug!("node alloc inum range ({},{})", range_begin, next);

@@ -1,10 +1,12 @@
 use super::{s3_node::S3Node, s3_wrapper::S3BackEnd, INum, S3MetaData};
+use crate::async_fuse::memfs::dist::id_alloc::IdType;
 use crate::common::async_fuse_error::KVEngineError;
 use crate::common::error::{Context, DatenLordError, DatenLordResult};
 use async_trait::async_trait;
-use clippy_utilities::OverflowArithmetic;
 use core::fmt::Debug;
-use etcd_client::{Compare, CompareOp, DeleteOptions, LockOptions, PutOptions, Txn, TxnOp};
+use etcd_client::{
+    Compare, CompareOp, DeleteOptions, GetOptions, LockOptions, PutOptions, Txn, TxnOp,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt::Display;
@@ -14,8 +16,6 @@ use std::{fmt, time::Duration};
 /// The `KVEngineType` is used to provide support for metadata.
 /// We use this alias to avoid tem
 pub type KVEngineType = EtcdKVEngine;
-
-use std::sync::Arc;
 
 use super::serial::{SerialDirEntry, SerialFileAttr, SerialNode};
 
@@ -120,19 +120,16 @@ pub enum KeyType {
     /// INum -> SerialFileAttr
     INum2Attr(INum),
     /// IdAllocator value key
-    IdAllocatorValue {
-        /// the prefix of the key for different id type
-        unique_id: u8,
-    },
+    IdAllocatorValue(IdType),
     /// Csi related key
     Csi(String),
-    /// ETCD node ip and port info : node_id -> "{node_ipaddr}:{port}"
+    /// Node ip and port info : node_id -> "{node_ipaddr}:{port}"
     /// The corresponding value type is ValueType::String
     NodeIpPort(String),
-    /// ETCD volume information
+    /// Volume information
     /// The corresponding value type is ValueType::RawData
     VolumeInfo(String),
-    /// ETCD file node list
+    /// Node list
     /// The corresponding value type is ValueType::RawData
     FileNodeList(Vec<u8>),
 }
@@ -143,10 +140,7 @@ pub enum KeyType {
 #[allow(variant_size_differences)]
 pub enum LockKeyType {
     /// IdAllocator lock key
-    IdAllocatorLock {
-        /// the prefix of the key for different id type
-        unique_id: u8,
-    },
+    IdAllocatorLock(IdType),
     /// ETCD volume information lock
     VolumeInfoLock,
     /// ETCD file node list lock
@@ -160,8 +154,8 @@ impl Display for KeyType {
             KeyType::INum2DirEntry(ref i) => write!(f, "INum2DirEntry{{i: {i}}}"),
             KeyType::Path2INum(ref p) => write!(f, "Path2INum{{p: {p}}}"),
             KeyType::INum2Attr(ref i) => write!(f, "INum2Attr{{i: {i}}}"),
-            KeyType::IdAllocatorValue { unique_id } => {
-                write!(f, "IdAllocatorValue{{unique_id: {unique_id}}}")
+            KeyType::IdAllocatorValue(ref id_type) => {
+                write!(f, "IdAllocatorValue{{unique_id: {id_type:?}}}")
             }
             KeyType::Csi(ref s) => write!(f, "Csi{{s: {s}}}"),
             KeyType::NodeIpPort(ref s) => write!(f, "NodeIpPort{{s: {s}}}"),
@@ -174,8 +168,8 @@ impl Display for KeyType {
 impl Display for LockKeyType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
-            LockKeyType::IdAllocatorLock { unique_id } => {
-                write!(f, "IdAllocatorLock{{unique_id: {unique_id}}}")
+            LockKeyType::IdAllocatorLock(ref id_type) => {
+                write!(f, "IdAllocatorLock{{unique_id: {id_type:?}}}")
             }
             LockKeyType::VolumeInfoLock => {
                 write!(f, "LockKeyType::VolumeInfoLock ")
@@ -211,7 +205,7 @@ impl KeyType {
             KeyType::INum2DirEntry(ref i) => serialize_key(1, i),
             KeyType::Path2INum(ref p) => serialize_key(2, p),
             KeyType::INum2Attr(ref i) => serialize_key(3, i),
-            KeyType::IdAllocatorValue { unique_id } => serialize_key(4, &unique_id),
+            KeyType::IdAllocatorValue(ref id_type) => serialize_key(4, &id_type.to_unique_id()),
             KeyType::Csi(ref s) => serialize_key(5, s),
             KeyType::NodeIpPort(ref s) => serialize_key(6, s),
             KeyType::VolumeInfo(ref s) => serialize_key(8, s),
@@ -224,7 +218,9 @@ impl LockKeyType {
     /// Get the key in vec bytes.
     fn get_key(&self) -> Vec<u8> {
         match *self {
-            LockKeyType::IdAllocatorLock { unique_id } => serialize_key(100, &unique_id),
+            LockKeyType::IdAllocatorLock(ref id_type) => {
+                serialize_key(100, &id_type.to_unique_id())
+            }
             LockKeyType::VolumeInfoLock => serialize_key(101, &0_i32),
             LockKeyType::FileNodeListLock(ref file_name) => serialize_key(102, file_name),
         }
@@ -340,144 +336,64 @@ impl DeleteOption {
     }
 }
 
-#[allow(dead_code)]
-#[derive(Debug, Eq, PartialEq)]
-/// The option of 'lock' operation
-/// Currently, only the lease is supported.
-pub struct LockOption {
-    /// The lease of the lock
-    pub(crate) lease: Option<i64>,
-}
-
-impl Default for LockOption {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl LockOption {
-    #[allow(dead_code)]
-    #[must_use]
-    /// Create a new lock option without lease
-    pub fn new() -> Self {
-        Self { lease: None }
-    }
-
-    #[allow(dead_code)]
-    #[must_use]
-    /// Change the lease of the lock option
-    pub fn with_lease(mut self, lease: i64) -> Self {
-        self.lease = Some(lease);
-        self
-    }
-}
-
 /// `KeyRange` is an abstraction for describing etcd key of various types.
 #[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Debug)]
 #[allow(dead_code)]
+/// Key range builder.
 pub struct KeyRange {
-    /// The first key of the range and should be non-empty
+    /// The starting key of the range.
     pub(crate) key: Vec<u8>,
-    /// The key following the last key of the range
+
+    /// The ending key of the range.
     pub(crate) range_end: Vec<u8>,
+
+    /// A flag that, when set to true, causes the `build` method to treat `key` as a prefix.
+    pub(crate) with_prefix: bool,
+
+    /// A flag that, when set to true, causes the `build` method to include all keys in the range.
+    pub(crate) with_all_keys: bool,
 }
 
 impl KeyRange {
-    /// Creates a new `KeyRange` for describing a range of multiple keys.
-    #[inline]
-    #[allow(dead_code)]
-    pub fn range<K, R>(key: K, range_end: R) -> Self
-    where
-        K: Into<Vec<u8>>,
-        R: Into<Vec<u8>>,
-    {
-        Self {
-            key: key.into(),
-            range_end: range_end.into(),
-        }
-    }
-
-    /// Creates a new `KeyRange` for describing a specified key.
-    #[inline]
-    #[allow(dead_code)]
-    pub fn key<K>(key: K) -> Self
-    where
-        K: Into<Vec<u8>>,
-    {
-        Self {
-            key: key.into(),
-            range_end: vec![],
-        }
-    }
-
-    /// Creates a new `KeyRange` for describing all keys.
+    /// Creates a new `KeyRange` builder.
     #[inline]
     #[must_use]
-    #[allow(dead_code)]
-    pub fn all() -> Self {
-        Self {
-            key: vec![0],
-            range_end: vec![0],
+    pub const fn new() -> Self {
+        KeyRange {
+            key: Vec::new(),
+            range_end: Vec::new(),
+            with_prefix: false,
+            with_all_keys: false,
         }
     }
 
-    /// Creates a new `KeyRange` for describing keys prefixed with specified value.
+    /// Sets key.
     #[inline]
-    #[allow(dead_code)]
-    pub fn prefix<K>(prefix: K) -> Self
-    where
-        K: Into<Vec<u8>>,
-    {
-        let key = prefix.into();
-        if key.is_empty() {
-            // An empty Vec<u8> results in an invalid KeyRange.
-            // Assume that an empty value passed to this method implies no prefix (i.e., all keys).
-            return Self::all();
-        }
-
-        let mut first_value = true;
-        let mut range_end = key
-            .iter()
-            .rev()
-            .filter_map(|e| {
-                if *e < 0xff {
-                    if first_value {
-                        first_value = false;
-                        Some(e.overflow_add(1))
-                    } else {
-                        Some(*e)
-                    }
-                } else {
-                    None
-                }
-            })
-            .collect::<Vec<u8>>();
-        range_end.reverse();
-        Self { key, range_end }
+    pub fn with_key(&mut self, key: impl Into<Vec<u8>>) {
+        self.key = key.into();
     }
 
-    /// Take key value
+    /// Specifies the range end.
+    /// `end_key` must be lexicographically greater than start key.
     #[inline]
-    #[allow(dead_code)]
-    pub(crate) fn take_key(&mut self) -> Vec<u8> {
-        std::mem::take(&mut self.key)
+    pub fn with_range(&mut self, end_key: impl Into<Vec<u8>>) {
+        self.range_end = end_key.into();
+        self.with_prefix = false;
+        self.with_all_keys = false;
     }
 
-    /// Take `range_end` value
+    /// Sets all keys prefixed with key.
     #[inline]
-    #[allow(dead_code)]
-    pub(crate) fn take_range_end(&mut self) -> Vec<u8> {
-        std::mem::take(&mut self.range_end)
+    pub fn with_prefix(&mut self) {
+        self.with_prefix = true;
+        self.with_all_keys = false;
     }
-}
 
-// impl the From trait for KeyRange to etcd_client::KeyRange
-impl From<KeyRange> for etcd_client::KeyRange {
-    fn from(mut key_range: KeyRange) -> Self {
-        etcd_client::KeyRange::range(
-            std::mem::take(&mut key_range.key),
-            std::mem::take(&mut key_range.range_end),
-        )
+    /// Sets all keys.
+    #[inline]
+    pub fn with_all_keys(&mut self) {
+        self.with_all_keys = true;
+        self.with_prefix = false;
     }
 }
 
@@ -489,14 +405,9 @@ pub trait KVEngine: Send + Sync + Debug + Sized {
     /// Create a new transaction.
     async fn new_meta_txn(&self) -> Box<dyn MetaTxn + Send>;
     /// Distribute lock - lock
-    async fn lock(
-        &self,
-        key: &LockKeyType,
-        timeout: Duration,
-        option: Option<LockOption>,
-    ) -> DatenLordResult<Vec<u8>>;
+    async fn lock(&self, key: &LockKeyType, timeout: Duration) -> DatenLordResult<Vec<u8>>;
     /// Distribute lock - unlock
-    async fn unlock(&self, key: &LockKeyType) -> DatenLordResult<()>;
+    async fn unlock(&self, key: Vec<u8>) -> DatenLordResult<()>;
     /// Get the value by the key.
     async fn get(&self, key: &KeyType) -> DatenLordResult<Option<ValueType>>;
     /// Set the value by the key.
@@ -518,153 +429,6 @@ pub trait KVEngine: Send + Sync + Debug + Sized {
 
     /// Range query
     async fn range(&self, key_range: KeyRange) -> DatenLordResult<Vec<(Vec<u8>, Vec<u8>)>>;
-}
-
-/// The version of the key.
-type KvVersion = i64;
-
-/// Convert u64 seceond to i64
-fn conv_u64_sec_2_i64(sec: u64) -> i64 {
-    sec.try_into()
-        .unwrap_or_else(|e| panic!("ttl timeout_sec should < MAX_I64, err:{e}"))
-}
-
-/// Fix ttl, ttl should be > 0
-fn check_ttl(sec: i64) -> DatenLordResult<i64> {
-    if sec <= 0 {
-        Err(DatenLordError::KVEngineErr {
-            source: KVEngineError::WrongTimeoutArg,
-            context: vec!["Timeout arg for kv should be >= 1 second".to_owned()],
-        })
-    } else {
-        Ok(sec)
-    }
-}
-
-/// The version of the key.
-type KvVersion = i64;
-
-/// Convert u64 seceond to i64
-fn conv_u64_sec_2_i64(sec: u64) -> i64 {
-    sec.try_into()
-        .unwrap_or_else(|e| panic!("ttl timeout_sec should < MAX_I64, err:{e}"))
-}
-
-/// Fix ttl, ttl should be > 0
-fn check_ttl(sec: i64) -> DatenLordResult<i64> {
-    if sec <= 0 {
-        Err(DatenLordError::KVEngineErr {
-            source: KVEngineError::WrongTimeoutArg,
-            context: vec!["Timeout arg for kv should be >= 1 second".to_owned()],
-        })
-    } else {
-        Ok(sec)
-    }
-}
-
-/// The version of the key.
-type KvVersion = i64;
-
-/// Convert u64 seceond to i64
-fn conv_u64_sec_2_i64(sec: u64) -> i64 {
-    sec.try_into()
-        .unwrap_or_else(|e| panic!("ttl timeout_sec should < MAX_I64, err:{e}"))
-}
-
-/// Fix ttl, ttl should be > 0
-fn check_ttl(sec: i64) -> DatenLordResult<i64> {
-    if sec <= 0 {
-        Err(DatenLordError::KVEngineErr {
-            source: KVEngineError::WrongTimeoutArg,
-            context: vec!["Timeout arg for kv should be >= 1 second".to_owned()],
-        })
-    } else {
-        Ok(sec)
-    }
-}
-
-/// The version of the key.
-type KvVersion = i64;
-
-/// Convert u64 seceond to i64
-fn conv_u64_sec_2_i64(sec: u64) -> i64 {
-    sec.try_into()
-        .unwrap_or_else(|e| panic!("ttl timeout_sec should < MAX_I64, err:{e}"))
-}
-
-/// Fix ttl, ttl should be > 0
-fn check_ttl(sec: i64) -> DatenLordResult<i64> {
-    if sec <= 0 {
-        Err(DatenLordError::KVEngineErr {
-            source: KVEngineError::WrongTimeoutArg,
-            context: vec!["Timeout arg for kv should be >= 1 second".to_owned()],
-        })
-    } else {
-        Ok(sec)
-    }
-}
-
-/// The version of the key.
-type KvVersion = i64;
-
-/// Convert u64 seceond to i64
-fn conv_u64_sec_2_i64(sec: u64) -> i64 {
-    sec.try_into()
-        .unwrap_or_else(|e| panic!("ttl timeout_sec should < MAX_I64, err:{e}"))
-}
-
-/// Fix ttl, ttl should be > 0
-fn check_ttl(sec: i64) -> DatenLordResult<i64> {
-    if sec <= 0 {
-        Err(DatenLordError::KVEngineErr {
-            source: KVEngineError::WrongTimeoutArg,
-            context: vec!["Timeout arg for kv should be >= 1 second".to_owned()],
-        })
-    } else {
-        Ok(sec)
-    }
-}
-
-/// The version of the key.
-type KvVersion = i64;
-
-/// Convert u64 seceond to i64
-fn conv_u64_sec_2_i64(sec: u64) -> i64 {
-    sec.try_into()
-        .unwrap_or_else(|e| panic!("ttl timeout_sec should < MAX_I64, err:{e}"))
-}
-
-/// Fix ttl, ttl should be > 0
-fn check_ttl(sec: i64) -> DatenLordResult<i64> {
-    if sec <= 0 {
-        Err(DatenLordError::KVEngineErr {
-            source: KVEngineError::WrongTimeoutArg,
-            context: vec!["Timeout arg for kv should be >= 1 second".to_owned()],
-        })
-    } else {
-        Ok(sec)
-    }
-}
-
-/// The version of the key.
-type KvVersion = i64;
-
-/// Convert u64 seceond to i64
-fn conv_u64_sec_2_i64(sec: u64) -> i64 {
-    sec.try_into()
-        .unwrap_or_else(|e| panic!("ttl timeout_sec should < MAX_I64, err:{e}"))
-}
-
-/// Fix ttl, ttl should be > 0
-fn check_ttl(sec: i64) -> DatenLordResult<i64> {
-    if sec <= 0 {
-        Err(DatenLordError::KVEngineErr {
-            source: KVEngineError::WrongTimeoutArg,
-            context: vec!["Timeout arg for kv should be >= 1 second".to_owned()],
-        })
-    } else {
-        Ok(sec)
-    }
 }
 
 /// The version of the key.
@@ -872,57 +636,55 @@ macro_rules! retry_txn {
 impl KVEngine for EtcdKVEngine {
     #[must_use]
     async fn new(end_points: Vec<String>) -> DatenLordResult<Self> {
-        let client = etcd_client::Client::connect(etcd_client::ClientConfig::new(
-            end_points.clone(),
-            None,
-            64,
-            true,
-        ))
-        .await
-        .with_context(|| format!("failed to build etcd client to addresses={end_points:?}"))?;
-        Ok(EtcdKVEngine { client })
+        let client = etcd_client::Client::connect(end_points, None).await?;
+        Ok(Self { client })
     }
     async fn new_meta_txn(&self) -> Box<dyn MetaTxn + Send> {
         Box::new(EtcdTxn::new(self.client.clone()))
     }
 
     async fn lease_grant(&self, ttl: i64) -> DatenLordResult<i64> {
-        let req = etcd_client::EtcdLeaseGrantRequest::new(Duration::from_secs(
-            ttl.try_into()
-                .unwrap_or_else(|_| panic!("Unexpected i64 to u64 conversion error.")),
-        ));
-        let resp = self
-            .client
-            .lease()
-            .grant(req)
+        let mut client = self.client.clone();
+        let timeout_sec = check_ttl(ttl)
+            .with_context(|| "timeout_sec should be >=1s, please fix the call".to_owned())?;
+        Ok(client
+            .lease_grant(timeout_sec, None)
             .await
-            .with_context(|| "failed to get LeaseGrantResponse from etcd".to_owned())?;
-        Ok(resp
-            .id()
-            .try_into()
-            .unwrap_or_else(|_| panic!("Unexpected u64 to i64 conversion error.")))
+            .with_context(|| "failed to get lease at `MetaTxn::lock`".to_owned())?
+            .id())
     }
 
     async fn range(&self, key_range: KeyRange) -> DatenLordResult<Vec<(Vec<u8>, Vec<u8>)>> {
-        let req = etcd_client::EtcdRangeRequest::new(key_range.into());
-        let mut resp = self
+        // check that with_all_keys and with_prefix are not set at the same time
+        debug_assert!(
+            !(key_range.with_all_keys && key_range.with_prefix),
+            "with_all_keys and with_prefix are not set at the same time"
+        );
+        let option = if key_range.with_all_keys {
+            Some(GetOptions::new().with_all_keys())
+        } else if key_range.with_prefix {
+            Some(GetOptions::new().with_prefix())
+        } else {
+            Some(GetOptions::new().with_range(key_range.range_end))
+        };
+        let resp = self
             .client
-            .kv()
-            .range(req)
+            .kv_client()
+            .get(key_range.key, option)
             .await
-            .with_context(|| "failed to get RangeResponse from etcd".to_owned())?;
-        let kvs = resp.take_kvs();
-        let mut result = Vec::with_capacity(kvs.len());
-        for kv in &kvs {
-            result.push((kv.key().to_vec(), kv.value().to_vec()));
-        }
+            .with_context(|| "failed to get range at `KVEngine::range`".to_owned())?;
+        let kvs = resp.kvs();
+        let result: Vec<_> = kvs
+            .iter()
+            .map(|kv| (kv.key().to_vec(), kv.value().to_vec()))
+            .collect();
         Ok(result)
     }
 
     /// Distribute lock - lock
     /// - `timeout_sec` should be >=1s
     /// - `timeout_sec` should be >=1s
-    async fn lock(&self, key: &LockKeyType, timeout_sec: Duration) -> DatenLordResult<()> {
+    async fn lock(&self, key: &LockKeyType, timeout_sec: Duration) -> DatenLordResult<Vec<u8>> {
         let mut client = self.client.clone();
         let timeout_sec = check_ttl(conv_u64_sec_2_i64(timeout_sec.as_secs()))
             .with_context(|| "timeout_sec should be >=1s, please fix the call".to_owned())?;
@@ -933,19 +695,19 @@ impl KVEngine for EtcdKVEngine {
             .with_context(|| "failed to get lease at `MetaTxn::lock`".to_owned())?
             .id();
 
-        let _ = client
+        let resp = client
             .lock(key.get_key(), Some(LockOptions::new().with_lease(lease_id)))
             .await
             .with_context(|| "failed to lock at `MetaTxn::lock`".to_owned())?;
 
-        Ok(())
+        Ok(resp.key().to_vec())
     }
 
     /// Distribute lock - unlock
-    async fn unlock(&self, key: &LockKeyType) -> DatenLordResult<()> {
+    async fn unlock(&self, key: Vec<u8>) -> DatenLordResult<()> {
         let mut client = self.client.clone();
         client
-            .unlock(key.get_key())
+            .unlock(key)
             .await
             .with_context(|| "failed to unlock at `MetaTxn::unlock`".to_owned())?;
 
@@ -973,18 +735,27 @@ impl KVEngine for EtcdKVEngine {
         &self,
         key: &KeyType,
         value: &ValueType,
-        _option: Option<SetOption>,
+        option: Option<SetOption>,
     ) -> DatenLordResult<Option<ValueType>> {
+        let option = match option {
+            Some(option) => {
+                let mut set_option = PutOptions::new();
+                if option.prev_kv {
+                    set_option = set_option.with_prev_key();
+                }
+                if let Some(lease) = option.lease {
+                    set_option = set_option.with_lease(lease);
+                }
+                Some(set_option)
+            }
+            None => None,
+        };
         // TODO : add option support
         let serial_value = serde_json::to_vec(value)
             .with_context(|| format!("failed to serialize value={value:?} to bytes"))?;
         let mut client = self.client.clone();
         let mut resp = client
-            .put(
-                key.get_key(),
-                serial_value,
-                Some(PutOptions::new().with_prev_key()),
-            )
+            .put(key.get_key(), serial_value, option)
             .await
             .with_context(|| "failed to put at `MetaTxn::set`".to_owned())?;
         if let Some(pre_kv) = resp.take_prev_key() {
@@ -996,11 +767,28 @@ impl KVEngine for EtcdKVEngine {
     }
 
     /// Delete the kv pair by the key.
-    async fn delete(&self, key: &KeyType) -> DatenLordResult<Option<ValueType>> {
+    async fn delete(
+        &self,
+        key: &KeyType,
+        option: Option<DeleteOption>,
+    ) -> DatenLordResult<Option<ValueType>> {
+        let option = match option {
+            Some(option) => {
+                let mut delete_option = DeleteOptions::new();
+                if option.prev_kv {
+                    delete_option = delete_option.with_prev_key();
+                }
+                if let Some(range_end) = option.range_end {
+                    delete_option = delete_option.with_range(range_end);
+                }
+                Some(delete_option)
+            }
+            None => None,
+        };
         let resp = self
             .client
             .kv_client()
-            .delete(key.get_key(), Some(DeleteOptions::new().with_prev_key()))
+            .delete(key.get_key(), option)
             .await
             .with_context(|| format!("failed to get DeleteResponse from etcd for key={key:?}"))?;
         if let Some(pre_kv) = resp.prev_kvs().first() {
@@ -1016,17 +804,45 @@ impl KVEngine for EtcdKVEngine {
 #[allow(clippy::unwrap_used)]
 mod test {
 
+    use std::time::Instant;
+
     use super::*;
     use crate::common::error::DatenLordError;
 
     const ETCD_ADDRESS: &str = "localhost:2379";
 
     #[tokio::test]
-    async fn test_key_serial() {
-        let key = KeyType::INum2Attr(1).get_key();
-        assert_eq!(key.len(), 10);
-        let key = KeyType::IdAllocatorValue { unique_id: 0 }.get_key();
-        assert_eq!(key.len(), 3);
+    async fn test_lock_unlock() {
+        let test_key = "TEST_LOCK_UNLOCK";
+        let client = EtcdKVEngine::new_for_local_test(vec![ETCD_ADDRESS.to_owned()])
+            .await
+            .unwrap();
+        let key: Vec<u8> = Vec::from(test_key);
+        let key = LockKeyType::FileNodeListLock(key);
+        let lock_key = client.lock(&key, Duration::from_secs(9999)).await.unwrap();
+        // start a new thread to lock the same key
+        // to check that lock the same key will be blocked
+        // the first lock will be unlock after 5 seconds
+        // if the second lock the same key ,it will be blocked until the first lock unlock
+        let lock_time = Duration::from_secs(5);
+        let time_now = Instant::now();
+        let handle = tokio::spawn(async move {
+            let client2 = EtcdKVEngine::new_for_local_test(vec![ETCD_ADDRESS.to_owned()])
+                .await
+                .unwrap();
+            // the time it takes to lock the same key should be greater than 5 seconds
+            // check the time duration
+            let time_duration = Instant::now().duration_since(time_now).as_secs();
+            assert!(time_duration >= lock_time.as_secs());
+            let key: Vec<u8> = Vec::from(test_key);
+            let key = LockKeyType::FileNodeListLock(key);
+            let lock_key = client2.lock(&key, Duration::from_secs(9999)).await.unwrap();
+            client2.unlock(lock_key).await.unwrap();
+        });
+        // sleep 5 second to make sure the second lock is blocked
+        tokio::time::sleep(lock_time).await;
+        client.unlock(lock_key).await.unwrap();
+        handle.await.unwrap();
     }
 
     #[tokio::test]

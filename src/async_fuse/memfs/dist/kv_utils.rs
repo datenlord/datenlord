@@ -7,6 +7,9 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
+/// The kv lock 's timeout
+const LOCK_TIME_OUT_SECS: u64 = 10;
+
 /// Register current node to etcd.
 /// The registered information contains IP.
 pub async fn register_node_id(
@@ -54,37 +57,20 @@ pub async fn register_volume(
     kv_engine: &Arc<KVEngineType>,
     node_id: &str,
     volume_info: &str,
-) -> anyhow::Result<()> {
-    let _lock_key = kv_engine
-        .lock(&LockKeyType::VolumeInfoLock, Duration::from_secs(10), None)
-        .await?;
+) -> DatenLordResult<()> {
+    let lock_key = kv_engine
+        .lock(
+            &LockKeyType::VolumeInfoLock,
+            Duration::from_secs(LOCK_TIME_OUT_SECS),
+        )
+        .await
+        .with_context(|| "lock fail while register volume")?;
 
-    let _volume_info_key = volume_info.to_owned();
     let volume_node_list = kv_engine
         .get(&KeyType::VolumeInfo(volume_info.to_owned()))
-        .await?
+        .await
+        .with_context(|| format!("Fail to get volume node list for volume {volume_info:?}",))?
         .map(kv_engine::ValueType::into_raw);
-
-    /*
-    let new_volume_node_list = if let Some(node_list) = volume_node_list {
-        let mut node_set: HashSet<String> = bincode::deserialize(node_list.as_slice())
-            .unwrap_or_else(|e| {
-                panic!(
-                    "fail to deserialize node list for volume {:?}, error: {}",
-                    volume_info, e
-                );
-            });
-        if !node_set.contains(node_id) {
-            node_set.insert(node_id.to_owned());
-        }
-
-        node_set
-    } else {
-        let mut hash = HashSet::new();
-        hash.insert(node_id.to_owned());
-        hash
-    };
-    */
 
     let new_volume_node_list = volume_node_list.map_or_else(
         || {
@@ -115,10 +101,13 @@ pub async fn register_volume(
             &ValueType::Raw(volume_node_list_bin.clone()),
             None,
         )
-        .await?;
+        .await
+        .with_context(|| {
+            format!("Fail to register volume {volume_info:?} to etcd, node_id:{node_id}",)
+        })?;
 
     kv_engine
-        .unlock(&LockKeyType::VolumeInfoLock)
+        .unlock(lock_key)
         .await
         .with_context(|| "unlock fail while register volume")?;
 
@@ -131,11 +120,12 @@ pub async fn get_volume_nodes(
     kv_engine: &Arc<KVEngineType>,
     node_id: &str,
     volume_info: &str,
-) -> anyhow::Result<HashSet<String>> {
+) -> DatenLordResult<HashSet<String>> {
     let volume_info_key = volume_info.to_owned();
     let volume_node_list: Option<Vec<u8>> = kv_engine
         .get(&KeyType::VolumeInfo(volume_info_key.clone()))
-        .await?
+        .await
+        .with_context(|| format!("Fail to get volume node list for volume {volume_info:?}",))?
         .map(kv_engine::ValueType::into_raw);
 
     let new_volume_node_list = if let Some(node_list) = volume_node_list {
@@ -164,18 +154,17 @@ async fn modify_file_node_list<F: Fn(Option<Vec<u8>>) -> HashSet<String>>(
     kv_engine: &Arc<KVEngineType>,
     file_name: &[u8],
     fun: F,
-) -> anyhow::Result<()>
+) -> DatenLordResult<()>
 where
     F: Send,
 {
     let file_lock_key = file_name.to_vec();
 
     // FIXME : lock key should be a string
-    let _lock_key = kv_engine
+    let lock_key = kv_engine
         .lock(
             &LockKeyType::FileNodeListLock(file_lock_key.clone()),
-            Duration::from_secs(10),
-            None,
+            Duration::from_secs(LOCK_TIME_OUT_SECS),
         )
         .await
         .with_context(|| "lock fail update file node list")?;
@@ -185,7 +174,8 @@ where
 
     let node_list: Option<Vec<u8>> = kv_engine
         .get(&KeyType::FileNodeList(node_list_key))
-        .await?
+        .await
+        .with_context(|| format!("fail to get node list for file {file_name:?}",))?
         .map(kv_engine::ValueType::into_raw);
 
     let new_node_list = fun(node_list);
@@ -194,17 +184,17 @@ where
         panic!("fail to serialize node list for file {file_name:?}, error: {e}")
     });
 
-    let _node_list_key_clone_2 = node_list_key_clone.clone();
     kv_engine
         .set(
             &KeyType::FileNodeList(node_list_key_clone),
             &ValueType::Raw(node_list_bin.clone()),
             None,
         )
-        .await?;
+        .await
+        .with_context(|| format!("fail to set node list for file {file_name:?}"))?;
 
     kv_engine
-        .unlock(&LockKeyType::FileNodeListLock(file_lock_key))
+        .unlock(lock_key)
         .await
         .with_context(|| "unlock fail while update file node list")?;
 
@@ -216,7 +206,7 @@ pub async fn add_node_to_file_list(
     kv_engine: &Arc<KVEngineType>,
     node_id: &str,
     file_name: &[u8],
-) -> anyhow::Result<()> {
+) -> DatenLordResult<()> {
     let add_node_fun = |node_list: Option<Vec<u8>>| -> HashSet<String> {
         node_list.map_or_else(
             || {
@@ -247,7 +237,7 @@ pub async fn remove_node_from_file_list(
     kv_engine: &Arc<KVEngineType>,
     node_id: &str,
     file_name: &[u8],
-) -> anyhow::Result<()> {
+) -> DatenLordResult<()> {
     let remove_node_fun = |node_list: Option<Vec<u8>>| -> HashSet<String> {
         match node_list {
             Some(list) => {
