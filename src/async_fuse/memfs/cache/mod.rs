@@ -6,7 +6,8 @@ use lockfree_cuckoohash::{pin, LockFreeCuckooHash as HashMap};
 use log::debug;
 use nix::sys::uio::IoVec;
 // TODO: use smol RwLock
-use super::dist::{kv_utils, request::Index};
+use super::dist::request::Index;
+use super::kv_engine::kv_utils::{add_node_to_file_list, remove_node_from_file_list};
 use super::kv_engine::KVEngineType;
 use clippy_utilities::{Cast, OverflowArithmetic};
 use parking_lot::{Mutex, RwLock};
@@ -483,8 +484,7 @@ impl GlobalCache {
         if !exist {
             if let Some(ref kv_engine) = self.kv_engine {
                 if let Some(ref id) = self.node_id {
-                    if let Err(e) = kv_utils::add_node_to_file_list(kv_engine, id, file_name).await
-                    {
+                    if let Err(e) = add_node_to_file_list(kv_engine, id, file_name).await {
                         panic!("Cannot add node {id} to file {file_name:?} node list, error: {e}");
                     }
                 }
@@ -682,8 +682,7 @@ impl GlobalCache {
     pub(crate) async fn remove_file_cache(&self, file_name: &[u8]) -> bool {
         if let Some(ref kv_engine) = self.kv_engine {
             if let Some(ref id) = self.node_id {
-                if let Err(e) = kv_utils::remove_node_from_file_list(kv_engine, id, file_name).await
-                {
+                if let Err(e) = remove_node_from_file_list(kv_engine, id, file_name).await {
                     panic!("Cannot remove node {id} to file {file_name:?} node list, error: {e}");
                 }
             }

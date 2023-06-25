@@ -41,14 +41,15 @@ pub async fn get_node_ip_and_port(
 ) -> DatenLordResult<String> {
     let ip_and_port = kv_engine
         .get(&KeyType::NodeIpPort(node_id.to_owned()))
-        .await?;
+        .await
+        .with_context(|| format!("Fail to get node {node_id} ip and port",))?;
     if let Some(value) = ip_and_port {
         let ip_and_port = value.into_string();
         debug!("node {} ip and port is {}", node_id, ip_and_port);
         Ok(ip_and_port)
     } else {
         debug!("node {} missing ip and port information", node_id);
-        panic!("Ip and port is not registered for Node {node_id}")
+        Err(anyhow::anyhow!("node {} missing ip and port information", node_id).into())
     }
 }
 
