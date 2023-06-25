@@ -32,6 +32,18 @@ impl Debug for EtcdKVEngine {
 }
 
 impl EtcdKVEngine {
+    #[allow(dead_code)]
+    /// For local test, we need to create a new etcd kv engine locally.
+    async fn new_for_local_test(etcd_address_vec: Vec<String>) -> DatenLordResult<Self> {
+        let client = etcd_client::Client::connect(etcd_address_vec.clone(), None)
+            .await
+            .with_context(|| {
+                format!("failed to connect to etcd, the etcd address={etcd_address_vec:?}")
+            })?;
+        Ok(EtcdKVEngine { client })
+    }
+
+    #[allow(dead_code)]
     #[must_use]
     /// Create a new etcd kv engine.
     pub fn new_kv_engine(etcd_client: etcd_client::Client) -> Arc<Self> {
@@ -91,6 +103,7 @@ impl KVEngine for EtcdKVEngine {
     }
 
     /// Distribute lock - lock
+    /// - `timeout_sec` should be >=1s
     /// - `timeout_sec` should be >=1s
     async fn lock(&self, key: &LockKeyType, timeout_sec: Duration) -> DatenLordResult<Vec<u8>> {
         let mut client = self.client.clone();
@@ -325,20 +338,10 @@ mod test {
 
     const ETCD_ADDRESS: &str = "localhost:2379";
 
-    #[cfg(test)]
-    async fn new_for_local_test(etcd_address_vec: Vec<String>) -> DatenLordResult<EtcdKVEngine> {
-        let client = etcd_client::Client::connect(etcd_address_vec.clone(), None)
-            .await
-            .with_context(|| {
-                format!("failed to connect to etcd, the etcd address={etcd_address_vec:?}")
-            })?;
-        Ok(EtcdKVEngine { client })
-    }
-
     #[tokio::test]
     async fn test_lock_unlock() {
         let test_key = "TEST_LOCK_UNLOCK";
-        let client = new_for_local_test(vec![ETCD_ADDRESS.to_owned()])
+        let client = EtcdKVEngine::new_for_local_test(vec![ETCD_ADDRESS.to_owned()])
             .await
             .unwrap();
         let key: Vec<u8> = Vec::from(test_key);
@@ -351,7 +354,7 @@ mod test {
         let lock_time = Duration::from_secs(5);
         let time_now = Instant::now();
         let handle = tokio::spawn(async move {
-            let client2 = new_for_local_test(vec![ETCD_ADDRESS.to_owned()])
+            let client2 = EtcdKVEngine::new_for_local_test(vec![ETCD_ADDRESS.to_owned()])
                 .await
                 .unwrap();
             // the time it takes to lock the same key should be greater than 5 seconds
@@ -371,7 +374,7 @@ mod test {
 
     #[tokio::test]
     async fn test_connect_local() {
-        let client = new_for_local_test(vec![ETCD_ADDRESS.to_owned()])
+        let client = EtcdKVEngine::new_for_local_test(vec![ETCD_ADDRESS.to_owned()])
             .await
             .unwrap();
         // insert a key , and then get it , and then delete it, and then get it again
@@ -393,7 +396,7 @@ mod test {
         // And the third one will set two keys and commit
         // What we expect is that the second one will fail
         // Between it's read ,the third one will set the same key
-        let client = new_for_local_test(vec![ETCD_ADDRESS.to_owned()])
+        let client = EtcdKVEngine::new_for_local_test(vec![ETCD_ADDRESS.to_owned()])
             .await
             .unwrap();
         let mut first_txn = client.new_meta_txn().await;
@@ -411,7 +414,7 @@ mod test {
         let (second_step_tx, mut second_step_rx) = tokio::sync::mpsc::channel(1);
         let second_handle = tokio::spawn(async move {
             let result = retry_txn!(1, {
-                let client = new_for_local_test(vec![ETCD_ADDRESS.to_owned()])
+                let client = EtcdKVEngine::new_for_local_test(vec![ETCD_ADDRESS.to_owned()])
                     .await
                     .unwrap();
                 let mut second_txn = client.new_meta_txn().await;
@@ -445,7 +448,7 @@ mod test {
             }
         });
         let third_handle = tokio::spawn(async move {
-            let client = new_for_local_test(vec![ETCD_ADDRESS.to_owned()])
+            let client = EtcdKVEngine::new_for_local_test(vec![ETCD_ADDRESS.to_owned()])
                 .await
                 .unwrap();
             let mut third_txn = client.new_meta_txn().await;
@@ -465,7 +468,7 @@ mod test {
     #[tokio::test]
     async fn test_txn_retry() {
         let result = retry_txn!(3, {
-            let client = new_for_local_test(vec![ETCD_ADDRESS.to_owned()])
+            let client = EtcdKVEngine::new_for_local_test(vec![ETCD_ADDRESS.to_owned()])
                 .await
                 .unwrap();
             let mut txn = client.new_meta_txn().await;
