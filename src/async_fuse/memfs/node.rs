@@ -714,7 +714,7 @@ impl Node for DefaultNode {
 
         let need_load = match self.data {
             DefaultNodeData::RegFile(ref cache) => {
-                let file_cache = cache.get_file_cache(self.full_path.as_bytes(), offset, len);
+                let file_cache = cache.get_file_cache(self.get_ino(), offset, len);
                 let cache_miss = file_cache.is_empty()
                     || file_cache.iter().filter(|b| !(*b).can_convert()).count() != 0;
                 if cache_miss {
@@ -1001,7 +1001,7 @@ impl Node for DefaultNode {
                 .context("open_child_file() failed to get the attribute of the new child")?;
             debug_assert_eq!(SFlag::S_IFREG, child_attr_.kind);
             child_attr.write().clone_from(&child_attr_);
-        }
+        };
 
         let mut full_path = self.full_path().to_owned();
         full_path.push_str(child_file_name);
@@ -1120,7 +1120,7 @@ impl Node for DefaultNode {
 
                 global_cache
                     .write_or_update(
-                        self.full_path.as_bytes(),
+                        self.get_ino(),
                         aligned_offset,
                         read_size,
                         &file_data_vec,
@@ -1271,7 +1271,7 @@ impl Node for DefaultNode {
                 panic!("forbidden to load FileData from non-file node")
             }
             DefaultNodeData::RegFile(ref cache) => {
-                cache.get_file_cache(self.full_path.as_bytes(), offset, len)
+                cache.get_file_cache(self.get_ino(), offset, len)
             }
         }
     }
@@ -1310,7 +1310,7 @@ impl Node for DefaultNode {
 
         cache
             .write_or_update(
-                self.full_path.as_bytes(),
+                self.get_ino(),
                 offset.cast(),
                 data.len(),
                 data.as_slice(),
@@ -1341,7 +1341,7 @@ impl Node for DefaultNode {
                 (offset.cast::<u64>()).overflow_add(written_size.cast()),
             );
             debug!("file {:?} size = {:?}", self.name, attr_write.size);
-        }
+        };
         self.update_mtime_ctime_to_now();
 
         Ok(written_size)
@@ -1564,12 +1564,11 @@ pub fn rename_fullpath_recursive(
             )
         });
         child_node.set_parent_ino(parent);
-        let old_path = child_node.full_path();
         let new_path = match child_node.data {
             DefaultNodeData::Directory(ref dir_data) => {
-                dir_data.values().into_iter().for_each(|grandchild_node| {
+                for grandchild_node in dir_data.values() {
                     node_pool.push_back((grandchild_node.ino(), child));
-                });
+                }
                 parent_path.push_str(child_node.get_name());
                 parent_path.push('/');
                 parent_path
@@ -1580,9 +1579,6 @@ pub fn rename_fullpath_recursive(
             }
         };
 
-        if let DefaultNodeData::RegFile(ref global_cache) = child_node.data {
-            global_cache.rename(old_path.as_bytes(), new_path.as_bytes());
-        }
         child_node.set_full_path(new_path);
     }
 }

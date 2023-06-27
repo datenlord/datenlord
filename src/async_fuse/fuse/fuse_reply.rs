@@ -712,7 +712,7 @@ impl ReplyDirectory {
             // set len
             let new_len = self.data.len().wrapping_add(padlen);
             self.data.set_len(new_len);
-        }
+        };
 
         false
     }

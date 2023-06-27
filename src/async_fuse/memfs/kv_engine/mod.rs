@@ -131,7 +131,7 @@ pub enum KeyType {
     VolumeInfo(String),
     /// Node list
     /// The corresponding value type is ValueType::RawData
-    FileNodeList(Vec<u8>),
+    FileNodeList(INum),
 }
 
 // ::<KeyType>::get() -> ValueType
@@ -144,7 +144,7 @@ pub enum LockKeyType {
     /// ETCD volume information lock
     VolumeInfoLock,
     /// ETCD file node list lock
-    FileNodeListLock(Vec<u8>),
+    FileNodeListLock(INum),
 }
 
 impl Display for KeyType {

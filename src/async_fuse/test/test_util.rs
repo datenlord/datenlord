@@ -27,16 +27,37 @@ pub const TEST_ETCD_ENDPOINT: &str = "127.0.0.1:2379";
 const CACHE_DEFAULT_CAPACITY: usize = 1024 * 1024 * 1024;
 
 pub async fn setup(mount_dir: &Path, is_s3: bool) -> anyhow::Result<tokio::task::JoinHandle<()>> {
-    let _log_init_res = env_logger::try_init();
+    use env_logger::Builder;
+    use log::LevelFilter;
 
+    let mut builder = Builder::new();
+    builder.filter(None, LevelFilter::Debug); // 设置全局日志级别为info
+    builder.filter_module("h2", LevelFilter::Off); // 过滤掉特定模块的日志
+    builder.filter_module("tower", LevelFilter::Off);
+    builder.filter_module("typer", LevelFilter::Off);
+    builder.filter_module("datenlord::async_fuse::fuse::session", LevelFilter::Off);
+    let _ = builder.try_init();
+    debug!("setup started with mount_dir: {:?}", mount_dir);
     if mount_dir.exists() {
+        debug!("mount_dir {:?} exists ,try umount", mount_dir);
         let result = mount::umount(mount_dir).await;
         if result.is_ok() {
-            debug!("umounted {:?} before setup", mount_dir);
+            debug!("Successfully umounted {:?} before setup", mount_dir);
+        } else {
+            info!(
+                "Failed to umount {:?}, reason: {:?}",
+                mount_dir,
+                result.err()
+            );
         }
-
-        fs::remove_dir_all(mount_dir)?;
+        debug!("remove mount_dir {:?} before setup", mount_dir);
+        if let Err(e) = fs::remove_dir_all(mount_dir) {
+            info!("Failed to remove mount_dir {:?}, reason: {}", mount_dir, e);
+            return Err(e.into());
+        }
     }
+
+    debug!("Creating directory {:?}", mount_dir);
     fs::create_dir_all(mount_dir)?;
     let abs_root_path = fs::canonicalize(mount_dir)?;
 
@@ -92,16 +113,18 @@ pub async fn setup(mount_dir: &Path, is_s3: bool) -> anyhow::Result<tokio::task:
             );
         }
     });
-    // do not block main thread
+
+    debug!("Spawning main thread");
     let th = tokio::task::spawn(async {
         fs_task.await.unwrap_or_else(|e| {
             panic!("fs_task failed to join for error {e}");
         });
         debug!("spawned a thread for futures::executor::block_on()");
     });
+
     debug!("async_fuse task spawned");
     let seconds = 2;
-    debug!("sleep {} seconds for setup", seconds);
+    info!("sleeping {} seconds for setup", seconds);
     tokio::time::sleep(Duration::new(seconds, 0)).await;
 
     info!("setup finished");
