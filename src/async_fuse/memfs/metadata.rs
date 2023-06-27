@@ -21,8 +21,8 @@ use nix::sys::stat::SFlag;
 use nix::unistd;
 use parking_lot::RwLock as SyncRwLock; // conflict with tokio RwLock
 use std::collections::BTreeMap;
+use std::os::unix::ffi::OsStringExt;
 use std::os::unix::io::RawFd;
-use std::os::unix::prelude::OsStringExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -87,10 +87,6 @@ pub trait MetaData {
 
     /// Helper function of fsync
     async fn fsync_helper(&self, ino: u64, fh: u64, datasync: bool) -> DatenLordResult<()>;
-
-    // TODO: Should hide this implementation detail
-    /// Get metadata cache
-    fn cache(&self) -> &RwLock<BTreeMap<INum, Self::N>>;
 
     /// Try to delete node that is marked as deferred deletion
     async fn try_delete_node(&self, ino: INum) -> bool;
@@ -160,7 +156,7 @@ pub trait MetaData {
         ino: u64,
         fh: u64,
         offset: i64,
-        mut reply: ReplyDirectory,
+        reply: ReplyDirectory,
     ) -> nix::Result<usize>;
 
     /// Helper function to release
@@ -204,7 +200,7 @@ impl MetaData for DefaultMetaData {
                 ino,
                 inode.get_name(),
             );
-        }
+        };
         self.try_delete_node(ino).await;
     }
 
@@ -251,7 +247,7 @@ impl MetaData for DefaultMetaData {
             if let Err(e) = load_res {
                 debug!(
                     "readdir() failed to load the data for directory of ino={} and name={:?}, \
-                        the error is: {}",
+                        the error is: {:?}",
                     ino,
                     inode.get_name(),
                     e
@@ -325,7 +321,7 @@ impl MetaData for DefaultMetaData {
                 );
             });
             node.closedir(ino, fh).await;
-        }
+        };
         self.try_delete_node(ino).await;
     }
 
@@ -357,7 +353,7 @@ impl MetaData for DefaultMetaData {
             let load_res = inode.load_data(offset.cast(), size.cast()).await;
             if let Err(e) = load_res {
                 debug!(
-                    "read() failed to load file data of ino={} and name={:?}, the error is: {}",
+                    "read() failed to load file data of ino={} and name={:?}, the error is: {:?}",
                     ino,
                     inode.get_name(),
                     e,
@@ -433,7 +429,7 @@ impl MetaData for DefaultMetaData {
                 previous_count,
                 current_count,
             );
-        }
+        };
         self.try_delete_node(ino).await;
     }
 
@@ -470,7 +466,7 @@ impl MetaData for DefaultMetaData {
             }
             Err(e) => {
                 debug!(
-                    "setattr() failed to set the attribute of ino={} and name={:?}, the error is: {}",
+                    "setattr() failed to set the attribute of ino={} and name={:?}, the error is: {:?}",
                     ino,
                     inode.get_name(),
                     e,
@@ -548,11 +544,6 @@ impl MetaData for DefaultMetaData {
         (meta, None, vec![])
     }
 
-    /// Get metadata cache
-    fn cache(&self) -> &RwLock<BTreeMap<INum, Self::N>> {
-        &self.cache
-    }
-
     /// Set fuse fd into `MetaData`
     async fn set_fuse_fd(&self, fuse_fd: RawFd) {
         *self.fuse_fd.lock().await = fuse_fd;
@@ -579,9 +570,7 @@ impl MetaData for DefaultMetaData {
             );
             if let Some(inode) = cache.remove(&ino) {
                 if let SFlag::S_IFREG = inode.get_type() {
-                    self.data_cache
-                        .remove_file_cache(inode.get_full_path().as_bytes())
-                        .await;
+                    self.data_cache.remove_file_cache(inode.get_ino()).await;
                 }
             }
 
@@ -804,7 +793,7 @@ impl MetaData for DefaultMetaData {
         let (ino, child_type, child_attr) = match pre_check_res {
             Ok((ino, child_type, child_attr)) => (ino, child_type, child_attr),
             Err(e) => {
-                debug!("lookup() failed to pre-check, the error is: {}", e);
+                debug!("lookup() failed to pre-check, the error is: {:?}", e);
                 return Err(e);
             }
         };
@@ -910,7 +899,7 @@ impl MetaData for DefaultMetaData {
                 (old_parent_fd, old_entry_ino, new_parent_fd, new_entry_ino)
             }
             Err(e) => {
-                debug!("rename() pre-check failed, the error is: {}", e);
+                debug!("rename() pre-check failed, the error is: {:?}", e);
                 return Err(e);
             }
         };
@@ -1008,7 +997,7 @@ impl MetaData for DefaultMetaData {
                 (old_parent_fd, old_entry_ino, new_parent_fd, new_entry_ino)
             }
             Err(e) => {
-                debug!("rename() pre-check failed, the error is: {}", e);
+                debug!("rename() pre-check failed, the error is: {:?}", e);
                 return Err(e);
             }
         };
@@ -1069,7 +1058,7 @@ impl MetaData for DefaultMetaData {
                 the to i-node of ino={} and name={:?} under to parent ino={}",
                 old_entry_ino, old_name, old_parent, old_entry_ino, new_name, new_parent,
             );
-        }
+        };
 
         let rename_replace_res = self
             .rename_in_cache_helper(old_parent, &old_name, new_parent, &new_name)
@@ -1438,5 +1427,10 @@ impl DefaultMetaData {
             )
         });
         new_parent_node.insert_entry_for_rename(entry_to_move)
+    }
+
+    /// Get metadata cache
+    fn cache(&self) -> &RwLock<BTreeMap<INum, DefaultNode>> {
+        &self.cache
     }
 }

@@ -299,14 +299,14 @@ impl Proactor {
 
         {
             let inner = Arc::clone(&inner);
-            tokio::task::spawn(async move { Self::submitter(&mut sq, &mut rx, &inner).await });
-        }
+            tokio::task::spawn(async move { Self::submitter(&mut sq, &mut rx, &inner).await })
+        };
         {
             let inner = Arc::clone(&inner);
             // using tokio::task::spawn / spawn_blocking here would cause deadlock
             // `Self::completer` is pure non-async routine
-            thread::spawn(move || Self::completer(&mut cq, &inner));
-        }
+            thread::spawn(move || Self::completer(&mut cq, &inner))
+        };
 
         Ok(Self { inner })
     }
@@ -366,7 +366,9 @@ impl Proactor {
             while let Some(cqe) = cq.peek_cqe() {
                 Self::complete(cqe, pool);
                 cqes_cnt = cqes_cnt.wrapping_add(1);
-                unsafe { cq.advance_unchecked(1) };
+                unsafe {
+                    cq.advance_unchecked(1);
+                }
             }
             trace!("completer completed {} cqes", cqes_cnt);
 

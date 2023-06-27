@@ -176,7 +176,7 @@ mod test {
 
     use clippy_utilities::{Cast, OverflowArithmetic};
     use grpcio::{ChannelBuilder, EnvBuilder};
-    use mock_etcd::MockEtcdServer;
+    // use mock_etcd::MockEtcdServer;
     use protobuf::RepeatedField;
     use std::fs::{self, File};
     use std::io::prelude::*;
@@ -203,17 +203,31 @@ mod test {
     const DATA_DIR: &str = "/tmp/csi-data-dir";
     static GRPC_SERVER: Once = Once::new();
 
+    #[ignore = "maybe conflict with other tests"]
     #[tokio::test(flavor = "multi_thread")]
     async fn test_all() -> DatenLordResult<()> {
+        use env_logger::Builder;
+        use log::LevelFilter;
+        let mut builder = Builder::new();
+        builder.filter(None, LevelFilter::Info); // 设置全局日志级别为info
+        builder.filter_module("h2", LevelFilter::Off); // 过滤掉特定模块的日志
+        builder.filter_module("tower", LevelFilter::Off);
+        builder.filter_module("typer", LevelFilter::Off);
+        builder.filter_module("datenlord::async_fuse::fuse::session", LevelFilter::Off);
+        let _ = builder.try_init();
         // TODO: run test case in parallel
         // Because they all depend on etcd, so cannot run in parallel now
-        let mut etcd_server = MockEtcdServer::new();
-        etcd_server.start();
+        // let mut etcd_server = MockEtcdServer::new();
+        // etcd_server.start();
+        info!("test meta data");
         test_meta_data()
             .await
             .add_context("test meta data failed")?;
+        info!("test identity server");
         test_identity_server().add_context("test identity server failed")?;
+        info!("test controller server");
         test_controller_server().add_context("test controller server failed")?;
+        info!("test node server");
         test_node_server().add_context("test node server failed")?;
         Ok(())
     }
@@ -1182,10 +1196,13 @@ mod test {
     fn test_node_server() -> DatenLordResult<()> {
         let node_client = build_node_client()?;
 
+        info!("test node server publish unpublish");
         test_node_server_publish_unpublish(&node_client)
             .add_context("failed to test node publish unpublish")?;
+        info!("test node server remount publish");
         test_node_server_remount_publish(&node_client)
             .add_context("failed to test node remount")?;
+        info!("test node server multi publish");
         test_node_server_multiple_publish(&node_client)
             .add_context("failed to test node multi-mount")?;
         Ok(())

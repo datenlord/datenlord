@@ -1,6 +1,7 @@
 //! This is the cache implementation for the memfs
 
 use crate::async_fuse::fuse::fuse_reply::{AsIoVec, CouldBeAsIoVecList};
+use crate::async_fuse::fuse::protocol::INum;
 use aligned_utils::bytes::AlignedBytes;
 use lockfree_cuckoohash::{pin, LockFreeCuckooHash as HashMap};
 use log::debug;
@@ -12,11 +13,9 @@ use super::kv_engine::KVEngineType;
 use clippy_utilities::{Cast, OverflowArithmetic};
 use parking_lot::{Mutex, RwLock};
 use priority_queue::PriorityQueue;
-use std::ffi::OsStr;
 use std::fmt::{Debug, Error, Formatter};
 use std::hash::{Hash, Hasher};
 use std::ops::Deref;
-use std::os::unix::ffi::OsStrExt;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
@@ -37,7 +36,7 @@ const GLOBAL_CACHE_DEFAULT_CAPACITY: usize = 10 * 1024 * 1024 * 1024;
 /// A mapping from file name to per-file memory block mapping
 pub struct GlobalCache {
     /// Map from file identifier to cache content map
-    inner: HashMap<Vec<u8>, HashMap<usize, MemBlockBucket>>,
+    inner: HashMap<INum, HashMap<usize, MemBlockBucket>>,
     /// Priority queue to track bucket usage
     queue: Mutex<PriorityQueue<MemBlockBucket, i64>>,
     /// The current size of this global cache in byte
@@ -131,15 +130,6 @@ impl GlobalCache {
         }
     }
 
-    /// Currently just remove the `old_key` cache
-    pub(crate) fn rename(&self, old_key: &[u8], _new_key: &[u8]) {
-        let guard = pin();
-
-        if self.inner.get(old_key, &guard).is_some() {
-            let _ = self.inner.remove(old_key);
-        }
-    }
-
     /// Get the aligment of this cache
     #[inline]
     pub(crate) const fn get_align(&self) -> usize {
@@ -160,12 +150,12 @@ impl GlobalCache {
     #[allow(dead_code)]
     pub(crate) fn get_file_cache(
         &self,
-        file_name: &[u8],
+        file_ino: INum,
         offset: usize,
         len: usize,
     ) -> Vec<IoMemBlock> {
         let guard = pin();
-        let Some(file_cache) = self.inner.get(file_name, &guard) else { return vec![] };
+        let Some(file_cache) = self.inner.get(&file_ino, &guard) else { return vec![] };
 
         if len == 0 {
             return vec![];
@@ -259,12 +249,12 @@ impl GlobalCache {
     }
 
     /// Invalidate file's cache
-    pub(crate) fn invalidate(&self, file_name: &[u8], index: Vec<Index>) {
+    pub(crate) fn invalidate(&self, file_ino: INum, index: Vec<Index>) {
         let guard = pin();
-        let Some(file_cache) = self.inner.get(file_name, &guard) else {
+        let Some(file_cache) = self.inner.get(&file_ino, &guard) else {
             debug!(
                 "cache for {:?} is empty, don't need to invalidate",
-                OsStr::from_bytes(file_name)
+                file_ino
             );
             return;
         };
@@ -307,16 +297,12 @@ impl GlobalCache {
     }
 
     /// Check if file is available in cache
-    pub(crate) fn check_available(
-        &self,
-        file_name: &[u8],
-        index: Vec<Index>,
-    ) -> (Vec<Index>, bool) {
+    pub(crate) fn check_available(&self, file_ino: INum, index: Vec<Index>) -> (Vec<Index>, bool) {
         let guard = pin();
-        let Some(file_cache) = self.inner.get(file_name, &guard) else {
+        let Some(file_cache) = self.inner.get(&file_ino, &guard) else {
             debug!(
                 "cache for {:?} is empty, don't need to invalidate",
-                OsStr::from_bytes(file_name)
+                file_ino,
             );
             return (vec![], false);
         };
@@ -392,12 +378,12 @@ impl GlobalCache {
     }
 
     /// Read file from cache
-    pub(crate) fn read(&self, file_name: &[u8], index: Vec<Index>) -> Vec<IoMemBlock> {
+    pub(crate) fn read(&self, file_ino: INum, index: Vec<Index>) -> Vec<IoMemBlock> {
         let guard = pin();
-        let Some(file_cache) = self.inner.get(file_name, &guard) else {
+        let Some(file_cache) = self.inner.get(&file_ino, &guard) else {
             debug!(
                 "cache for {:?} is empty, don't need to invalidate",
-                OsStr::from_bytes(file_name)
+                file_ino,
             );
             return vec![];
         };
@@ -474,18 +460,18 @@ impl GlobalCache {
     /// 2. `len` should be multiple times of `MemoryBlock` Size unless it contains the file's last `MemoryBlock`.
     pub(crate) async fn write_or_update(
         &self,
-        file_name: &[u8],
+        file_ino: INum,
         offset: usize,
         len: usize,
         buf: &[u8],
         overwrite: bool,
     ) {
-        let exist = self.write_or_update_helper(file_name, offset, len, buf, overwrite);
+        let exist = self.write_or_update_helper(file_ino, offset, len, buf, overwrite);
         if !exist {
             if let Some(ref kv_engine) = self.kv_engine {
                 if let Some(ref id) = self.node_id {
-                    if let Err(e) = add_node_to_file_list(kv_engine, id, file_name).await {
-                        panic!("Cannot add node {id} to file {file_name:?} node list, error: {e}");
+                    if let Err(e) = add_node_to_file_list(kv_engine, id, file_ino).await {
+                        panic!("Cannot add node {id} to file {file_ino:?} node list, error: {e}");
                     }
                 }
             }
@@ -499,26 +485,22 @@ impl GlobalCache {
     #[allow(clippy::too_many_lines)]
     fn write_or_update_helper(
         &self,
-        file_name: &[u8],
+        file_ino: INum,
         offset: usize,
         len: usize,
         buf: &[u8],
         overwrite: bool,
     ) -> bool {
         let guard = pin();
-        let (exist, file_cache) = if let Some(cache) = self.inner.get(file_name, &guard) {
+        let (exist, file_cache) = if let Some(cache) = self.inner.get(&file_ino, &guard) {
             (true, cache)
         } else {
-            debug!(
-                "cache for {:?} is empty, create one",
-                OsStr::from_bytes(file_name)
-            );
+            debug!("cache for {:?} is empty, create one", file_ino);
             // Here maybe a racing case where two thread are updating the cache
-            self.inner.insert(file_name.to_vec(), HashMap::new());
-            let file_cache = self.inner.get(file_name, &guard).unwrap_or_else(|| {
+            self.inner.insert(file_ino, HashMap::new());
+            let file_cache = self.inner.get(&file_ino, &guard).unwrap_or_else(|| {
                 panic!(
-                    "Just insert a file cache ({:?}) into global cache mapping, but cannot get it.",
-                    OsStr::from_bytes(file_name)
+                    "Just insert a file cache ({file_ino:?}) into global cache mapping, but cannot get it."
                 )
             });
 
@@ -617,8 +599,7 @@ impl GlobalCache {
                 // Here might be a racing case
                 debug!(
                     "memory_block_bucket for file {:?} index {} is empty, create one",
-                    OsStr::from_bytes(file_name),
-                    start_key
+                    file_ino, start_key
                 );
                 debug!("start offset {}, end offset {}", s, l);
                 let bucket = MemBlockBucket::new();
@@ -679,15 +660,15 @@ impl GlobalCache {
     }
 
     /// Remove file cache
-    pub(crate) async fn remove_file_cache(&self, file_name: &[u8]) -> bool {
+    pub(crate) async fn remove_file_cache(&self, file_ino: INum) -> bool {
         if let Some(ref kv_engine) = self.kv_engine {
             if let Some(ref id) = self.node_id {
-                if let Err(e) = remove_node_from_file_list(kv_engine, id, file_name).await {
-                    panic!("Cannot remove node {id} to file {file_name:?} node list, error: {e}");
+                if let Err(e) = remove_node_from_file_list(kv_engine, id, file_ino).await {
+                    panic!("Cannot remove node {id} to file {file_ino:?} node list, error: {e}");
                 }
             }
         }
-        self.inner.remove(file_name)
+        self.inner.remove(&file_ino)
     }
 
     /// Round down `value` to `align`, align must be power of 2
@@ -945,20 +926,18 @@ mod test {
     #[test]
     fn test_get_empty_cache() {
         let global = GlobalCache::new();
-        let cache = global.get_file_cache(b"test_file", 0, 1024);
+        let cache = global.get_file_cache(0, 0, 1024);
         assert!(cache.is_empty());
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_insert_one_byte_cache() {
         let global = GlobalCache::new();
-        let file_name = "test_file";
+        let file_ino = 1;
         let content = AlignedBytes::new_from_slice(&[b'a'], 1);
-        global
-            .write_or_update(file_name.as_bytes(), 0, 1, &content, true)
-            .await;
+        global.write_or_update(file_ino, 0, 1, &content, true).await;
 
-        let cache = global.get_file_cache(file_name.as_bytes(), 0, 1);
+        let cache = global.get_file_cache(file_ino, 0, 1);
         assert_eq!(cache.len(), 1);
         assert!(cache
             .get(0)
@@ -980,19 +959,13 @@ mod test {
     #[tokio::test(flavor = "multi_thread")]
     async fn test_get_partial_result() {
         let global = GlobalCache::new();
-        let file_name = "test_file";
+        let file_ino = 1;
         let content = AlignedBytes::new_from_slice(&[b'a'], 1);
         global
-            .write_or_update(
-                file_name.as_bytes(),
-                MEMORY_BLOCK_SIZE_IN_BYTE,
-                1,
-                &content,
-                true,
-            )
+            .write_or_update(file_ino, MEMORY_BLOCK_SIZE_IN_BYTE, 1, &content, true)
             .await;
 
-        let cache = global.get_file_cache(file_name.as_bytes(), 0, MEMORY_BLOCK_SIZE_IN_BYTE + 1);
+        let cache = global.get_file_cache(file_ino, 0, MEMORY_BLOCK_SIZE_IN_BYTE + 1);
         assert_eq!(cache.len(), 2);
         assert!(!cache
             .get(0)
@@ -1018,13 +991,11 @@ mod test {
     #[tokio::test(flavor = "multi_thread")]
     async fn test_panic_write_unaligned_data() {
         let global = GlobalCache::new();
-        let file_name = "test_file";
+        let file_ino = 1;
         let content = AlignedBytes::new_from_slice(&[b'a'], 1);
-        global
-            .write_or_update(file_name.as_bytes(), 1, 1, &content, true)
-            .await;
+        global.write_or_update(file_ino, 1, 1, &content, true).await;
 
-        let cache = global.get_file_cache(file_name.as_bytes(), 0, 2);
+        let cache = global.get_file_cache(file_ino, 0, 2);
         assert_eq!(cache.len(), 1);
         assert!(cache
             .get(0)
@@ -1046,25 +1017,19 @@ mod test {
     #[tokio::test(flavor = "multi_thread")]
     async fn test_eviction() {
         let global = GlobalCache::new_with_capacity(MEMORY_BLOCK_SIZE_IN_BYTE);
-        let file_name = "test_file";
+        let file_ino = 1;
         let block_one = AlignedBytes::new_from_slice(&[b'a'], 1);
         global
-            .write_or_update(file_name.as_bytes(), 0, 1, &block_one, true)
+            .write_or_update(file_ino, 0, 1, &block_one, true)
             .await;
 
         let block_two = AlignedBytes::new_from_slice(&[b'b'], 1);
         global
-            .write_or_update(
-                file_name.as_bytes(),
-                MEMORY_BUCKET_SIZE_IN_BYTE,
-                1,
-                &block_two,
-                true,
-            )
+            .write_or_update(file_ino, MEMORY_BUCKET_SIZE_IN_BYTE, 1, &block_two, true)
             .await;
 
         // First cache should be evicted
-        let cache = global.get_file_cache(file_name.as_bytes(), 0, MEMORY_BUCKET_SIZE_IN_BYTE + 1);
+        let cache = global.get_file_cache(file_ino, 0, MEMORY_BUCKET_SIZE_IN_BYTE + 1);
         assert_eq!(cache.len(), 17);
         for item in cache.iter().take(MEMORY_BUCKET_VEC_SIZE) {
             assert!(!item.can_convert());
