@@ -4,7 +4,7 @@ use super::cache::{GlobalCache, IoMemBlock};
 use super::dir::DirEntry;
 use super::dist::client as dist_client;
 use super::fs_util::{self, FileAttr};
-use super::kv_engine::{KVEngine, KVEngineType, KeyType, ValueType};
+use super::kv_engine::KVEngineType;
 use super::node::Node;
 use super::persist;
 use super::s3_metadata::S3MetaData;
@@ -30,10 +30,9 @@ use std::collections::BTreeMap;
 use std::collections::VecDeque;
 use std::os::unix::io::RawFd;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{self, AtomicBool, AtomicI64, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::SystemTime;
-use tokio::sync::RwLockWriteGuard;
 
 /// S3's available fd count
 static GLOBAL_S3_FD_CNT: AtomicU32 = AtomicU32::new(4);
@@ -96,66 +95,6 @@ pub struct S3Node<S: S3BackEnd + Sync + Send + 'static> {
     k8s_volume_info: Arc<str>,
 }
 
-/// Wrap the `S3Node`
-/// If the node is dirty, it will be synced to the metadata before drop
-#[allow(dead_code)]
-#[derive(Debug)]
-pub struct S3NodeWrap<'a, S: S3BackEnd + Sync + Send + 'static> {
-    ///Inner S3Node
-    node: S3Node<S>,
-    /// Mark if the node is dirty
-    dirty: bool,
-    /// ref to the metadata
-    meta: &'a S3MetaData<S>,
-}
-
-impl<S: S3BackEnd + Sync + Send + 'static> S3NodeWrap<'_, S> {
-    #[allow(dead_code)]
-    /// Create `S3NodeWrap`
-    pub fn new(node: S3Node<S>, meta: &S3MetaData<S>) -> S3NodeWrap<S> {
-        S3NodeWrap {
-            node,
-            dirty: false,
-            meta,
-        }
-    }
-
-    #[allow(dead_code)]
-    /// Get immutable reference to the node
-    pub fn as_ref(&self) -> &S3Node<S> {
-        &self.node
-    }
-
-    #[allow(dead_code)]
-    /// Get mutable reference to the node
-    pub fn as_mut_ref(&mut self) -> &mut S3Node<S> {
-        self.dirty = true;
-        &mut self.node
-    }
-}
-
-impl<S: S3BackEnd + Sync + Send + 'static> Drop for S3NodeWrap<'_, S> {
-    fn drop(&mut self) {
-        if self.dirty {
-            let inum = self.node.get_ino();
-            let kv_engine = Arc::clone(&self.meta.kv_engine);
-            let serial_node = self.node.to_serial_node();
-            let fut = async move {
-                kv_engine
-                    .set(&KeyType::INum2Node(inum), &ValueType::Node(serial_node),None)
-                    .await
-                    .unwrap_or_else(|e| {
-                        panic!(
-                            "set_node_to_kv_engine() failed to set node of ino={inum} to kv engine, \
-                                error={e:?}"
-                        );
-                    });
-            };
-            tokio::spawn(fut);
-        }
-    }
-}
-
 impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
     #[allow(clippy::too_many_arguments)]
     /// Create `S3Node`
@@ -216,7 +155,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
                     let child_node = meta.get_node_from_kv_engine(child_ino).await;
                     // If the child_node is None , it means it has been deleted,skip
                     if let Some(child_node) = child_node {
-                        let child_attr = *child_node.as_ref().attr.read();
+                        let child_attr = *child_node.attr.read();
                         dir_entries.insert(
                             name.clone(),
                             DirEntry::new(name.clone(), Arc::new(RwLock::new(child_attr))),
@@ -378,6 +317,49 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
         }
     }
 
+    /// push (child, parent) to node pool for rename
+    /// then return the new full path of this node
+    pub(crate) fn push_child_for_rename(
+        &self,
+        node_pool: &mut VecDeque<(INum, INum)>,
+        parent_path: &str,
+    ) -> String {
+        match self.data {
+            S3NodeData::Directory(ref dir_data) => {
+                for grandchild_node in dir_data.values() {
+                    node_pool.push_back((grandchild_node.ino(), self.get_ino()));
+                }
+                format!("{}{}/", parent_path, self.get_name())
+            }
+            S3NodeData::SymLink(..) | S3NodeData::RegFile(..) => {
+                format!("{}{}", parent_path, self.get_name())
+            }
+        }
+    }
+
+    /// Flush the data of this node to s3 backend if it is a regular file
+    pub(crate) async fn rename_in_s3_backend(&mut self, new_path: String) {
+        if let S3NodeData::RegFile(_) = self.data {
+            // TODO: Should not flush data, remove this once the "real" cache rename is available
+            if let Err(e) = self.flush_all_data().await {
+                panic!(
+                    "failed to flush all data of node {:?}, error is {:?}",
+                    self.get_full_path(),
+                    e
+                );
+            }
+        }
+
+        if let Err(e) = self.s3_backend.rename(&self.full_path, &new_path).await {
+            panic!(
+                "failed to rename from {} to {new_path:?} in s3 backend, error is {e:?}",
+                self.full_path,
+            );
+        }
+
+        self.set_full_path(new_path);
+    }
+
     /// Update mtime and ctime to now
     fn update_mtime_ctime_to_now(&mut self) {
         let mut attr = self.get_attr();
@@ -389,7 +371,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
 
     /// Increase node lookup count
     fn inc_lookup_count(&self) -> i64 {
-        self.lookup_count.fetch_add(1, atomic::Ordering::Relaxed)
+        self.lookup_count.fetch_add(1, Ordering::SeqCst)
     }
 
     /// Helper function to check need to load node data or not
@@ -445,7 +427,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
     /// Increase node open count
     fn inc_open_count(&self) -> i64 {
         // TODO: add the usage
-        self.open_count.fetch_add(1, atomic::Ordering::Relaxed)
+        self.open_count.fetch_add(1, Ordering::SeqCst)
     }
 
     /// Open root node
@@ -527,7 +509,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
             let load_res = self.load_data(0, size.cast()).await;
             if let Err(e) = load_res {
                 debug!(
-                    "failed to load data for file {} while flushing data, the error is: {}",
+                    "failed to load data for file {} while flushing data, the error is: {:?}",
                     self.get_name(),
                     e,
                 );
@@ -539,7 +521,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
             .s3_backend
             .put_data_vec(
                 &self.full_path,
-                data_cache.get_file_cache(self.full_path.as_bytes(), 0, size.cast()),
+                data_cache.get_file_cache(self.get_ino(), 0, size.cast()),
             )
             .await;
 
@@ -554,70 +536,6 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
                 Err(DatenLordError::from(anyhow!(e)))
             }
         }
-    }
-}
-
-/// Rename all the files
-pub async fn rename_fullpath_recursive<S: S3BackEnd + Send + Sync + 'static>(
-    ino: INum,
-    parent: INum,
-    cache: &mut RwLockWriteGuard<'_, BTreeMap<INum, S3Node<S>>>,
-) {
-    let mut node_pool: VecDeque<(INum, INum)> = VecDeque::new();
-    node_pool.push_back((ino, parent));
-
-    while let Some((child, parent)) = node_pool.pop_front() {
-        let parent_node = cache.get(&parent).unwrap_or_else(|| {
-            panic!(
-                "impossible case when rename, the parent i-node of ino={parent} should be in the cache"
-            )
-        });
-        let parent_path = parent_node.full_path.clone();
-
-        let child_node = cache.get_mut(&child).unwrap_or_else(|| {
-            panic!(
-                "impossible case when rename, the child i-node of ino={child} should be in the cache"
-            )
-        });
-        child_node.set_parent_ino(parent);
-        let old_path = child_node.full_path.clone();
-        let new_path = match child_node.data {
-            S3NodeData::Directory(ref dir_data) => {
-                dir_data.values().into_iter().for_each(|grandchild_node| {
-                    node_pool.push_back((grandchild_node.ino(), child));
-                });
-                format!("{}{}/", parent_path, child_node.get_name())
-            }
-            S3NodeData::SymLink(..) | S3NodeData::RegFile(..) => {
-                format!("{}{}", parent_path, child_node.get_name())
-            }
-        };
-
-        let is_reg = if let S3NodeData::RegFile(ref global_cache) = child_node.data {
-            global_cache.rename(old_path.as_str().as_bytes(), new_path.as_str().as_bytes());
-            true
-        } else {
-            false
-        };
-
-        if is_reg {
-            // TODO: Should not flush data, remove this once the "real" cache rename is available
-            if let Err(e) = child_node.flush_all_data().await {
-                panic!(
-                    "failed to flush all data of node {:?}, error is {:?}",
-                    child_node.get_full_path(),
-                    e
-                );
-            }
-        }
-
-        if let Err(e) = child_node.s3_backend.rename(&old_path, &new_path).await {
-            panic!(
-                "failed to rename from {old_path:?} to {new_path:?} in s3 backend, error is {e:?}"
-            );
-        }
-
-        child_node.set_full_path(new_path);
     }
 }
 
@@ -700,34 +618,35 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
 
     /// Get node open count
     fn get_open_count(&self) -> i64 {
-        self.open_count.load(atomic::Ordering::Relaxed)
+        self.open_count.load(Ordering::SeqCst)
     }
 
     /// Decrease node open count
     fn dec_open_count(&self) -> i64 {
-        self.open_count.fetch_sub(1, atomic::Ordering::Relaxed)
+        debug_assert!(self.open_count.load(Ordering::SeqCst) > 0);
+        self.open_count.fetch_sub(1, Ordering::SeqCst)
     }
 
     /// Get node lookup count
     fn get_lookup_count(&self) -> i64 {
-        self.lookup_count.load(atomic::Ordering::Relaxed)
+        self.lookup_count.load(Ordering::SeqCst)
     }
 
     /// Decrease node lookup count
     fn dec_lookup_count_by(&self, nlookup: u64) -> i64 {
         debug_assert!(nlookup < std::i64::MAX.cast());
         self.lookup_count
-            .fetch_sub(nlookup.cast(), atomic::Ordering::Relaxed)
+            .fetch_sub(nlookup.cast(), Ordering::SeqCst)
     }
 
     /// Mark node as deferred deletion
     fn mark_deferred_deletion(&self) {
-        self.deferred_deletion.store(true, Ordering::Relaxed);
+        self.deferred_deletion.store(true, Ordering::SeqCst);
     }
 
     /// If node is marked as deferred deletion
     fn is_deferred_deletion(&self) -> bool {
-        self.deferred_deletion.load(Ordering::Relaxed)
+        self.deferred_deletion.load(Ordering::SeqCst)
     }
 
     /// Load attribute
@@ -804,12 +723,17 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
         );
 
         if offset >= self.attr.read().size.cast() {
+            debug!(
+                "offset {} is larger than file size {}",
+                offset,
+                self.attr.read().size
+            );
             return false;
         }
 
         match self.data {
             S3NodeData::RegFile(ref cache) => {
-                let file_cache = cache.get_file_cache(self.full_path.as_bytes(), offset, len);
+                let file_cache = cache.get_file_cache(self.get_ino(), offset, len);
                 let cache_miss = file_cache.is_empty()
                     || file_cache.iter().filter(|b| !(*b).can_convert()).count() != 0;
                 if cache_miss {
@@ -1102,22 +1026,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
     /// The `offset` and `len` is used for regular file
     async fn load_data(&mut self, offset: usize, len: usize) -> DatenLordResult<usize> {
         match self.data {
-            S3NodeData::Directory(..) => {
-                // TODO: really read dir from S3
-                let entries = match dist_client::load_dir(
-                    &self.kv_engine,
-                    &self.k8s_node_id,
-                    &self.k8s_volume_info,
-                    &self.full_path,
-                )
-                .await?
-                {
-                    Some(entries) => entries,
-                    None => BTreeMap::new(),
-                };
-                self.data = S3NodeData::Directory(entries);
-                Ok(0)
-            }
+            S3NodeData::Directory(..) => Ok(0),
             S3NodeData::RegFile(ref global_cache) => {
                 let aligned_offset = global_cache.round_down(offset);
                 let new_len_tmp =
@@ -1133,13 +1042,17 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
                     } else {
                         new_len_tmp
                     };
+                debug!(
+                    "load_data() offset={}, len={}, new_len={} , aligned_offset={}",
+                    offset, len, new_len, aligned_offset
+                );
 
                 // dist_client::read_data() won't get lock at remote, OK to put here.
                 let file_data_vec = match dist_client::read_data(
                     &self.kv_engine,
                     &self.k8s_node_id,
                     &self.k8s_volume_info,
-                    &self.full_path,
+                    self.get_ino(),
                     aligned_offset
                         .overflow_div(global_cache.get_align().cast())
                         .cast(),
@@ -1177,7 +1090,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
                 );
                 global_cache
                     .write_or_update(
-                        self.full_path.as_bytes(),
+                        self.get_ino(),
                         aligned_offset,
                         read_size,
                         &file_data_vec,
@@ -1290,9 +1203,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
             S3NodeData::Directory(..) | S3NodeData::SymLink(..) => {
                 panic!("forbidden to load FileData from non-file node")
             }
-            S3NodeData::RegFile(ref cache) => {
-                cache.get_file_cache(self.full_path.as_bytes(), offset, len)
-            }
+            S3NodeData::RegFile(ref cache) => cache.get_file_cache(self.get_ino(), offset, len),
         }
     }
 
@@ -1312,7 +1223,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
             let load_res = self.load_data(offset.cast(), data.len()).await;
             if let Err(e) = load_res {
                 debug!(
-                    "read() failed to load file data of ino={} and name={:?}, the error is: {}",
+                    "read() failed to load file data of ino={} and name={:?}, the error is: {:?}",
                     ino,
                     self.get_name(),
                     e,
@@ -1330,7 +1241,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
 
         cache
             .write_or_update(
-                self.full_path.as_bytes(),
+                self.get_ino(),
                 offset.cast(),
                 data.len(),
                 data.as_slice(),
@@ -1347,7 +1258,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
                 attr_write.size,
                 offset.cast::<u64>().overflow_add(written_size.cast()),
             );
-        }
+        };
 
         debug!("file {:?} size = {:?}", self.name, self.attr.read().size);
         self.update_mtime_ctime_to_now();

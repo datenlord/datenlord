@@ -14,3 +14,5 @@ src/csi/proto/*.rs
 !src/csi/proto/mod.rs
 
 .idea/*
+fuse_bench/*
+bench.log

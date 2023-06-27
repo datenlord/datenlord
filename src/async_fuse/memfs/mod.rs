@@ -149,6 +149,11 @@ impl<M: MetaData + Send + Sync + 'static> MemFs<M> {
         node_id: &str,
         volume_info: &str,
     ) -> anyhow::Result<(Self, FsController)> {
+        // print the args
+        debug!(
+            "mount_point: ${}$, capacity: ${}$, ip: ${}$, port: ${}$, node_id: {}, volume_info: {}",
+            mount_point, capacity, ip, port, node_id, volume_info
+        );
         let (sender, receiver) = file_system::new_fs_async_result_chan();
         let (metadata, server, async_task_join_handles) = M::new(
             mount_point,
@@ -189,16 +194,14 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
     /// Initialize filesystem.
     /// Called before any other filesystem method.
     async fn init(&self, req: &Request<'_>) -> nix::Result<()> {
-        let cache = self.metadata.cache().read().await;
-        debug!("init(req={:?}), cache size={}", req, cache.len(),);
+        debug!("init(req={:?}), cache size={}", req, 0_i32);
         Ok(())
     }
 
     /// Clean up filesystem.
     /// Called on filesystem exit.
     async fn destroy(&self, req: &Request<'_>) {
-        let cache = self.metadata.cache().read().await;
-        debug!("destroy(req={:?}), cache size={}", req, cache.len(),);
+        debug!("destroy(req={:?}), cache size={}", req, 0_i32);
     }
 
     /// Look up a directory entry by name and get its attributes.
@@ -223,7 +226,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
             Err(e) => {
                 debug!(
                     "lookup() failed to find the node name={:?} under parent ino={}, \
-                        the error is: {}",
+                        the error is: {:?}",
                     name, parent, e,
                 );
                 reply.error(e).await
@@ -272,7 +275,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
                 reply.opened(new_fd, flags).await
             }
             Err(e) => {
-                debug!("open() failed, the error is: {}", e);
+                debug!("open() failed, the error is: {:?}", e);
                 reply.error(e).await
             }
         }
@@ -362,7 +365,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
             Err(e) => {
                 debug!(
                     "mknod() failed to create an i-node name={:?} and mode={:?} under parent ino={}, \
-                        the error is: {}",
+                        the error is: {:?}",
                     name,
                     mode,
                     parent,
@@ -398,7 +401,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
             Err(e) => {
                 debug!(
                     "mkdir() failed to create a directory name={:?} and mode={:?} under parent ino={}, \
-                        the error is: {}",
+                        the error is: {:?}",
                     name,
                     mode,
                     parent,
@@ -423,7 +426,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
             Err(e) => {
                 debug!(
                     "unlink() failed to remove file name={:?} under parent ino={}, \
-                        the error is: {}",
+                        the error is: {:?}",
                     name, parent, e,
                 );
                 reply.error(e).await
@@ -455,7 +458,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
             Err(e) => {
                 debug!(
                     "rmdir() failed to remove sub-directory name={:?} under parent ino={}, \
-                            the error is: {}",
+                            the error is: {:?}",
                     dir_name, parent, e,
                 );
                 reply.error(e).await
@@ -494,7 +497,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         match rename_res {
             Ok(()) => reply.ok().await,
             Err(e) => {
-                debug!("rename() failed, the error is: {}", e);
+                debug!("rename() failed, the error is: {:?}", e);
                 reply.error(e).await
             }
         }
@@ -539,7 +542,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
             }
             Err(e) => {
                 debug!(
-                    "read() failed to read from the file of ino={}, the error is: {}",
+                    "read() failed to read from the file of ino={}, the error is: {:?}",
                     ino, e,
                 );
                 reply.error(e).await
@@ -590,7 +593,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
             Err(e) => {
                 debug!(
                     "write() failed to write to the file of ino={} at offset={}, \
-                        the error is: {}",
+                        the error is: {:?}",
                     ino, offset, e,
                 );
                 reply.error(e).await
@@ -676,7 +679,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         match self.metadata.fsync_helper(ino, fh, datasync).await {
             Ok(()) => reply.ok().await,
             Err(e) => {
-                debug!("fsync() failed, the error is: {}", e);
+                debug!("fsync() failed, the error is: {:?}", e);
                 reply.error(e).await
             }
         }
@@ -705,7 +708,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
             Err(e) => {
                 debug!(
                     "opendir() failed to duplicate the file handler of ino={} with flags={:?}, \
-                        the error is: {}",
+                        the error is: {:?}",
                     ino, o_flags, e
                 );
                 reply.error(e).await
@@ -775,7 +778,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         match self.metadata.fsync_helper(ino, fh, datasync).await {
             Ok(()) => reply.ok().await,
             Err(e) => {
-                debug!("fsyncdir() failed, the error is: {}", e);
+                debug!("fsyncdir() failed, the error is: {:?}", e);
                 reply.error(e).await
             }
         }
@@ -800,7 +803,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
             }
             Err(e) => {
                 debug!(
-                    "statfs() failed to read the statvfs of ino={}  the error is: {}",
+                    "statfs() failed to read the statvfs of ino={}  the error is: {:?}",
                     ino, e
                 );
                 reply.error(e).await
@@ -844,7 +847,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
             Err(e) => {
                 debug!(
                     "symlink() failed to create a symlink name={:?} to target path={:?} under parent ino={}, \
-                        the error is: {}",
+                        the error is: {:?}",
                     name,
                     target_path,
                     parent,
@@ -859,8 +862,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
 
     /// Interrupt another FUSE request
     async fn interrupt(&self, req: &Request<'_>, unique: u64) {
-        let cache = self.metadata.cache().read().await;
-        debug!("interrupt(req={:?}), cache size={}", req, cache.len(),);
+        debug!("interrupt(req={:?}), cache size={}", req, 0_i32);
         // TODO: handle FUSE_INTERRUPT
         warn!(
             "FUSE INTERRUPT recieved, request w/ unique={} interrupted",

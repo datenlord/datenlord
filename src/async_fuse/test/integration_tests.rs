@@ -14,8 +14,8 @@ use super::test_util;
 
 pub const BENCH_MOUNT_DIR: &str = "./fuse_bench";
 pub const S3_BENCH_MOUNT_DIR: &str = "./s3_fuse_bench";
-pub const DEFAULT_MOUNT_DIR: &str = "./fuse_test";
-pub const S3_DEFAULT_MOUNT_DIR: &str = "./s3_fuse_test";
+pub const DEFAULT_MOUNT_DIR: &str = "/tmp/datenlord_test_dir";
+pub const S3_DEFAULT_MOUNT_DIR: &str = "/tmp/datenlord_test_dir";
 pub const FILE_CONTENT: &str = "0123456789ABCDEF";
 
 #[cfg(test)]
@@ -389,7 +389,9 @@ fn test_symlink_dir(mount_dir: &Path) -> anyhow::Result<()> {
         "directory entry name not match",
     );
 
+    info!("about to remove src_dir");
     fs::remove_dir_all(src_dir)?; // immediate deletion
+    info!("about to remove dst_dir");
     fs::remove_dir_all(dst_dir)?; // immediate deletion
     assert!(!src_dir.exists());
     assert!(!dst_dir.exists());
@@ -501,7 +503,7 @@ fn test_bind_mount(fuse_mount_dir: &Path) -> anyhow::Result<()> {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn run_test() -> anyhow::Result<()> {
-    _run_test(DEFAULT_MOUNT_DIR, false).await
+    _run_test(DEFAULT_MOUNT_DIR, true).await
 }
 
 #[ignore]
@@ -511,9 +513,9 @@ async fn run_s3_test() -> anyhow::Result<()> {
 }
 
 async fn _run_test(mount_dir_str: &str, is_s3: bool) -> anyhow::Result<()> {
+    info!("begin integration test");
     let mount_dir = Path::new(mount_dir_str);
     let th = test_util::setup(mount_dir, is_s3).await?;
-    info!("begin integration test");
 
     test_symlink_dir(mount_dir).context("test_symlink_dir() failed")?;
     test_symlink_file(mount_dir).context("test_symlink_file() failed")?;

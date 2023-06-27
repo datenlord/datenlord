@@ -70,7 +70,11 @@ use clap::{Arg, ArgMatches, Command};
 use csi::meta_data::MetaData;
 use csi::scheduler_extender::SchdulerExtender;
 use csi::util;
+
+use log::debug;
 use std::collections::HashMap;
+// use std::fs::File;
+// use env_logger::Builder;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 
@@ -562,8 +566,24 @@ fn parse_args() -> ArgMatches {
 #[allow(clippy::too_many_lines)]
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    env_logger::init();
+    // let target = Box::new(File::create("/tmp/test.txt").expect("Can't create file"));
+    // Builder::from_env("RUST_LOG")
+    //     .filter(Some("datenlord"), log::LevelFilter::Debug)
+    //     .target(env_logger::Target::Pipe(Box::new(target)))
+    //     .init();
 
+    use env_logger::Builder;
+    use log::LevelFilter;
+
+    let mut builder = Builder::new();
+    builder.filter(None, LevelFilter::Debug); // 设置全局日志级别为info
+    builder.filter_module("h2", LevelFilter::Off); // 过滤掉特定模块的日志
+    builder.filter_module("tower", LevelFilter::Off);
+    builder.filter_module("typer", LevelFilter::Off);
+    builder.filter_module("datenlord::async_fuse::fuse::session", LevelFilter::Off);
+    builder.init();
+
+    debug!("for test only");
     let matches = parse_args();
 
     // TODO: The pattern_type_mismatch is false positive
