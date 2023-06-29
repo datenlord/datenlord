@@ -75,6 +75,12 @@ jobs:
           profile: default
           toolchain: ${{ env.CI_RUST_TOOLCHAIN }}
           override: true
+      - name: Run etcd service
+        run: |
+            docker pull $ETCD_IMAGE
+            docker run -d --rm --net host --name $ETCD_CONTAINER_NAME $ETCD_IMAGE
+            docker ps
+            docker logs $ETCD_CONTAINER_NAME    
       - name: Build bind_mounter
         uses: actions-rs/cargo@v1
         with:

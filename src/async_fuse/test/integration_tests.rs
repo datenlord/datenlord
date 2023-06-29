@@ -12,7 +12,7 @@ use std::path::Path;
 
 use super::test_util;
 
-pub const BENCH_MOUNT_DIR: &str = "./fuse_bench";
+pub const BENCH_MOUNT_DIR: &str = "/tmp/datenlord_bench_dir";
 pub const S3_BENCH_MOUNT_DIR: &str = "./s3_fuse_bench";
 pub const DEFAULT_MOUNT_DIR: &str = "/tmp/datenlord_test_dir";
 pub const S3_DEFAULT_MOUNT_DIR: &str = "/tmp/datenlord_test_dir";
@@ -537,7 +537,7 @@ async fn _run_test(mount_dir_str: &str, is_s3: bool) -> anyhow::Result<()> {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn run_bench() -> anyhow::Result<()> {
-    _run_bench(BENCH_MOUNT_DIR, false).await
+    _run_bench(BENCH_MOUNT_DIR, true).await
 }
 
 #[ignore]
