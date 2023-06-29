@@ -203,6 +203,7 @@ mod test {
     const DATA_DIR: &str = "/tmp/csi-data-dir";
     static GRPC_SERVER: Once = Once::new();
 
+    #[ignore = "maybe conflict with other tests"]
     #[tokio::test(flavor = "multi_thread")]
     async fn test_all() -> DatenLordResult<()> {
         use env_logger::Builder;

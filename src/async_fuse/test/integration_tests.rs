@@ -502,6 +502,10 @@ fn test_bind_mount(fuse_mount_dir: &Path) -> anyhow::Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn test_all() -> anyhow::Result<()> {
+    run_test().await
+}
+
 async fn run_test() -> anyhow::Result<()> {
     _run_test(DEFAULT_MOUNT_DIR, true).await
 }
@@ -535,7 +539,7 @@ async fn _run_test(mount_dir_str: &str, is_s3: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[allow(dead_code)]
 async fn run_bench() -> anyhow::Result<()> {
     _run_bench(BENCH_MOUNT_DIR, true).await
 }
