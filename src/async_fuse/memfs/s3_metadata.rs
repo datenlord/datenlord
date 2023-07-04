@@ -59,8 +59,6 @@ const S3_INFO_DELIMITER: char = ';';
 pub struct S3MetaData<S: S3BackEnd + Send + Sync + 'static> {
     /// S3 backend
     pub(crate) s3_backend: Arc<S>,
-    /// Etcd client
-    pub(crate) etcd_client: Arc<EtcdDelegate>,
     /// Global data cache
     pub(crate) data_cache: Arc<GlobalCache>,
     /// Current available fd, it'll increase after using
@@ -418,13 +416,12 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         capacity: usize,
         ip: &str,
         port: &str,
-        etcd_client: EtcdDelegate,
+        _: EtcdDelegate,
         kv_engine: Arc<KVEngineType>,
         node_id: &str,
         volume_info: &str,
         fs_async_sender: FsAsyncResultSender,
     ) -> (Arc<Self>, Option<CacheServer>, Vec<JoinHandle<()>>) {
-        println!("new");
         let (bucket_name, endpoint, access_key, secret_key) = parse_s3_info(s3_info);
         let s3_backend = Arc::new(
             match S::new_backend(bucket_name, endpoint, access_key, secret_key).await {
@@ -436,7 +433,6 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         let (persist_handle, persist_join_handle) =
             PersistTask::spawn(Arc::clone(&s3_backend), fs_async_sender);
         async_tasks.push(persist_join_handle);
-        let etcd_arc = Arc::new(etcd_client);
         let data_cache = Arc::new(GlobalCache::new_dist_with_bz_and_capacity(
             10_485_760, // 10 * 1024 * 1024
             capacity,
@@ -446,7 +442,6 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
 
         let meta = Arc::new(Self {
             s3_backend: Arc::clone(&s3_backend),
-            etcd_client: etcd_arc,
             data_cache: Arc::<GlobalCache>::clone(&data_cache),
             cur_fd: AtomicU32::new(4),
             node_id: Arc::<str>::from(node_id.to_owned()),
@@ -465,8 +460,6 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
             .unwrap_or_else(|e| {
                 panic!("{}", e);
             });
-
-        println!("KKKKKKKKKKKKKKKKK");
         let full_path = root_inode.full_path().to_owned();
         // insert two K/V pairs into KV engine
         // 1. FUSE_ROOT_ID -> root_inode
@@ -534,7 +527,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         target_path: Option<&Path>,
     ) -> DatenLordResult<(Duration, FuseAttr, u64)> {
         // pre-check
-        let (parent_full_path, _, fuse_attr) = {
+        let (parent_full_path, fuse_attr) = {
             let mut parent_node = self
                 .create_node_pre_check(parent, node_name)
                 .await
@@ -640,7 +633,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
             self.set_node_to_kv_engine(parent, parent_node).await;
             self.set_inum_to_kv_engine(&new_node_full_path, new_ino)
                 .await;
-            (parent_full_path, new_node_attr, fuse_attr)
+            (parent_full_path, fuse_attr)
         };
         {
             let pnode = self
@@ -678,7 +671,6 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
             child_name={:?}, child_type={:?}",
             parent, node_name, node_type
         );
-        // FIXME(xiaguan) : remove comments here
         self.remove_node_local(parent, node_name, node_type, false)
             .await?;
         self.load_parent_from_cache_and_mark_dirty(parent).await;
@@ -1489,7 +1481,6 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
         Ok(())
     }
 
-    /// FIXME(xiaguan) : check logic here
     /// Helper function to rename file locally
     #[allow(dead_code)]
     pub(crate) async fn rename_local(&self, param: &RenameParam, from_remote: bool) {

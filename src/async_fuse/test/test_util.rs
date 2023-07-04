@@ -26,6 +26,7 @@ pub const TEST_ETCD_ENDPOINT: &str = "127.0.0.1:2379";
 /// The default capacity in bytes for test, 1GB
 const CACHE_DEFAULT_CAPACITY: usize = 1024 * 1024 * 1024;
 
+#[allow(clippy::let_underscore_must_use)]
 pub async fn setup(mount_dir: &Path, is_s3: bool) -> anyhow::Result<tokio::task::JoinHandle<()>> {
     use env_logger::Builder;
     use log::LevelFilter;
