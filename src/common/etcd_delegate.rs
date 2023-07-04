@@ -17,7 +17,6 @@ use serde::Serialize;
 use std::vec;
 
 /// version of kv for transaction verify
-/// TODO(xiaguan) : is i6s right ?
 pub type KvVersion = i64;
 
 /// Convert u64 seceond to i64
@@ -73,7 +72,6 @@ impl EtcdDelegate {
 
         let options = LockOptions::new().with_lease(lease_id);
 
-        // TODO(xiaguan) : into_vec
         let key = etcd_rs_client
             .lock(name, Some(options))
             .await
