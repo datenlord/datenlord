@@ -371,7 +371,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
 
     /// Increase node lookup count
     fn inc_lookup_count(&self) -> i64 {
-        self.lookup_count.fetch_add(1, Ordering::SeqCst)
+        self.lookup_count.fetch_add(1, Ordering::AcqRel)
     }
 
     /// Helper function to check need to load node data or not
@@ -427,7 +427,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
     /// Increase node open count
     fn inc_open_count(&self) -> i64 {
         // TODO: add the usage
-        self.open_count.fetch_add(1, Ordering::SeqCst)
+        self.open_count.fetch_add(1, Ordering::AcqRel)
     }
 
     /// Open root node
@@ -618,25 +618,25 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
 
     /// Get node open count
     fn get_open_count(&self) -> i64 {
-        self.open_count.load(Ordering::SeqCst)
+        self.open_count.load(Ordering::Acquire)
     }
 
     /// Decrease node open count
     fn dec_open_count(&self) -> i64 {
-        debug_assert!(self.open_count.load(Ordering::SeqCst) > 0);
-        self.open_count.fetch_sub(1, Ordering::SeqCst)
+        debug_assert!(self.open_count.load(Ordering::Acquire) > 0);
+        self.open_count.fetch_sub(1, Ordering::AcqRel)
     }
 
     /// Get node lookup count
     fn get_lookup_count(&self) -> i64 {
-        self.lookup_count.load(Ordering::SeqCst)
+        self.lookup_count.load(Ordering::Acquire)
     }
 
     /// Decrease node lookup count
     fn dec_lookup_count_by(&self, nlookup: u64) -> i64 {
         debug_assert!(nlookup < std::i64::MAX.cast());
         self.lookup_count
-            .fetch_sub(nlookup.cast(), Ordering::SeqCst)
+            .fetch_sub(nlookup.cast(), Ordering::AcqRel)
     }
 
     /// Mark node as deferred deletion

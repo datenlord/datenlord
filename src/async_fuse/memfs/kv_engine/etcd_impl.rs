@@ -6,7 +6,6 @@ use etcd_client::{
 };
 
 use std::collections::HashMap;
-use std::sync::Arc;
 
 use crate::common::error::{Context, DatenLordResult};
 
@@ -41,15 +40,6 @@ impl EtcdKVEngine {
                 format!("failed to connect to etcd, the etcd address={etcd_address_vec:?}")
             })?;
         Ok(EtcdKVEngine { client })
-    }
-
-    #[allow(dead_code)]
-    #[must_use]
-    /// Create a new etcd kv engine.
-    pub fn new_kv_engine(etcd_client: etcd_client::Client) -> Arc<Self> {
-        Arc::new(EtcdKVEngine {
-            client: etcd_client,
-        })
     }
 }
 
