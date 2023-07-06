@@ -289,7 +289,7 @@ pub trait FileSystem {
 #[async_trait]
 pub trait FsAsyncTaskController {
     /// Stop all async tasks
-    fn stop_all_async_tasks(&self);
+    async fn stop_all_async_tasks(&self);
 }
 
 /// create channel of communication from async task to main loop

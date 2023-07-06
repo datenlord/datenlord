@@ -101,19 +101,19 @@ pub struct S3Node<S: S3BackEnd + Sync + Send + 'static> {
 /// If the node is dirty, it will be synced to the metadata before drop
 #[allow(dead_code)]
 #[derive(Debug)]
-pub struct S3NodeWrap<'a, S: S3BackEnd + Sync + Send + 'static, K: KVEngine + 'static> {
+pub struct S3NodeWrap<'a, S: S3BackEnd + Sync + Send + 'static> {
     ///Inner S3Node
     node: S3Node<S>,
     /// Mark if the node is dirty
     dirty: bool,
     /// ref to the metadata
-    meta: &'a S3MetaData<S, K>,
+    meta: &'a S3MetaData<S>,
 }
 
-impl<S: S3BackEnd + Sync + Send + 'static, K: KVEngine + 'static> S3NodeWrap<'_, S, K> {
+impl<S: S3BackEnd + Sync + Send + 'static> S3NodeWrap<'_, S> {
     #[allow(dead_code)]
     /// Create `S3NodeWrap`
-    pub fn new(node: S3Node<S>, meta: &S3MetaData<S, K>) -> S3NodeWrap<S, K> {
+    pub fn new(node: S3Node<S>, meta: &S3MetaData<S>) -> S3NodeWrap<S> {
         S3NodeWrap {
             node,
             dirty: false,
@@ -135,7 +135,7 @@ impl<S: S3BackEnd + Sync + Send + 'static, K: KVEngine + 'static> S3NodeWrap<'_,
     }
 }
 
-impl<S: S3BackEnd + Sync + Send + 'static, K: KVEngine + 'static> Drop for S3NodeWrap<'_, S, K> {
+impl<S: S3BackEnd + Sync + Send + 'static> Drop for S3NodeWrap<'_, S> {
     fn drop(&mut self) {
         if self.dirty {
             let inum = self.node.get_ino();
@@ -202,9 +202,9 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
     This is crucial in enabling recursive async behavior in Rust.
     For more information, see https://rust-lang.github.io/async-book/07_workarounds/04_recursion.html
     */
-    pub fn from_serial_node<K: KVEngine + 'static>(
+    pub fn from_serial_node(
         serial_node: SerialNode,
-        meta: &S3MetaData<S, K>,
+        meta: &S3MetaData<S>,
     ) -> BoxFuture<'_, S3Node<S>> {
         async move {
             // check if the node is a directory
@@ -451,11 +451,11 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
 
     /// Open root node
     #[allow(clippy::unnecessary_wraps)]
-    pub(crate) async fn open_root_node<K: KVEngine + 'static>(
+    pub(crate) async fn open_root_node(
         root_ino: INum,
         name: &str,
         s3_backend: Arc<S>,
-        meta: Arc<S3MetaData<S, K>>,
+        meta: Arc<S3MetaData<S>>,
     ) -> DatenLordResult<Self> {
         match persist::read_persisted_dir(&s3_backend, "/".to_owned()).await {
             Err(e) => {

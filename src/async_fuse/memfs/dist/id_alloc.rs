@@ -1,6 +1,6 @@
 //! Allocate unique id between nodes.
 
-use std::{ops::Add, sync::Arc, time::Duration};
+use std::{ops::Add, sync::Arc};
 
 use anyhow::Context;
 use clippy_utilities::OverflowArithmetic;
@@ -8,9 +8,11 @@ use log::debug;
 use tokio::sync::Mutex;
 
 use crate::{
-    async_fuse::memfs::kv_engine::{KVEngine, KeyType, LockKeyType, ValueType},
+    async_fuse::memfs::kv_engine::{KVEngine, KVEngineType, KeyType, LockKeyType, ValueType},
     common::error::DatenLordResult,
 };
+
+use super::lock_manager::DistLockManager;
 
 /// Id type
 #[derive(Debug)]
@@ -32,12 +34,9 @@ impl IdType {
     }
 }
 
-/// the timeout for the lock of updating the alloc range
-const ID_ALLOC_TIMEOUT_SEC: u64 = 2;
-
 /// distribute id allocator to alloc unique id between nodes
 #[derive(Debug)]
-pub struct DistIdAllocator<K: KVEngine> {
+pub struct DistIdAllocator {
     /// range of allocable inum for a node,
     /// .0 is begin, .1 is end
     /// need realloc when begin==end
@@ -45,20 +44,28 @@ pub struct DistIdAllocator<K: KVEngine> {
     /// recyle inum when there's conflict path
     recycle_unused: crossbeam_queue::SegQueue<u64>,
     /// use etcd transaction to avoid conflict
-    kv_engine: Arc<K>,
+    kv_engine: Arc<KVEngineType>,
+    /// Dist lock manager
+    dist_lock_manager: Arc<DistLockManager>,
     /// Id type
     id_type: IdType,
     /// Id begin
     id_begin: u64,
 }
 
-impl<K: KVEngine + 'static> DistIdAllocator<K> {
+impl DistIdAllocator {
     /// new `DistIdAllocator`
-    pub(crate) fn new(kv_engine: Arc<K>, id_type: IdType, id_begin: u64) -> Self {
+    pub(crate) fn new(
+        dist_lock_manager: Arc<DistLockManager>,
+        kv_engine: Arc<KVEngineType>,
+        id_type: IdType,
+        id_begin: u64,
+    ) -> Self {
         Self {
             range_begin_end: Mutex::new((0, 0)),
             recycle_unused: crossbeam_queue::SegQueue::default(),
             kv_engine,
+            dist_lock_manager,
             id_type,
             id_begin,
         }
@@ -100,8 +107,8 @@ impl<K: KVEngine + 'static> DistIdAllocator<K> {
         };
 
         // Lock before rewrite
-        self.kv_engine
-            .lock(&lock_key, Duration::from_secs(ID_ALLOC_TIMEOUT_SEC))
+        self.dist_lock_manager
+            .lock(&lock_key)
             .await
             .with_context(|| format!("failed to lock id allocator range, key is {lock_key:?}"))?;
 
@@ -121,7 +128,8 @@ impl<K: KVEngine + 'static> DistIdAllocator<K> {
             .await
             .with_context(|| format!("failed to set id allocator range, key is {value_key:?}"))?;
 
-        self.kv_engine
+        // unlock after rewrite
+        self.dist_lock_manager
             .unlock(&lock_key)
             .await
             .with_context(|| format!("failed to unlock id allocator range, key is {lock_key:?}"))?;

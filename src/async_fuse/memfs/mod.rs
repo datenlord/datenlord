@@ -1008,8 +1008,8 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
 #[async_trait]
 impl<M: MetaData + Send + Sync + 'static> FsAsyncTaskController for MemFs<M> {
     /// Stop all async tasks
-    fn stop_all_async_tasks(&self) {
-        self.metadata.stop_all_async_tasks();
+    async fn stop_all_async_tasks(&self) {
+        self.metadata.stop_all_async_tasks().await;
     }
 }
 
