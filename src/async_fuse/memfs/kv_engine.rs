@@ -414,17 +414,19 @@ impl KVEngine for EtcdKVEngine {
     /// Distribute lock - lock
     /// - `timeout_sec` should be >=1s
     async fn lock(&self, key: &LockKeyType, timeout_sec: Duration) -> DatenLordResult<()> {
-        let mut client = self.client.clone();
+        // Need mutable client, and cloning the sub client is cheap.
+        let mut lease_client = self.client.lease_client();
+        let mut lock_client = self.client.lock_client();
         let timeout_sec = check_ttl(conv_u64_sec_2_i64(timeout_sec.as_secs()))
             .with_context(|| "timeout_sec should be >=1s, please fix the call".to_owned())?;
 
-        let lease_id = client
-            .lease_grant(timeout_sec, None)
+        let lease_id = lease_client
+            .grant(timeout_sec, None)
             .await
             .with_context(|| "failed to get lease at `MetaTxn::lock`".to_owned())?
             .id();
 
-        let _ = client
+        let _ = lock_client
             .lock(key.get_key(), Some(LockOptions::new().with_lease(lease_id)))
             .await
             .with_context(|| "failed to lock at `MetaTxn::lock`".to_owned())?;
@@ -434,7 +436,8 @@ impl KVEngine for EtcdKVEngine {
 
     /// Distribute lock - unlock
     async fn unlock(&self, key: &LockKeyType) -> DatenLordResult<()> {
-        let mut client = self.client.clone();
+        // Need mutable client, and cloning the sub client is cheap.
+        let mut client = self.client.lock_client();
         client
             .unlock(key.get_key())
             .await
@@ -445,7 +448,8 @@ impl KVEngine for EtcdKVEngine {
 
     /// Get the value by the key.
     async fn get(&self, key: &KeyType) -> DatenLordResult<Option<ValueType>> {
-        let mut client = self.client.clone();
+        // Need mutable client, and cloning the sub client is cheap.
+        let mut client = self.client.kv_client();
         let resp = client
             .get(key.get_key(), None)
             .await
@@ -463,7 +467,8 @@ impl KVEngine for EtcdKVEngine {
     async fn set(&self, key: &KeyType, value: &ValueType) -> DatenLordResult<Option<ValueType>> {
         let serial_value = serde_json::to_vec(value)
             .with_context(|| format!("failed to serialize value={value:?} to bytes"))?;
-        let mut client = self.client.clone();
+        // Need mutable client, and cloning the sub client is cheap.
+        let mut client = self.client.kv_client();
         let mut resp = client
             .put(
                 key.get_key(),
@@ -482,6 +487,7 @@ impl KVEngine for EtcdKVEngine {
 
     /// Delete the kv pair by the key.
     async fn delete(&self, key: &KeyType) -> DatenLordResult<Option<ValueType>> {
+        // Need mutable client, and cloning the sub client is cheap.
         let resp = self
             .client
             .kv_client()
