@@ -35,7 +35,7 @@ env:
   K8S_CONFIG: k8s.e2e.config
   K8S_VERSION: v1.21.1
   KIBANA_LABEL: kibana
-  KIND_NODE_VERSION: kindest/node:v1.21.1
+  KIND_NODE_VERSION: kindest/node:v1.21.1@sha256:69860bda5563ac81e3c0057d654b5253219618a22ec3a346306239bba8cfa1a6
   KIND_VERSION: v0.11.1
   # MINIKUBE_VERSION: v1.13.0
   NODE_APP_LABEL: csi-nodeplugin-datenlord
@@ -175,7 +175,14 @@ jobs:
           sudo rm -rf /opt/ghc
           sudo rm -rf "/usr/local/share/boost"
           sudo rm -rf "$AGENT_TOOLSDIRECTORY"
-
+          sudo rm -f /home/runner/runners/2.305.0.tgz
+          sudo rm -f /home/runner/runners/2.306.0.tgz
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /usr/local/share/chromium
+          sudo rm -rf /usr/lib/google-cloud-sdk/
+          sudo rm -rf /usr/lib/firefox
+          sudo rm -rf /usr/share/swift
+          sudo rm -rf /opt/microsoft/msedge
         # uses: jlumbroso/free-disk-space@main
         # with:
         #   # this might remove tools that are actually needed,
@@ -338,6 +345,9 @@ jobs:
       - name: Print DatenLord logs
         if: ${{ failure() }}
         run: |
+          echo “check disk usage”
+          df -h
+
           kubectl get pods -A -o wide
           CONTROLLER_POD_NAME=`kubectl get pod -l app=$CONTROLLER_APP_LABEL -n $DATENLORD_NAMESPACE -o jsonpath="{.items[0].metadata.name}"`
           echo "SHOW LOGS OF $CONTROLLER_CONTAINER_NAME IN $CONTROLLER_POD_NAME"
