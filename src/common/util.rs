@@ -30,3 +30,11 @@ pub fn format_anyhow_error(error: &anyhow::Error) -> String {
 
     err_msg
 }
+
+#[cfg(test)]
+#[allow(dead_code)]
+pub(crate) fn setup_test_log_debug() {
+    use std::env::set_var;
+    set_var("RUST_LOG", "debug");
+    let _log_init_res = env_logger::try_init();
+}

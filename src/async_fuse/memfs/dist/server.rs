@@ -2,7 +2,6 @@
 
 use super::super::cache::GlobalCache;
 use super::super::dir::DirEntry;
-use super::super::kv_engine::KVEngine;
 use super::super::node::Node;
 use super::super::s3_metadata::S3MetaData;
 use super::super::s3_node::S3Node;
@@ -46,11 +45,11 @@ impl Drop for CacheServer {
 
 impl CacheServer {
     /// New a `CacheServer `
-    pub(crate) fn new<S: S3BackEnd + Send + Sync + 'static, K: KVEngine + 'static>(
+    pub(crate) fn new<S: S3BackEnd + Send + Sync + 'static>(
         ip: String,
         port: String,
         cache: Arc<GlobalCache>,
-        meta: Arc<S3MetaData<S, K>>,
+        meta: Arc<S3MetaData<S>>,
     ) -> Self {
         let ip_copy = ip.clone();
         let port_copy = port.clone();
@@ -65,11 +64,11 @@ impl CacheServer {
 }
 
 /// async listen routine
-async fn listen<S: S3BackEnd + Send + Sync + 'static, K: KVEngine + 'static>(
+async fn listen<S: S3BackEnd + Send + Sync + 'static>(
     ip: String,
     port: String,
     cache: Arc<GlobalCache>,
-    meta: Arc<S3MetaData<S, K>>,
+    meta: Arc<S3MetaData<S>>,
 ) {
     let listener = tokio::net::TcpListener::bind(format!("{ip}:{port}"))
         .await
@@ -80,7 +79,7 @@ async fn listen<S: S3BackEnd + Send + Sync + 'static, K: KVEngine + 'static>(
         match listener.accept().await {
             Ok((stream, _)) => {
                 let cache_clone = Arc::<GlobalCache>::clone(&cache);
-                let meta_clone = Arc::<S3MetaData<S, K>>::clone(&meta);
+                let meta_clone = Arc::<S3MetaData<S>>::clone(&meta);
 
                 tokio::spawn(async move {
                     let mut local_stream = stream;
@@ -96,10 +95,10 @@ async fn listen<S: S3BackEnd + Send + Sync + 'static, K: KVEngine + 'static>(
 }
 
 /// Dispatch request
-async fn dispatch<S: S3BackEnd + Send + Sync + 'static, K: KVEngine + 'static>(
+async fn dispatch<S: S3BackEnd + Send + Sync + 'static>(
     stream: &mut TcpStream,
     cache: Arc<GlobalCache>,
-    meta: Arc<S3MetaData<S, K>>,
+    meta: Arc<S3MetaData<S>>,
 ) -> anyhow::Result<bool> {
     let mut buf = Vec::new();
     if let Err(e) = tcp::read_message(stream, &mut buf).await {
@@ -196,9 +195,9 @@ async fn read(
 }
 
 /// Handle `LoadDir` request
-async fn load_dir<S: S3BackEnd + Send + Sync + 'static, K: KVEngine + 'static>(
+async fn load_dir<S: S3BackEnd + Send + Sync + 'static>(
     stream: &mut TcpStream,
-    meta: Arc<S3MetaData<S, K>>,
+    meta: Arc<S3MetaData<S>>,
     path: &str,
 ) -> anyhow::Result<()> {
     let inum_opt = {
@@ -221,9 +220,9 @@ async fn load_dir<S: S3BackEnd + Send + Sync + 'static, K: KVEngine + 'static>(
 }
 
 /// Handle `UpdateDir` request
-async fn update_dir<S: S3BackEnd + Send + Sync + 'static, K: KVEngine + 'static>(
+async fn update_dir<S: S3BackEnd + Send + Sync + 'static>(
     stream: &mut TcpStream,
-    meta: Arc<S3MetaData<S, K>>,
+    meta: Arc<S3MetaData<S>>,
     args: UpdateDirArgs,
 ) -> anyhow::Result<()> {
     debug!("receive update_dir request {:?}", args);
@@ -258,9 +257,9 @@ async fn update_dir<S: S3BackEnd + Send + Sync + 'static, K: KVEngine + 'static>
 }
 
 /// Handle `RemoveDirEntry` request
-async fn remove_dir_entry<S: S3BackEnd + Send + Sync + 'static, K: KVEngine + 'static>(
+async fn remove_dir_entry<S: S3BackEnd + Send + Sync + 'static>(
     stream: &mut TcpStream,
-    meta: Arc<S3MetaData<S, K>>,
+    meta: Arc<S3MetaData<S>>,
     args: RemoveDirEntryArgs,
 ) -> anyhow::Result<()> {
     let parent_inum_opt = {
@@ -277,9 +276,9 @@ async fn remove_dir_entry<S: S3BackEnd + Send + Sync + 'static, K: KVEngine + 's
 }
 
 /// Handle `GetAttr` request
-async fn get_attr<S: S3BackEnd + Send + Sync + 'static, K: KVEngine + 'static>(
+async fn get_attr<S: S3BackEnd + Send + Sync + 'static>(
     stream: &mut TcpStream,
-    meta: Arc<S3MetaData<S, K>>,
+    meta: Arc<S3MetaData<S>>,
     path: &str,
 ) -> anyhow::Result<()> {
     let inum_opt = {
@@ -308,9 +307,9 @@ async fn get_attr<S: S3BackEnd + Send + Sync + 'static, K: KVEngine + 'static>(
 }
 
 /// Handle `PushAttr` request
-async fn push_attr<S: S3BackEnd + Send + Sync + 'static, K: KVEngine + 'static>(
+async fn push_attr<S: S3BackEnd + Send + Sync + 'static>(
     stream: &mut TcpStream,
-    meta: Arc<S3MetaData<S, K>>,
+    meta: Arc<S3MetaData<S>>,
     path: &str,
     attr: &SerialFileAttr,
 ) -> anyhow::Result<()> {
@@ -334,9 +333,9 @@ async fn push_attr<S: S3BackEnd + Send + Sync + 'static, K: KVEngine + 'static>(
 }
 
 /// Handle `Rename` request
-async fn rename<S: S3BackEnd + Send + Sync + 'static, K: KVEngine + 'static>(
+async fn rename<S: S3BackEnd + Send + Sync + 'static>(
     stream: &mut TcpStream,
-    meta: Arc<S3MetaData<S, K>>,
+    meta: Arc<S3MetaData<S>>,
     args: RenameParam,
 ) -> anyhow::Result<()> {
     meta.rename_local(&args, true).await;
@@ -345,9 +344,9 @@ async fn rename<S: S3BackEnd + Send + Sync + 'static, K: KVEngine + 'static>(
 }
 
 /// Handle `Remove` request
-async fn remove<S: S3BackEnd + Send + Sync + 'static, K: KVEngine + 'static>(
+async fn remove<S: S3BackEnd + Send + Sync + 'static>(
     stream: &mut TcpStream,
-    meta: Arc<S3MetaData<S, K>>,
+    meta: Arc<S3MetaData<S>>,
     args: RemoveArgs,
 ) -> anyhow::Result<()> {
     debug!("receive remove request {:?}", args);

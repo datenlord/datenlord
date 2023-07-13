@@ -122,7 +122,7 @@ impl<F: FileSystem + Send + Sync + 'static, A: FsAsyncTaskController + Send + Sy
                 join_handle.abort();
             }
             // stop and join async sub tasks
-            self.fs_async_task_controller.stop_all_async_tasks();
+            self.fs_async_task_controller.stop_all_async_tasks().await;
             self.fs_controller.join_all_async_tasks().await;
             let mount_path = &self.mount_path;
             let res = mount::umount(mount_path).await;

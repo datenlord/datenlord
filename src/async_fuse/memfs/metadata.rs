@@ -107,7 +107,7 @@ pub trait MetaData {
     async fn set_fuse_fd(&self, fuse_fd: RawFd);
 
     /// Stop all async tasks
-    fn stop_all_async_tasks(&self);
+    async fn stop_all_async_tasks(&self);
 
     /// Set Node's attribute
     async fn setattr_helper(
@@ -1154,7 +1154,7 @@ impl MetaData for DefaultMetaData {
     }
 
     /// Stop all async tasks
-    fn stop_all_async_tasks(&self) {}
+    async fn stop_all_async_tasks(&self) {}
 }
 
 impl DefaultMetaData {
