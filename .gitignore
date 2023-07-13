@@ -14,3 +14,8 @@ src/csi/proto/*.rs
 !src/csi/proto/mod.rs
 
 .idea/*
+
+# Test generated
+kind-config.yaml
+datenlord-rbac-snapshot-controller.yaml
+datenlord-setup-snapshot-controller.yaml
