@@ -348,9 +348,7 @@ pub async fn load_file_data(fd: RawFd, offset: usize, len: usize) -> anyhow::Res
             }
             res.cast::<usize>()
         };
-        unsafe {
-            file_data_vec.set_len(read_size);
-        }
+        unsafe { file_data_vec.set_len(read_size) };
         // Should explicitly highlight the error type
         Ok::<Vec<u8>, anyhow::Error>(file_data_vec)
     })

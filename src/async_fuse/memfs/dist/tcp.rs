@@ -11,7 +11,7 @@ pub async fn read_message(stream: &mut TcpStream, buf: &mut Vec<u8>) -> anyhow::
     let len = u64::from_be_bytes(local_buf);
 
     Vec::reserve(buf, len.cast());
-    unsafe { buf.set_len(len.cast()) }
+    unsafe { buf.set_len(len.cast()) };
     stream.read_exact(buf).await?;
     Ok(len.cast())
 }

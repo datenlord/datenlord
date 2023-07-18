@@ -933,7 +933,7 @@ mod test {
     #[tokio::test(flavor = "multi_thread")]
     async fn test_insert_one_byte_cache() {
         let global = GlobalCache::new();
-        let file_ino = 6789;
+        let file_ino = 1;
         let content = AlignedBytes::new_from_slice(&[b'a'], 1);
         global.write_or_update(file_ino, 0, 1, &content, true).await;
 
