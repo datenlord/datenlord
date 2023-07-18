@@ -26,6 +26,7 @@ pub const TEST_ETCD_ENDPOINT: &str = "127.0.0.1:2379";
 /// The default capacity in bytes for test, 1GB
 const CACHE_DEFAULT_CAPACITY: usize = 1024 * 1024 * 1024;
 
+#[allow(clippy::let_underscore_must_use)]
 pub async fn setup(mount_dir: &Path, is_s3: bool) -> anyhow::Result<tokio::task::JoinHandle<()>> {
     use env_logger::Builder;
     use log::LevelFilter;
@@ -36,7 +37,7 @@ pub async fn setup(mount_dir: &Path, is_s3: bool) -> anyhow::Result<tokio::task:
     builder.filter_module("tower", LevelFilter::Off);
     builder.filter_module("typer", LevelFilter::Off);
     builder.filter_module("datenlord::async_fuse::fuse::session", LevelFilter::Off);
-    builder.init();
+    let _ = builder.try_init();
     debug!("setup started with mount_dir: {:?}", mount_dir);
     if mount_dir.exists() {
         debug!("mount_dir {:?} exists ,try umount", mount_dir);

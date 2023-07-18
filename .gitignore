@@ -16,3 +16,4 @@ src/csi/proto/*.rs
 .idea/*
 fuse_bench/*
 bench.log
+.vscode/*

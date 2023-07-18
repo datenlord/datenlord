@@ -160,7 +160,6 @@ async fn modify_file_node_list<F: Fn(Option<Vec<u8>>) -> HashSet<String>>(
 where
     F: Send,
 {
-    // FIXME : lock key should be a string
     let lock_key = kv_engine
         .lock(
             &LockKeyType::FileNodeListLock(file_ino),
