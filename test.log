@@ -1,0 +1,2 @@
+146M -rwsrwxr-x 2 root root 146M  7月 11 16:48 target/debug/bind_mounter
+fusermount: entry for /tmp/datenlord_data_dir not found in /etc/mtab
