@@ -70,7 +70,7 @@ etcd-client = "0.11.1"
 protoc-grpcio = "3.0.0"
 
 [dev-dependencies]
-mock-etcd = { git = "https://github.com/datenlord/etcd-client", rev = "f697899" }
+mock-etcd = { git = "https://github.com/ActivePeter/etcd-client", rev = "7382374" }
 #  Create mock api for some interface like s3 that are independent service,
 #  We don't want to start up a real service for some api when doing unit test.
 mockall = "0.11.2"

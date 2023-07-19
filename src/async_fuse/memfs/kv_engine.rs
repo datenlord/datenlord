@@ -2,8 +2,10 @@ use super::{s3_node::S3Node, s3_wrapper::S3BackEnd, INum, S3MetaData};
 use crate::common::async_fuse_error::KVEngineError;
 use crate::common::error::{Context, DatenLordError, DatenLordResult};
 use async_trait::async_trait;
+use clippy_utilities::OverflowArithmetic;
 use core::fmt::Debug;
 use etcd_client::{Compare, CompareOp, DeleteOptions, LockOptions, PutOptions, Txn, TxnOp};
+use etcd_client::{LeaseKeepAliveStream, LeaseKeeper};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt::Display;
@@ -32,9 +34,9 @@ impl ValueType {
     /// Turn the `ValueType` into `SerialNode` then into `S3Node`.
     /// # Panics
     /// Panics if `ValueType` is not `ValueType::Node`.
-    pub async fn into_s3_node<S: S3BackEnd + Send + Sync + 'static, K: KVEngine + 'static>(
+    pub async fn into_s3_node<S: S3BackEnd + Send + Sync + 'static>(
         self,
-        meta: &S3MetaData<S, K>,
+        meta: &S3MetaData<S>,
     ) -> S3Node<S> {
         match self {
             ValueType::Node(node) => S3Node::from_serial_node(node, meta).await,
@@ -99,6 +101,8 @@ pub enum LockKeyType {
         /// the prefix of the key for different id type
         unique_id: u8,
     },
+    /// Test lock key
+    TestOnly(String),
 }
 
 impl Display for KeyType {
@@ -121,6 +125,7 @@ impl Display for LockKeyType {
             LockKeyType::IdAllocatorLock { unique_id } => {
                 write!(f, "IdAllocatorLock{{unique_id: {unique_id}}}")
             }
+            LockKeyType::TestOnly(ref s) => write!(f, "TestOnly({s})"),
         }
     }
 }
@@ -156,9 +161,11 @@ impl KeyType {
 
 impl LockKeyType {
     /// Get the key in vec bytes.
-    fn get_key(&self) -> Vec<u8> {
+    #[must_use]
+    pub fn get_key(&self) -> Vec<u8> {
         match *self {
             LockKeyType::IdAllocatorLock { unique_id } => serialize_key(100, &unique_id),
+            LockKeyType::TestOnly(ref tag) => serialize_key(10000, tag),
         }
     }
 }
@@ -180,17 +187,46 @@ pub trait MetaTxn {
     async fn commit(&mut self) -> DatenLordResult<bool>;
 }
 
+/// Lease ID type
+pub type LeaseId = i64;
+
+/// Lease id with it's timeout duration
+/// - make the `LockManager` api more clear
+#[derive(Debug)]
+pub struct LeaseInfo {
+    /// Lease id
+    pub lease_id: LeaseId,
+    /// Lease timeout duration
+    pub lease_timeout: Duration,
+}
+
+/// Locked info for unlock and renew lease
+#[derive(Debug)]
+pub struct LockInfo {
+    /// the unlock token of the lock, used to unlock the lock
+    pub unlock_token: Vec<u8>,
+}
+
 /// To support different K/V storage engines, we need to a trait to abstract the K/V storage engine.
 #[async_trait]
 pub trait KVEngine: Send + Sync + Debug {
+    /// Lease keeper returned by `alloc_lease_keeper`
+    type LeaseKeeper: KVEngineLeaseKeeper;
+
     /// create a new KVEngine.
     fn new(etcd_client: etcd_client::Client) -> Self;
     /// Create a new transaction.
     async fn new_meta_txn(&self) -> Box<dyn MetaTxn + Send>;
     /// Distribute lock - lock
-    async fn lock(&self, key: &LockKeyType, timeout: Duration) -> DatenLordResult<()>;
+    async fn lock(&self, key: &LockKeyType, lease_info: &LeaseInfo) -> DatenLordResult<LockInfo>;
     /// Distribute lock - unlock
-    async fn unlock(&self, key: &LockKeyType) -> DatenLordResult<()>;
+    async fn unlock(&self, unlock_token: UnlockToken) -> DatenLordResult<()>;
+    /// Grant a new lease
+    async fn lease_grant(&self, timeout_sec: Duration) -> DatenLordResult<LeaseInfo>;
+    /// Revoke a lease, the binding keys and locks will be deleted.
+    async fn lease_revoke(&self, lease_id: LeaseId) -> DatenLordResult<()>;
+    /// Renew the lease
+    async fn alloc_lease_keeper(&self, lease: LeaseId) -> DatenLordResult<Self::LeaseKeeper>;
     /// Get the value by the key.
     async fn get(&self, key: &KeyType) -> DatenLordResult<Option<ValueType>>;
     /// Set the value by the key.
@@ -198,6 +234,66 @@ pub trait KVEngine: Send + Sync + Debug {
     /// Delete the kv pair by the key.
     async fn delete(&self, key: &KeyType) -> DatenLordResult<Option<ValueType>>;
 }
+
+/// `KVEngine`'s lease keeper trait.
+#[async_trait]
+pub trait KVEngineLeaseKeeper {
+    /// keep alive the lease
+    async fn lease_keep_alive(&mut self) -> DatenLordResult<()>;
+}
+
+#[derive(Debug)]
+/// Etcd `KVEngineLeaseKeeper` implementation.
+pub struct EtcdLeaseKeeper {
+    /// lease keeper to send keep alive request
+    keeper: LeaseKeeper,
+    /// lease keep alive stream to receive keep alive response
+    stream: LeaseKeepAliveStream,
+}
+
+#[async_trait]
+impl KVEngineLeaseKeeper for EtcdLeaseKeeper {
+    async fn lease_keep_alive(&mut self) -> DatenLordResult<()> {
+        if let Err(err) = self.keeper.keep_alive().await {
+            return Err(DatenLordError::EtcdClientErr {
+                source: err,
+                context: vec![
+                    "Lease keep alive send failed at KVEngineLeaseKeeper.lease_keep_alive()"
+                        .to_owned(),
+                ],
+            });
+        }
+        let res = self.stream.message().await;
+        match res {
+            Ok(res) => {
+                if let Some(_res) = res {
+                    Ok(())
+                } else {
+                    Err(DatenLordError::KVEngineErr {
+                        source: KVEngineError::LeaseKeepAliveStreamEnd,
+                        context: vec![format!("Lease keep alive stream ended when calling KVEngineLeaseKeeper.lease_keep_alive()")],
+                    })
+                }
+            }
+            Err(e) => Err(DatenLordError::EtcdClientErr {
+                source: e,
+                context: vec![
+                    "Lease keep alive stream error at KVEngineLeaseKeeper.lease_keep_alive()"
+                        .to_owned(),
+                ],
+            }),
+        }
+    }
+}
+
+/// Global used specific `KVEngineLeaseKeeper`
+pub type KVEngineLeaseKeeperType = EtcdLeaseKeeper;
+
+/// Global used specific `KVEngine`
+pub type KVEngineType = EtcdKVEngine;
+
+/// The returned token for unlock
+pub type UnlockToken = Vec<u8>;
 
 /// The version of the key.
 type KvVersion = i64;
@@ -344,7 +440,7 @@ impl Debug for EtcdKVEngine {
 impl EtcdKVEngine {
     #[allow(dead_code)]
     /// For local test, we need to create a new etcd kv engine locally.
-    async fn new_for_local_test(etcd_address_vec: Vec<String>) -> DatenLordResult<Self> {
+    pub async fn new_for_local_test(etcd_address_vec: Vec<String>) -> DatenLordResult<Self> {
         let client = etcd_client::Client::connect(etcd_address_vec.clone(), None)
             .await
             .with_context(|| {
@@ -402,6 +498,7 @@ macro_rules! retry_txn {
 
 #[async_trait]
 impl KVEngine for EtcdKVEngine {
+    type LeaseKeeper = EtcdLeaseKeeper;
     #[must_use]
     fn new(etcd_client: etcd_client::Client) -> Self {
         EtcdKVEngine {
@@ -413,34 +510,117 @@ impl KVEngine for EtcdKVEngine {
     }
     /// Distribute lock - lock
     /// - `timeout_sec` should be >=1s
-    async fn lock(&self, key: &LockKeyType, timeout_sec: Duration) -> DatenLordResult<()> {
+    #[allow(clippy::integer_arithmetic)] // select code is auto generated
+    async fn lock(&self, key: &LockKeyType, lease_info: &LeaseInfo) -> DatenLordResult<LockInfo> {
         let mut client = self.client.clone();
-        let timeout_sec = check_ttl(conv_u64_sec_2_i64(timeout_sec.as_secs()))
-            .with_context(|| "timeout_sec should be >=1s, please fix the call".to_owned())?;
 
-        let lease_id = client
-            .lease_grant(timeout_sec, None)
+        let mut keeper: Self::LeaseKeeper = self
+            .alloc_lease_keeper(lease_info.lease_id)
             .await
-            .with_context(|| "failed to get lease at `MetaTxn::lock`".to_owned())?
-            .id();
+            .with_context(|| "failed to alloc lease keeper at `KVEngine::lock`")?;
 
-        let _ = client
-            .lock(key.get_key(), Some(LockOptions::new().with_lease(lease_id)))
-            .await
-            .with_context(|| "failed to lock at `MetaTxn::lock`".to_owned())?;
+        let mut final_res = None;
+        loop {
+            tokio::select! {
+                _ = tokio::time::sleep(
+                    if lease_info.lease_timeout.as_secs()==1{Duration::from_millis(500)}
+                    else{Duration::from_secs(lease_info.lease_timeout.as_secs().overflow_sub(1))}
+                ) => {
+                    keeper.lease_keep_alive().await.with_context(||{
+                        "failed to keep alive lease at `KVEngine::lock`"
+                    })?;
+                }
+                _ = async{
+                    // use retry to avoid `mutex: session is expired` error when lock immediately after unlock
 
-        Ok(())
+                    for _ in 0_i32..3_i32 {
+                        match client
+                            .lock(key.get_key(), Some(LockOptions::new().with_lease(lease_info.lease_id)))
+                            .await
+                        {
+                            Ok(res) => {
+                                final_res = Some(Ok(res));
+                                break;
+                            }
+                            Err(e) => {
+                                final_res = Some(
+                                    Err(e).with_context(|| "failed to lock at `KVEngine::lock`".to_owned()),
+                                );
+                            }
+                        };
+                        log::debug!("lock failed, retry after 500ms");
+                        tokio::time::sleep(Duration::from_millis(500)).await;
+                    }
+                } => {
+                    break;
+                }
+            };
+        }
+
+        final_res
+            .unwrap_or_else(|| panic!("just loaded in loop, should not be None"))
+            .map(|res| LockInfo {
+                unlock_token: res.key().to_vec(),
+            })
     }
 
     /// Distribute lock - unlock
-    async fn unlock(&self, key: &LockKeyType) -> DatenLordResult<()> {
-        let mut client = self.client.clone();
+    async fn unlock(&self, unlock_token: UnlockToken) -> DatenLordResult<()> {
+        let mut client: etcd_client::Client = self.client.clone();
         client
-            .unlock(key.get_key())
+            .unlock(unlock_token)
             .await
             .with_context(|| "failed to unlock at `MetaTxn::unlock`".to_owned())?;
 
         Ok(())
+    }
+
+    async fn lease_grant(&self, timeout_sec: Duration) -> DatenLordResult<LeaseInfo> {
+        let timeout_ok =
+            check_ttl(conv_u64_sec_2_i64(timeout_sec.as_secs())).with_context(|| {
+                format!(
+                    "failed to convert timeout_sec:{timeout_sec:?} to i64 at `KVEngine::lease_grant`"
+                )
+            })?;
+
+        Ok(LeaseInfo {
+            lease_id: self
+                .client
+                .lease_client()
+                .grant(timeout_ok, None)
+                .await
+                .with_context(|| "failed to grant lease at `KVEngine::lease_grant`".to_owned())?
+                .id(),
+            lease_timeout: Duration::from_secs(timeout_ok.try_into().unwrap_or_else(|e| {
+                panic!("Just checked timeout_ok, should not be negative, err:{e}")
+            })),
+        })
+    }
+
+    async fn lease_revoke(&self, lease_id: LeaseId) -> DatenLordResult<()> {
+        self.client
+            .lease_client()
+            .revoke(lease_id)
+            .await
+            .with_context(|| {
+                format!("failed to revoke lease {lease_id} at `KVEngine::lease_revoke`")
+            })?;
+        Ok(())
+    }
+
+    /// Lease keeper to renew the lease
+    async fn alloc_lease_keeper(&self, lease: LeaseId) -> DatenLordResult<Self::LeaseKeeper> {
+        let mut client = self.client.clone();
+        match client.lease_keep_alive(lease).await {
+            Ok((keeper, stream)) => Ok(Self::LeaseKeeper { keeper, stream }),
+            Err(err) => Err(DatenLordError::EtcdClientErr {
+                source: err,
+                context: vec![
+                    "etcd request lease_keep_alive failed at KVEngine.alloc_lease_keeper"
+                        .to_owned(),
+                ],
+            }),
+        }
     }
 
     /// Get the value by the key.

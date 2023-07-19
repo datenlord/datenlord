@@ -11,29 +11,32 @@ use crate::{
 };
 
 use super::{
-    dist::id_alloc::{DistIdAllocator, IdType},
-    kv_engine::{KVEngine, KeyType, ValueType},
+    dist::{
+        id_alloc::{DistIdAllocator, IdType},
+        lock_manager::DistLockManager,
+    },
+    kv_engine::{KVEngine, KVEngineType, KeyType, ValueType},
 };
 
 /// Inum allocator
 #[derive(Debug)]
-pub struct INumAllocator<K: KVEngine + 'static> {
+pub struct INumAllocator {
     /// id allocator
-    id_allocator: DistIdAllocator<K>,
+    id_allocator: DistIdAllocator,
 }
 
-impl<K: KVEngine + 'static> INumAllocator<K> {
+impl INumAllocator {
     /// new `INumAllocator`
-    pub fn new(kv_engine: Arc<K>) -> Self {
+    pub fn new(dist_lock_mananeger: Arc<DistLockManager>, kv_engine: Arc<KVEngineType>) -> Self {
         Self {
-            id_allocator: DistIdAllocator::new(kv_engine, IdType::INum, 2),
+            id_allocator: DistIdAllocator::new(dist_lock_mananeger, kv_engine, IdType::INum, 2),
         }
     }
     /// get a unique inum for a path when cache miss or creating a new file
     /// return (inum, `is_new`)
     pub async fn alloc_inum_for_fnode(
         &self,
-        kv_engine: &K,
+        kv_engine: &KVEngineType,
         fullpath: &str,
     ) -> DatenLordResult<(INum, bool)> {
         let key = KeyType::Path2INum(fullpath.to_owned());
@@ -71,7 +74,7 @@ impl<K: KVEngine + 'static> INumAllocator<K> {
 /// Fd allocator
 /// TODO: implement this
 #[allow(dead_code)]
-pub struct FdAllocator<K: KVEngine> {
+pub struct FdAllocator {
     /// inum allocator
-    id_allocator: DistIdAllocator<K>,
+    id_allocator: DistIdAllocator,
 }

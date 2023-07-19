@@ -8,8 +8,10 @@ use std::{io, ptr, slice};
 
 use crate::common::error::{DatenLordError, DatenLordResult};
 use memchr::memchr;
+use mock_etcd::MockEtcdServer;
 use nix::errno::Errno;
 use nix::sys::stat::SFlag;
+use parking_lot::Mutex;
 
 /// Format `nix::Error`
 // TODO: refactor this
@@ -182,5 +184,27 @@ pub fn u64_to_ptr(x: u64) -> *const () {
     {
         use std::convert::TryInto;
         x.try_into().expect("number cast failed")
+    }
+}
+
+#[cfg(test)]
+#[allow(dead_code)]
+pub(crate) fn setup_test_log_debug() {
+    use std::env::set_var;
+    set_var("RUST_LOG", "debug");
+    let _log_init_res = env_logger::try_init();
+}
+
+lazy_static::lazy_static! {
+    static ref MOCK_ETCD: Mutex<Option<MockEtcdServer>> = None.into();
+}
+#[cfg(test)]
+#[allow(dead_code)]
+pub(crate) fn setup_mock_etcd_server() {
+    let mut mock_etcd_opt = MOCK_ETCD.lock();
+    if mock_etcd_opt.is_none() {
+        let mut server = mock_etcd::MockEtcdServer::default();
+        server.start();
+        *mock_etcd_opt = Some(server);
     }
 }
