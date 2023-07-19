@@ -6,7 +6,6 @@ use etcd_client::{
 };
 
 use std::collections::HashMap;
-use std::sync::Arc;
 
 use crate::common::error::{Context, DatenLordResult};
 
@@ -41,15 +40,6 @@ impl EtcdKVEngine {
                 format!("failed to connect to etcd, the etcd address={etcd_address_vec:?}")
             })?;
         Ok(EtcdKVEngine { client })
-    }
-
-    #[allow(dead_code)]
-    #[must_use]
-    /// Create a new etcd kv engine.
-    pub fn new_kv_engine(etcd_client: etcd_client::Client) -> Arc<Self> {
-        Arc::new(EtcdKVEngine {
-            client: etcd_client,
-        })
     }
 }
 
@@ -340,18 +330,17 @@ mod test {
 
     #[tokio::test]
     async fn test_lock_unlock() {
-        let test_key = "TEST_LOCK_UNLOCK";
+        let test_key = 1224;
         let client = EtcdKVEngine::new_for_local_test(vec![ETCD_ADDRESS.to_owned()])
             .await
             .unwrap();
-        let key: Vec<u8> = Vec::from(test_key);
-        let key = LockKeyType::FileNodeListLock(key);
+        let key: LockKeyType = LockKeyType::FileNodeListLock(test_key);
         let lock_key = client.lock(&key, Duration::from_secs(9999)).await.unwrap();
         // start a new thread to lock the same key
         // to check that lock the same key will be blocked
-        // the first lock will be unlock after 5 seconds
+        // the first lock will be unlock after 2 seconds
         // if the second lock the same key ,it will be blocked until the first lock unlock
-        let lock_time = Duration::from_secs(5);
+        let lock_time = Duration::from_secs(2);
         let time_now = Instant::now();
         let handle = tokio::spawn(async move {
             let client2 = EtcdKVEngine::new_for_local_test(vec![ETCD_ADDRESS.to_owned()])
@@ -359,11 +348,11 @@ mod test {
                 .unwrap();
             // the time it takes to lock the same key should be greater than 5 seconds
             // check the time duration
-            let time_duration = Instant::now().duration_since(time_now).as_secs();
-            assert!(time_duration >= lock_time.as_secs());
-            let key: Vec<u8> = Vec::from(test_key);
-            let key = LockKeyType::FileNodeListLock(key);
+            let key = LockKeyType::FileNodeListLock(test_key);
             let lock_key = client2.lock(&key, Duration::from_secs(9999)).await.unwrap();
+            let time_duration = Instant::now().duration_since(time_now).as_secs();
+            assert_eq!(time_duration, 2, "lock the same key should be blocked",);
+            assert!(time_duration >= lock_time.as_secs());
             client2.unlock(lock_key).await.unwrap();
         });
         // sleep 5 second to make sure the second lock is blocked
@@ -400,9 +389,9 @@ mod test {
             .await
             .unwrap();
         let mut first_txn = client.new_meta_txn().await;
-        let key1 = KeyType::Path2INum(String::from("/"));
+        let key1 = KeyType::Path2INum(String::from("test_commit key1"));
         let value1 = ValueType::INum(12);
-        let key2 = KeyType::Path2INum(String::from("/a"));
+        let key2 = KeyType::Path2INum(String::from("test_commit key2"));
         let value2 = ValueType::INum(13);
         first_txn.set(&key1, &value1);
         first_txn.set(&key2, &value2);
@@ -418,7 +407,7 @@ mod test {
                     .await
                     .unwrap();
                 let mut second_txn = client.new_meta_txn().await;
-                let key1 = KeyType::Path2INum(String::from("/"));
+                let key1 = KeyType::Path2INum(String::from("test_commit key1"));
                 let value1 = second_txn.get(&key1).await.unwrap();
                 assert!(value1.is_some());
                 if let Some(ValueType::INum(num)) = value1 {
@@ -430,7 +419,7 @@ mod test {
                 first_step_tx.send(()).await.unwrap();
                 // wait for the third txn to set the key
                 second_step_rx.recv().await.unwrap();
-                let key2 = KeyType::Path2INum(String::from("/a"));
+                let key2 = KeyType::Path2INum(String::from("test_commit key2"));
                 let value2 = second_txn.get(&key2).await.unwrap();
                 assert!(value2.is_some());
                 if let Some(ValueType::INum(num)) = value2 {
@@ -454,7 +443,7 @@ mod test {
             let mut third_txn = client.new_meta_txn().await;
             // wait for the second read first key and send the signal
             first_step_rx.recv().await.unwrap();
-            let key1 = KeyType::Path2INum(String::from("/"));
+            let key1 = KeyType::Path2INum(String::from("test_commit key1"));
             let value1 = ValueType::INum(14);
             third_txn.set(&key1, &value1);
             third_txn.commit().await.unwrap();

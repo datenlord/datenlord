@@ -17,3 +17,4 @@ src/csi/proto/*.rs
 fuse_bench/*
 bench.log
 .vscode/*
+localtest.sh
