@@ -15,9 +15,9 @@ use anyhow::{anyhow, Context};
 use clippy_utilities::Cast;
 use crossbeam_channel::{Receiver, Sender};
 use crossbeam_utils::atomic::AtomicCell;
-use log::{debug, error, info};
 use nix::errno::Errno;
 use nix::unistd;
+use tracing::{debug, error, info};
 
 use super::context::ProtoVersion;
 use super::file_system::{FileSystem, FsAsyncTaskController, FsController};

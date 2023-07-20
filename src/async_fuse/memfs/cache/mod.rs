@@ -9,10 +9,10 @@ use std::sync::Arc;
 use aligned_utils::bytes::AlignedBytes;
 use clippy_utilities::{Cast, OverflowArithmetic};
 use lockfree_cuckoohash::{pin, LockFreeCuckooHash as HashMap};
-use log::debug;
 use nix::sys::uio::IoVec;
 use parking_lot::{Mutex, RwLock};
 use priority_queue::PriorityQueue;
+use tracing::debug;
 
 // TODO: use smol RwLock
 use super::dist::request::Index;

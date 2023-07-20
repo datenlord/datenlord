@@ -12,7 +12,6 @@ use crossbeam_queue::ArrayQueue;
 use event_listener::{Event, EventListener};
 use futures::channel::mpsc;
 use futures::StreamExt;
-use log::trace;
 use once_cell::sync::Lazy;
 use parking_lot::Mutex;
 use ring_io::cq::CompletionQueue;
@@ -20,6 +19,7 @@ use ring_io::cqe::CQE;
 use ring_io::ring::RingBuilder;
 use ring_io::sq::SubmissionQueue;
 use ring_io::sqe::SQE;
+use tracing::trace;
 
 use super::small_box::SmallBox;
 use crate::async_fuse::util::{u32_to_usize, u64_to_ptr, usize_to_u64};

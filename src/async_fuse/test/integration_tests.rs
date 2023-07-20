@@ -4,11 +4,11 @@ use std::{fs, iter};
 
 use anyhow::Context;
 use clippy_utilities::OverflowArithmetic;
-use log::info;
 use nix::dir::Dir;
 use nix::fcntl::{self, OFlag};
 use nix::sys::stat::Mode;
 use nix::unistd::{self, Whence};
+use tracing::info;
 
 use super::test_util;
 

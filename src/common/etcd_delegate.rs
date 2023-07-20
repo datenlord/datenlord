@@ -11,9 +11,9 @@ use etcd_client::{
     Compare, CompareOp, DeleteOptions, EventType, GetOptions, LockOptions, PutOptions, Txn, TxnOp,
     TxnOpResponse,
 };
-use log::debug;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
+use tracing::debug;
 
 use super::error::{Context, DatenLordError, DatenLordResult};
 use super::util;
@@ -672,7 +672,7 @@ impl EtcdDelegate {
                     tokio::select! {
                         _ = tokio::time::sleep(Duration::from_secs(1)) => {
                             sec_cnt=sec_cnt.overflow_add(1_i32);
-                            log::debug!("wait for dist lock {name_clone} for {sec_cnt} seconds, if this goes too long, there might be dead lock");
+                            tracing::debug!("wait for dist lock {name_clone} for {sec_cnt} seconds, if this goes too long, there might be dead lock");
                         }
                         _ = &mut stop_wait_log_task_chan_rx => {
                             break;

@@ -11,10 +11,10 @@ use anyhow::anyhow;
 use async_trait::async_trait;
 use clippy_utilities::{Cast, OverflowArithmetic};
 use futures::future::{BoxFuture, FutureExt};
-use log::debug;
 use nix::fcntl::OFlag;
 use nix::sys::stat::{Mode, SFlag};
 use parking_lot::RwLock;
+use tracing::debug;
 
 use super::cache::{GlobalCache, IoMemBlock};
 use super::dir::DirEntry;
@@ -483,7 +483,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
                     Ok(root_node)
                 }
                 Err(e) => {
-                    log::error!("Root node persist lack of attr info {e}.");
+                    tracing::error!("Root node persist lack of attr info {e}.");
                     Err(DatenLordError::from(e))
                 }
             },

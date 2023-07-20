@@ -3,7 +3,7 @@
 use std::fmt;
 
 use clippy_utilities::Cast;
-use log::warn;
+use tracing::warn;
 
 use super::context::ProtoVersion;
 use super::de::Deserializer;
@@ -844,7 +844,7 @@ impl<'a> Request<'a> {
 #[cfg(test)]
 mod test {
     use aligned_utils::stack::Align8;
-    use log::debug;
+    use tracing::debug;
 
     use super::super::de::DeserializeError;
     use super::*;

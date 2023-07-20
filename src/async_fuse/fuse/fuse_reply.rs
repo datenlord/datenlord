@@ -11,10 +11,10 @@ use std::time::Duration;
 use std::{mem, ptr, slice};
 
 use clippy_utilities::{Cast, OverflowArithmetic};
-use log::debug;
 use nix::errno::Errno;
 use nix::sys::stat::SFlag;
 use nix::sys::uio::{self, IoVec};
+use tracing::debug;
 
 use super::abi_marker;
 #[cfg(target_os = "macos")]

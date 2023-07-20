@@ -6,8 +6,8 @@ use std::time::Duration;
 
 use anyhow::Context;
 use clippy_utilities::OverflowArithmetic;
-use log::debug;
 use tokio::sync::Mutex;
+use tracing::debug;
 
 use crate::async_fuse::memfs::kv_engine::{KVEngine, KeyType, LockKeyType, ValueType};
 use crate::common::error::DatenLordResult;
