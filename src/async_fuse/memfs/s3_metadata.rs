@@ -30,7 +30,7 @@ use super::node::Node;
 use super::persist::{PersistDirContent, PersistHandle, PersistTask};
 use super::s3_node::S3Node;
 use super::s3_wrapper::S3BackEnd;
-use super::{serial, RenameParam, SetAttrParam};
+use super::{serial, CreateParam, RenameParam, SetAttrParam};
 use crate::async_fuse::fuse::file_system::FsAsyncResultSender;
 #[cfg(feature = "abi-7-18")]
 use crate::async_fuse::fuse::fuse_reply::FuseDeleteNotification;
@@ -528,42 +528,47 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
     #[instrument(skip(self), err, ret)]
     /// Helper function to create node
     #[allow(clippy::too_many_lines)]
+    // Create and open a file
+    // If the file does not exist, first create it with
+    // the specified mode, and then open it.
+    #[allow(clippy::too_many_lines)]
     async fn create_node_helper(
         &self,
-        parent: INum,
-        node_name: &str,
-        mode: u32,
-        node_type: SFlag,
-        target_path: Option<&Path>,
+        param: CreateParam,
     ) -> DatenLordResult<(Duration, FuseAttr, u64)> {
-        // pre-check
-        let (parent_full_path, fuse_attr) = {
-            let mut parent_node = self
-                .create_node_pre_check(parent, node_name)
-                .await
-                .context("create_node_helper() failed to pre check")?;
-            let inum = self
-                .inum_allocator
-                .alloc_inum_for_fnode()
-                .await
-                .with_context(|| {
-                    format!(
-                        "create_node_helper() failed to alloc ino for node of name={node_name:?}"
-                    )
-                })?;
+        let parent = param.parent;
+        let node_name = &param.name;
+        let mode = param.mode;
+        let node_type = param.node_type;
+        let target_path: Option<&Path> = match param.link {
+            Some(ref path) => Some(path.as_ref()),
+            None => None,
+        };
+        let uid = param.uid;
+        let gid = param.gid;
+        if node_name.len() > 255 {
+            return util::build_error_result_from_errno(
+                Errno::ENAMETOOLONG,
+                format!(
+                    "create_node_helper() found the length of child name={node_name} is too long",
+                ),
+            );
+        }
+        // pre-check : check whether the child name is valid
+        let mut parent_node = self
+            .create_node_pre_check(parent, node_name)
+            .await
+            .context("create_node_helper() failed to pre check")?;
+        // allocate a new i-node number
+        let inum = self.alloc_inum().await?;
 
-            let parent_name = parent_node.get_name().to_owned();
-            // all checks are passed, ready to create new node
-            let m_flags = fs_util::parse_mode(mode);
-            let new_node = match node_type {
+        let parent_name = parent_node.get_name().to_owned();
+        // all checks are passed, ready to create new node
+        let m_flags = fs_util::parse_mode(mode);
+        let new_node = match node_type {
                 SFlag::S_IFDIR => {
-                    debug!(
-                    "create_node_helper() about to create a sub-directory with name={:?} and mode={:?} \
-                        under parent directory of ino={} and name={:?}",
-                    node_name, m_flags, parent, parent_name,
-                );
                     parent_node
-                   .create_child_dir(inum,node_name, m_flags)
+                   .create_child_dir(inum,node_name, m_flags,param.uid,param.gid)
                    .await
                    .context(format!(
                         "create_node_helper() failed to create directory with name={node_name:?} and mode={m_flags:?} \
@@ -572,18 +577,14 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
                 }
                 SFlag::S_IFREG => {
                     let o_flags = OFlag::O_CREAT | OFlag::O_EXCL | OFlag::O_RDWR;
-                    debug!(
-                        "helper_create_node() about to \
-                        create a file with name={:?}, oflags={:?}, mode={:?} \
-                        under parent directory of ino={} and name={:?}",
-                        node_name, o_flags, m_flags, parent, parent_name,
-                    );
                     parent_node
                        .create_child_file(
                             inum,
                             node_name,
                             o_flags,
                             m_flags,
+                            uid,
+                            gid,
                             Arc::<GlobalCache>::clone(&self.data_cache),
                         )
                        .await
@@ -593,12 +594,6 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
                     ))?
                 }
                 SFlag::S_IFLNK => {
-                    debug!(
-                        "create_node_helper() about to \
-                        create a symlink with name={:?} to target path={:?} \
-                        under parent directory of ino={} and name={:?}",
-                        node_name, target_path, parent, parent_name
-                    );
                     parent_node
                    .create_child_symlink(
                         inum,
@@ -623,47 +618,36 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
                 );
                 }
             };
-            let new_ino = new_node.get_ino();
-            let new_node_attr = new_node.get_attr();
-            let new_node_full_path = new_node.full_path().to_owned();
-            let fuse_attr = fs_util::convert_to_fuse_attr(new_node_attr);
-            debug!(
-                "create_node_helper() successfully created the new child name={:?} \
+        let new_ino = new_node.get_ino();
+        let new_node_attr = new_node.get_attr();
+        let new_node_full_path = new_node.full_path().to_owned();
+        let fuse_attr = fs_util::convert_to_fuse_attr(new_node_attr);
+        debug!(
+            "create_node_helper() successfully created the new child name={:?} \
                 of ino={} and type={:?} under parent ino={} and name={:?} lookup_count={}",
-                node_name,
-                new_ino,
-                node_type,
-                parent,
-                parent_name,
-                new_node.get_lookup_count(),
-            );
-            let parent_full_path = parent_node.full_path().to_owned();
+            node_name,
+            new_ino,
+            node_type,
+            parent,
+            parent_name,
+            new_node.get_lookup_count(),
+        );
+        let parent_full_path = parent_node.full_path().to_owned();
 
-            self.set_node_to_kv_engine(new_ino, new_node).await;
-            self.set_node_to_kv_engine(parent, parent_node).await;
-            self.set_inum_to_kv_engine(&new_node_full_path, new_ino)
-                .await;
-            (parent_full_path, fuse_attr)
-        };
-        {
-            let pnode = self
-                .get_node_from_kv_engine(parent)
-                .await
-                .unwrap_or_else(|| {
-                    panic!(
-                    "failed to get parent inode {parent:?}, parent fullpath {parent_full_path:?}"
-                )
-                });
-            // After sync to other，we should do async persist
-            self.persist_handle.mark_dirty(
-                parent,
-                PersistDirContent::new_from_cache(
-                    parent_full_path,
-                    pnode.get_dir_data(),
-                    serial::file_attr_to_serial(&pnode.get_attr()),
-                ),
-            );
-        };
+        // After sync to other，we should do async persist
+        self.persist_handle.mark_dirty(
+            parent,
+            PersistDirContent::new_from_cache(
+                parent_full_path,
+                parent_node.get_dir_data(),
+                serial::file_attr_to_serial(&parent_node.get_attr()),
+            ),
+        );
+
+        self.set_node_to_kv_engine(new_ino, new_node).await;
+        self.set_node_to_kv_engine(parent, parent_node).await;
+        self.set_inum_to_kv_engine(&new_node_full_path, new_ino)
+            .await;
 
         let ttl = Duration::new(MY_TTL_SEC, 0);
         Ok((ttl, fuse_attr, MY_GENERATION))
@@ -1637,5 +1621,9 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
         {
             panic!("failed to invlidate others' cache, error: {e}");
         }
+    }
+
+    async fn alloc_inum(&self) -> DatenLordResult<INum> {
+        self.inum_allocator.alloc_inum_for_fnode().await
     }
 }

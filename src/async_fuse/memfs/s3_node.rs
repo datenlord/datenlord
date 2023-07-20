@@ -896,6 +896,8 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
         inum: INum,
         child_dir_name: &str,
         mode: Mode,
+        uid: u32,
+        gid: u32,
     ) -> DatenLordResult<Self> {
         let absolute_path = self.absolute_dir_with_child(child_dir_name);
         let dir_data = self.get_dir_data();
@@ -913,6 +915,9 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
             ino: inum,
             kind: SFlag::S_IFDIR,
             perm: fs_util::parse_mode_bits(mode.bits()),
+            uid,
+            gid,
+            nlink: 1,
             ..FileAttr::now()
         }));
         debug_assert_eq!(SFlag::S_IFDIR, child_attr.read().kind);
@@ -971,6 +976,8 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
         child_file_name: &str,
         oflags: OFlag,
         mode: Mode,
+        uid: u32,
+        gid: u32,
         global_cache: Arc<GlobalCache>,
     ) -> DatenLordResult<Self> {
         let absolute_path = self.absolute_path_with_child(child_file_name);
@@ -995,6 +1002,9 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
             perm: fs_util::parse_mode_bits(mode.bits()),
             size: 0,
             blocks: 0,
+            uid,
+            gid,
+            nlink: 1,
             ..FileAttr::now()
         }));
         debug_assert_eq!(SFlag::S_IFREG, child_attr.read().kind);

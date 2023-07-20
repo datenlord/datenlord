@@ -103,6 +103,8 @@ pub trait Node: Sized {
         inum: INum,
         child_dir_name: &str,
         mode: Mode,
+        uid: u32,
+        gid: u32,
     ) -> DatenLordResult<Self>;
     /// Open file in a directory
     async fn open_child_file(
@@ -119,6 +121,8 @@ pub trait Node: Sized {
         child_file_name: &str,
         oflags: OFlag,
         mode: Mode,
+        uid: u32,
+        gid: u32,
         global_cache: Arc<GlobalCache>,
     ) -> DatenLordResult<Self>;
     /// Load data from directory, file or symlink target.
@@ -914,6 +918,8 @@ impl Node for DefaultNode {
         _inum: INum,
         child_dir_name: &str,
         mode: Mode,
+        _uid: u32,
+        _gid: u32,
     ) -> DatenLordResult<Self> {
         let ino = self.get_ino();
         let fd = self.fd;
@@ -1026,6 +1032,8 @@ impl Node for DefaultNode {
         child_file_name: &str,
         oflags: OFlag,
         mode: Mode,
+        _uid: u32,
+        _gid: u32,
         global_cache: Arc<GlobalCache>,
     ) -> DatenLordResult<Self> {
         let ino = self.get_ino();

@@ -23,7 +23,7 @@ use super::dist::server::CacheServer;
 use super::fs_util::{self, FileAttr};
 use super::kv_engine::KVEngineType;
 use super::node::{self, DefaultNode, Node};
-use super::{RenameParam, SetAttrParam};
+use super::{CreateParam, RenameParam, SetAttrParam};
 use crate::async_fuse::fuse::file_system::FsAsyncResultSender;
 use crate::async_fuse::fuse::fuse_reply::{ReplyDirectory, StatFsParam};
 use crate::async_fuse::fuse::protocol::{FuseAttr, INum, FUSE_ROOT_ID};
@@ -59,11 +59,7 @@ pub trait MetaData {
     /// Helper function to create node
     async fn create_node_helper(
         &self,
-        parent: INum,
-        node_name: &str,
-        mode: u32,
-        node_type: SFlag,
-        target_path: Option<&Path>,
+        param: CreateParam,
     ) -> DatenLordResult<(Duration, FuseAttr, u64)>;
 
     /// Helper function to remove node
@@ -595,15 +591,20 @@ impl MetaData for DefaultMetaData {
     /// Helper function to create node
     async fn create_node_helper(
         &self,
-        parent: INum,
-        node_name: &str,
-        mode: u32,
-        node_type: SFlag,
-        target_path: Option<&Path>,
+        param: CreateParam,
     ) -> DatenLordResult<(Duration, FuseAttr, u64)> {
+        // parent node_name mode node_type(SFlag)
+        let parent = param.parent;
+        let node_name = &param.name;
+        let mode = param.mode;
+        let node_type = param.node_type;
+        let target_path: Option<&Path> = match param.link {
+            Some(ref path) => Some(path.as_ref()),
+            None => None,
+        };
         // pre-check
         let mut cache = self.cache.write().await;
-        let parent_node = Self::create_node_pre_check(parent, node_name, &mut cache)
+        let parent_node = Self::create_node_pre_check(parent, &node_name, &mut cache)
             .context("create_node_helper() failed to pre check")?;
         let parent_name = parent_node.get_name().to_owned();
         // all checks are passed, ready to create new node
@@ -616,7 +617,7 @@ impl MetaData for DefaultMetaData {
                     node_name, m_flags, parent, parent_name,
                 );
                 parent_node
-                    .create_child_dir(0, node_name, m_flags)
+                    .create_child_dir(0, &node_name, m_flags, param.uid, param.gid)
                     .await
                     .context(format!(
                     "create_node_helper() failed to create directory with name={node_name:?} and mode={m_flags:?} \
@@ -634,9 +635,11 @@ impl MetaData for DefaultMetaData {
                 parent_node
                     .create_child_file(
                         0,
-                        node_name,
+                        &node_name,
                         o_flags,
                         m_flags,
+                        param.uid,
+                        param.gid,
                         Arc::<GlobalCache>::clone(&self.data_cache),
                     )
                     .await

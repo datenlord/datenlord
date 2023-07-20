@@ -19,6 +19,69 @@ pub const S3_DEFAULT_MOUNT_DIR: &str = "/tmp/datenlord_test_dir";
 pub const FILE_CONTENT: &str = "0123456789ABCDEF";
 
 #[cfg(test)]
+fn test_create_file(mount_dir: &Path) -> anyhow::Result<()> {
+    info!("test create file");
+    use smol::fs::unix::MetadataExt;
+    let file_path = Path::new(mount_dir).join("test_create_file_user.txt");
+    let file_mode = Mode::from_bits_truncate(0o644);
+    let file_fd = fcntl::open(&file_path, OFlag::O_CREAT, file_mode)?;
+    unistd::close(file_fd)?;
+    info!("try get file metadata");
+    let file_metadata = fs::metadata(&file_path)?;
+    assert_eq!(file_metadata.mode() & 0o777, 0o644);
+    // check the file owner
+    let file_owner = file_metadata.uid();
+    let current_uid = unistd::getuid();
+    assert_eq!(file_owner, current_uid.as_raw());
+    // check the file group
+    let file_group = file_metadata.gid();
+    let current_gid = unistd::getgid();
+    assert_eq!(file_group, current_gid.as_raw());
+    // check nlink == 1
+    assert_eq!(file_metadata.nlink(), 1);
+    fs::remove_file(&file_path)?; // immediate deletion
+    Ok(())
+}
+
+#[cfg(test)]
+fn test_name_too_long(mount_dir: &Path) -> anyhow::Result<()> {
+    info!("test_name_too_long");
+    use nix::fcntl::open;
+
+    let file_name = "a".repeat(256);
+    // try to create file, dir, symlink with name too long
+    // expect to fail with ENAMETOOLONG
+    let file_path = Path::new(mount_dir).join(&file_name);
+    let file_mode = Mode::from_bits_truncate(0o644);
+
+    info!("try to create a file with name too long");
+    let result = open(&file_path, OFlag::O_CREAT, file_mode);
+    match result {
+        Ok(_) => panic!("File creation should have failed with ENAMETOOLONG"),
+        Err(nix::Error::ENAMETOOLONG) => {} // expected this error
+        Err(_) => panic!("Expected ENAMETOOLONG"),
+    }
+
+    info!("try to create a dir with name too long");
+    let result = fs::create_dir(&file_path);
+    match result {
+        Ok(_) => panic!("Directory creation should have failed with ENAMETOOLONG"),
+        Err(ref e) if e.raw_os_error() == Some(libc::ENAMETOOLONG) => {} // expected this error
+        Err(_) => panic!("Expected ENAMETOOLONG"),
+    }
+
+    info!("try to create a symlink with name too long");
+    let result = std::os::unix::fs::symlink(mount_dir, &file_path);
+    match result {
+        Ok(_) => panic!("Symlink creation should have failed with ENAMETOOLONG"),
+        Err(ref e) if e.raw_os_error() == Some(libc::ENAMETOOLONG) => {} // expected this error
+        Err(_) => panic!("Expected ENAMETOOLONG"),
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
 fn test_file_manipulation_rust_way(mount_dir: &Path) -> anyhow::Result<()> {
     info!("file manipulation Rust style");
     let file_path = Path::new(mount_dir).join("tmp.txt");
@@ -523,6 +586,8 @@ async fn _run_test(mount_dir_str: &str, is_s3: bool) -> anyhow::Result<()> {
     let mount_dir = Path::new(mount_dir_str);
     let th = test_util::setup(mount_dir, is_s3).await?;
 
+    test_create_file(mount_dir).context("test_create_file() failed")?;
+    test_name_too_long(mount_dir).context("test_name_too_long() failed")?;
     test_symlink_dir(mount_dir).context("test_symlink_dir() failed")?;
     test_symlink_file(mount_dir).context("test_symlink_file() failed")?;
     #[cfg(target_os = "linux")]
