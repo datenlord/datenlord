@@ -96,7 +96,7 @@ pub struct FuseAttr {
     pub blocks: u64,
     /// Access time seconds
     pub atime: u64,
-    /// Content modifed time seconds
+    /// Content modified time seconds
     pub mtime: u64,
     /// Meta-data changed time seconds
     pub ctime: u64,
@@ -105,7 +105,7 @@ pub struct FuseAttr {
     pub crtime: u64,
     /// Access time nano-seconds
     pub atimensec: u32,
-    /// Content modifed time nano-seconds
+    /// Content modified time nano-seconds
     pub mtimensec: u32,
     /// Meta-data changed time nano-seconds
     pub ctimensec: u32,
@@ -267,7 +267,8 @@ pub mod init_flags {
     pub const FUSE_ASYNC_READ: u32 = 1;
     /// `FUSE_POSIX_LOCKS`: remote locking for POSIX file locks
     pub const FUSE_POSIX_LOCKS: u32 = 1 << 1_i32;
-    /// `FUSE_FILE_OPS`: kernel sends file handle for fstat, etc... (not yet supported)
+    /// `FUSE_FILE_OPS`: kernel sends file handle for fstat, etc... (not yet
+    /// supported)
     #[cfg(feature = "abi-7-9")]
     pub const FUSE_FILE_OPS: u32 = 1 << 2_i32;
     /// `FUSE_ATOMIC_O_TRUNC`: handles the `O_TRUNC` open flag in the filesystem
@@ -320,7 +321,8 @@ pub mod init_flags {
     /// `FUSE_PARALLEL_DIROPS`: allow parallel lookups and readdir
     #[cfg(feature = "abi-7-25")]
     pub const FUSE_PARALLEL_DIROPS: u32 = 1 << 18_i32;
-    /// `FUSE_HANDLE_KILLPRIV`: fs handles killing suid/sgid/cap on write/chown/trunc
+    /// `FUSE_HANDLE_KILLPRIV`: fs handles killing suid/sgid/cap on
+    /// write/chown/trunc
     #[cfg(feature = "abi-7-26")]
     pub const FUSE_HANDLE_KILLPRIV: u32 = 1 << 19_i32;
     /// `FUSE_POSIX_ACL`: filesystem supports posix acls
@@ -329,7 +331,8 @@ pub mod init_flags {
     /// `FUSE_ABORT_ERROR`: reading the device after abort returns ECONNABORTED
     #[cfg(feature = "abi-7-27")]
     pub const FUSE_ABORT_ERROR: u32 = 1 << 21_i32;
-    /// `FUSE_MAX_PAGES`: `init_out.max_pages` contains the max number of req pages
+    /// `FUSE_MAX_PAGES`: `init_out.max_pages` contains the max number of req
+    /// pages
     #[cfg(feature = "abi-7-28")]
     pub const FUSE_MAX_PAGES: u32 = 1 << 22_i32;
     /// `FUSE_CACHE_SYMLINKS`: cache READLINK responses
@@ -338,7 +341,8 @@ pub mod init_flags {
     /// `FUSE_NO_OPENDIR_SUPPORT`: kernel supports zero-message opendir
     #[cfg(feature = "abi-7-29")]
     pub const FUSE_NO_OPENDIR_SUPPORT: u32 = 1 << 24_i32;
-    /// `FUSE_EXPLICIT_INVAL_DATA`: only invalidate cached pages on explicit request
+    /// `FUSE_EXPLICIT_INVAL_DATA`: only invalidate cached pages on explicit
+    /// request
     #[cfg(feature = "abi-7-30")]
     pub const FUSE_EXPLICIT_INVAL_DATA: u32 = 1 << 25_i32;
 
@@ -388,7 +392,8 @@ pub const FUSE_LK_FLOCK: u32 = 1 << 0_i32;
 /// WRITE flags
 #[allow(dead_code)]
 pub mod write_flags {
-    /// `FUSE_WRITE_CACHE`: delayed write from page cache, file handle is guessed
+    /// `FUSE_WRITE_CACHE`: delayed write from page cache, file handle is
+    /// guessed
     #[cfg(feature = "abi-7-9")]
     pub const FUSE_WRITE_CACHE: u32 = 1 << 0_i32;
     /// `FUSE_WRITE_LOCKOWNER`: `lock_owner` field is valid
@@ -412,7 +417,8 @@ pub mod ioctl_flags {
     /// `FUSE_IOCTL_COMPAT`: 32bit compat ioctl on 64bit machine
     #[cfg(feature = "abi-7-11")]
     pub const FUSE_IOCTL_COMPAT: u32 = 1 << 0_i32;
-    /// `FUSE_IOCTL_UNRESTRICTED`: not restricted to well-formed ioctls, retry allowed
+    /// `FUSE_IOCTL_UNRESTRICTED`: not restricted to well-formed ioctls, retry
+    /// allowed
     #[cfg(feature = "abi-7-11")]
     pub const FUSE_IOCTL_UNRESTRICTED: u32 = 1 << 1_i32;
     /// `FUSE_IOCTL_RETRY`: retry with new iovecs
@@ -424,7 +430,8 @@ pub mod ioctl_flags {
     /// `FUSE_IOCTL_DIR`: is a directory
     #[cfg(feature = "abi-7-18")]
     pub const FUSE_IOCTL_DIR: u32 = 1 << 4_i32;
-    /// `FUSE_IOCTL_COMPAT_X32`: x32 compat ioctl on 64bit machine (64bit `time_t`)
+    /// `FUSE_IOCTL_COMPAT_X32`: x32 compat ioctl on 64bit machine (64bit
+    /// `time_t`)
     #[cfg(feature = "abi-7-30")]
     pub const FUSE_IOCTL_COMPAT_X32: u32 = 1 << 5_i32;
 
@@ -526,7 +533,8 @@ pub enum FuseOpCode {
     FUSE_CREATE = 35,
     /// Interrupt a previous FUSE request
     FUSE_INTERRUPT = 36,
-    /// Map block index withClean up filesystemin file to block index within device
+    /// Map block index withClean up filesystemin file to block index within
+    /// device
     FUSE_BMAP = 37,
     /// Clean up filesystem
     FUSE_DESTROY = 38,
@@ -573,7 +581,7 @@ pub enum FuseOpCode {
     CUSE_INIT = 4096,
 }
 
-/// FUSE nofity code `fuse_notify_code`
+/// FUSE notify code `fuse_notify_code`
 #[allow(dead_code)]
 #[allow(
     non_camel_case_types,
@@ -613,13 +621,15 @@ pub const FUSE_MIN_READ_BUFFER: usize = 8192;
 pub mod fuse_compat_configs {
     /// FUSE compatible statfs size when minior version lower than 4
     pub const FUSE_COMPAT_STATFS_SIZE: usize = 48;
-    /// FUSE compatible directory entry related response size for macOS and version < 7.9
+    /// FUSE compatible directory entry related response size for macOS and
+    /// version < 7.9
     #[cfg(all(target_os = "macos", feature = "abi-7-9"))]
     pub const FUSE_COMPAT_ENTRY_OUT_SIZE: usize = 136;
     /// FUSE compatible directory entry related response size for version < 7.9
     #[cfg(feature = "abi-7-9")]
     pub const FUSE_COMPAT_ENTRY_OUT_SIZE: usize = 120;
-    /// FUSE compatible attribute related response size for macOS and version < 7.9
+    /// FUSE compatible attribute related response size for macOS and version <
+    /// 7.9
     #[cfg(all(target_os = "macos", feature = "abi-7-9"))]
     pub const FUSE_COMPAT_ATTR_OUT_SIZE: usize = 112;
     /// FUSE compatible attribute related response size for version < 7.9
@@ -975,7 +985,7 @@ pub struct FuseWriteIn {
     pub fh: u64,
     /// Write offset
     pub offset: u64,
-    /// Wirte size
+    /// Write size
     pub size: u32,
     /// Write flags
     pub write_flags: u32,
@@ -1130,14 +1140,15 @@ pub struct FuseInitOut {
     /// Max background pending requests under processing
     #[cfg(feature = "abi-7-13")]
     pub max_background: u16,
-    /// Nofity FUSE kernel module to mark the filesystem as "congested"
+    /// Notify FUSE kernel module to mark the filesystem as "congested"
     /// if the number of pending requests above this threshold
     #[cfg(feature = "abi-7-13")]
     pub congestion_threshold: u16,
     /// The max size of write requests from the kernel
     pub max_write: u32,
     /// The timestamp granularity supported by the FUSE filesystem
-    /// The default is 1 for full nano-second resolution, 1000000000 for second resolution
+    /// The default is 1 for full nano-second resolution, 1000000000 for second
+    /// resolution
     #[cfg(feature = "abi-7-23")]
     pub time_gran: u32,
     // unused: [u32; 9] is defined between 7-13 and 7-27
@@ -1407,7 +1418,7 @@ pub struct FuseDirEntPlus {
 // #define FUSE_DIRENTPLUS_SIZE(d) \
 //     FUSE_DIRENT_ALIGN(FUSE_NAME_OFFSET_DIRENTPLUS + (d)->dirent.namelen)
 
-/// FUSE nofity invalid inode response `fuse_notify_inval_inode_out`
+/// FUSE notify invalid inode response `fuse_notify_inval_inode_out`
 #[cfg(feature = "abi-7-12")]
 #[derive(Debug)]
 #[repr(C)]

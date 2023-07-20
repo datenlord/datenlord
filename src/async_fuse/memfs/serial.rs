@@ -1,14 +1,17 @@
+use std::collections::BTreeMap;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::SystemTime;
+
+use nix::sys::stat::SFlag;
+use parking_lot::RwLock;
+use serde::{Deserialize, Serialize};
+
 use super::cache::GlobalCache;
 use super::dir::DirEntry;
 use super::fs_util::FileAttr;
 use super::s3_node::S3NodeData;
 use crate::async_fuse::fuse::protocol::INum;
-use nix::sys::stat::SFlag;
-use parking_lot::RwLock;
-use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
-use std::path::PathBuf;
-use std::{sync::Arc, time::SystemTime};
 
 /// Serializable `DirEntry`
 #[derive(Serialize, Deserialize, Debug, Eq, PartialEq)]
@@ -80,7 +83,8 @@ pub enum SerialSFlag {
 }
 
 /// In order to derive Serialize and Deserialize,
-/// Replace the 'BTreeMap<String, `DirEntry`>' with 'HashMap<String, `SerialDirEntry`>'
+/// Replace the 'BTreeMap<String, `DirEntry`>' with 'HashMap<String,
+/// `SerialDirEntry`>'
 #[derive(Serialize, Deserialize, Debug, Eq, PartialEq)]
 pub enum SerialNodeData {
     /// Directory data
@@ -232,12 +236,14 @@ mod test {
 
     #[test]
     fn test_entrytype_serialize() {
+        use nix::sys::stat::SFlag;
+
         /// Test `entry_type_to_serial` and `serial_to_entry_type`
-        /// `entry_type_to_serial` and `serial_to_entry_type` should be a pair of inverse functions
-        /// We will test all the possible entry types (currently just three types)
+        /// `entry_type_to_serial` and `serial_to_entry_type` should be a pair
+        /// of inverse functions We will test all the possible entry
+        /// types (currently just three types)
         use super::entry_type_to_serial;
         use super::serial_to_entry_type;
-        use nix::sys::stat::SFlag;
         let entry_types = vec![SFlag::S_IFDIR, SFlag::S_IFREG, SFlag::S_IFLNK];
         for entry_type_before in entry_types {
             let serial_entry_type = entry_type_to_serial(entry_type_before);
@@ -246,8 +252,9 @@ mod test {
         }
     }
 
-    use rand::Rng;
     use std::time::SystemTime;
+
+    use rand::Rng;
 
     // Helper function to create a FileAttr instance for testing
     fn create_file_attr() -> FileAttr {

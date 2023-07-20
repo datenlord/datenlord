@@ -1,16 +1,15 @@
 //! Proactor API version 0
 
-use super::global::{IoRequest, Operation};
-use super::small_box::SmallBox;
-
-use crate::async_fuse::util::u32_to_usize;
-
 use std::io;
 use std::mem::{ManuallyDrop, MaybeUninit};
 use std::os::unix::io::RawFd;
 
 use nix::unistd;
 use ring_io::sqe::PrepareSqe;
+
+use super::global::{IoRequest, Operation};
+use super::small_box::SmallBox;
+use crate::async_fuse::util::u32_to_usize;
 
 /// An owned file descriptor
 struct Fd(RawFd);

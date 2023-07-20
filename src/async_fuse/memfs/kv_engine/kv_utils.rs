@@ -1,12 +1,14 @@
+use std::collections::HashSet;
+use std::sync::Arc;
+use std::time::Duration;
+
+use log::debug;
+
 use crate::async_fuse::fuse::protocol::INum;
 use crate::async_fuse::memfs::kv_engine::{
     self, KVEngine, KVEngineType, KeyType, LockKeyType, ValueType,
 };
 use crate::common::error::{Context, DatenLordResult};
-use log::debug;
-use std::collections::HashSet;
-use std::sync::Arc;
-use std::time::Duration;
 
 /// The kv lock 's timeout
 const LOCK_TIME_OUT_SECS: u64 = 10;
@@ -116,8 +118,9 @@ pub async fn register_volume(
     Ok(())
 }
 
-/// Get node list related to a volume, execluding the input `node_ide` as its the local node id.
-/// This function is used to sync metadata, the inode information.
+/// Get node list related to a volume, execluding the input `node_ide` as its
+/// the local node id. This function is used to sync metadata, the inode
+/// information.
 pub async fn get_volume_nodes(
     kv_engine: &Arc<KVEngineType>,
     node_id: &str,

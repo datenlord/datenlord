@@ -1,5 +1,24 @@
 //! The implementation of filesystem node
 
+use std::collections::{BTreeMap, VecDeque};
+use std::os::unix::io::{FromRawFd, IntoRawFd, RawFd};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{self, AtomicBool, AtomicI64, Ordering};
+use std::sync::Arc;
+use std::time::SystemTime;
+
+use anyhow::Context;
+use async_trait::async_trait;
+use clippy_utilities::{Cast, OverflowArithmetic};
+use log::debug;
+use nix::errno::Errno;
+use nix::fcntl::{self, FcntlArg, OFlag};
+use nix::sys::stat::{self, Mode, SFlag};
+use nix::sys::time::TimeSpec;
+use nix::unistd;
+use parking_lot::RwLock;
+use tokio::sync::RwLockWriteGuard;
+
 use super::cache::{GlobalCache, IoMemBlock};
 use super::dir::DirEntry;
 use super::fs_util::{self, FileAttr};
@@ -9,24 +28,6 @@ use crate::async_fuse::fuse::fuse_reply::{AsIoVec, StatFsParam};
 use crate::async_fuse::fuse::protocol::INum;
 use crate::async_fuse::metrics;
 use crate::common::error::DatenLordResult;
-use anyhow::Context;
-use async_trait::async_trait;
-use clippy_utilities::{Cast, OverflowArithmetic};
-use log::debug;
-use nix::errno::Errno;
-use nix::fcntl::{self, FcntlArg, OFlag};
-use nix::sys::stat::SFlag;
-use nix::sys::stat::{self, Mode};
-use nix::{sys::time::TimeSpec, unistd};
-use parking_lot::RwLock;
-use std::collections::BTreeMap;
-use std::collections::VecDeque;
-use std::os::unix::io::{FromRawFd, IntoRawFd, RawFd};
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{self, AtomicBool, AtomicI64, Ordering};
-use std::sync::Arc;
-use std::time::SystemTime;
-use tokio::sync::RwLockWriteGuard;
 
 /// Fs node trait
 #[async_trait]
@@ -235,6 +236,7 @@ impl DefaultNode {
             meta,
         }
     }
+
     /// Get full path
     fn full_path(&self) -> &str {
         self.full_path.as_ref()
@@ -331,7 +333,7 @@ impl DefaultNode {
             });
             if 0 == fd_res {
                 debug!(
-                    "create_or_load_child_symlink_helper() successfully opened symlink={:?} itselt",
+                    "create_or_load_child_symlink_helper() successfully opened symlink={:?} itself",
                     child_symlink_name
                 );
                 Ok(fd_res)
@@ -1135,14 +1137,15 @@ impl Node for DefaultNode {
                 // let target_data = self
                 //     .load_symlink_target_helper()
                 //     .await
-                //     .context("load_data() failed to load symlink target node data")?;
-                // let data_size = target_data.size();
-                // self.data = DefaultNodeData::SymLink(Box::new(SymLinkData::from(
+                //     .context("load_data() failed to load symlink target node
+                // data")?; let data_size = target_data.size();
+                // self.data =
+                // DefaultNodeData::SymLink(Box::new(SymLinkData::from(
                 //     self.get_symlink_target().to_owned(),
                 //     target_data,
                 // )));
-                // debug!("load_data() successfully load symlink target node data");
-                // Ok(data_size)
+                // debug!("load_data() successfully load symlink target node
+                // data"); Ok(data_size)
             }
         }
     }
@@ -1386,7 +1389,8 @@ impl Node for DefaultNode {
                     crate::common::util::format_anyhow_error(&e)
                 );
             });
-        self.dec_open_count(); // decrease open count before reply in case reply failed
+        self.dec_open_count(); // decrease open count before reply in case reply
+                               // failed
     }
 
     /// Close dir
@@ -1585,15 +1589,17 @@ pub fn rename_fullpath_recursive(
 
 #[cfg(test)]
 mod test {
+    use std::path::Path;
+
     use anyhow::Context;
     use nix::fcntl::{self, FcntlArg, OFlag};
     use nix::sys::stat::Mode;
     use nix::unistd;
+
     // use std::fs::File;
     // use std::io::prelude::*;
     // use std::os::unix::io::FromRawFd;
     use crate::common::error::{DatenLordError, DatenLordResult};
-    use std::path::Path;
 
     #[test]
     fn test_dup_fd() -> DatenLordResult<()> {
@@ -1632,7 +1638,8 @@ mod test {
             assert_eq!(write_size, file_content.len(), "write size not match");
 
             // unistd::lseek(dup_fd, 0, unistd::Whence::SeekSet)?;
-            // let mut buffer: Vec<u8> = std::iter::repeat(0_u8).take(file_content.len()).collect();
+            // let mut buffer: Vec<u8> =
+            // std::iter::repeat(0_u8).take(file_content.len()).collect();
             // let read_size = unistd::read(dup_fd, &mut *buffer)?;
             // assert_eq!(read_size, file_content.len(), "read size not match");
             // let content = String::from_utf8(buffer)?;

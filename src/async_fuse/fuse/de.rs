@@ -1,15 +1,14 @@
 //! FUSE protocol deserializer
 
-use super::abi_marker::FuseAbiData;
-use super::context::ProtoVersion;
-
 use std::ffi::OsStr;
-use std::mem;
-use std::slice;
+use std::{mem, slice};
 
 use better_as::pointer;
 use log::trace;
 use memchr::memchr;
+
+use super::abi_marker::FuseAbiData;
+use super::context::ProtoVersion;
 
 /// FUSE protocol deserializer
 #[derive(Debug)]
@@ -206,7 +205,8 @@ impl<'b> Deserializer<'b> {
     }
 
     #[allow(dead_code)]
-    /// Fetch some nul-terminated bytes and return an `OsStr` without the nul byte.
+    /// Fetch some nul-terminated bytes and return an `OsStr` without the nul
+    /// byte.
     pub fn fetch_os_str(&mut self) -> Result<&'b OsStr, DeserializeError> {
         use std::os::unix::ffi::OsStrExt;
 
@@ -220,7 +220,8 @@ impl<'b> Deserializer<'b> {
         Ok(OsStrExt::from_bytes(bytes_without_nul))
     }
 
-    /// Fetch some nul-terminated bytes and return an `str` without the nul byte.
+    /// Fetch some nul-terminated bytes and return an `str` without the nul
+    /// byte.
     pub fn fetch_str(&mut self) -> Result<&'b str, DeserializeError> {
         let bytes_with_nul = self.fetch_c_str()?;
 
@@ -249,9 +250,9 @@ impl<'b> Deserializer<'b> {
 
 #[cfg(test)]
 mod tests {
-    use super::{DeserializeError, Deserializer};
-
     use aligned_utils::stack::Align8;
+
+    use super::{DeserializeError, Deserializer};
 
     #[test]
     fn fetch_all_bytes() {

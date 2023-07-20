@@ -28,7 +28,7 @@ DatenLord can alleviate data unavailable of cloud or data center failure by cach
 ## Architecture
 
 ### Single Data Center
-![DatenLord Single Data Center](docs/images/datenlord_architecture_single_data_center.svg "DatenLord Signle Data Center")
+![DatenLord Single Data Center](docs/images/datenlord_architecture_single_data_center.svg "DatenLord Single Data Center")
 
 ### Multiple Data Centers and Hybrid Cloud
 ![DatenLord Multiple Data Centers and Hybrid Cloud](docs/images/datenlord_architecture_multi_data_center.svg "DatenLord Multiple Data Centers and Hybrid Cloud")

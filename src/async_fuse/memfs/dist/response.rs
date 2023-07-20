@@ -1,11 +1,13 @@
 //! Response between caches
 
+use std::collections::BTreeMap;
+
+use serde::{Deserialize, Serialize};
+
 use super::super::dir::DirEntry;
 use super::super::fs_util::FileAttr;
 use super::super::serial::{self, SerialDirEntry, SerialFileAttr};
 use super::request::Index;
-use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
 
 /// Cache operation response
 #[allow(variant_size_differences)]
