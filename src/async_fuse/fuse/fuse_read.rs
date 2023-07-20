@@ -1,10 +1,10 @@
 use futures::io::AsyncRead;
 use futures::stream::Stream;
 use futures::task::{Context, Poll};
-use log::debug;
 use pin_project_lite::pin_project;
 use std::iter;
 use std::pin::Pin;
+use tracing::debug;
 
 pin_project! {
     #[derive(Debug)]
@@ -57,9 +57,9 @@ impl<R: AsyncRead> Stream for FuseBufReadStream<R> {
 mod test {
     use futures::prelude::*;
     use futures::stream::StreamExt;
-    use tokio::{self, blocking};
     use std::fs::{self, File};
     use std::io;
+    use tokio::{self, blocking};
 
     use super::FuseBufReadStream;
 

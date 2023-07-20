@@ -1,7 +1,7 @@
 //! Request between caches
 
-use log::info;
 use serde::{Deserialize, Serialize};
+use tracing::info;
 
 use super::super::serial::SerialSFlag;
 use crate::async_fuse::fuse::protocol::INum;

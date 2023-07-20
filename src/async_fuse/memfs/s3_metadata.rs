@@ -10,13 +10,13 @@ use anyhow::Context;
 use async_trait::async_trait;
 use clippy_utilities::{Cast, OverflowArithmetic};
 use itertools::Itertools;
-use log::{debug, warn};
 use nix::errno::Errno;
 use nix::fcntl::OFlag;
 use nix::sys::stat::SFlag;
 use parking_lot::RwLock as SyncRwLock;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
+use tracing::{debug, warn};
 
 use super::cache::{GlobalCache, IoMemBlock};
 use super::dir::DirEntry;

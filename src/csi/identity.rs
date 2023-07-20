@@ -1,7 +1,7 @@
 //! The implementation for CSI identity service
 
 use grpcio::{RpcContext, UnarySink};
-use log::debug;
+use tracing::debug;
 
 use super::proto::csi::{
     GetPluginCapabilitiesRequest, GetPluginCapabilitiesResponse, GetPluginInfoRequest,

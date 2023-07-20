@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use grpcio::{RpcContext, UnarySink};
-use log::{debug, info, warn};
+use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use super::meta_data::{DatenLordVolume, MetaData, VolumeSource};

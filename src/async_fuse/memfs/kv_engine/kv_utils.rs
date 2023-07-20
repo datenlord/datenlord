@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
-use log::debug;
+use tracing::debug;
 
 use crate::async_fuse::fuse::protocol::INum;
 use crate::async_fuse::memfs::kv_engine::{

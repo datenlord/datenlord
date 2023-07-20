@@ -5,9 +5,9 @@ use std::os::unix::io::RawFd;
 use std::path::Path;
 
 use anyhow::Context;
-use log::{debug, info};
 use nix::fcntl::{self, OFlag};
 use nix::sys::stat::{self, Mode};
+use tracing::{debug, info};
 
 // Linux mount flags, check the following link for details
 // <https://github.com/torvalds/linux/blob/master/include/uapi/linux/mount.h#L11>

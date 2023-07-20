@@ -8,7 +8,6 @@ use std::time::Duration;
 use anyhow::Context;
 use async_trait::async_trait;
 use clippy_utilities::{Cast, OverflowArithmetic};
-use log::{debug, warn};
 use nix::errno::Errno;
 use nix::fcntl::OFlag;
 use nix::sys::stat::SFlag;
@@ -16,6 +15,7 @@ use nix::unistd;
 use parking_lot::RwLock as SyncRwLock; // conflict with tokio RwLock
 use tokio::sync::{Mutex, RwLock, RwLockWriteGuard};
 use tokio::task::JoinHandle;
+use tracing::{debug, warn};
 
 use super::cache::{GlobalCache, IoMemBlock};
 use super::dir::DirEntry;

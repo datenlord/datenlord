@@ -3,13 +3,14 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use log::{debug, info}; // warn, error
+use tracing::{debug, info}; // warn, error
 
 use crate::async_fuse::fuse::{file_system, mount, session};
 use crate::async_fuse::memfs;
 use crate::async_fuse::memfs::kv_engine::{KVEngine, KVEngineType};
 use crate::async_fuse::memfs::s3_wrapper::DoNothingImpl;
 use crate::common::etcd_delegate::EtcdDelegate;
+use crate::common::logger::init_logger;
 
 // pub const TEST_BUCKET_NAME: &str = "fuse-test-bucket";
 // pub const TEST_ENDPOINT: &str = "http://127.0.0.1:9000";
@@ -26,16 +27,7 @@ const CACHE_DEFAULT_CAPACITY: usize = 1024 * 1024 * 1024;
 
 #[allow(clippy::let_underscore_must_use)]
 pub async fn setup(mount_dir: &Path, is_s3: bool) -> anyhow::Result<tokio::task::JoinHandle<()>> {
-    use env_logger::Builder;
-    use log::LevelFilter;
-
-    let mut builder = Builder::new();
-    builder.filter(None, LevelFilter::Debug); // 设置全局日志级别为info
-    builder.filter_module("h2", LevelFilter::Off); // 过滤掉特定模块的日志
-    builder.filter_module("tower", LevelFilter::Off);
-    builder.filter_module("typer", LevelFilter::Off);
-    builder.filter_module("datenlord::async_fuse::fuse::session", LevelFilter::Off);
-    let _ = builder.try_init();
+    init_logger();
     debug!("setup started with mount_dir: {:?}", mount_dir);
     if mount_dir.exists() {
         debug!("mount_dir {:?} exists ,try umount", mount_dir);

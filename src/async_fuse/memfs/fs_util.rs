@@ -7,9 +7,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::Context;
 use clippy_utilities::Cast;
-use log::debug;
 use nix::fcntl::{self, OFlag};
 use nix::sys::stat::{self, FileStat, Mode, SFlag};
+use tracing::debug;
 
 use super::dir::{Dir, DirEntry};
 use crate::async_fuse::fuse::protocol::{FuseAttr, INum};
