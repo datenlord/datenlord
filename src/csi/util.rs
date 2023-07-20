@@ -11,10 +11,10 @@ use clippy_utilities::Cast;
 use futures::prelude::*;
 use grpcio::{RpcStatus, UnarySink};
 use lazy_static::lazy_static;
-use log::{debug, info};
 use nix::mount::{self, MntFlags, MsFlags};
 use nix::unistd;
 use protobuf::RepeatedField;
+use tracing::{debug, info};
 use walkdir::WalkDir;
 
 use super::proto::csi::{

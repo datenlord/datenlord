@@ -5,12 +5,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use clippy_utilities::OverflowArithmetic;
-use log::debug;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::sync::Notify;
 use tokio::task::JoinHandle;
+use tracing::debug;
 
 use super::fs_util::FileAttr;
 use super::serial::{self, file_attr_to_serial, SerialFileAttr};

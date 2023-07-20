@@ -4,8 +4,8 @@ use std::ffi::OsStr;
 use std::{mem, slice};
 
 use better_as::pointer;
-use log::trace;
 use memchr::memchr;
+use tracing::trace;
 
 use super::abi_marker::FuseAbiData;
 use super::context::ProtoVersion;

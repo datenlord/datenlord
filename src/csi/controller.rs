@@ -4,8 +4,8 @@ use std::cmp::Ordering;
 use std::sync::Arc;
 
 use grpcio::{Error, RpcContext, UnarySink};
-use log::{debug, error, info, warn};
 use protobuf::RepeatedField;
+use tracing::{debug, error, info, warn};
 
 use super::meta_data::{DatenLordSnapshot, MetaData, VolumeSource};
 use super::proto::csi::{

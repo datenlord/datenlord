@@ -103,7 +103,7 @@ mod test {
     use std::{fs, io};
 
     use futures::StreamExt;
-    use log::debug;
+    use tracing::debug;
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_async_iter() -> io::Result<()> {

@@ -10,10 +10,10 @@ use std::sync::Arc;
 
 use clippy_utilities::Cast;
 use grpcio::{ChannelBuilder, Environment};
-use log::{debug, error, info, warn};
 use rand::seq::IteratorRandom;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
+use tracing::{debug, error, info, warn};
 
 use super::proto::csi::{
     CreateVolumeRequest, ListSnapshotsResponse_Entry, ListVolumesResponse_Entry, Topology,

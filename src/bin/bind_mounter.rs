@@ -6,8 +6,9 @@ use std::path::Path;
 use clap::{Arg, Command};
 use datenlord::common::error::DatenLordError::ArgumentInvalid;
 use datenlord::common::error::{Context, DatenLordResult};
-use log::debug;
+use datenlord::common::logger::init_logger;
 use nix::mount::{self, MsFlags};
+use tracing::debug;
 
 /// Argument name of mount from directory
 const FROM_DIR_ARG_NAME: &str = "from";
@@ -25,7 +26,7 @@ const MOUNT_OPTIONS_ARG_NAME: &str = "options";
 const UMOUNT_ARG_NAME: &str = "umount";
 
 fn main() -> DatenLordResult<()> {
-    env_logger::init();
+    init_logger();
 
     let matches = Command::new("BindMounter")
         .about("Helper command to bind mount for non-root user")

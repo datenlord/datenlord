@@ -15,9 +15,9 @@ use std::sync::Arc;
 use controller::ControllerImpl;
 use grpcio::{Environment, Server};
 use identity::IdentityImpl;
-use log::info;
 use meta_data::{DatenLordNode, MetaData};
 use node::NodeImpl;
+use tracing::info;
 use worker::WorkerImpl;
 
 use crate::common::error::{Context, DatenLordResult};
@@ -168,7 +168,6 @@ mod test {
 
     use clippy_utilities::{Cast, OverflowArithmetic};
     use grpcio::{ChannelBuilder, EnvBuilder};
-    use log::debug;
     use proto::csi::{
         ControllerExpandVolumeRequest, ControllerExpandVolumeResponse, CreateSnapshotRequest,
         CreateSnapshotResponse, CreateVolumeRequest, CreateVolumeResponse, DeleteSnapshotRequest,
@@ -183,9 +182,11 @@ mod test {
     use proto::csi_grpc::{ControllerClient, IdentityClient, NodeClient};
     // use mock_etcd::MockEtcdServer;
     use protobuf::RepeatedField;
+    use tracing::debug;
 
     use super::{util, *};
     use crate::common::error::Context;
+    use crate::common::logger::init_logger;
 
     const NODE_PUBLISH_VOLUME_TARGET_PATH: &str = "/tmp/target_volume_path";
     const NODE_PUBLISH_VOLUME_TARGET_PATH_1: &str = "/tmp/target_volume_path_1";
@@ -210,15 +211,7 @@ mod test {
     #[allow(clippy::let_underscore_must_use)]
     #[tokio::test(flavor = "multi_thread")]
     async fn test_all() -> DatenLordResult<()> {
-        use env_logger::Builder;
-        use log::LevelFilter;
-        let mut builder = Builder::new();
-        builder.filter(None, LevelFilter::Info); // 设置全局日志级别为info
-        builder.filter_module("h2", LevelFilter::Off); // 过滤掉特定模块的日志
-        builder.filter_module("tower", LevelFilter::Off);
-        builder.filter_module("typer", LevelFilter::Off);
-        builder.filter_module("datenlord::async_fuse::fuse::session", LevelFilter::Off);
-        let _ = builder.try_init();
+        init_logger();
         // TODO: run test case in parallel
         // Because they all depend on etcd, so cannot run in parallel now
         // let mut etcd_server = MockEtcdServer::new();

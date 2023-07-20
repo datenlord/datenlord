@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
-use log::debug;
 use tokio::net::TcpStream;
+use tracing::debug;
 
 use super::request::{self, Index};
 use super::{response, tcp};

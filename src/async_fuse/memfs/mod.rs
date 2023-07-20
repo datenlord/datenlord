@@ -30,12 +30,12 @@ use async_trait::async_trait;
 use cache::IoMemBlock;
 use clippy_utilities::Cast;
 use dist::server::CacheServer;
-use log::{debug, warn};
 pub use metadata::{DefaultMetaData, MetaData};
 use nix::errno::Errno;
 use nix::sys::stat::SFlag;
 pub use s3_metadata::S3MetaData;
 use serde::{Deserialize, Serialize};
+use tracing::{debug, warn};
 
 use self::kv_engine::KVEngineType;
 use super::fuse::file_system::FsController;

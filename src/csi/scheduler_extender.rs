@@ -8,9 +8,9 @@ use std::sync::Arc;
 use clippy_utilities::OverflowArithmetic;
 use k8s_openapi::api::core::v1::{Node, Pod};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ListMeta;
-use log::{error, info};
 use serde::{Deserialize, Serialize};
 use tiny_http::{Method, Request, Response, Server, StatusCode};
+use tracing::{error, info};
 
 use super::meta_data::MetaData;
 use crate::common::error::DatenLordResult;

@@ -2,8 +2,8 @@ use hyper::header::CONTENT_TYPE;
 use hyper::service::{make_service_fn, service_fn};
 use hyper::{Body, Request, Response, Server};
 use lazy_static::lazy_static;
-use log::debug;
 use prometheus::{opts, register_counter, Counter, Encoder, TextEncoder};
+use tracing::debug;
 
 lazy_static! {
     /// Datenlord cache hit metrics

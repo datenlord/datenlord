@@ -10,7 +10,6 @@ use std::time::SystemTime;
 use anyhow::Context;
 use async_trait::async_trait;
 use clippy_utilities::{Cast, OverflowArithmetic};
-use log::debug;
 use nix::errno::Errno;
 use nix::fcntl::{self, FcntlArg, OFlag};
 use nix::sys::stat::{self, Mode, SFlag};
@@ -18,6 +17,7 @@ use nix::sys::time::TimeSpec;
 use nix::unistd;
 use parking_lot::RwLock;
 use tokio::sync::RwLockWriteGuard;
+use tracing::debug;
 
 use super::cache::{GlobalCache, IoMemBlock};
 use super::dir::DirEntry;
