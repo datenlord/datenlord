@@ -1,22 +1,20 @@
-use crate::async_fuse::fuse::{file_system, session};
-use crate::async_fuse::memfs::kv_engine::{KVEngine, KVEngineType};
-use crate::common::etcd_delegate::EtcdDelegate;
-use log::{debug, info}; // warn, error
 use std::fs;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::async_fuse::fuse::mount;
-use crate::async_fuse::memfs;
-use crate::async_fuse::memfs::s3_wrapper::DoNothingImpl;
+use log::{debug, info}; // warn, error
 
-/*
-pub const TEST_BUCKET_NAME: &str = "fuse-test-bucket";
-pub const TEST_ENDPOINT: &str = "http://127.0.0.1:9000";
-pub const TEST_ACCESS_KEY: &str = "test";
-pub const TEST_SECRET_KEY: &str = "test1234";
-*/
+use crate::async_fuse::fuse::{file_system, mount, session};
+use crate::async_fuse::memfs;
+use crate::async_fuse::memfs::kv_engine::{KVEngine, KVEngineType};
+use crate::async_fuse::memfs::s3_wrapper::DoNothingImpl;
+use crate::common::etcd_delegate::EtcdDelegate;
+
+// pub const TEST_BUCKET_NAME: &str = "fuse-test-bucket";
+// pub const TEST_ENDPOINT: &str = "http://127.0.0.1:9000";
+// pub const TEST_ACCESS_KEY: &str = "test";
+// pub const TEST_SECRET_KEY: &str = "test1234";
 pub const TEST_VOLUME_INFO: &str = "fuse-test-bucket;http://127.0.0.1:9000;test;test1234";
 pub const TEST_NODE_IP: &str = "127.0.0.1";
 pub const TEST_NODE_ID: &str = "test_node";

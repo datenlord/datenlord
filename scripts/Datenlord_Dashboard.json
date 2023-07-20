@@ -2159,7 +2159,7 @@
       ],
       "timeFrom": null,
       "timeShift": null,
-      "title": "Applcation(Container) resource",
+      "title": "Application(Container) resource",
       "transform": "table",
       "type": "table-old"
     },

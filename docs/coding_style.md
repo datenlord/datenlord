@@ -20,7 +20,7 @@ fn foo(input: Box<dyn SomeTrait>)
 fn foo(input: impl SomeTrait)
 ```
 
-* Try to avoid redundent generic type definition, use `impl` instead. For example:
+* Try to avoid redundant generic type definition, use `impl` instead. For example:
 ```Rust
 // not recommended
 fn foo<P: AsRef<Path>>(input: P)
@@ -73,7 +73,7 @@ fn foo(bar: impl SomeTrait) {
 ```
 
 Except for using `Result`, since so many crates define `Result` for theirselves,
-so plese highlight which `Result` is using. For example:
+so please highlight which `Result` is using. For example:
 ```Rust
 // not recommended
 use std::io::Result;

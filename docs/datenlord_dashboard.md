@@ -1,8 +1,8 @@
 # Datenlord dashboard
 
-Datenlord is using Grafana dashboard to show all the metrics, which can be configed dynamically to display different information.
+Datenlord is using Grafana dashboard to show all the metrics, which can be configured dynamically to display different information.
 
-Currently Datenlord has two dashboards. `Node resources` and `Application and Pod resources`. Both of them have 9 panels currenlty.
+Currently Datenlord has two dashboards. `Node resources` and `Application and Pod resources`. Both of them have 9 panels currently.
 
 ![DatenLord](images/Doc-dashboards.png "DatenLord")
 
@@ -28,7 +28,7 @@ Then choose the `Pramethues` as the Data source and input the query to collect t
 
 All the application, instance and Pod information are displayed in this dashboard.
 
-To display a specifc application's resource information, you can use the top side filter panel:
+To display a specific application's resource information, you can use the top side filter panel:
 
 ![DatenLord](images/Doc-filter.png "DatenLord")
 

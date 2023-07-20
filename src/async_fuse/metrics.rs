@@ -1,8 +1,6 @@
-use hyper::{header::CONTENT_TYPE, Body, Request, Response};
-use hyper::{
-    service::{make_service_fn, service_fn},
-    Server,
-};
+use hyper::header::CONTENT_TYPE;
+use hyper::service::{make_service_fn, service_fn};
+use hyper::{Body, Request, Response, Server};
 use lazy_static::lazy_static;
 use log::debug;
 use prometheus::{opts, register_counter, Counter, Encoder, TextEncoder};
@@ -22,7 +20,7 @@ lazy_static! {
     .unwrap();
 }
 
-/// Serve promethues requests, return metrics response
+/// Serve prometheus requests, return metrics response
 ///
 /// # Errors
 /// Returns [`hyper::Error`]
@@ -40,11 +38,11 @@ pub async fn serve_req(_req: Request<Body>) -> Result<Response<Body>, hyper::Err
         .status(200)
         .header(CONTENT_TYPE, encoder.format_type())
         .body(Body::from(buffer))
-        .unwrap_or_else(|_| panic!("Fail to build promethues response"));
+        .unwrap_or_else(|_| panic!("Fail to build prometheus response"));
     Ok(response)
 }
 
-/// Start a server to process promethues request
+/// Start a server to process prometheus request
 pub fn start_metrics_server() {
     tokio::task::spawn(async move {
         let addr = ([0, 0, 0, 0], 9897).into();

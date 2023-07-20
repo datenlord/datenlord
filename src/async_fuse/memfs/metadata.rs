@@ -1,3 +1,22 @@
+use std::collections::BTreeMap;
+use std::os::unix::ffi::OsStringExt;
+use std::os::unix::io::RawFd;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::Duration;
+
+use anyhow::Context;
+use async_trait::async_trait;
+use clippy_utilities::{Cast, OverflowArithmetic};
+use log::{debug, warn};
+use nix::errno::Errno;
+use nix::fcntl::OFlag;
+use nix::sys::stat::SFlag;
+use nix::unistd;
+use parking_lot::RwLock as SyncRwLock; // conflict with tokio RwLock
+use tokio::sync::{Mutex, RwLock, RwLockWriteGuard};
+use tokio::task::JoinHandle;
+
 use super::cache::{GlobalCache, IoMemBlock};
 use super::dir::DirEntry;
 use super::dist::server::CacheServer;
@@ -11,23 +30,6 @@ use crate::async_fuse::fuse::protocol::{FuseAttr, INum, FUSE_ROOT_ID};
 use crate::async_fuse::util;
 use crate::common::error::DatenLordResult;
 use crate::common::etcd_delegate::EtcdDelegate;
-use anyhow::Context;
-use async_trait::async_trait;
-use clippy_utilities::{Cast, OverflowArithmetic};
-use log::{debug, warn};
-use nix::errno::Errno;
-use nix::fcntl::OFlag;
-use nix::sys::stat::SFlag;
-use nix::unistd;
-use parking_lot::RwLock as SyncRwLock; // conflict with tokio RwLock
-use std::collections::BTreeMap;
-use std::os::unix::ffi::OsStringExt;
-use std::os::unix::io::RawFd;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::time::Duration;
-use tokio::sync::{Mutex, RwLock, RwLockWriteGuard};
-use tokio::task::JoinHandle;
 
 /// The time-to-live seconds of FUSE attributes
 const MY_TTL_SEC: u64 = 3600; // TODO: should be a long value, say 1 hour
@@ -189,7 +191,7 @@ impl MetaData for DefaultMetaData {
             let mut cache = self.cache().write().await;
             let inode = cache.get_mut(&ino).unwrap_or_else(|| {
                 panic!(
-                    "relese() found fs is inconsistent, \
+                    "release() found fs is inconsistent, \
                      the inode ino={ino} is not in cache"
                 );
             });
@@ -217,7 +219,8 @@ impl MetaData for DefaultMetaData {
                 let child_ino = child_entry.ino();
                 reply.add(
                     child_ino,
-                    offset.overflow_add(i.cast()).overflow_add(1), // i + 1 means the index of the next entry
+                    offset.overflow_add(i.cast()).overflow_add(1), /* i + 1 means the index of
+                                                                    * the next entry */
                     child_entry.entry_type(),
                     child_name,
                 );
@@ -238,7 +241,7 @@ impl MetaData for DefaultMetaData {
         let mut cache = self.cache().write().await;
         let inode = cache.get_mut(&ino).unwrap_or_else(|| {
             panic!(
-                "relese() found fs is inconsistent, \
+                "release() found fs is inconsistent, \
                  the inode ino={ino} is not in cache"
             );
         });
@@ -916,7 +919,7 @@ impl MetaData for DefaultMetaData {
                 "rename_exchange_helper() replaced entry i-number not match"
             );
 
-            //todo: check file attr logic carefully at here
+            // todo: check file attr logic carefully at here
             let exchange_entry = DirEntry::new(
                 old_name.to_owned(),
                 Arc::new(SyncRwLock::new(FileAttr {
@@ -1239,7 +1242,7 @@ impl DefaultMetaData {
                 );
             });
             debug!(
-                "may_deferred_delete_node_helper() defered removed \
+                "may_deferred_delete_node_helper() deferred removed \
                     the i-node name={:?} of ino={} under parent ino={}, \
                     open count={}, lookup count={}",
                 inode.get_name(),

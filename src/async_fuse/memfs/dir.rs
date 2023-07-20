@@ -3,8 +3,6 @@
 #[cfg(not(all(target_os = "linux", target_pointer_width = "64")))]
 compile_error!("async-fuse does not support this target now");
 
-use crate::async_fuse::util::{clear_errno, cstr_to_bytes, errno, nix_to_io_error, with_c_str};
-
 use std::io;
 use std::iter::FusedIterator;
 use std::os::unix::ffi::OsStrExt;
@@ -20,6 +18,7 @@ use nix::sys::stat::{Mode, SFlag};
 use parking_lot::RwLock;
 
 use super::fs_util::FileAttr;
+use crate::async_fuse::util::{clear_errno, cstr_to_bytes, errno, nix_to_io_error, with_c_str};
 
 /// Directory meta-data
 pub struct Dir(NonNull<libc::DIR>);
@@ -62,7 +61,8 @@ impl Dir {
     /// When an error occurs, closes the `fd` and returns the previous error.
     /// # Safety
     /// This function **consumes ownership** of the specified file descriptor.
-    /// The returned object will take responsibility for closing it when the object goes out of scope.
+    /// The returned object will take responsibility for closing it when the
+    /// object goes out of scope.
     pub unsafe fn fdopendir(fd: RawFd) -> io::Result<Self> {
         let dirp = libc::fdopendir(fd);
         if dirp.is_null() {
@@ -101,9 +101,8 @@ impl Dir {
 }
 
 impl IntoIterator for Dir {
-    type Item = io::Result<DirEntry>;
-
     type IntoIter = IntoIter;
+    type Item = io::Result<DirEntry>;
 
     /// Returns an iterator over the entries within a directory.
     fn into_iter(self) -> Self::IntoIter {
@@ -128,12 +127,14 @@ impl DirEntry {
     pub const fn new(name: String, file_attr: Arc<RwLock<FileAttr>>) -> Self {
         Self { name, file_attr }
     }
+
     /// Returns the inode number (`d_ino`) of the underlying `dirent`.
     pub fn ino(&self) -> ino_t {
         self.file_attr.read().ino
     }
 
-    /// Returns the bare file name of this directory entry without any other leading path component.
+    /// Returns the bare file name of this directory entry without any other
+    /// leading path component.
     pub fn entry_name(&self) -> &str {
         self.name.as_str()
     }
@@ -142,11 +143,12 @@ impl DirEntry {
     pub fn file_attr_arc_ref(&self) -> &Arc<RwLock<FileAttr>> {
         &self.file_attr
     }
+
     /// Returns the type of this directory entry, if known.
     ///
-    /// See platform `readdir(3)` or `dirent(5)` manpage for when the file type is known;
-    /// notably, some Linux filesystems don't implement this. The caller should use `stat` or
-    /// `fstat` if this returns `None`.
+    /// See platform `readdir(3)` or `dirent(5)` manpage for when the file type
+    /// is known; notably, some Linux filesystems don't implement this. The
+    /// caller should use `stat` or `fstat` if this returns `None`.
     pub fn entry_type(&self) -> SFlag {
         self.file_attr.read().kind
     }
@@ -174,7 +176,8 @@ impl DirEntry {
             libc::DT_REG => SFlag::S_IFREG,
             libc::DT_LNK => SFlag::S_IFLNK,
             libc::DT_SOCK => SFlag::S_IFSOCK,
-            /* libc::DT_UNKNOWN | */ _ => panic!("failed to recognize file type"),
+            // libc::DT_UNKNOWN |
+            _ => panic!("failed to recognize file type"),
         };
 
         Self {
@@ -199,7 +202,6 @@ pub struct IntoIter {
 /// Reads next entry and set "end of stream" flag into `eos`
 ///
 /// See [readdir(3)](https://man7.org/linux/man-pages/man3/readdir.3.html)
-///
 unsafe fn next_entry(dirp: *mut libc::DIR, eos: &mut bool) -> Option<io::Result<DirEntry>> {
     loop {
         let p_dirent = libc::readdir64(dirp);
@@ -236,11 +238,11 @@ impl FusedIterator for IntoIter {}
 
 #[cfg(test)]
 mod test {
-    use super::Dir;
-
     use std::io;
 
     use futures::StreamExt;
+
+    use super::Dir;
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_dir() -> io::Result<()> {

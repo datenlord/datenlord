@@ -1,23 +1,25 @@
 //! This is the cache implementation for the memfs
 
-use crate::async_fuse::fuse::fuse_reply::{AsIoVec, CouldBeAsIoVecList};
-use crate::async_fuse::fuse::protocol::INum;
-use aligned_utils::bytes::AlignedBytes;
-use lockfree_cuckoohash::{pin, LockFreeCuckooHash as HashMap};
-use log::debug;
-use nix::sys::uio::IoVec;
-// TODO: use smol RwLock
-use super::dist::request::Index;
-use super::kv_engine::kv_utils::{add_node_to_file_list, remove_node_from_file_list};
-use super::kv_engine::KVEngineType;
-use clippy_utilities::{Cast, OverflowArithmetic};
-use parking_lot::{Mutex, RwLock};
-use priority_queue::PriorityQueue;
 use std::fmt::{Debug, Error, Formatter};
 use std::hash::{Hash, Hasher};
 use std::ops::Deref;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+
+use aligned_utils::bytes::AlignedBytes;
+use clippy_utilities::{Cast, OverflowArithmetic};
+use lockfree_cuckoohash::{pin, LockFreeCuckooHash as HashMap};
+use log::debug;
+use nix::sys::uio::IoVec;
+use parking_lot::{Mutex, RwLock};
+use priority_queue::PriorityQueue;
+
+// TODO: use smol RwLock
+use super::dist::request::Index;
+use super::kv_engine::kv_utils::{add_node_to_file_list, remove_node_from_file_list};
+use super::kv_engine::KVEngineType;
+use crate::async_fuse::fuse::fuse_reply::{AsIoVec, CouldBeAsIoVecList};
+use crate::async_fuse::fuse::protocol::INum;
 
 /// Page Size
 const PAGE_SIZE: usize = 4096;
@@ -130,7 +132,7 @@ impl GlobalCache {
         }
     }
 
-    /// Get the aligment of this cache
+    /// Get the alignment of this cache
     #[inline]
     pub(crate) const fn get_align(&self) -> usize {
         self.block_size
@@ -143,10 +145,12 @@ impl GlobalCache {
         self.size.load(Ordering::Relaxed)
     }
 
-    /// Get a number of continous `MemoryBlock` from cache
-    /// Some element in the return value could be None, which means there's no buffer in this range.
+    /// Get a number of continuous `MemoryBlock` from cache
+    /// Some element in the return value could be None, which means there's no
+    /// buffer in this range.
     ///
-    /// The request can not be `MemoryBlock` size aligned. The return value will try to cover all the memory range.
+    /// The request can not be `MemoryBlock` size aligned. The return value will
+    /// try to cover all the memory range.
     #[allow(dead_code)]
     pub(crate) fn get_file_cache(
         &self,
@@ -155,7 +159,9 @@ impl GlobalCache {
         len: usize,
     ) -> Vec<IoMemBlock> {
         let guard = pin();
-        let Some(file_cache) = self.inner.get(&file_ino, &guard) else { return vec![] };
+        let Some(file_cache) = self.inner.get(&file_ino, &guard) else {
+            return vec![];
+        };
 
         if len == 0 {
             return vec![];
@@ -312,27 +318,25 @@ impl GlobalCache {
         let check_fn = |global_index: usize| -> Option<usize> {
             let hash_index = global_index.overflow_div(bucket_size);
             let bucket_opt = file_cache.get(&hash_index, &guard);
-            /*
-            if let Some(bucket) = bucket_opt {
-                if bucket
-                    .write()
-                    .get(global_index.overflow_rem(bucket_size))
-                    .unwrap_or_else(|| {
-                        panic!(
-                            "error when getting range of {} in the cache bucket",
-                            global_index.overflow_rem(bucket_size)
-                        )
-                    })
-                    .is_some()
-                {
-                    Some(global_index)
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
-            */
+            // if let Some(bucket) = bucket_opt {
+            // if bucket
+            // .write()
+            // .get(global_index.overflow_rem(bucket_size))
+            // .unwrap_or_else(|| {
+            // panic!(
+            // "error when getting range of {} in the cache bucket",
+            // global_index.overflow_rem(bucket_size)
+            // )
+            // })
+            // .is_some()
+            // {
+            // Some(global_index)
+            // } else {
+            // None
+            // }
+            // } else {
+            // None
+            // }
 
             bucket_opt.and_then(|bucket| {
                 bucket
@@ -394,26 +398,24 @@ impl GlobalCache {
         let read_fn = |global_index: usize| -> IoMemBlock {
             let hash_index = global_index.overflow_div(bucket_size);
             let bucket_opt = file_cache.get(&hash_index, &guard);
-            /*
-            if let Some(bucket) = bucket_opt {
-                if let Some(block) = bucket
-                    .write()
-                    .get(global_index.overflow_rem(bucket_size))
-                    .unwrap_or_else(|| {
-                        panic!(
-                            "error when getting range of {} in the cache bucket",
-                            global_index.overflow_rem(bucket_size)
-                        )
-                    })
-                {
-                    IoMemBlock::new(Some(block.clone()), 0, block_size)
-                } else {
-                    IoMemBlock::new(None, 0, 0)
-                }
-            } else {
-                IoMemBlock::new(None, 0, 0)
-            }
-            */
+            // if let Some(bucket) = bucket_opt {
+            // if let Some(block) = bucket
+            // .write()
+            // .get(global_index.overflow_rem(bucket_size))
+            // .unwrap_or_else(|| {
+            // panic!(
+            // "error when getting range of {} in the cache bucket",
+            // global_index.overflow_rem(bucket_size)
+            // )
+            // })
+            // {
+            // IoMemBlock::new(Some(block.clone()), 0, block_size)
+            // } else {
+            // IoMemBlock::new(None, 0, 0)
+            // }
+            // } else {
+            // IoMemBlock::new(None, 0, 0)
+            // }
 
             bucket_opt.map_or_else(
                 || IoMemBlock::new(None, 0, 0),
@@ -457,7 +459,8 @@ impl GlobalCache {
     /// Update the Cache.
     ///
     /// 1. `offset` be `MemoryBlock` aligned.
-    /// 2. `len` should be multiple times of `MemoryBlock` Size unless it contains the file's last `MemoryBlock`.
+    /// 2. `len` should be multiple times of `MemoryBlock` Size unless it
+    ///    contains the file's last `MemoryBlock`.
     pub(crate) async fn write_or_update(
         &self,
         file_ino: INum,
@@ -481,7 +484,8 @@ impl GlobalCache {
     /// Update the Cache Helper
     ///
     /// 1. `offset` be `MemoryBlock` aligned.
-    /// 2. `len` should be multiple times of `MemoryBlock` Size unless it contains the file's last `MemoryBlock`.
+    /// 2. `len` should be multiple times of `MemoryBlock` Size unless it
+    ///    contains the file's last `MemoryBlock`.
     #[allow(clippy::too_many_lines)]
     fn write_or_update_helper(
         &self,
@@ -759,6 +763,7 @@ impl MemBlockBucket {
 
 impl Deref for MemBlockBucket {
     type Target = RwLock<Vec<Option<MemBlock>>>;
+
     fn deref(&self) -> &Self::Target {
         &self.inner
     }
@@ -902,6 +907,7 @@ impl MemBlock {
 
 impl Deref for MemBlock {
     type Target = RwLock<AlignedBytes>;
+
     fn deref(&self) -> &Self::Target {
         &self.inner
     }
@@ -917,11 +923,12 @@ impl Clone for MemBlock {
 
 #[cfg(test)]
 mod test {
+    use aligned_utils::bytes::AlignedBytes;
+
     use super::{
         GlobalCache, MEMORY_BLOCK_SIZE_IN_BYTE, MEMORY_BUCKET_SIZE_IN_BYTE, MEMORY_BUCKET_VEC_SIZE,
     };
     use crate::async_fuse::fuse::fuse_reply::AsIoVec;
-    use aligned_utils::bytes::AlignedBytes;
 
     #[test]
     fn test_get_empty_cache() {

@@ -64,19 +64,20 @@ pub mod async_fuse;
 mod common;
 mod csi;
 
-use crate::common::etcd_delegate::EtcdDelegate;
-use async_fuse::memfs::kv_engine::{KVEngine, KVEngineType};
-use clap::{Arg, ArgMatches, Command};
-use csi::meta_data::MetaData;
-use csi::scheduler_extender::SchdulerExtender;
-use csi::util;
-
-use log::debug;
 use std::collections::HashMap;
 // use std::fs::File;
 // use env_logger::Builder;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
+
+use async_fuse::memfs::kv_engine::{KVEngine, KVEngineType};
+use clap::{Arg, ArgMatches, Command};
+use csi::meta_data::MetaData;
+use csi::scheduler_extender::SchedulerExtender;
+use csi::util;
+use log::debug;
+
+use crate::common::etcd_delegate::EtcdDelegate;
 
 /// Service port number
 const SERVER_PORT_NUM_ARG_NAME: &str = "serverport";
@@ -209,7 +210,7 @@ impl<'a> ArgParam<'a> {
 
 /// Generate the default arg
 #[allow(clippy::too_many_lines)]
-//allow for this function as there is no other logic in this function
+// allow for this function as there is no other logic in this function
 #[must_use]
 fn get_default_arg_map<'a>() -> HashMap<String, Arg<'a>> {
     let vec = vec![
@@ -290,7 +291,7 @@ fn get_default_arg_map<'a>() -> HashMap<String, Arg<'a>> {
             take_value: true,
             required: true,
             help: "Set the etcd addresses of format ip:port, \
-            if multiple etcd addresses use comma to seperate, \
+            if multiple etcd addresses use comma to separate, \
             required argument, no default value",
         },
         ArgParam {
@@ -399,7 +400,9 @@ fn get_driver_name(matches: &ArgMatches) -> String {
 /// Get mount dir
 #[must_use]
 fn get_mount_dir(matches: &ArgMatches) -> &str {
-    let Some(mount_dir) = matches.get_one::<String>(MOUNT_POINT_ARG_NAME) else { panic!("No mount point input") };
+    let Some(mount_dir) = matches.get_one::<String>(MOUNT_POINT_ARG_NAME) else {
+        panic!("No mount point input")
+    };
     mount_dir
 }
 
@@ -451,7 +454,9 @@ fn get_cache_capacity(matches: &ArgMatches) -> usize {
 /// Get volume info
 #[must_use]
 fn get_volume_info(matches: &ArgMatches) -> &str {
-    let Some(volume_info) = matches.get_one::<String>(VOLUME_INFO_ARG_NAME) else { panic!("No volume information input") };
+    let Some(volume_info) = matches.get_one::<String>(VOLUME_INFO_ARG_NAME) else {
+        panic!("No volume information input")
+    };
     volume_info
 }
 
@@ -566,8 +571,8 @@ fn parse_args() -> ArgMatches {
 #[allow(clippy::too_many_lines)]
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // let target = Box::new(File::create("/tmp/test.txt").expect("Can't create file"));
-    // Builder::from_env("RUST_LOG")
+    // let target = Box::new(File::create("/tmp/test.txt").expect("Can't create
+    // file")); Builder::from_env("RUST_LOG")
     //     .filter(Some("datenlord"), log::LevelFilter::Debug)
     //     .target(env_logger::Target::Pipe(Box::new(target)))
     //     .init();
@@ -654,7 +659,7 @@ async fn main() -> anyhow::Result<()> {
             let node_id = get_node_id(matches);
             let ip_address = get_ip_address(matches, &node_id);
 
-            let scheduler_extender = SchdulerExtender::new(
+            let scheduler_extender = SchedulerExtender::new(
                 Arc::<MetaData>::clone(&md),
                 SocketAddr::new(ip_address, port),
             );

@@ -1,19 +1,16 @@
 //! The implementation of FUSE channel
 
-use anyhow::{anyhow, Context};
-use clippy_utilities::Cast;
-use nix::{
-    fcntl::{self, FcntlArg, FdFlag, OFlag},
-    ioctl_read,
-    sys::stat::Mode,
-    unistd::close,
-};
 use std::os::unix::io::RawFd;
 
-use super::{
-    file_system::{FileSystem, FsAsyncTaskController},
-    session::Session,
-};
+use anyhow::{anyhow, Context};
+use clippy_utilities::Cast;
+use nix::fcntl::{self, FcntlArg, FdFlag, OFlag};
+use nix::ioctl_read;
+use nix::sys::stat::Mode;
+use nix::unistd::close;
+
+use super::file_system::{FileSystem, FsAsyncTaskController};
+use super::session::Session;
 
 /// FUSE channel
 #[derive(Debug)]

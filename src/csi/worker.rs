@@ -1,8 +1,9 @@
 //! The implementation for `DatenLord` worker service
 
+use std::sync::Arc;
+
 use grpcio::{RpcContext, UnarySink};
 use log::{debug, info, warn};
-use std::sync::Arc;
 use uuid::Uuid;
 
 use super::meta_data::{DatenLordVolume, MetaData, VolumeSource};
@@ -42,6 +43,7 @@ impl WorkerImplInner {
     pub fn new(meta_data: Arc<MetaData>) -> Self {
         Self { meta_data }
     }
+
     /// Build volume from either snapshot or another volume
     async fn build_volume_from_source(
         &self,

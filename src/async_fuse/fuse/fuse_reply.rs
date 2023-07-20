@@ -1,17 +1,20 @@
 //! The implementation of FUSE response
 
-use clippy_utilities::{Cast, OverflowArithmetic};
-use log::debug;
-use nix::errno::Errno;
-use nix::sys::stat::SFlag;
-use nix::sys::uio::{self, IoVec};
 use std::convert::AsRef;
+#[cfg(feature = "abi-7-18")]
+use std::ffi::CString;
 use std::ffi::OsStr;
 use std::fmt::Debug;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::io::RawFd;
 use std::time::Duration;
 use std::{mem, ptr, slice};
+
+use clippy_utilities::{Cast, OverflowArithmetic};
+use log::debug;
+use nix::errno::Errno;
+use nix::sys::stat::SFlag;
+use nix::sys::uio::{self, IoVec};
 
 use super::abi_marker;
 #[cfg(target_os = "macos")]
@@ -22,8 +25,6 @@ use super::protocol::{
 };
 #[cfg(feature = "abi-7-18")]
 use super::protocol::{FuseNotifyCode::FUSE_NOTIFY_DELETE, FuseNotifyDeleteOut};
-#[cfg(feature = "abi-7-18")]
-use std::ffi::CString;
 
 /// This trait describes a type that can be converted to Vec<IoVec<&[u8]>>
 pub trait AsIoVecList {
@@ -35,7 +36,8 @@ pub trait AsIoVecList {
     fn is_empty(&self) -> bool;
 }
 
-/// Any type implement the `AsIoVec` trait, its Vec can be automatically for Vec<IoVec<&[u8]>>.
+/// Any type implement the `AsIoVec` trait, its Vec can be automatically for
+/// Vec<IoVec<&[u8]>>.
 impl<T> AsIoVecList for Vec<T>
 where
     T: AsIoVec,
@@ -53,8 +55,8 @@ where
     }
 }
 
-/// All the Type implement `CouldBeAsIoVecList` and `AsIoVec` can automatically implement
-/// `AsIoVecList`
+/// All the Type implement `CouldBeAsIoVecList` and `AsIoVec` can automatically
+/// implement `AsIoVecList`
 pub trait CouldBeAsIoVecList {}
 
 impl<T> AsIoVecList for T
@@ -126,7 +128,8 @@ where
 pub trait AsIoVec {
     /// Convert the type to `IoVec`<&[u8]>
     fn as_io_vec(&self) -> IoVec<&[u8]>;
-    /// Tell if the type is ready to be converted, please call it before calling `as_io_vec`
+    /// Tell if the type is ready to be converted, please call it before calling
+    /// `as_io_vec`
     fn can_convert(&self) -> bool;
     /// The length of the `IoVec`
     fn len(&self) -> usize;
@@ -138,12 +141,15 @@ impl AsIoVec for Vec<u8> {
     fn as_io_vec(&self) -> IoVec<&[u8]> {
         IoVec::from_slice(self.as_slice())
     }
+
     fn can_convert(&self) -> bool {
         true
     }
+
     fn len(&self) -> usize {
         self.len()
     }
+
     fn is_empty(&self) -> bool {
         self.is_empty()
     }
@@ -405,7 +411,7 @@ pub struct ReplyData {
 }
 
 impl ReplyData {
-    /// Reply with byte data repsonse
+    /// Reply with byte data response
     pub async fn data(self, bytes: impl AsIoVecList + Send + Sync + 'static) -> nix::Result<usize> {
         self.reply.send(bytes).await
     }
@@ -534,7 +540,7 @@ pub struct StatFsParam {
     pub blocks: u64,
     /// The number of free blocks
     pub bfree: u64,
-    /// The number of free blocks for non-priviledge users
+    /// The number of free blocks for non-privilege users
     pub bavail: u64,
     /// The number of inodes
     pub files: u64,
@@ -668,9 +674,10 @@ impl ReplyDirectory {
         }
     }
 
-    /// Add an entry to the directory reply buffer. Returns true if the buffer is full.
-    /// A transparent offset value can be provided for each entry. The kernel uses these
-    /// value to request the next entries in further readdir calls
+    /// Add an entry to the directory reply buffer. Returns true if the buffer
+    /// is full. A transparent offset value can be provided for each entry.
+    /// The kernel uses these value to request the next entries in further
+    /// readdir calls
     pub fn add<T: AsRef<OsStr>>(&mut self, ino: u64, offset: i64, kind: SFlag, name: T) -> bool {
         /// <https://doc.rust-lang.org/std/alloc/struct.Layout.html#method.padding_needed_for>
         ///
@@ -749,12 +756,15 @@ impl AsIoVec for CString {
     fn as_io_vec(&self) -> IoVec<&[u8]> {
         IoVec::from_slice(self.as_bytes_with_nul())
     }
+
     fn can_convert(&self) -> bool {
         true
     }
+
     fn len(&self) -> usize {
         self.as_bytes_with_nul().len()
     }
+
     // CString cannot be empty
     fn is_empty(&self) -> bool {
         false
@@ -797,20 +807,19 @@ impl FuseDeleteNotification {
 
 #[cfg(test)]
 mod test {
-    use super::super::de::Deserializer;
-    use super::super::protocol::{FuseAttr, FuseAttrOut, FuseOutHeader};
-    use super::ReplyAttr;
+    use std::os::unix::io::FromRawFd;
+    use std::time::Duration;
 
     use aligned_utils::bytes::AlignedBytes;
     use anyhow::Context;
     use nix::fcntl::{self, OFlag};
     use nix::sys::stat::Mode;
     use nix::unistd;
-    use std::os::unix::io::FromRawFd;
-    use std::time::Duration;
+    use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
-    use tokio::io::AsyncReadExt;
-    use tokio::io::AsyncSeekExt;
+    use super::super::de::Deserializer;
+    use super::super::protocol::{FuseAttr, FuseAttrOut, FuseOutHeader};
+    use super::ReplyAttr;
 
     #[test]
     fn test_slice() {

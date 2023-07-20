@@ -1,38 +1,37 @@
 //! The implementation of filesystem node
 
-use super::cache::{GlobalCache, IoMemBlock};
-use super::dir::DirEntry;
-use super::dist::client as dist_client;
-use super::fs_util::{self, FileAttr};
-use super::kv_engine::KVEngineType;
-use super::node::Node;
-use super::persist;
-use super::s3_metadata::S3MetaData;
-use super::s3_wrapper::S3BackEnd;
-use super::serial::{
-    dir_entry_to_serial, file_attr_to_serial, serial_to_file_attr, SerialNode, SerialNodeData,
-};
-use super::SetAttrParam;
-use crate::async_fuse::fuse::fuse_reply::{AsIoVec, StatFsParam};
-use crate::async_fuse::fuse::protocol::INum;
-use crate::async_fuse::metrics;
-use crate::common::error::{DatenLordError, DatenLordResult};
+use std::collections::{BTreeMap, VecDeque};
+use std::os::unix::io::RawFd;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, Ordering};
+use std::sync::Arc;
+use std::time::SystemTime;
+
 use anyhow::anyhow;
 use async_trait::async_trait;
 use clippy_utilities::{Cast, OverflowArithmetic};
 use futures::future::{BoxFuture, FutureExt};
 use log::debug;
 use nix::fcntl::OFlag;
-use nix::sys::stat::Mode;
-use nix::sys::stat::SFlag;
+use nix::sys::stat::{Mode, SFlag};
 use parking_lot::RwLock;
-use std::collections::BTreeMap;
-use std::collections::VecDeque;
-use std::os::unix::io::RawFd;
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, Ordering};
-use std::sync::Arc;
-use std::time::SystemTime;
+
+use super::cache::{GlobalCache, IoMemBlock};
+use super::dir::DirEntry;
+use super::dist::client as dist_client;
+use super::fs_util::{self, FileAttr};
+use super::kv_engine::KVEngineType;
+use super::node::Node;
+use super::s3_metadata::S3MetaData;
+use super::s3_wrapper::S3BackEnd;
+use super::serial::{
+    dir_entry_to_serial, file_attr_to_serial, serial_to_file_attr, SerialNode, SerialNodeData,
+};
+use super::{persist, SetAttrParam};
+use crate::async_fuse::fuse::fuse_reply::{AsIoVec, StatFsParam};
+use crate::async_fuse::fuse::protocol::INum;
+use crate::async_fuse::metrics;
+use crate::common::error::{DatenLordError, DatenLordResult};
 
 /// S3's available fd count
 static GLOBAL_S3_FD_CNT: AtomicU32 = AtomicU32::new(4);
@@ -129,17 +128,18 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
 
     #[allow(dead_code)]
     /// Deserialize `S3Node` from `SerialNode`
-    /*
-    This function returns a `BoxFuture due` to its potential for recursive calls (`get_node_from_kv_engine()`).
-    Recursive async functions in Rust can lead to 'infinite type' compilation errors because each async function
-    is compiled into a unique type that must know its size at compile time. When the function is recursive, it
-    embeds its own type within it for every recursive call, leading to an 'infinite' type size.
-
-    By using a BoxFuture, we can heap-allocate the future, which avoids these issues and provides a type of a
-    known size (the size of a pointer), regardless of the depth or complexity of the recursion within the future.
-    This is crucial in enabling recursive async behavior in Rust.
-    For more information, see https://rust-lang.github.io/async-book/07_workarounds/04_recursion.html
-    */
+    // This function returns a `BoxFuture due` to its potential for recursive calls
+    // (`get_node_from_kv_engine()`). Recursive async functions in Rust can lead
+    // to 'infinite type' compilation errors because each async function
+    // is compiled into a unique type that must know its size at compile time. When
+    // the function is recursive, it embeds its own type within it for every
+    // recursive call, leading to an 'infinite' type size.
+    //
+    // By using a BoxFuture, we can heap-allocate the future, which avoids these
+    // issues and provides a type of a known size (the size of a pointer),
+    // regardless of the depth or complexity of the recursion within the future.
+    // This is crucial in enabling recursive async behavior in Rust.
+    // For more information, see https://rust-lang.github.io/async-book/07_workarounds/04_recursion.html
     pub fn from_serial_node(
         serial_node: SerialNode,
         meta: &S3MetaData<S>,
@@ -262,21 +262,19 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
             S3NodeData::SymLink(..) => debug_assert_eq!(new_attr.kind, SFlag::S_IFLNK),
         }
 
-        /*
-        if broadcast {
-            if let Err(e) = dist_client::push_attr(
-                self.meta.etcd_client.clone(),
-                &self.meta.node_id,
-                &self.meta.volume_info,
-                &self.full_path,
-                &new_attr,
-            )
-            .await
-            {
-                panic!("failed to push attribute to others, error: {}", e);
-            }
-        }
-        */
+        // if broadcast {
+        // if let Err(e) = dist_client::push_attr(
+        // self.meta.etcd_client.clone(),
+        // &self.meta.node_id,
+        // &self.meta.volume_info,
+        // &self.full_path,
+        // &new_attr,
+        // )
+        // .await
+        // {
+        // panic!("failed to push attribute to others, error: {}", e);
+        // }
+        // }
         self.attr.write().clone_from(&new_attr);
         old_attr
     }
@@ -340,7 +338,8 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
     /// Flush the data of this node to s3 backend if it is a regular file
     pub(crate) async fn rename_in_s3_backend(&mut self, new_path: String) {
         if let S3NodeData::RegFile(_) = self.data {
-            // TODO: Should not flush data, remove this once the "real" cache rename is available
+            // TODO: Should not flush data, remove this once the "real" cache rename is
+            // available
             if let Err(e) = self.flush_all_data().await {
                 panic!(
                     "failed to flush all data of node {:?}, error is {:?}",
@@ -440,7 +439,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
     ) -> DatenLordResult<Self> {
         match persist::read_persisted_dir(&s3_backend, "/".to_owned()).await {
             Err(e) => {
-                //todo: handle different type of error, key not exist, net err, etc.
+                // todo: handle different type of error, key not exist, net err, etc.
                 debug!("read persit dir error {e}");
                 let now = SystemTime::now();
                 let attr = Arc::new(RwLock::new(FileAttr {
@@ -711,7 +710,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
         );
         // Dir data is synced. Don't need to load
         false
-        //self.need_load_node_data_helper()
+        // self.need_load_node_data_helper()
     }
 
     /// Check whether to load file content data or not
@@ -1262,7 +1261,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
 
         debug!("file {:?} size = {:?}", self.name, self.attr.read().size);
         self.update_mtime_ctime_to_now();
-        //FileAttr changed, remember to persist the directory after calling this fn
+        // FileAttr changed, remember to persist the directory after calling this fn
 
         Ok(written_size)
     }

@@ -1,3 +1,7 @@
+use std::collections::HashSet;
+use std::path::Path;
+use std::{fs, iter};
+
 use anyhow::Context;
 use clippy_utilities::OverflowArithmetic;
 use log::info;
@@ -5,10 +9,6 @@ use nix::dir::Dir;
 use nix::fcntl::{self, OFlag};
 use nix::sys::stat::Mode;
 use nix::unistd::{self, Whence};
-use std::collections::HashSet;
-use std::fs;
-use std::iter;
-use std::path::Path;
 
 use super::test_util;
 
@@ -319,11 +319,11 @@ fn test_rename_dir(mount_dir: &Path) -> anyhow::Result<()> {
 
     assert!(
         !old_sub_dir.exists(),
-        "the old direcotry {old_sub_dir:?} should have been removed"
+        "the old directory {old_sub_dir:?} should have been removed"
     );
     assert!(
         new_sub_dir.exists(),
-        "the new direcotry {new_sub_dir:?} should exist",
+        "the new directory {new_sub_dir:?} should exist",
     );
 
     // Clean up
@@ -350,11 +350,12 @@ fn test_symlink_dir(mount_dir: &Path) -> anyhow::Result<()> {
 
     let dst_dir = Path::new("dst_dir");
     unistd::symlinkat(src_dir, None, dst_dir).context("create symlink failed")?;
-    // std::os::unix::fs::symlink(&src_path, &dst_path).context("create symlink failed")?;
+    // std::os::unix::fs::symlink(&src_path, &dst_path).context("create symlink
+    // failed")?;
     let target_path = std::fs::read_link(dst_dir).context("read symlink failed ")?;
     assert_eq!(src_dir, target_path, "symlink target path not match");
 
-    //let dst_path = Path::new(&dst_dir).join(src_file_name);
+    // let dst_path = Path::new(&dst_dir).join(src_file_name);
     let dst_path = Path::new("./dst_dir").join(src_file_name);
     fs::write(&dst_path, FILE_CONTENT).context(format!("failed to write to file={dst_path:?}"))?;
     let content = fs::read_to_string(src_path).context("read symlink target file failed")?;
@@ -411,7 +412,8 @@ fn test_symlink_file(mount_dir: &Path) -> anyhow::Result<()> {
 
     let dst_path = Path::new("dst.txt");
     unistd::symlinkat(src_path, None, dst_path).context("create symlink failed")?;
-    // std::os::unix::fs::symlink(&src_path, &dst_path).context("create symlink failed")?;
+    // std::os::unix::fs::symlink(&src_path, &dst_path).context("create symlink
+    // failed")?;
     let target_path = std::fs::read_link(dst_path).context("read symlink failed ")?;
     assert_eq!(src_path, target_path, "symlink target path not match");
 

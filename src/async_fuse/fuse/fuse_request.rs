@@ -1,8 +1,9 @@
-//! The implementation fo FUSE request
+//! The implementation for FUSE request
+
+use std::fmt;
 
 use clippy_utilities::Cast;
 use log::warn;
-use std::fmt;
 
 use super::context::ProtoVersion;
 use super::de::Deserializer;
@@ -775,9 +776,10 @@ impl<'a> Request<'a> {
 
     /// Returns the unique identifier of this request.
     ///
-    /// The FUSE kernel driver assigns a unique id to every concurrent request. This allows to
-    /// distinguish between multiple concurrent requests. The unique id of a request may be
-    /// reused in later requests after it has completed.
+    /// The FUSE kernel driver assigns a unique id to every concurrent request.
+    /// This allows to distinguish between multiple concurrent requests. The
+    /// unique id of a request may be reused in later requests after it has
+    /// completed.
     #[inline]
     #[must_use]
     pub const fn unique(&self) -> u64 {
@@ -841,18 +843,19 @@ impl<'a> Request<'a> {
 
 #[cfg(test)]
 mod test {
-    use super::super::de::DeserializeError;
-    use super::*;
+    use aligned_utils::stack::Align8;
     use log::debug;
 
-    use aligned_utils::stack::Align8;
+    use super::super::de::DeserializeError;
+    use super::*;
 
     // `FuseInHeader` is aligned to 8 bytes.
     // `Align8` is enough for structs used here.
     //
     // `[u8;N]` is aligned to 1 byte.
-    // Requests which are not well-aligned will cause an alignment error (potential UB).
-    // So we have runtime checks in `ByteSlice::fetch` and `ByteSlice::fetch_all_as_slice`.
+    // Requests which are not well-aligned will cause an alignment error (potential
+    // UB). So we have runtime checks in `ByteSlice::fetch` and
+    // `ByteSlice::fetch_all_as_slice`.
 
     #[cfg(target_endian = "big")]
     const INIT_REQUEST: Align8<[u8; 56]> = Align8([
@@ -909,7 +912,7 @@ mod test {
         let idx = 20;
         let bytes = INIT_REQUEST
             .get(..idx)
-            .unwrap_or_else(|| panic!("faile to get the first {idx} elements from INIT_REQUEST"));
+            .unwrap_or_else(|| panic!("failed to get the first {idx} elements from INIT_REQUEST"));
 
         #[allow(clippy::expect_used)]
         let err =

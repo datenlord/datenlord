@@ -11,7 +11,7 @@ use super::proto::csi::{
 use super::proto::csi_grpc::Identity;
 use super::util;
 
-/// for `IdentityService` implmentation
+/// for `IdentityService` implementation
 #[derive(Clone)]
 pub struct IdentityImpl {
     /// The name of the CSI plugin

@@ -6,7 +6,7 @@ set -u # unset var as error
 
 if [ $# -le 0 ]
 then
-    echo "Plase input mount directory\nthe usage: $0 <MOUNT DIR>"
+    echo "Please input mount directory\nthe usage: $0 <MOUNT DIR>"
     exit 1
 fi
 

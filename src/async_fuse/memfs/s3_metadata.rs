@@ -1,50 +1,44 @@
-use super::cache::GlobalCache;
-use super::cache::IoMemBlock;
+use std::collections::{BTreeMap, VecDeque};
+use std::os::unix::ffi::OsStringExt;
+use std::os::unix::io::RawFd;
+use std::path::Path;
+use std::sync::atomic::AtomicU32;
+use std::sync::Arc;
+use std::time::Duration;
+
+use anyhow::Context;
+use async_trait::async_trait;
+use clippy_utilities::{Cast, OverflowArithmetic};
+use itertools::Itertools;
+use log::{debug, warn};
+use nix::errno::Errno;
+use nix::fcntl::OFlag;
+use nix::sys::stat::SFlag;
+use parking_lot::RwLock as SyncRwLock;
+use tokio::sync::Mutex;
+use tokio::task::JoinHandle;
+
+use super::cache::{GlobalCache, IoMemBlock};
 use super::dir::DirEntry;
 use super::dist::client as dist_client;
 use super::dist::server::CacheServer;
 use super::fs_util::{self, FileAttr};
 use super::id_alloc_used::INumAllocator;
-use super::kv_engine::KVEngineType;
-use super::kv_engine::{KVEngine, KeyType, ValueType};
+use super::kv_engine::{KVEngine, KVEngineType, KeyType, ValueType};
 use super::metadata::MetaData;
 use super::node::Node;
-use super::persist::PersistDirContent;
-use super::persist::PersistHandle;
-use super::persist::PersistTask;
+use super::persist::{PersistDirContent, PersistHandle, PersistTask};
 use super::s3_node::S3Node;
 use super::s3_wrapper::S3BackEnd;
-use super::serial;
-use super::RenameParam;
-use super::SetAttrParam;
+use super::{serial, RenameParam, SetAttrParam};
 use crate::async_fuse::fuse::file_system::FsAsyncResultSender;
 #[cfg(feature = "abi-7-18")]
 use crate::async_fuse::fuse::fuse_reply::FuseDeleteNotification;
-use crate::async_fuse::fuse::fuse_reply::ReplyDirectory;
-use crate::async_fuse::fuse::fuse_reply::StatFsParam;
+use crate::async_fuse::fuse::fuse_reply::{ReplyDirectory, StatFsParam};
 use crate::async_fuse::fuse::protocol::{FuseAttr, INum, FUSE_ROOT_ID};
 use crate::async_fuse::util;
 use crate::common::error::DatenLordResult;
-use crate::common::etcd_delegate::EtcdDelegate;
-use anyhow::Context;
-use async_trait::async_trait;
-use clippy_utilities::{Cast, OverflowArithmetic};
-use itertools::Itertools;
-use log::debug;
-use log::warn;
-use nix::errno::Errno;
-use nix::fcntl::OFlag;
-use nix::sys::stat::SFlag;
-use parking_lot::RwLock as SyncRwLock;
-use std::collections::BTreeMap;
-use std::collections::VecDeque;
-use std::os::unix::ffi::OsStringExt;
-use std::os::unix::io::RawFd;
-use std::path::Path;
-use std::sync::{atomic::AtomicU32, Arc};
-use std::time::Duration;
-use tokio::sync::Mutex;
-use tokio::task::JoinHandle; // conflict with tokio RwLock
+use crate::common::etcd_delegate::EtcdDelegate; // conflict with tokio RwLock
 
 /// The time-to-live seconds of FUSE attributes
 const MY_TTL_SEC: u64 = 3600; // TODO: should be a long value, say 1 hour
@@ -91,7 +85,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
     async fn release(&self, ino: u64, fh: u64, _flags: u32, _lock_owner: u64, flush: bool) {
         let mut inode = self.get_node_from_kv_engine(ino).await.unwrap_or_else(|| {
             panic!(
-                "relese() found fs is inconsistent, \
+                "release() found fs is inconsistent, \
                      the inode ino={ino} is not in cache"
             );
         });
@@ -120,7 +114,8 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
                 let child_ino = child_entry.ino();
                 reply.add(
                     child_ino,
-                    offset.overflow_add(i.cast()).overflow_add(1), // i + 1 means the index of the next entry
+                    offset.overflow_add(i.cast()).overflow_add(1), /* i + 1 means the index of
+                                                                    * the next entry */
                     child_entry.entry_type(),
                     child_name,
                 );
@@ -140,7 +135,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
 
         let mut inode = self.get_node_from_kv_engine(ino).await.unwrap_or_else(|| {
             panic!(
-                "relese() found fs is inconsistent, \
+                "release() found fs is inconsistent, \
                  the inode ino={ino} is not in cache"
             );
         });
@@ -866,6 +861,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         self.invalidate_remote(ino, offset, data_len).await;
         result
     }
+
     /// Stop all async tasks
     fn stop_all_async_tasks(&self) {
         self.persist_handle.system_end();
@@ -967,7 +963,8 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
     }
 
     /// Get parent content from cache and do the persist operation.
-    /// This function will try to get the lock, so make sure there's no deadlock.
+    /// This function will try to get the lock, so make sure there's no
+    /// deadlock.
     async fn load_parent_from_cache_and_mark_dirty(&self, parent: INum) {
         let p = self
             .get_node_from_kv_engine(parent)
@@ -1083,7 +1080,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
                 );
             });
             debug!(
-                "may_deferred_delete_node_helper() defered removed \
+                "may_deferred_delete_node_helper() deferred removed \
                     the i-node name={:?} of ino={} under parent ino={}, \
                     open count={}, lookup count={}",
                 inode.get_name(),
