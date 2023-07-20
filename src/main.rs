@@ -64,19 +64,18 @@ pub mod async_fuse;
 mod common;
 mod csi;
 
-use crate::common::etcd_delegate::EtcdDelegate;
-use async_fuse::memfs::kv_engine::{KVEngine, KVEngineType};
-use clap::{Arg, ArgMatches, Command};
-use csi::meta_data::MetaData;
-use csi::scheduler_extender::SchdulerExtender;
-use csi::util;
-
-use env_logger::Builder;
-use log::LevelFilter;
-
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
+
+use async_fuse::memfs::kv_engine::{KVEngine, KVEngineType};
+use clap::{Arg, ArgMatches, Command};
+use csi::meta_data::MetaData;
+use csi::scheduler_extender::SchedulerExtender;
+use csi::util;
+
+use crate::common::etcd_delegate::EtcdDelegate;
+use crate::common::logger::init_logger;
 
 /// Service port number
 const SERVER_PORT_NUM_ARG_NAME: &str = "serverport";
@@ -209,7 +208,7 @@ impl<'a> ArgParam<'a> {
 
 /// Generate the default arg
 #[allow(clippy::too_many_lines)]
-//allow for this function as there is no other logic in this function
+// allow for this function as there is no other logic in this function
 #[must_use]
 fn get_default_arg_map<'a>() -> HashMap<String, Arg<'a>> {
     let vec = vec![
@@ -290,7 +289,7 @@ fn get_default_arg_map<'a>() -> HashMap<String, Arg<'a>> {
             take_value: true,
             required: true,
             help: "Set the etcd addresses of format ip:port, \
-            if multiple etcd addresses use comma to seperate, \
+            if multiple etcd addresses use comma to separate, \
             required argument, no default value",
         },
         ArgParam {
@@ -570,13 +569,7 @@ fn parse_args() -> ArgMatches {
 #[allow(clippy::too_many_lines)]
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let mut builder = Builder::new();
-    builder.filter(None, LevelFilter::Debug);
-    builder.filter_module("h2", LevelFilter::Off);
-    builder.filter_module("tower", LevelFilter::Off);
-    builder.filter_module("typer", LevelFilter::Off);
-    builder.filter_module("datenlord::async_fuse::fuse::session", LevelFilter::Off);
-    builder.init();
+    init_logger();
 
     let matches = parse_args();
 
@@ -648,7 +641,7 @@ async fn main() -> anyhow::Result<()> {
             let node_id = get_node_id(matches);
             let ip_address = get_ip_address(matches, &node_id);
 
-            let scheduler_extender = SchdulerExtender::new(
+            let scheduler_extender = SchedulerExtender::new(
                 Arc::<MetaData>::clone(&md),
                 SocketAddr::new(ip_address, port),
             );
