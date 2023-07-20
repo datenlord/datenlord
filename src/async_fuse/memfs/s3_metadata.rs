@@ -16,7 +16,7 @@ use nix::sys::stat::SFlag;
 use parking_lot::RwLock as SyncRwLock;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
-use tracing::{debug, warn};
+use tracing::{debug, instrument, warn};
 
 use super::cache::{GlobalCache, IoMemBlock};
 use super::dir::DirEntry;
@@ -82,6 +82,7 @@ fn parse_s3_info(info: &str) -> (&str, &str, &str, &str) {
 impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
     type N = S3Node<S>;
 
+    #[instrument(skip(self))]
     async fn release(&self, ino: u64, fh: u64, _flags: u32, _lock_owner: u64, flush: bool) {
         let mut inode = self.get_node_from_kv_engine(ino).await.unwrap_or_else(|| {
             panic!(
@@ -101,6 +102,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         self.try_delete_node(ino).await;
     }
 
+    #[instrument(skip(self), err, ret)]
     async fn readdir(
         &self,
         ino: u64,
@@ -163,6 +165,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         reply.ok().await
     }
 
+    #[instrument(skip(self), err, ret)]
     async fn opendir(&self, ino: u64, flags: u32) -> DatenLordResult<RawFd> {
         let node = self.get_node_from_kv_engine(ino).await.unwrap_or_else(|| {
             panic!(
@@ -176,6 +179,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         result
     }
 
+    #[instrument(skip(self))]
     async fn readlink(&self, ino: u64) -> Vec<u8> {
         let node = self.get_node_from_kv_engine(ino).await.unwrap_or_else(|| {
             panic!(
@@ -186,6 +190,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         node.get_symlink_target().as_os_str().to_owned().into_vec()
     }
 
+    #[instrument(skip(self), err, ret)]
     async fn statfs(&self, ino: u64) -> DatenLordResult<StatFsParam> {
         let node = self.get_node_from_kv_engine(ino).await.unwrap_or_else(|| {
             panic!(
@@ -196,6 +201,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         node.statefs().await
     }
 
+    #[instrument(skip(self))]
     async fn flush(&self, ino: u64, fh: u64) {
         let mut node = self.get_node_from_kv_engine(ino).await.unwrap_or_else(|| {
             panic!(
@@ -206,6 +212,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         node.flush(ino, fh).await;
     }
 
+    #[instrument(skip(self))]
     async fn releasedir(&self, ino: u64, fh: u64) {
         {
             let node = self.get_node_from_kv_engine(ino).await.unwrap_or_else(|| {
@@ -220,6 +227,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         self.try_delete_node(ino).await;
     }
 
+    #[instrument(skip(self), err, ret)]
     async fn read_helper(
         &self,
         ino: INum,
@@ -263,6 +271,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         return Ok(inode.get_file_data(offset.cast(), size.cast()).await);
     }
 
+    #[instrument(skip(self), err, ret)]
     async fn open(&self, ino: u64, flags: u32) -> DatenLordResult<RawFd> {
         let node = self.get_node_from_kv_engine(ino).await.unwrap_or_else(|| {
             panic!(
@@ -285,6 +294,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         result
     }
 
+    #[instrument(skip(self), err, ret)]
     async fn getattr(&self, ino: u64) -> DatenLordResult<(Duration, FuseAttr)> {
         let inode_wrap = self.get_node_from_kv_engine(ino).await.unwrap_or_else(|| {
             panic!(
@@ -305,6 +315,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         Ok((ttl, fuse_attr))
     }
 
+    #[instrument(skip(self))]
     async fn forget(&self, ino: u64, nlookup: u64) {
         let current_count: i64;
         {
@@ -334,6 +345,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         self.try_delete_node(ino).await;
     }
 
+    #[instrument(skip(self), err, ret)]
     async fn setattr_helper(
         &self,
         ino: u64,
@@ -377,6 +389,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         }
     }
 
+    #[instrument(skip(self), err, ret)]
     async fn unlink(&self, parent: INum, name: &str) -> DatenLordResult<()> {
         let entry_type = {
             let parent_node = self
@@ -469,6 +482,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         *self.fuse_fd.lock().await = fuse_fd;
     }
 
+    #[instrument(skip(self), ret)]
     /// Try to delete node that is marked as deferred deletion
     async fn try_delete_node(&self, ino: INum) -> bool {
         let node = self.get_node_from_kv_engine(ino).await.unwrap_or_else(|| {
@@ -511,6 +525,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         }
     }
 
+    #[instrument(skip(self), err, ret)]
     /// Helper function to create node
     #[allow(clippy::too_many_lines)]
     async fn create_node_helper(
@@ -654,6 +669,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         Ok((ttl, fuse_attr, MY_GENERATION))
     }
 
+    #[instrument(skip(self), err, ret)]
     /// Helper function to remove node
     async fn remove_node_helper(
         &self,
@@ -672,6 +688,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         Ok(())
     }
 
+    #[instrument(skip(self), err, ret)]
     /// Helper function to lookup
     #[allow(clippy::too_many_lines)]
     async fn lookup_helper(
@@ -822,6 +839,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         Ok(())
     }
 
+    #[instrument(skip(self), err, ret)]
     /// Helper function to write data
     async fn write_helper(
         &self,
