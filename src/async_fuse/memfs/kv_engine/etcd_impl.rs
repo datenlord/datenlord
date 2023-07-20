@@ -1,20 +1,17 @@
+use std::collections::HashMap;
 use std::fmt::Debug;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use etcd_client::{
     Compare, CompareOp, DeleteOptions, GetOptions, LockOptions, PutOptions, Txn, TxnOp,
 };
 
-use std::collections::HashMap;
-
-use crate::common::error::{Context, DatenLordResult};
-
 use super::{
     check_ttl, conv_u64_sec_2_i64, fmt, DeleteOption, KVEngine, KeyRange, KeyType, KvVersion,
     LockKeyType, MetaTxn, SetOption, ValueType,
 };
-
-use std::time::Duration;
+use crate::common::error::{Context, DatenLordResult};
 
 #[derive(Clone)]
 /// Wrap the etcd client to support the `KVEngine` trait.
@@ -50,6 +47,7 @@ impl KVEngine for EtcdKVEngine {
         let client = etcd_client::Client::connect(end_points, None).await?;
         Ok(Self { client })
     }
+
     async fn new_meta_txn(&self) -> Box<dyn MetaTxn + Send> {
         Box::new(EtcdTxn::new(self.client.clone()))
     }
@@ -141,6 +139,7 @@ impl KVEngine for EtcdKVEngine {
             None => Ok(None),
         }
     }
+
     /// Set the value by the key.
     async fn set(
         &self,
@@ -324,7 +323,8 @@ mod test {
     use std::time::Instant;
 
     use super::*;
-    use crate::{common::error::DatenLordError, retry_txn};
+    use crate::common::error::DatenLordError;
+    use crate::retry_txn;
 
     const ETCD_ADDRESS: &str = "localhost:2379";
 
@@ -339,7 +339,8 @@ mod test {
         // start a new thread to lock the same key
         // to check that lock the same key will be blocked
         // the first lock will be unlock after 2 seconds
-        // if the second lock the same key ,it will be blocked until the first lock unlock
+        // if the second lock the same key ,it will be blocked until the first lock
+        // unlock
         let lock_time = Duration::from_secs(2);
         let time_now = Instant::now();
         let handle = tokio::spawn(async move {

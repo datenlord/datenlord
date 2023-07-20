@@ -1,5 +1,11 @@
 //! The `FileSystem` trait
 
+use std::os::unix::io::RawFd;
+use std::path::Path;
+
+use async_trait::async_trait;
+use tokio::task::JoinHandle;
+
 use super::fuse_reply::{
     ReplyAttr, ReplyBMap, ReplyCreate, ReplyData, ReplyDirectory, ReplyEmpty, ReplyEntry,
     ReplyLock, ReplyOpen, ReplyStatFs, ReplyWrite, ReplyXAttr,
@@ -8,12 +14,6 @@ use super::fuse_request::Request;
 use super::protocol::INum;
 use crate::async_fuse::memfs::{FileLockParam, RenameParam, SetAttrParam};
 use crate::common::error::DatenLordResult;
-use std::os::unix::io::RawFd;
-
-use std::path::Path;
-
-use async_trait::async_trait;
-use tokio::task::JoinHandle;
 
 /// FUSE filesystem trait
 #[async_trait]
@@ -300,7 +300,8 @@ pub(crate) fn new_fs_async_result_chan() -> (FsAsyncResultSender, FsAsyncResultR
 /// result of fs async result
 pub type FsAsyncResult = DatenLordResult<()>;
 
-/// sender for async tasks to send msg(mainly refers to error) to session main loop
+/// sender for async tasks to send msg(mainly refers to error) to session main
+/// loop
 pub type FsAsyncResultSender = tokio::sync::mpsc::Sender<FsAsyncResult>;
 
 /// receiver to receive msg from async tasks
@@ -328,6 +329,7 @@ impl FsController {
             async_task_join_handles,
         }
     }
+
     /// before calling this, make sure just all task will break their loop.
     pub(crate) async fn join_all_async_tasks(&mut self) {
         while let Some(task) = self.async_task_join_handles.pop() {
@@ -335,6 +337,7 @@ impl FsController {
                 .unwrap_or_else(|e| panic!("join async task error {e}"));
         }
     }
+
     /// async read a result from async task
     pub(crate) async fn recv_async_task_res(&mut self) -> FsAsyncResult {
         if let Some(res) = self.async_res_receiver.recv().await {
@@ -342,9 +345,9 @@ impl FsController {
         } else {
             // The receiver is held by fs_controller, which is owned by session task.
             // Receiver will receive none only when senders are all dropped.
-            // However senders are held by the async task, which must end before the session task.
-            // So this function is supposed to be called when the system is running
-            //   and not all senders have been dropped.
+            // However senders are held by the async task, which must end before the session
+            // task. So this function is supposed to be called when the system
+            // is running   and not all senders have been dropped.
             panic!("fs async task channel was destroyed unexpectedly")
         }
     }

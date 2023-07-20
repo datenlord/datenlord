@@ -27,33 +27,28 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use async_trait::async_trait;
+use cache::IoMemBlock;
 use clippy_utilities::Cast;
+use dist::server::CacheServer;
 use log::{debug, warn};
+pub use metadata::{DefaultMetaData, MetaData};
 use nix::errno::Errno;
 use nix::sys::stat::SFlag;
+pub use s3_metadata::S3MetaData;
+use serde::{Deserialize, Serialize};
 
+use self::kv_engine::KVEngineType;
+use super::fuse::file_system::FsController;
 use crate::async_fuse::fuse::file_system;
-use crate::async_fuse::fuse::file_system::FileSystem;
-use crate::async_fuse::fuse::file_system::FsAsyncTaskController;
-use crate::async_fuse::fuse::fuse_reply::AsIoVec;
+use crate::async_fuse::fuse::file_system::{FileSystem, FsAsyncTaskController};
 use crate::async_fuse::fuse::fuse_reply::{
-    ReplyAttr, ReplyBMap, ReplyCreate, ReplyData, ReplyDirectory, ReplyEmpty, ReplyEntry,
+    AsIoVec, ReplyAttr, ReplyBMap, ReplyCreate, ReplyData, ReplyDirectory, ReplyEmpty, ReplyEntry,
     ReplyLock, ReplyOpen, ReplyStatFs, ReplyWrite, ReplyXAttr,
 };
 use crate::async_fuse::fuse::fuse_request::Request;
 use crate::async_fuse::fuse::protocol::{INum, FUSE_ROOT_ID};
 use crate::common::error::{Context, DatenLordResult};
 use crate::common::etcd_delegate::EtcdDelegate;
-use cache::IoMemBlock;
-use dist::server::CacheServer;
-pub use metadata::DefaultMetaData;
-pub use metadata::MetaData;
-pub use s3_metadata::S3MetaData;
-use serde::{Deserialize, Serialize};
-
-use self::kv_engine::KVEngineType;
-
-use super::fuse::file_system::FsController;
 
 /// In-memory file system
 #[derive(Debug)]
@@ -122,7 +117,7 @@ pub struct RenameParam {
 /// POSIX file lock parameters
 #[derive(Debug)]
 pub struct FileLockParam {
-    /// File hander
+    /// File handler
     pub fh: u64,
     /// Lock owner
     pub lock_owner: u64,
@@ -255,13 +250,14 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
     }
 
     /// Open a file.
-    /// Open flags (with the exception of `O_CREAT`, `O_EXCL`, `O_NOCTTY` and `O_TRUNC`) are
-    /// available in flags. Filesystem may store an arbitrary file handle (pointer, index,
-    /// etc) in fh, and use self in other all other file operations (read, write, flush,
-    /// release, fsync). Filesystem may also implement stateless file I/O and not store
-    /// anything in fh. There are also some flags (`direct_io`, `keep_cache`) which the
-    /// filesystem may set, to change the way the file is opened. See `fuse_file_info`
-    /// structure in `fuse_common.h` for more details.
+    /// Open flags (with the exception of `O_CREAT`, `O_EXCL`, `O_NOCTTY` and
+    /// `O_TRUNC`) are available in flags. Filesystem may store an arbitrary
+    /// file handle (pointer, index, etc) in fh, and use self in other all
+    /// other file operations (read, write, flush, release, fsync).
+    /// Filesystem may also implement stateless file I/O and not store
+    /// anything in fh. There are also some flags (`direct_io`, `keep_cache`)
+    /// which the filesystem may set, to change the way the file is opened.
+    /// See `fuse_file_info` structure in `fuse_common.h` for more details.
     async fn open(&self, req: &Request<'_>, flags: u32, reply: ReplyOpen) -> nix::Result<usize> {
         let ino = req.nodeid();
         debug!("open(ino={}, flags={}, req={:?})", ino, flags, req);
@@ -282,11 +278,12 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
     }
 
     /// Forget about an inode.
-    /// The nlookup parameter indicates the number of lookups previously performed on
-    /// self inode. If the filesystem implements inode lifetimes, it is recommended that
-    /// inodes acquire a single reference on each lookup, and lose nlookup references on
-    /// each forget. The filesystem may ignore forget calls, if the inodes don't need to
-    /// have a limited lifetime. On unmount it is not guaranteed, that all referenced
+    /// The nlookup parameter indicates the number of lookups previously
+    /// performed on self inode. If the filesystem implements inode
+    /// lifetimes, it is recommended that inodes acquire a single reference
+    /// on each lookup, and lose nlookup references on each forget. The
+    /// filesystem may ignore forget calls, if the inodes don't need to have
+    /// a limited lifetime. On unmount it is not guaranteed, that all referenced
     /// inodes will receive a forget message.
     async fn forget(&self, req: &Request<'_>, nlookup: u64) {
         let ino = req.nodeid();
@@ -329,7 +326,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
             req,
         );
         if 0 == valid {
-            warn!("setattr() enountered valid=0, the req={:?}", req);
+            warn!("setattr() encountered valid=0, the req={:?}", req);
         };
         let set_res = self.metadata.setattr_helper(ino, param).await;
         match set_res {
@@ -339,7 +336,8 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
     }
 
     /// Create file node.
-    /// Create a regular file, character device, block device, fifo or socket node.
+    /// Create a regular file, character device, block device, fifo or socket
+    /// node.
     async fn mknod(
         &self,
         req: &Request<'_>,
@@ -504,11 +502,12 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
     }
 
     /// Read data.
-    /// Read should send exactly the number of bytes requested except on EOF or error,
-    /// otherwise the rest of the data will be substituted with zeroes. An exception to
-    /// self is when the file has been opened in `direct_io` mode, in which case the
-    /// return value of the read system call will reflect the return value of self
-    /// operation. fh will contain the value set by the open method, or will be undefined
+    /// Read should send exactly the number of bytes requested except on EOF or
+    /// error, otherwise the rest of the data will be substituted with
+    /// zeroes. An exception to self is when the file has been opened in
+    /// `direct_io` mode, in which case the return value of the read system
+    /// call will reflect the return value of self operation. fh will
+    /// contain the value set by the open method, or will be undefined
     /// if the open method didn't set any value.
     async fn read(
         &self,
@@ -551,11 +550,12 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
     }
 
     /// Write data.
-    /// Write should return exactly the number of bytes requested except on error. An
-    /// exception to self is when the file has been opened in `direct_io` mode, in
-    /// which case the return value of the write system call will reflect the return
-    /// value of self operation. fh will contain the value set by the open method, or
-    /// will be undefined if the open method did not set any value.
+    /// Write should return exactly the number of bytes requested except on
+    /// error. An exception to self is when the file has been opened in
+    /// `direct_io` mode, in which case the return value of the write system
+    /// call will reflect the return value of self operation. fh will
+    /// contain the value set by the open method, or will be undefined if
+    /// the open method did not set any value.
     async fn write(
         &self,
         req: &Request<'_>,
@@ -602,15 +602,17 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
     }
 
     /// Flush method.
-    /// This is called on each close() of the opened file. Since file descriptors can
-    /// be duplicated (dup, dup2, fork), for one open call there may be many flush
-    /// calls. Filesystems should not assume that flush will always be called after some
-    /// writes, or that if will be called at all. fh will contain the value set by the
-    /// open method, or will be undefined if the open method did not set any value.
-    /// NOTE: the name of the method is misleading, since (unlike fsync) the filesystem
-    /// is not forced to flush pending writes. One reason to flush data, is if the
-    /// filesystem wants to return write errors. If the filesystem supports file locking
-    /// operations (setlk, getlk) it should remove all locks belonging to `lock_owner`.
+    /// This is called on each close() of the opened file. Since file
+    /// descriptors can be duplicated (dup, dup2, fork), for one open call
+    /// there may be many flush calls. Filesystems should not assume that
+    /// flush will always be called after some writes, or that if will be
+    /// called at all. fh will contain the value set by the open method, or
+    /// will be undefined if the open method did not set any value.
+    /// NOTE: the name of the method is misleading, since (unlike fsync) the
+    /// filesystem is not forced to flush pending writes. One reason to
+    /// flush data, is if the filesystem wants to return write errors. If
+    /// the filesystem supports file locking operations (setlk, getlk) it
+    /// should remove all locks belonging to `lock_owner`.
     async fn flush(
         &self,
         req: &Request<'_>,
@@ -633,13 +635,14 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
     }
 
     /// Release an open file.
-    /// Release is called when there are no more references to an open file: all file
-    /// descriptors are closed and all memory mappings are unmapped. For every open
-    /// call there will be exactly one release call. The filesystem may reply with an
-    /// error, but error values are not returned to close() or munmap() which triggered
-    /// the release. fh will contain the value set by the open method, or will be undefined
-    /// if the open method didn't set any value. flags will contain the same flags as for
-    /// open.
+    /// Release is called when there are no more references to an open file: all
+    /// file descriptors are closed and all memory mappings are unmapped.
+    /// For every open call there will be exactly one release call. The
+    /// filesystem may reply with an error, but error values are not
+    /// returned to close() or munmap() which triggered the release. fh will
+    /// contain the value set by the open method, or will be undefined
+    /// if the open method didn't set any value. flags will contain the same
+    /// flags as for open.
     async fn release(
         &self,
         req: &Request<'_>,
@@ -661,8 +664,8 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
     }
 
     /// Synchronize file contents.
-    /// If the datasync parameter is non-zero, then only the user data should be flushed,
-    /// not the meta data.
+    /// If the datasync parameter is non-zero, then only the user data should be
+    /// flushed, not the meta data.
     async fn fsync(
         &self,
         req: &Request<'_>,
@@ -686,12 +689,13 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
     }
 
     /// Open a directory.
-    /// Filesystem may store an arbitrary file handle (pointer, index, etc) in fh, and
-    /// use self in other all other directory stream operations (readdir, releasedir,
-    /// fsyncdir). Filesystem may also implement stateless directory I/O and not store
-    /// anything in fh, though that makes it impossible to implement standard conforming
-    /// directory stream operations in case the contents of the directory can change
-    /// between opendir and releasedir.
+    /// Filesystem may store an arbitrary file handle (pointer, index, etc) in
+    /// fh, and use self in other all other directory stream operations
+    /// (readdir, releasedir, fsyncdir). Filesystem may also implement
+    /// stateless directory I/O and not store anything in fh, though that
+    /// makes it impossible to implement standard conforming
+    /// directory stream operations in case the contents of the directory can
+    /// change between opendir and releasedir.
     async fn opendir(&self, req: &Request<'_>, flags: u32, reply: ReplyOpen) -> nix::Result<usize> {
         let ino = req.nodeid();
         debug!("opendir(ino={}, flags={}, req={:?})", ino, flags, req,);
@@ -718,9 +722,9 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
 
     /// Read directory.
     /// Send a buffer filled using buffer.fill(), with size not exceeding the
-    /// requested size. Send an empty buffer on end of stream. fh will contain the
-    /// value set by the opendir method, or will be undefined if the opendir method
-    /// didn't set any value.
+    /// requested size. Send an empty buffer on end of stream. fh will contain
+    /// the value set by the opendir method, or will be undefined if the
+    /// opendir method didn't set any value.
     async fn readdir(
         &self,
         req: &Request<'_>,
@@ -738,9 +742,9 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
     }
 
     /// Release an open directory.
-    /// For every opendir call there will be exactly one releasedir call. fh will
-    /// contain the value set by the opendir method, or will be undefined if the
-    /// opendir method didn't set any value.
+    /// For every opendir call there will be exactly one releasedir call. fh
+    /// will contain the value set by the opendir method, or will be
+    /// undefined if the opendir method didn't set any value.
     async fn releasedir(
         &self,
         req: &Request<'_>,
@@ -759,9 +763,10 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
     }
 
     /// Synchronize directory contents.
-    /// If the datasync parameter is set, then only the directory contents should
-    /// be flushed, not the meta data. fh will contain the value set by the opendir
-    /// method, or will be undefined if the opendir method didn't set any value.
+    /// If the datasync parameter is set, then only the directory contents
+    /// should be flushed, not the meta data. fh will contain the value set
+    /// by the opendir method, or will be undefined if the opendir method
+    /// didn't set any value.
     async fn fsyncdir(
         &self,
         req: &Request<'_>,
@@ -865,7 +870,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         debug!("interrupt(req={:?}), cache size={}", req, 0_i32);
         // TODO: handle FUSE_INTERRUPT
         warn!(
-            "FUSE INTERRUPT recieved, request w/ unique={} interrupted",
+            "FUSE INTERRUPT received, request w/ unique={} interrupted",
             unique
         );
     }
@@ -895,9 +900,9 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
     }
 
     /// Get an extended attribute.
-    /// If `size` is 0, the size of the value should be sent with `reply.size()`.
-    /// If `size` is not 0, and the value fits, send it with `reply.data()`, or
-    /// `reply.error(ERANGE)` if it doesn't.
+    /// If `size` is 0, the size of the value should be sent with
+    /// `reply.size()`. If `size` is not 0, and the value fits, send it with
+    /// `reply.data()`, or `reply.error(ERANGE)` if it doesn't.
     async fn getxattr(
         &self,
         _req: &Request<'_>,
@@ -909,9 +914,9 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
     }
 
     /// List extended attribute names.
-    /// If `size` is 0, the size of the value should be sent with `reply.size()`.
-    /// If `size` is not 0, and the value fits, send it with `reply.data()`, or
-    /// `reply.error(ERANGE)` if it doesn't.
+    /// If `size` is 0, the size of the value should be sent with
+    /// `reply.size()`. If `size` is not 0, and the value fits, send it with
+    /// `reply.data()`, or `reply.error(ERANGE)` if it doesn't.
     async fn listxattr(
         &self,
         _req: &Request<'_>,
@@ -932,9 +937,9 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
     }
 
     /// Check file access permissions.
-    /// This will be called for the `access()` system call. If the `default_permissions`
-    /// mount option is given, self method is not called. This method is not called
-    /// under Linux kernel versions 2.4.x
+    /// This will be called for the `access()` system call. If the
+    /// `default_permissions` mount option is given, self method is not
+    /// called. This method is not called under Linux kernel versions 2.4.x
     async fn access(
         &self,
         _req: &Request<'_>,
@@ -945,14 +950,15 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
     }
 
     /// Create and open a file.
-    /// If the file does not exist, first create it with the specified mode, and then
-    /// open it. Open flags (with the exception of `O_NOCTTY`) are available in flags.
-    /// Filesystem may store an arbitrary file handle (pointer, index, etc) in fh,
-    /// and use self in other all other file operations (read, write, flush, release,
-    /// fsync). There are also some flags (`direct_io`, `keep_cache`) which the
-    /// filesystem may set, to change the way the file is opened. See `fuse_file_info`
-    /// structure in `fuse_common.h` for more details. If self method is not
-    /// implemented or under Linux kernel versions earlier than 2.6.15, the mknod()
+    /// If the file does not exist, first create it with the specified mode, and
+    /// then open it. Open flags (with the exception of `O_NOCTTY`) are
+    /// available in flags. Filesystem may store an arbitrary file handle
+    /// (pointer, index, etc) in fh, and use self in other all other file
+    /// operations (read, write, flush, release, fsync). There are also some
+    /// flags (`direct_io`, `keep_cache`) which the filesystem may set, to
+    /// change the way the file is opened. See `fuse_file_info` structure in
+    /// `fuse_common.h` for more details. If self method is not implemented
+    /// or under Linux kernel versions earlier than 2.6.15, the mknod()
     /// and open() methods will be called instead.
     async fn create(
         &self,
@@ -977,12 +983,13 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
     }
 
     /// Acquire, modify or release a POSIX file lock.
-    /// For POSIX threads (NPTL) there's a 1-1 relation between pid and owner, but
-    /// otherwise self is not always the case.  For checking lock ownership,
-    /// `fi->owner` must be used. The `l_pid` field in `struct flock` should only be
-    /// used to fill in self field in `getlk()`. Note: if the locking methods are not
-    /// implemented, the kernel will still allow file locking to work locally.
-    /// Hence these are only interesting for network filesystems and similar.
+    /// For POSIX threads (NPTL) there's a 1-1 relation between pid and owner,
+    /// but otherwise self is not always the case.  For checking lock
+    /// ownership, `fi->owner` must be used. The `l_pid` field in `struct
+    /// flock` should only be used to fill in self field in `getlk()`. Note:
+    /// if the locking methods are not implemented, the kernel will still
+    /// allow file locking to work locally. Hence these are only interesting
+    /// for network filesystems and similar.
     async fn setlk(
         &self,
         _req: &Request<'_>,
@@ -1023,8 +1030,9 @@ impl<M: MetaData + Send + Sync + 'static> FsAsyncTaskController for MemFs<M> {
 #[cfg(test)]
 mod test {
 
-    use nix::sys::statvfs;
     use std::fs::File;
+
+    use nix::sys::statvfs;
     #[test]
     fn test_statfs() -> anyhow::Result<()> {
         let file = File::open(".")?;

@@ -9,19 +9,20 @@ pub mod scheduler_extender;
 pub mod util;
 mod worker;
 
-use crate::common::error::{Context, DatenLordResult};
-use crate::common::etcd_delegate::EtcdDelegate;
-use crate::RunAsRole;
+use std::net::IpAddr;
+use std::sync::Arc;
+
 use controller::ControllerImpl;
+use grpcio::{Environment, Server};
 use identity::IdentityImpl;
+use log::info;
 use meta_data::{DatenLordNode, MetaData};
 use node::NodeImpl;
 use worker::WorkerImpl;
 
-use grpcio::{Environment, Server};
-use log::info;
-use std::net::IpAddr;
-use std::sync::Arc;
+use crate::common::error::{Context, DatenLordResult};
+use crate::common::etcd_delegate::EtcdDelegate;
+use crate::RunAsRole;
 
 /// Build meta data
 pub async fn build_meta_data(
@@ -111,9 +112,11 @@ pub fn build_grpc_controller_server(
 
     // let (mem_size, overflow) = 1024_usize.overflowing_mul(1024);
     // debug_assert!(!overflow, "computing memory size overflowed");
-    // let quota = ResourceQuota::new(Some("DatenLordWokerQuota")).resize_memory(mem_size);
-    // let ch_builder = ChannelBuilder::new(Arc::<Environment>::clone(&env)).set_resource_quota(quota);
-    // TODO: increase concurrent queue size
+    // let quota =
+    // ResourceQuota::new(Some("DatenLordWokerQuota")).resize_memory(mem_size);
+    // let ch_builder =
+    // ChannelBuilder::new(Arc::<Environment>::clone(&env)).
+    // set_resource_quota(quota); TODO: increase concurrent queue size
     let controller_server = grpcio::ServerBuilder::new(Arc::new(Environment::new(1)))
         .register_service(identity_service)
         .register_service(controller_service)
@@ -157,9 +160,14 @@ pub async fn run_grpc_servers(servers: &mut [Server]) {
 
 #[cfg(test)]
 mod test {
-    use super::util;
-    use super::*;
-    use crate::common::error::Context;
+    use std::fs::{self, File};
+    use std::io::prelude::*;
+    use std::net::Ipv4Addr;
+    use std::path::{Path, PathBuf};
+    use std::sync::Once;
+
+    use clippy_utilities::{Cast, OverflowArithmetic};
+    use grpcio::{ChannelBuilder, EnvBuilder};
     use log::debug;
     use proto::csi::{
         ControllerExpandVolumeRequest, ControllerExpandVolumeResponse, CreateSnapshotRequest,
@@ -173,16 +181,11 @@ mod test {
         VolumeCapability_MountVolume,
     };
     use proto::csi_grpc::{ControllerClient, IdentityClient, NodeClient};
-
-    use clippy_utilities::{Cast, OverflowArithmetic};
-    use grpcio::{ChannelBuilder, EnvBuilder};
     // use mock_etcd::MockEtcdServer;
     use protobuf::RepeatedField;
-    use std::fs::{self, File};
-    use std::io::prelude::*;
-    use std::net::Ipv4Addr;
-    use std::path::{Path, PathBuf};
-    use std::sync::Once;
+
+    use super::{util, *};
+    use crate::common::error::Context;
 
     const NODE_PUBLISH_VOLUME_TARGET_PATH: &str = "/tmp/target_volume_path";
     const NODE_PUBLISH_VOLUME_TARGET_PATH_1: &str = "/tmp/target_volume_path_1";
@@ -347,8 +350,8 @@ mod test {
 
         let snap_id = "the-fake-snapshot-id-for-meta-data-test";
         let snapshot = meta_data::DatenLordSnapshot::new(
-            "test-snapshot-name".to_owned(), //snap_name,
-            snap_id.to_owned(),              //snap_id,
+            "test-snapshot-name".to_owned(), // snap_name,
+            snap_id.to_owned(),              // snap_id,
             vol_id.to_owned(),
             meta_data.get_node_id().to_owned(),
             meta_data.get_snapshot_path(snap_id),

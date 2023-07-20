@@ -1,18 +1,17 @@
 //! Request between caches
 
-use crate::async_fuse::fuse::protocol::INum;
+use log::info;
+use serde::{Deserialize, Serialize};
 
 use super::super::serial::SerialSFlag;
-use log::info;
-
-use serde::{Deserialize, Serialize};
+use crate::async_fuse::fuse::protocol::INum;
 
 /// Distributed request
 #[derive(Serialize, Deserialize, Debug)]
 pub enum DistRequest {
     /// Invalidate cache request
     Invalidate(OpArgs),
-    /// Check cache availibility request
+    /// Check cache availability request
     CheckAvailable(OpArgs),
     /// Read data request
     Read(OpArgs),
@@ -65,7 +64,7 @@ pub fn invalidate(file_ino: INum, index: Vec<Index>) -> Vec<u8> {
     })
 }
 
-/// Serialize Check cache availibility of file request
+/// Serialize Check cache availability of file request
 #[must_use]
 pub fn check_available(file_ino: INum, index: Vec<Index>) -> Vec<u8> {
     bincode::serialize(&DistRequest::CheckAvailable(OpArgs { file_ino, index })).unwrap_or_else(

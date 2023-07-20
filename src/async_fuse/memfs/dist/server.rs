@@ -1,13 +1,14 @@
-//! This is the server for the cache, which is used to accpet the request
+//! This is the server for the cache, which is used to accept the request
+
+use std::fmt::{self, Debug};
+use std::sync::Arc;
+
+use tokio::net::TcpStream;
+use tokio::task::JoinHandle;
 
 use super::super::cache::GlobalCache;
 use super::request::{self, DistRequest, OpArgs};
-use super::response;
-use super::tcp;
-use std::fmt::{self, Debug};
-use std::sync::Arc;
-use tokio::net::TcpStream;
-use tokio::task::JoinHandle;
+use super::{response, tcp};
 
 /// Distributed cache server
 pub struct CacheServer {

@@ -1,16 +1,16 @@
 //! Allocate unique id between nodes.
 
-use std::{ops::Add, sync::Arc, time::Duration};
+use std::ops::Add;
+use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Context;
 use clippy_utilities::OverflowArithmetic;
 use log::debug;
 use tokio::sync::Mutex;
 
-use crate::{
-    async_fuse::memfs::kv_engine::{KVEngine, KeyType, LockKeyType, ValueType},
-    common::error::DatenLordResult,
-};
+use crate::async_fuse::memfs::kv_engine::{KVEngine, KeyType, LockKeyType, ValueType};
+use crate::common::error::DatenLordResult;
 
 /// Id type
 #[derive(Debug, Eq, PartialEq, Clone)]
@@ -44,7 +44,7 @@ pub struct DistIdAllocator<K: KVEngine> {
     /// .0 is begin, .1 is end
     /// need realloc when begin==end
     range_begin_end: Mutex<(u64, u64)>,
-    /// recyle inum when there's conflict path
+    /// recycle inum when there's conflict path
     recycle_unused: crossbeam_queue::SegQueue<u64>,
     /// use etcd transaction to avoid conflict
     kv_engine: Arc<K>,
@@ -65,6 +65,7 @@ impl<K: KVEngine + 'static> DistIdAllocator<K> {
             id_begin,
         }
     }
+
     /// just get a unique id
     pub(crate) async fn alloc_id(&self) -> DatenLordResult<u64> {
         /// the step length for prealloc a range of inum for a node.

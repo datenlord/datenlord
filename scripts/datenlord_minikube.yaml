@@ -605,7 +605,7 @@ spec:
   attachRequired: false # No controller publish/unpublish
   # To determine at runtime which mode a volume uses, pod info and its
   # "csi.storage.k8s.io/ephemeral" entry are needed.
-  # Informaion includes pod name, uid and namespace.
+  # Information includes pod name, uid and namespace.
   podInfoOnMount: true
   # Supports persistent and ephemeral inline volumes, added in Kubernetes 1.16, this field is beta
   volumeLifecycleModes:

@@ -1,20 +1,19 @@
 //! `DatenLord` K8S Scheduler Extender
 
-use k8s_openapi::api::core::v1::Node;
-use k8s_openapi::api::core::v1::Pod;
-use k8s_openapi::apimachinery::pkg::apis::meta::v1::ListMeta;
-
-use super::meta_data::MetaData;
-use crate::common::error::DatenLordResult;
-use clippy_utilities::OverflowArithmetic;
-use log::{error, info};
-use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io::Error;
 use std::net::SocketAddr;
 use std::sync::Arc;
+
+use clippy_utilities::OverflowArithmetic;
+use k8s_openapi::api::core::v1::{Node, Pod};
+use k8s_openapi::apimachinery::pkg::apis::meta::v1::ListMeta;
+use log::{error, info};
+use serde::{Deserialize, Serialize};
 use tiny_http::{Method, Request, Response, Server, StatusCode};
+
+use super::meta_data::MetaData;
+use crate::common::error::DatenLordResult;
 
 /// Node List
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -49,7 +48,8 @@ struct ExtenderFilterResult {
     /// Filtered set of nodes where the pod can be scheduled; to be populated
     /// only if Extender.NodeCacheCapable == true
     pub NodeNames: Option<Vec<String>>,
-    /// Filtered out nodes where the pod can't be scheduled and the failure messages
+    /// Filtered out nodes where the pod can't be scheduled and the failure
+    /// messages
     pub FailedNodes: HashMap<String, String>,
     /// Error message indicating failure
     pub Error: String,
@@ -66,7 +66,7 @@ struct HostPriority {
 }
 
 /// Scheduler Extender
-pub struct SchdulerExtender {
+pub struct SchedulerExtender {
     /// Meta Data
     meta_data: Arc<MetaData>,
     /// Address of scheduler extender
@@ -96,7 +96,7 @@ macro_rules! try_or_return_err {
         }
     };
 }
-impl SchdulerExtender {
+impl SchedulerExtender {
     /// Create `SchedulerExtender`
     pub fn new(meta_data: Arc<MetaData>, address: SocketAddr) -> Self {
         let server = Server::http(address)
@@ -113,7 +113,7 @@ impl SchdulerExtender {
         info!("listening on http://{}", self.address);
         for req in self.server.incoming_requests() {
             if let Err(e) = self.scheduler(req).await {
-                error!("Faild to send response, error is: {}", e);
+                error!("Failed to send response, error is: {}", e);
             }
         }
     }
@@ -193,7 +193,7 @@ impl SchdulerExtender {
                     NodeNames: args.NodeNames.and(Some(vec![])),
                     FailedNodes: HashMap::new(),
                     Error: format!(
-                        "faile to get all nodes from etcd, failed to schedule, the error is {e}"
+                        "failed to get all nodes from etcd, failed to schedule, the error is {e}"
                     ),
                 },
             }

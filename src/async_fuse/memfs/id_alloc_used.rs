@@ -2,12 +2,10 @@
 
 use std::sync::Arc;
 
-use crate::{async_fuse::fuse::protocol::INum, common::error::DatenLordResult};
-
-use super::{
-    dist::id_alloc::{DistIdAllocator, IdType},
-    kv_engine::KVEngine,
-};
+use super::dist::id_alloc::{DistIdAllocator, IdType};
+use super::kv_engine::KVEngine;
+use crate::async_fuse::fuse::protocol::INum;
+use crate::common::error::DatenLordResult;
 
 /// Inum allocator
 #[derive(Debug)]
@@ -23,6 +21,7 @@ impl<K: KVEngine + 'static> INumAllocator<K> {
             id_allocator: DistIdAllocator::new(kv_engine, IdType::INum, 2),
         }
     }
+
     /// get a unique inum for a new file
     /// return inum
     pub async fn alloc_inum_for_fnode(&self) -> DatenLordResult<INum> {

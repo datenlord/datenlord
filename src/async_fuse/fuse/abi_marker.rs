@@ -8,8 +8,8 @@ use std::{mem, slice};
 ///
 /// [`FuseAbiData`] can not be implemented for ZSTs.
 ///
-/// [`FuseAbiData`] can be implemented for DSTs but there is no way to construct a custom DST reference.
-///
+/// [`FuseAbiData`] can be implemented for DSTs but there is no way to construct
+/// a custom DST reference.
 pub unsafe trait FuseAbiData {}
 
 /// # Safety
@@ -31,7 +31,7 @@ pub fn as_abi_bytes<T: FuseAbiData + Sized>(raw: &T) -> &[u8] {
 
 /// Impl `FuseAbiData` trait
 macro_rules! mark_abi_type {
-    ($ty: ty) => {
+    ($ty:ty) => {
         unsafe impl FuseAbiData for $ty {}
     };
 }

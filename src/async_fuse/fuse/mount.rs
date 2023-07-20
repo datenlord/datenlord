@@ -1,12 +1,13 @@
 //! The implementation of FUSE mount and un-mount
 
+use std::fs;
+use std::os::unix::io::RawFd;
+use std::path::Path;
+
 use anyhow::Context;
 use log::{debug, info};
 use nix::fcntl::{self, OFlag};
 use nix::sys::stat::{self, Mode};
-use std::fs;
-use std::os::unix::io::RawFd;
-use std::path::Path;
 
 // Linux mount flags, check the following link for details
 // <https://github.com/torvalds/linux/blob/master/include/uapi/linux/mount.h#L11>
@@ -91,8 +92,9 @@ mod param {
 /// Linux un-mount
 #[cfg(target_os = "linux")]
 pub async fn umount(short_path: &Path) -> anyhow::Result<()> {
-    use nix::unistd;
     use std::process::Command;
+
+    use nix::unistd;
 
     let mount_path = short_path.to_path_buf();
     tokio::task::spawn_blocking(move || {
@@ -146,12 +148,13 @@ pub async fn mount(mount_point: &Path) -> anyhow::Result<RawFd> {
 /// Linux fusermount
 #[cfg(target_os = "linux")]
 async fn fuser_mount(mount_point: &Path) -> anyhow::Result<RawFd> {
+    use std::process::Command;
+
     use nix::cmsg_space;
     use nix::sys::socket::{
         self, AddressFamily, ControlMessageOwned, MsgFlags, SockFlag, SockType,
     };
     use nix::sys::uio::IoVec;
-    use std::process::Command;
 
     let mount_path = mount_point.to_path_buf();
 
@@ -169,7 +172,8 @@ async fn fuser_mount(mount_point: &Path) -> anyhow::Result<RawFd> {
     let mount_handle = tokio::task::spawn_blocking(move || {
         Command::new("fusermount")
             .arg("-o")
-            // fusermount option allow_other only allowed if user_allow_other is set in /etc/fuse.conf
+            // fusermount option allow_other only allowed if user_allow_other is set in
+            // /etc/fuse.conf
             .arg("nosuid,nodev,allow_other") // rw,async,noatime,noexec,auto_unmount,allow_other
             .arg(mount_path.as_os_str())
             .env("_FUSE_COMMFD", remote.to_string())
@@ -283,13 +287,14 @@ pub async fn umount(mount_path: &Path) -> anyhow::Result<()> {
 #[allow(clippy::integer_arithmetic)] // ioctl macro involves integer arithmetic
 #[cfg(target_os = "macos")]
 pub async fn mount(mount_path: &Path) -> anyhow::Result<RawFd> {
+    use std::ffi::CString;
+
     use param::{
         FuseMountArgs, FUSE_DEFAULT_BLOCKSIZE, FUSE_DEFAULT_DAEMON_TIMEOUT, FUSE_DEFAULT_IOSIZE,
         FUSE_FSSUBTYPE_UNKNOWN, FUSE_IOC_MAGIC, FUSE_IOC_TYPE_MODE, FUSE_MOPT_DEBUG,
         FUSE_MOPT_FSNAME, FUSE_MOPT_NO_APPLEXATTR, MAXPATHLEN, MFSTYPENAMELEN, MNT_NOATIME,
         MNT_NODEV, MNT_NOSUID, MNT_NOUSERXATTR,
     };
-    use std::ffi::CString;
     use utilities::Cast;
 
     /// Copy slice

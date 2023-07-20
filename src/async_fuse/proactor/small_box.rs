@@ -1,4 +1,5 @@
-//! A type-erased container which stores small item on stack and fallbacks to heap for large item.
+//! A type-erased container which stores small item on stack and fallbacks to
+//! heap for large item.
 
 use std::{fmt, mem, ptr};
 
@@ -7,7 +8,8 @@ use std::{fmt, mem, ptr};
 /// The size of a [`SmallBox`] is `size_of::<usize>() * (NR_INLINE_PTR + 1)`
 const NR_INLINE_PTR: usize = 7;
 
-/// A type-erased container which stores small item on stack and fallbacks to heap for large item.
+/// A type-erased container which stores small item on stack and fallbacks to
+/// heap for large item.
 pub struct SmallBox {
     /// inline storage
     bytes: [usize; NR_INLINE_PTR],
@@ -43,13 +45,15 @@ impl SmallBox {
         unsafe { drop_fn(self.bytes.as_mut_ptr().cast()) }
     }
 
-    /// Puts a value into the [`SmallBox`]. The previous value in it will be dropped.
+    /// Puts a value into the [`SmallBox`]. The previous value in it will be
+    /// dropped.
     pub fn put<T: Send + 'static>(&mut self, value: T) -> *mut T {
         assert!(mem::align_of::<usize>().wrapping_rem(mem::align_of::<T>()) == 0);
         unsafe { self.put_unchecked(value) }
     }
 
-    /// Puts a value into the [`SmallBox`]. The previous value in it will be dropped.
+    /// Puts a value into the [`SmallBox`]. The previous value in it will be
+    /// dropped.
     ///
     /// # Safety
     /// + `T` must be [`Send`] + 'static.
