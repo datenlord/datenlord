@@ -151,11 +151,11 @@ mod tests {
     use std::os::unix::io::AsRawFd;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use crate::common::logger::init_logger;
+    use crate::common::logger::{init_logger, NodeType};
 
     #[tokio::test(flavor = "multi_thread")]
     async fn proactor_v0_test() -> anyhow::Result<()> {
-        init_logger();
+        init_logger(NodeType::Node);
 
         let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
 

@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use grpcio::{RpcContext, UnarySink};
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 use super::meta_data::{DatenLordVolume, MetaData, VolumeSource};
@@ -122,6 +122,7 @@ impl Worker for WorkerImpl {
                 let preferred_topology = req.get_accessibility_requirements().get_preferred();
                 let requisite_topology = req.get_accessibility_requirements().get_requisite();
                 if requisite_topology.is_empty() && preferred_topology.is_empty() {
+                    error!("request has accessibility requirements but both requisite and preferred topology are empty");
                     panic!("request has accessibility requirements but both requisite and preferred topology are empty");
                 } else if requisite_topology.is_empty() {
                     get_nodes_from_topologies(preferred_topology)

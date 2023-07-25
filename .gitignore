@@ -19,3 +19,4 @@ fuse_bench/*
 localtest.sh
 /log/*
 *.log
+/local_test/

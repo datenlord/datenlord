@@ -72,7 +72,7 @@ use std::sync::Arc;
 
 use async_fuse::memfs::kv_engine::{KVEngine, KVEngineType};
 use clap::{Arg, ArgMatches, Command};
-use common::logger::init_logger;
+use common::logger::{init_logger, NodeType};
 use csi::meta_data::MetaData;
 use csi::scheduler_extender::SchedulerExtender;
 use csi::util;
@@ -571,7 +571,6 @@ fn parse_args() -> ArgMatches {
 #[allow(clippy::too_many_lines)]
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    init_logger();
     let matches = parse_args();
 
     // TODO: The pattern_type_mismatch is false positive
@@ -579,6 +578,7 @@ async fn main() -> anyhow::Result<()> {
     #[allow(clippy::pattern_type_mismatch)]
     match matches.subcommand() {
         Some((START_CONTROLLER, matches)) => {
+            init_logger(NodeType::Controller);
             let metadata = parse_metadata(matches, RunAsRole::Controller).await?;
             let md = Arc::new(metadata);
 
@@ -592,6 +592,7 @@ async fn main() -> anyhow::Result<()> {
             csi::run_grpc_servers(&mut [controller_server]).await;
         }
         Some((START_NODE, matches)) => {
+            init_logger(NodeType::Node);
             let metadata = parse_metadata(matches, RunAsRole::Node).await?;
 
             let md = Arc::new(metadata);
@@ -636,6 +637,7 @@ async fn main() -> anyhow::Result<()> {
                 .unwrap_or_else(|e| panic!("csi thread error: {e:?}"));
         }
         Some((START_SCHEDULER_EXTENDER, matches)) => {
+            init_logger(NodeType::SchedulerExtender);
             let metadata = parse_metadata(matches, RunAsRole::SchedulerExtender).await?;
             let md = Arc::new(metadata);
             let port = get_scheduler_port(matches);
@@ -649,6 +651,7 @@ async fn main() -> anyhow::Result<()> {
             scheduler_extender.start().await;
         }
         Some((START_ASYNC_FUSE, matches)) => {
+            init_logger(NodeType::AsyncFuse);
             let etcd_delegate = EtcdDelegate::new(get_etcd_address_vec(matches)).await?;
             let kv_engine = Arc::new(KVEngineType::new(get_etcd_address_vec(matches)).await?);
             let node_id = get_node_id(matches);
