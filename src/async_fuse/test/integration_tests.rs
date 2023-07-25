@@ -20,8 +20,8 @@ pub const FILE_CONTENT: &str = "0123456789ABCDEF";
 
 #[cfg(test)]
 fn test_create_file(mount_dir: &Path) -> anyhow::Result<()> {
-    info!("test create file");
     use smol::fs::unix::MetadataExt;
+    info!("test create file");
     let file_path = Path::new(mount_dir).join("test_create_file_user.txt");
     let file_mode = Mode::from_bits_truncate(0o644);
     let file_fd = fcntl::open(&file_path, OFlag::O_CREAT, file_mode)?;
@@ -31,12 +31,12 @@ fn test_create_file(mount_dir: &Path) -> anyhow::Result<()> {
     assert_eq!(file_metadata.mode() & 0o777, 0o644);
     // check the file owner
     let file_owner = file_metadata.uid();
-    let current_uid = unistd::getuid();
-    assert_eq!(file_owner, current_uid.as_raw());
+    let create_user_id = unistd::getuid();
+    assert_eq!(file_owner, create_user_id.as_raw());
     // check the file group
     let file_group = file_metadata.gid();
-    let current_gid = unistd::getgid();
-    assert_eq!(file_group, current_gid.as_raw());
+    let create_group_id = unistd::getgid();
+    assert_eq!(file_group, create_group_id.as_raw());
     // check nlink == 1
     assert_eq!(file_metadata.nlink(), 1);
     fs::remove_file(&file_path)?; // immediate deletion
@@ -45,13 +45,13 @@ fn test_create_file(mount_dir: &Path) -> anyhow::Result<()> {
 
 #[cfg(test)]
 fn test_name_too_long(mount_dir: &Path) -> anyhow::Result<()> {
-    info!("test_name_too_long");
     use nix::fcntl::open;
+    info!("test_name_too_long");
 
     let file_name = "a".repeat(256);
     // try to create file, dir, symlink with name too long
     // expect to fail with ENAMETOOLONG
-    let file_path = Path::new(mount_dir).join(&file_name);
+    let file_path = Path::new(mount_dir).join(file_name);
     let file_mode = Mode::from_bits_truncate(0o644);
 
     info!("try to create a file with name too long");
@@ -59,15 +59,15 @@ fn test_name_too_long(mount_dir: &Path) -> anyhow::Result<()> {
     match result {
         Ok(_) => panic!("File creation should have failed with ENAMETOOLONG"),
         Err(nix::Error::ENAMETOOLONG) => {} // expected this error
-        Err(_) => panic!("Expected ENAMETOOLONG"),
+        Err(e) => return Err(e.into()),
     }
 
     info!("try to create a dir with name too long");
-    let result = fs::create_dir(&file_path);
+    let result = std::fs::create_dir_all(&file_path);
     match result {
         Ok(_) => panic!("Directory creation should have failed with ENAMETOOLONG"),
         Err(ref e) if e.raw_os_error() == Some(libc::ENAMETOOLONG) => {} // expected this error
-        Err(_) => panic!("Expected ENAMETOOLONG"),
+        Err(e) => return Err(e.into()),
     }
 
     info!("try to create a symlink with name too long");
@@ -75,7 +75,7 @@ fn test_name_too_long(mount_dir: &Path) -> anyhow::Result<()> {
     match result {
         Ok(_) => panic!("Symlink creation should have failed with ENAMETOOLONG"),
         Err(ref e) if e.raw_os_error() == Some(libc::ENAMETOOLONG) => {} // expected this error
-        Err(_) => panic!("Expected ENAMETOOLONG"),
+        Err(e) => return Err(e.into()),
     }
 
     Ok(())

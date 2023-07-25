@@ -38,7 +38,7 @@ pub fn init_logger(node_type: NodeType) {
         .create(true)
         .write(true)
         .truncate(true)
-        .open(format!("./datenlord_{}.log", path))
+        .open(format!("./datenlord_{path}.log"))
         .unwrap_or_else(|e| panic!("Failed to open log file ,err {e}"));
 
     let layer = tracing_subscriber::fmt::layer()

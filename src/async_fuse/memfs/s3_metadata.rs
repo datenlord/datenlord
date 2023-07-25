@@ -1623,6 +1623,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
         }
     }
 
+    /// Allocate a new uinque inum for new node
     async fn alloc_inum(&self) -> DatenLordResult<INum> {
         self.inum_allocator.alloc_inum_for_fnode().await
     }

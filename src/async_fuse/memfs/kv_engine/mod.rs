@@ -194,10 +194,7 @@ fn serialize_key<K: ?Sized + Serialize>(key_prefix: u16, key: &K, debug_prefix: 
     {
         let key_prefix = debug_prefix;
         bincode::serialize_into(&mut v, &key_prefix).unwrap_or_else(|e| {
-            panic!(
-                "serialize key prefix failed for key: {}, err: {:?}",
-                debug_prefix, e
-            );
+            panic!("serialize key prefix failed for key: {debug_prefix}, err: {e:?}");
         });
     }
 
@@ -209,10 +206,7 @@ fn serialize_key<K: ?Sized + Serialize>(key_prefix: u16, key: &K, debug_prefix: 
     }
 
     bincode::serialize_into(&mut v, key).unwrap_or_else(|e| {
-        panic!(
-            "serialize key failed for key: {}, err: {:?}",
-            debug_prefix, e
-        );
+        panic!("serialize key failed for key: {debug_prefix}, err: {e:?}");
     });
 
     v

@@ -114,6 +114,7 @@ pub trait Node: Sized {
         oflags: OFlag,
         global_cache: Arc<GlobalCache>,
     ) -> DatenLordResult<Self>;
+    #[allow(clippy::too_many_arguments)]
     /// Create file in a directory
     async fn create_child_file(
         &mut self,

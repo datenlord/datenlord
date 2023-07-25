@@ -357,7 +357,8 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
     }
 
     /// Create file node.
-    /// Create a regular file, character device, block device, fifo or socket node.
+    /// Create a regular file, character device, block device, fifo or socket
+    /// node.
     async fn mknod(
         &self,
         req: &Request<'_>,

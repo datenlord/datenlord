@@ -890,6 +890,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
         Ok(child_node)
     }
 
+    #[allow(clippy::similar_names)] // uid and gid are common
     /// Create sub-directory in a directory
     async fn create_child_dir(
         &mut self,
@@ -969,6 +970,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
         ))
     }
 
+    #[allow(clippy::similar_names)]
     /// Create file in a directory
     async fn create_child_file(
         &mut self,
