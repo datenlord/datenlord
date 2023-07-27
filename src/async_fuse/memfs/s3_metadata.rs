@@ -25,7 +25,7 @@ use super::dist::server::CacheServer;
 use super::fs_util::{self, FileAttr};
 use super::id_alloc_used::INumAllocator;
 use super::kv_engine::{KVEngine, KVEngineType, KeyType, ValueType};
-use super::metadata::MetaData;
+use super::metadata::{MetaData, ReqContext};
 use super::node::Node;
 use super::persist::{PersistDirContent, PersistHandle, PersistTask};
 use super::s3_node::S3Node;
@@ -105,11 +105,12 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
     #[instrument(skip(self), err, ret)]
     async fn readdir(
         &self,
+        context: ReqContext,
         ino: u64,
         _fh: u64,
         offset: i64,
-        mut reply: ReplyDirectory,
-    ) -> nix::Result<usize> {
+        reply: &mut ReplyDirectory,
+    ) -> DatenLordResult<()> {
         let mut readdir_helper = |data: &BTreeMap<String, DirEntry>| -> usize {
             let mut num_child_entries = 0;
             for (i, (child_name, child_entry)) in data.iter().enumerate().skip(offset.cast()) {
@@ -141,18 +142,9 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
                  the inode ino={ino} is not in cache"
             );
         });
+        inode.get_attr().check_perm(context.uid, context.gid, 5)?;
         if inode.need_load_dir_data() {
-            let load_res = inode.load_data(0_usize, 0_usize).await;
-            if let Err(e) = load_res {
-                debug!(
-                    "readdir() failed to load the data for directory of ino={} and name={:?}, \
-                        the error is: {:?}",
-                    ino,
-                    inode.get_name(),
-                    e
-                );
-                return reply.error(e).await;
-            }
+            inode.load_data(0_usize, 0_usize).await?;
         }
         let num_child_entries = inode.read_dir(&mut readdir_helper);
         debug!(
@@ -162,11 +154,11 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
             ino,
             inode.get_name(),
         );
-        reply.ok().await
+        Ok(())
     }
 
     #[instrument(skip(self), err, ret)]
-    async fn opendir(&self, ino: u64, flags: u32) -> DatenLordResult<RawFd> {
+    async fn opendir(&self, context: ReqContext, ino: u64, flags: u32) -> DatenLordResult<RawFd> {
         let node = self.get_node_from_kv_engine(ino).await.unwrap_or_else(|| {
             panic!(
                 "opendir() found fs is inconsistent, \
@@ -174,6 +166,8 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
             );
         });
         let o_flags = fs_util::parse_oflag(flags);
+        //   Open directory  need both read and execute permission
+        node.get_attr().check_perm(context.uid, context.gid, 5)?;
         let result = node.dup_fd(o_flags).await;
         self.set_node_to_kv_engine(ino, node).await;
         result
@@ -191,13 +185,14 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
     }
 
     #[instrument(skip(self), err, ret)]
-    async fn statfs(&self, ino: u64) -> DatenLordResult<StatFsParam> {
+    async fn statfs(&self, context: ReqContext, ino: u64) -> DatenLordResult<StatFsParam> {
         let node = self.get_node_from_kv_engine(ino).await.unwrap_or_else(|| {
             panic!(
                 "statfs() found fs is inconsistent, \
                     the i-node of ino={ino} should be in cache",
             );
         });
+        node.get_attr().check_perm(context.uid, context.gid, 5)?;
         node.statefs().await
     }
 
@@ -272,7 +267,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
     }
 
     #[instrument(skip(self), err, ret)]
-    async fn open(&self, ino: u64, flags: u32) -> DatenLordResult<RawFd> {
+    async fn open(&self, context: ReqContext, ino: u64, flags: u32) -> DatenLordResult<RawFd> {
         let node = self.get_node_from_kv_engine(ino).await.unwrap_or_else(|| {
             panic!(
                 "open() found fs is inconsistent, \
@@ -280,6 +275,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
             );
         });
         let o_flags = fs_util::parse_oflag(flags);
+        node.open_pre_check(o_flags, context.uid, context.gid)?;
         // TODO: handle open flags
         // <https://pubs.opengroup.org/onlinepubs/9699919799/functions/open.html>
         // let open_res = if let SFlag::S_IFLNK = node.get_type() {
@@ -348,6 +344,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
     #[instrument(skip(self), err, ret)]
     async fn setattr_helper(
         &self,
+        context: ReqContext,
         ino: u64,
         param: SetAttrParam,
     ) -> DatenLordResult<(Duration, FuseAttr)> {
@@ -359,7 +356,10 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
             );
         });
 
-        match inode.setattr_precheck(param).await {
+        match inode
+            .setattr_precheck(param, context.uid, context.gid)
+            .await
+        {
             Ok((attr_changed, file_attr)) => {
                 if attr_changed {
                     inode.set_attr(file_attr);
@@ -546,17 +546,18 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         };
         let uid = param.uid;
         let gid = param.gid;
-        if node_name.len() > 255 {
+        if node_name.chars().count() > 255 {
             return util::build_error_result_from_errno(
                 Errno::ENAMETOOLONG,
                 format!(
-                    "create_node_helper() found the length of child name={node_name} is too long",
+                    "create_node_helper() found the length of child name_length={} is too long",
+                    node_name.chars().count()
                 ),
             );
         }
         // pre-check : check whether the child name is valid
         let mut parent_node = self
-            .create_node_pre_check(parent, node_name)
+            .create_node_pre_check(parent, node_name, uid, gid)
             .await
             .context("create_node_helper() failed to pre check")?;
         // allocate a new i-node number
@@ -677,6 +678,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
     #[allow(clippy::too_many_lines)]
     async fn lookup_helper(
         &self,
+        context: ReqContext,
         parent: INum,
         child_name: &str,
     ) -> DatenLordResult<(Duration, FuseAttr, u64)> {
@@ -684,7 +686,9 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
             "lookup_helper() about to lookup parent ino={} and name={:?}",
             parent, child_name
         );
-        let pre_check_res = self.lookup_pre_check(parent, child_name).await;
+        let pre_check_res = self
+            .lookup_pre_check(parent, child_name, context.uid, context.gid)
+            .await;
         let (child_ino, child_type, child_attr) = match pre_check_res {
             Ok((ino, child_type, child_attr)) => (ino, child_type, child_attr),
             Err(e) => {
@@ -698,6 +702,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
             // cache hit
             let child_node = self.get_node_from_kv_engine(child_ino).await;
             if let Some(node) = child_node {
+                // if the child node is directory, we should check its permission
                 debug!(
                     "lookup_helper() cache hit when searching i-node of \
                     child_ino={} and name={:?} under parent ino={}",
@@ -992,6 +997,8 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
         &self,
         parent: INum,
         node_name: &str,
+        uid: u32,
+        gid: u32,
     ) -> DatenLordResult<S3Node<S>> {
         let parent_node = self
             .get_node_from_kv_engine(parent)
@@ -1002,6 +1009,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
                     parent of ino={parent} should be in cache before create it new child",
                 );
             });
+        parent_node.get_attr().check_perm(uid, gid, 2)?;
         if let Some(occupied) = parent_node.get_entry(node_name) {
             debug!(
                 "create_node_pre_check() found the directory of ino={} and name={:?} \
@@ -1119,6 +1127,8 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
         &self,
         parent: INum,
         name: &str,
+        uid: u32,
+        gid: u32,
     ) -> DatenLordResult<(INum, SFlag, Arc<SyncRwLock<FileAttr>>)> {
         // lookup child ino and type first
         let parent_node = self
@@ -1130,6 +1140,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
                         the parent i-node of ino={parent} should be in cache",
                 );
             });
+        parent_node.get_attr().check_perm(uid, gid, 1)?;
         if let Some(child_entry) = parent_node.get_entry(name) {
             let ino = child_entry.ino();
             let child_type = child_entry.entry_type();

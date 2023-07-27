@@ -156,7 +156,12 @@ pub trait Node: Sized {
     /// Close dir
     async fn closedir(&self, ino: INum, fh: u64);
     /// Precheck before set attr
-    async fn setattr_precheck(&self, param: SetAttrParam) -> DatenLordResult<(bool, FileAttr)>;
+    async fn setattr_precheck(
+        &self,
+        param: SetAttrParam,
+        uid: u32,
+        gid: u32,
+    ) -> DatenLordResult<(bool, FileAttr)>;
     /// Mark as deferred deletion
     fn mark_deferred_deletion(&self);
     /// If node is marked as deferred deletion
@@ -1432,7 +1437,12 @@ impl Node for DefaultNode {
 
     /// Precheck before set attr
     #[allow(clippy::too_many_lines)]
-    async fn setattr_precheck(&self, param: SetAttrParam) -> DatenLordResult<(bool, FileAttr)> {
+    async fn setattr_precheck(
+        &self,
+        param: SetAttrParam,
+        _uid: u32,
+        _gid: u32,
+    ) -> DatenLordResult<(bool, FileAttr)> {
         let fd = self.get_fd();
         let mut attr = self.get_attr();
 
