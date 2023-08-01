@@ -16,7 +16,7 @@ use nix::sys::stat::SFlag;
 use parking_lot::RwLock as SyncRwLock;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
-use tracing::{debug, instrument, warn};
+use tracing::{debug, error, instrument, warn};
 
 use super::cache::{GlobalCache, IoMemBlock};
 use super::dir::DirEntry;
@@ -702,25 +702,14 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
             // cache hit
             let child_node = self.get_node_from_kv_engine(child_ino).await;
             if let Some(node) = child_node {
-                // if the child node is directory, we should check its permission
-                debug!(
-                    "lookup_helper() cache hit when searching i-node of \
-                    child_ino={} and name={:?} under parent ino={}",
-                    child_ino, child_name, parent,
-                );
                 let attr = node.lookup_attr();
                 let fuse_attr = fs_util::convert_to_fuse_attr(attr);
-                debug!(
-                    "lookup_helper() successfully found in cache the i-node of \
-                    child_ino={} name={:?} under parent ino={}, the attr={:?}",
-                    child_ino, child_name, parent, &attr,
-                );
                 return Ok((ttl, fuse_attr, MY_GENERATION));
             }
         }
         {
             // cache miss
-            debug!(
+            error!(
                 "lookup_helper() cache missed when searching parent ino={} \
                     and i-node of ino={} and name={:?}",
                 parent, child_ino, child_name,

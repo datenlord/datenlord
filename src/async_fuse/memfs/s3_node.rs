@@ -450,6 +450,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
                     ctime: now,
                     crtime: now,
                     kind: SFlag::S_IFDIR,
+                    perm: 0o777,
                     ..FileAttr::default()
                 }));
 
@@ -931,7 +932,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
             perm: fs_util::parse_mode_bits(mode.bits()),
             uid,
             gid,
-            nlink: 1,
+            nlink: 2,
             ..FileAttr::now()
         }));
         debug_assert_eq!(SFlag::S_IFDIR, child_attr.read().kind);
@@ -1357,10 +1358,13 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
         }
 
         if let Some(mode) = param.mode {
-            let mode: u16 = mode.cast();
+            let mut mode: u16 = mode.cast();
             debug!("setattr() mode={:o}", mode);
-            // mode &= 0o0777;
+            mode &= 0o7777;
             debug!("setattr() mode={:o}", mode);
+            if ctx_uid != 0 && mode & 0o3000 != 0 && ctx_gid != cur_attr.gid {
+                mode &= 0o0777;
+            }
             if mode != cur_attr.perm {
                 if ctx_uid != 0 && ctx_uid != cur_attr.uid {
                     return util::build_error_result_from_errno(

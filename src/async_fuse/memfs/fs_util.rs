@@ -99,18 +99,18 @@ impl FileAttr {
             return Ok(());
         }
 
-        let mode = self.get_access_mode(uid, gid);
+        let file_access_mode = self.get_access_mode(uid, gid);
         debug!(
-            "check_perm() got access_mode={access_mode} and mode={mode} from uid={uid} gid={gid}",
+            "check_perm() got access_mode={access_mode} and mode={file_access_mode} from uid={uid} gid={gid}",
             access_mode = access_mode,
-            mode = mode,
+            file_access_mode = file_access_mode,
             uid = uid,
             gid = gid,
         );
-        if mode & access_mode != access_mode {
+        if file_access_mode & access_mode != access_mode {
             return util::build_error_result_from_errno(
                 Errno::EACCES,
-                format!("check_perm() failed {uid} {gid} {mode}"),
+                format!("check_perm() failed {uid} {gid} {file_access_mode}"),
             );
         }
         Ok(())
