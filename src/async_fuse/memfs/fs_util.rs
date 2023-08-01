@@ -72,24 +72,24 @@ impl FileAttr {
         }
     }
 
-    // ```
-    //     File permissions in Unix/Linux systems are represented as a 12-bit structure, laid out as follows:
-    //     ┌─────────────┬─────────┬─────────┬─────────┐
-    //     │   Special   │  User   │  Group  │  Other  │
-    //     ├─────────────┼─────────┼─────────┼─────────┤
-    //     │2 Bits       │3 Bits   │3 Bits   │3 Bits   │
-    //     ├─────────────┼─────────┼─────────┼─────────┤
-    //     │suid |sgid   │r  w  x  │r  w  x  │r  w  x  │
-    //     └──────┬──────┴───┬────┴───┬────┴───┬──────┘
-    //            │          │        │        │
-    //            │          │        │        └─ Other: Read, Write, Execute permissions for users
-    //            |          |        |                   other than the owner or members of the group.
-    //            │          │        └─ Group: Read, Write, Execute permissions for group members.
-    //            │          └─ User: Read, Write, Execute permissions for the owner of the file.
-    //            └─ Special: Set User ID (suid) and Set Group ID (sgid).
-    //  The suid and sgid bits are beyond the scope of a simple permissions
-    //  check and are not considered in this function.
-    // ```
+    /// ```
+    ///     File permissions in Unix/Linux systems are represented as a 12-bit structure, laid out as follows:
+    ///     ┌─────────────┬─────────┬─────────┬─────────┐
+    ///     │   Special   │  User   │  Group  │  Other  │
+    ///     ├─────────────┼─────────┼─────────┼─────────┤
+    ///     │2 Bits       │3 Bits   │3 Bits   │3 Bits   │
+    ///     ├─────────────┼─────────┼─────────┼─────────┤
+    ///     │suid |sgid   │r  w  x  │r  w  x  │r  w  x  │
+    ///     └──────┬──────┴───┬────┴───┬────┴───┬──────┘
+    ///            │          │        │        │
+    ///            │          │        │        └─ Other: Read, Write, Execute permissions for users
+    ///            |          |        |                   other than the owner or members of the group.
+    ///            │          │        └─ Group: Read, Write, Execute permissions for group members.
+    ///            │          └─ User: Read, Write, Execute permissions for the owner of the file.
+    ///            └─ Special: Set User ID (suid) and Set Group ID (sgid).
+    ///  The suid and sgid bits are beyond the scope of a simple permissions
+    ///  check and are not considered in this function.
+    /// ```
     pub fn check_perm(&self, uid: u32, gid: u32, access_mode: u8) -> DatenLordResult<()> {
         debug_assert!(
             access_mode <= 0o7 && access_mode != 0,
@@ -116,6 +116,9 @@ impl FileAttr {
         Ok(())
     }
 
+    /// For given uid and gid, get the access mode of the file
+    #[allow(clippy::default_numeric_fallback)]
+    #[allow(clippy::integer_arithmetic)]
     fn get_access_mode(&self, uid: u32, gid: u32) -> u8 {
         let perm = self.perm;
         let mode = if uid == self.uid {
@@ -419,6 +422,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[allow(clippy::assertions_on_result_states)]
     fn test_permission_check() {
         let file = FileAttr {
             ino: 0,
@@ -465,5 +469,6 @@ mod tests {
         assert!(file.check_perm(0, 0, 1).is_ok());
     }
 
-    // Continue writing more tests for group permissions and other permissions...
+    // Continue writing more tests for group permissions and other
+    // permissions...
 }

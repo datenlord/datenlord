@@ -40,6 +40,7 @@
     clippy::missing_errors_doc, // TODO: add error docs
     clippy::exhaustive_structs,
     clippy::exhaustive_enums,
+    clippy::similar_names,        // uid and gid are common names
     clippy::missing_panics_doc, // TODO: add panic docs
     clippy::panic_in_result_fn,
     clippy::single_char_lifetime_names,

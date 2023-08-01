@@ -1330,7 +1330,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
             if ctx_uid != 0 && cur_attr.uid != ctx_uid {
                 return util::build_error_result_from_errno(
                     Errno::EPERM,
-                    format!("setattr() cannot change gid "),
+                    "setattr() cannot change gid".to_owned(),
                 );
             }
 
@@ -1346,7 +1346,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
                 if ctx_uid != 0 {
                     return util::build_error_result_from_errno(
                         Errno::EPERM,
-                        format!("setattr() cannot change uid "),
+                        "setattr() cannot change uid".to_owned(),
                     );
                 }
                 // ctx_uid == 0
@@ -1357,15 +1357,15 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
         }
 
         if let Some(mode) = param.mode {
-            let mut mode = mode as u16;
+            let mode: u16 = mode.cast();
             debug!("setattr() mode={:o}", mode);
-            mode &= 0o0777;
+            // mode &= 0o0777;
             debug!("setattr() mode={:o}", mode);
             if mode != cur_attr.perm {
                 if ctx_uid != 0 && ctx_uid != cur_attr.uid {
                     return util::build_error_result_from_errno(
                         Errno::EPERM,
-                        format!("setattr() cannot change mode"),
+                        "setattr() cannot change mode".to_owned(),
                     );
                 }
                 dirty_attr.perm = mode;

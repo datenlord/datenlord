@@ -20,3 +20,4 @@ localtest.sh
 /log/*
 *.log
 /local_test/
+tests/fstest/fstest
