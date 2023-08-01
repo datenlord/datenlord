@@ -441,32 +441,32 @@ mod tests {
             flags: 0,
         };
 
-        // Owner permission checks
-        assert!(file.check_perm(1000, 0, 7).is_ok());
-        assert!(file.check_perm(1000, 0, 6).is_err());
-        assert!(file.check_perm(1000, 0, 5).is_err());
-        assert!(file.check_perm(1000, 0, 4).is_ok());
-        assert!(file.check_perm(1000, 0, 3).is_err());
-        assert!(file.check_perm(1000, 0, 2).is_err());
-        assert!(file.check_perm(1000, 0, 1).is_err());
+        // Owner permission checks 7
+        assert!(file.check_perm(1000, 1001, 7).is_ok());
+        assert!(file.check_perm(1000, 1001, 6).is_ok());
+        assert!(file.check_perm(1000, 1001, 5).is_ok());
+        assert!(file.check_perm(1000, 1001, 4).is_ok());
+        assert!(file.check_perm(1000, 1001, 3).is_ok());
+        assert!(file.check_perm(1000, 1001, 2).is_ok());
+        assert!(file.check_perm(1000, 1001, 1).is_ok());
 
-        // Group permission checks
-        assert!(file.check_perm(0, 1000, 7).is_err());
-        assert!(file.check_perm(0, 1000, 6).is_err());
-        assert!(file.check_perm(0, 1000, 5).is_err());
-        assert!(file.check_perm(0, 1000, 4).is_ok());
-        assert!(file.check_perm(0, 1000, 3).is_err());
-        assert!(file.check_perm(0, 1000, 2).is_err());
-        assert!(file.check_perm(0, 1000, 1).is_err());
+        // Group permission checks 4
+        assert!(file.check_perm(1001, 1000, 7).is_err());
+        assert!(file.check_perm(1001, 1000, 6).is_err());
+        assert!(file.check_perm(1001, 1000, 5).is_err());
+        assert!(file.check_perm(1001, 1000, 4).is_ok());
+        assert!(file.check_perm(1001, 1000, 3).is_err());
+        assert!(file.check_perm(1001, 1000, 2).is_err());
+        assert!(file.check_perm(1001, 1000, 1).is_err());
 
-        // Other permission checks
-        assert!(file.check_perm(0, 0, 7).is_err());
-        assert!(file.check_perm(0, 0, 6).is_err());
-        assert!(file.check_perm(0, 0, 5).is_err());
-        assert!(file.check_perm(0, 0, 4).is_err());
-        assert!(file.check_perm(0, 0, 3).is_err());
-        assert!(file.check_perm(0, 0, 2).is_err());
-        assert!(file.check_perm(0, 0, 1).is_ok());
+        // Other permission checks 1
+        assert!(file.check_perm(1002, 1002, 7).is_err());
+        assert!(file.check_perm(1002, 1002, 6).is_err());
+        assert!(file.check_perm(1002, 1002, 5).is_err());
+        assert!(file.check_perm(1002, 1002, 4).is_err());
+        assert!(file.check_perm(1002, 1002, 3).is_err());
+        assert!(file.check_perm(1002, 1002, 2).is_err());
+        assert!(file.check_perm(1002, 1002, 1).is_ok());
     }
 
     // Continue writing more tests for group permissions and other
