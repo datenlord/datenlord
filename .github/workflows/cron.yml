@@ -1,7 +1,9 @@
 name: CRON-CI
 on:
-  pull_request:
-    branches: [master]
+  workflow_run:
+    workflows: ["CI Workflow"]
+    types: 
+      - completed
   schedule: [cron: "0 */4 * * *"]
   workflow_dispatch: 
 env:
