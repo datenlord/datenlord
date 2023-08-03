@@ -4,6 +4,9 @@ set -o errexit
 set -o nounset
 set -o xtrace
 
+# wait for port forward to be ready
+PORT_FORWARD_WAIT_TIME=3
+
 print_usage ()
 {
     cat <<EOF
@@ -55,6 +58,7 @@ then
     kubectl wait --for=condition=Ready pod -l app=elasticsearch -n datenlord-logging --timeout=120s
     POD_NAME=`kubectl get pods -l app=grafana -n datenlord-monitoring | grep grafana | awk '{print $1}'`
     kubectl port-forward $POD_NAME $GRAFANA_PORT -n datenlord-monitoring &
+    sleep $PORT_FORWARD_WAIT_TIME
 else
     print_usage
     exit 1
