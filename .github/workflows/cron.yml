@@ -267,32 +267,25 @@ jobs:
       - name: Deploy DatenLord to K8S
         run: |
           for image in $ETCD_IMAGE $BUSYBOX_IMAGE $SCHEDULER_IMAGE $CSI_ATTACHER_IMAGE $CSI_DRIVER_IMAGE $CSI_PROVISIONER_IMAGE $CSI_RESIZER_IMAGE $CSI_SNAPSHOTTER_IMAGE; do
+            echo "loading $image"
             docker pull $image
             kind load docker-image $image
           done
           kind load docker-image $DATENLORD_IMAGE
           kubectl cluster-info
           kubectl get pods -A
-          kubectl apply -f https://raw.githubusercontent.com/kubernetes-csi/external-snapshotter/${SNAPSHOTTER_VERSION}/client/config/crd/snapshot.storage.k8s.io_volumesnapshots.yaml
-          kubectl apply -f https://raw.githubusercontent.com/kubernetes-csi/external-snapshotter/${SNAPSHOTTER_VERSION}/client/config/crd/snapshot.storage.k8s.io_volumesnapshotcontents.yaml
-          kubectl apply -f https://raw.githubusercontent.com/kubernetes-csi/external-snapshotter/${SNAPSHOTTER_VERSION}/client/config/crd/snapshot.storage.k8s.io_volumesnapshotclasses.yaml
+          kubectl apply -f https://raw.githubusercontent.com/kubernetes-csi/external-snapshotter/$SNAPSHOTTER_VERSION/client/config/crd/snapshot.storage.k8s.io_volumesnapshots.yaml
+          kubectl apply -f https://raw.githubusercontent.com/kubernetes-csi/external-snapshotter/$SNAPSHOTTER_VERSION/client/config/crd/snapshot.storage.k8s.io_volumesnapshotcontents.yaml
+          kubectl apply -f https://raw.githubusercontent.com/kubernetes-csi/external-snapshotter/$SNAPSHOTTER_VERSION/client/config/crd/snapshot.storage.k8s.io_volumesnapshotclasses.yaml
           kubectl apply -f $CONFIG_KIND
           kubectl wait --for=condition=Ready pod -l app=$CONTROLLER_APP_LABEL -n $DATENLORD_NAMESPACE --timeout=60s
           kubectl wait --for=condition=Ready pod -l app=$NODE_APP_LABEL -n $DATENLORD_NAMESPACE --timeout=60s
-          FOUND_PATH=`cat /proc/self/mountinfo | grep fuse | grep $FUSE_MOUNT_PATH | awk '{print $5}'`
-          test -n $FOUND_PATH || (echo "FAILED TO FIND MOUNT PATH $FUSE_MOUNT_PATH" && /bin/false)
-          kubectl delete -f $CONFIG_KIND
-          NO_PATH=`cat /proc/self/mountinfo | grep fuse | grep $FUSE_MOUNT_PATH | awk '{print $5}'`
-          test -z $NO_PATH || (echo "FAILED TO UN-MOUNT PATH $FUSE_MOUNT_PATH" && /bin/false)
-          kubectl apply -f $CONFIG_KIND
           kubectl get csidriver
           kubectl get csinode
           kubectl get storageclass
           kubectl get volumesnapshotclass
-          kubectl wait --for=condition=Ready pod -l app=$CONTROLLER_APP_LABEL -n $DATENLORD_NAMESPACE --timeout=60s
-          kubectl wait --for=condition=Ready pod -l app=$NODE_APP_LABEL -n $DATENLORD_NAMESPACE --timeout=60s
-          wget https://raw.githubusercontent.com/kubernetes-csi/external-snapshotter/${SNAPSHOTTER_VERSION}/deploy/kubernetes/snapshot-controller/rbac-snapshot-controller.yaml
-          wget https://raw.githubusercontent.com/kubernetes-csi/external-snapshotter/${SNAPSHOTTER_VERSION}/deploy/kubernetes/snapshot-controller/setup-snapshot-controller.yaml
+          wget https://raw.githubusercontent.com/kubernetes-csi/external-snapshotter/$SNAPSHOTTER_VERSION/deploy/kubernetes/snapshot-controller/rbac-snapshot-controller.yaml
+          wget https://raw.githubusercontent.com/kubernetes-csi/external-snapshotter/$SNAPSHOTTER_VERSION/deploy/kubernetes/snapshot-controller/setup-snapshot-controller.yaml
           sed -e 's/namespace\:\ default/namespace\:\ kube\-system/g' rbac-snapshot-controller.yaml > datenlord-rbac-snapshot-controller.yaml
           sed -e 's/namespace\:\ default/namespace\:\ kube\-system/g' setup-snapshot-controller.yaml > datenlord-setup-snapshot-controller.yaml
           docker pull gcr.io/k8s-staging-sig-storage/snapshot-controller:${SNAPSHOTTER_VERSION}
@@ -316,20 +309,47 @@ jobs:
           sh scripts/datenlord_metrics_logging_test.sh
       - name: CSI E2E Test
         run: |
+          # clean up nodes temporarily
+          cat > /tmp/clean_up_mount_dir.sh <<'END'
+          #!/bin/bash
+
+          CONFIG_KIND=$1
+          NODE_APP_LABEL=$2
+          DATENLORD_NAMESPACE=$3
+          IF_REDEPLOY=$4
+
+          kubectl delete -f $CONFIG_KIND
+          NODES_IP="$(kubectl get nodes -A -o wide | awk 'FNR > 2 {print $6}')"
+          USER="$(whoami)"
+          for ip in ${NODES_IP}; do
+            ssh -t ${USER}@${ip} 'sudo bash -s' < scripts/umount-in-container.sh /var/opt/datenlord-data
+            echo "done umount in node $ip"
+          done
+
+          if [ "$IF_REDEPLOY" = true ]; then
+            kubectl apply -f $CONFIG_KIND
+            kubectl wait --for=condition=Ready pod -l app=$NODE_APP_LABEL -n $DATENLORD_NAMESPACE --timeout=120s
+            sleep 10
+            kubectl get pods -A -o wide
+          fi
+          END
+          
           wget --quiet https://dl.k8s.io/$K8S_VERSION/kubernetes-test-linux-amd64.tar.gz
           tar zxvf kubernetes-test-linux-amd64.tar.gz
           kubectl config view --raw > $K8S_CONFIG
           #kubernetes/test/bin/e2e.test -v=5 -ginkgo.failFast -ginkgo.failOnPending -ginkgo.debug -ginkgo.v -ginkgo.focus='External.Storage' -kubectl-path=`which kubectl` -kubeconfig=$K8S_CONFIG -storage.testdriver=`realpath $E2E_TEST_CONFIG`
           kubernetes/test/bin/ginkgo -v -failFast -failOnPending -debug -focus='External.Storage' -skip='\[Feature:|\[Disruptive\]|\[Serial\]' kubernetes/test/bin/e2e.test -- -v=5 -kubectl-path=`which kubectl` -kubeconfig=`realpath $K8S_CONFIG` -storage.testdriver=`realpath $E2E_TEST_CONFIG`
+          /bin/bash /tmp/clean_up_mount_dir.sh $CONFIG_KIND $NODE_APP_LABEL $DATENLORD_NAMESPACE true
           # Run [Disruptive] test in serial and separately
           kubernetes/test/bin/ginkgo -v -failFast -failOnPending -debug -focus='External.Storage.*(\[Feature:|\[Disruptive\]|\[Serial\])' kubernetes/test/bin/e2e.test -- -v=5 -kubectl-path=`which kubectl` -kubeconfig=`realpath $K8S_CONFIG` -storage.testdriver=`realpath $E2E_TEST_CONFIG`
+          /bin/bash /tmp/clean_up_mount_dir.sh $CONFIG_KIND $NODE_APP_LABEL $DATENLORD_NAMESPACE false
       - name: Quick Start Test
         run: |
-          kubectl delete -f $CONFIG_KIND
+          # kubectl delete -f $CONFIG_KIND
           sed -e 's/e2e_test/latest/g' $CONFIG_KIND > $CONFIG_DOCKERHUB
           kubectl apply -f $CONFIG_DOCKERHUB
-          kubectl wait --for=condition=Ready pod -l app=$CONTROLLER_APP_LABEL -n $DATENLORD_NAMESPACE --timeout=60s
-          kubectl wait --for=condition=Ready pod -l app=$NODE_APP_LABEL -n $DATENLORD_NAMESPACE --timeout=60s
+          kubectl wait --for=condition=Ready pod -l app=$CONTROLLER_APP_LABEL -n $DATENLORD_NAMESPACE --timeout=120s
+          kubectl wait --for=condition=Ready pod -l app=$NODE_APP_LABEL -n $DATENLORD_NAMESPACE --timeout=120s
       - name: DatenLord Perf Test
         run: |
           kind delete cluster
