@@ -1,21 +1,21 @@
-use super::cache::IoMemBlock;
+use std::fmt::Write;
+use std::time::SystemTime;
+
 use async_trait::async_trait;
 use clippy_utilities::{Cast, OverflowArithmetic};
 #[cfg(test)]
 use mockall::{automock, predicate::str};
-use s3::{
-    bucket::Bucket,
-    bucket_ops::BucketConfiguration,
-    command::{Command, Multipart},
-    creds::Credentials,
-    request_trait::Request,
-    serde_types::{CompleteMultipartUploadData, InitiateMultipartUploadResponse, Part},
-    surf_request::SurfRequest as RequestImpl,
-    Region,
-};
+use s3::bucket::Bucket;
+use s3::bucket_ops::BucketConfiguration;
+use s3::command::{Command, Multipart};
+use s3::creds::Credentials;
+use s3::request_trait::Request;
+use s3::serde_types::{CompleteMultipartUploadData, InitiateMultipartUploadResponse, Part};
+use s3::surf_request::SurfRequest as RequestImpl;
+use s3::Region;
 use serde_xml_rs as serde_xml;
-use std::fmt::Write;
-use std::time::SystemTime;
+
+use super::cache::IoMemBlock;
 
 /// S3 backend error
 #[derive(thiserror::Error, Debug)]
@@ -75,7 +75,7 @@ pub struct S3BackEndImpl {
 
 /// Transfer anyhow error to `S3Error`
 macro_rules! resultify_anyhow {
-    ($e: expr) => {
+    ($e:expr) => {
         match $e {
             Ok(data) => Ok(data),
             Err(ref anyhow_error) => {
@@ -152,6 +152,7 @@ impl S3BackEnd for S3BackEndImpl {
         )
         .map(|_| ())
     }
+
     async fn get_len(&self, file: &str) -> S3Result<usize> {
         match resultify_anyhow!(self.bucket.head_object(file.to_owned()).await) {
             Ok((head_object, _)) => match head_object.content_length {
@@ -161,6 +162,7 @@ impl S3BackEnd for S3BackEndImpl {
             Err(e) => Err(e),
         }
     }
+
     async fn list_file(&self, dir: &str) -> S3Result<Vec<String>> {
         resultify_anyhow!(
             self.bucket
@@ -270,7 +272,9 @@ impl S3BackEnd for S3BackEndImpl {
             let command = Command::PutObject {
                 content: unsafe { d.as_slice() },
                 content_type: "application/octet-stream",
-                multipart: Some(Multipart::new(part_number.cast(), upload_id)), // upload_id: &msg.upload_id,
+                multipart: Some(Multipart::new(part_number.cast(), upload_id)), /* upload_id:
+                                                                                 * &msg.upload_id,
+                                                                                 */
             };
             let request = RequestImpl::new(&self.bucket, &path, command);
             let (data, _code) = resultify_anyhow!(request.response_data(true).await)?;
@@ -351,9 +355,11 @@ impl S3BackEnd for DoNothingImpl {
     async fn put_data(&self, _: &str, _: &[u8], _: usize, _: usize) -> S3Result<()> {
         Ok(())
     }
+
     async fn get_len(&self, _: &str) -> S3Result<usize> {
         Ok(0)
     }
+
     async fn list_file(&self, _: &str) -> S3Result<Vec<String>> {
         Ok(vec![])
     }

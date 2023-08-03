@@ -1,23 +1,24 @@
 //! The etcd client implementation
 
-use super::error::{Context, DatenLordError, DatenLordResult};
-use super::util;
-use clippy_utilities::OverflowArithmetic;
 use core::fmt;
 use core::fmt::Debug;
 use core::time::Duration;
+use std::vec;
+
+use clippy_utilities::OverflowArithmetic;
 use etcd_client::TxnOpResponse::Put;
 use etcd_client::{
     Compare, CompareOp, DeleteOptions, EventType, GetOptions, LockOptions, PutOptions, Txn, TxnOp,
     TxnOpResponse,
 };
-use log::debug;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
-use std::vec;
+use tracing::debug;
+
+use super::error::{Context, DatenLordError, DatenLordResult};
+use super::util;
 
 /// version of kv for transaction verify
-/// TODO(xiaguan) : is i6s right ?
 pub type KvVersion = i64;
 
 /// Convert u64 seceond to i64
@@ -73,7 +74,6 @@ impl EtcdDelegate {
 
         let options = LockOptions::new().with_lease(lease_id);
 
-        // TODO(xiaguan) : into_vec
         let key = etcd_rs_client
             .lock(name, Some(options))
             .await
@@ -159,7 +159,7 @@ impl EtcdDelegate {
         })?;
 
         if txn_res.succeeded() {
-            //key does not exist, insert kv
+            // key does not exist, insert kv
             Ok(None)
         } else {
             let mut resp_ = txn_res.op_responses();
@@ -171,7 +171,7 @@ impl EtcdDelegate {
                 TxnOpResponse::Get(resp) => {
                     let kvs = resp.kvs();
                     let kv_first = kvs.get(0).unwrap_or_else(|| panic!("kv res must be sz>0"));
-                    //key exists
+                    // key exists
                     let decoded_value: T = util::decode_from_bytes(kv_first.value())?;
                     Ok(Some((decoded_value, kv_first.version())))
                 }
@@ -262,7 +262,7 @@ impl EtcdDelegate {
             .with_context(|| "failed to do txn at `write_to_etcd_if_none`".to_owned())?;
 
         if txn_res.succeeded() {
-            //key does not exist, insert kv
+            // key does not exist, insert kv
             Ok(None)
         } else {
             let mut resp_ = txn_res.op_responses();
@@ -273,7 +273,7 @@ impl EtcdDelegate {
                 TxnOpResponse::Get(resp) => {
                     let kvs = resp.kvs();
                     let kv_first = kvs.get(0).unwrap_or_else(|| panic!("kv res must be sz>0"));
-                    //key exists
+                    // key exists
                     let decoded_value: T = util::decode_from_bytes(kv_first.value())?;
                     Ok(Some((decoded_value, kv_first.version())))
                 }
@@ -423,7 +423,7 @@ impl EtcdDelegate {
             .with_context(|| "failed to `write_to_etcd` at `write_new_kv`".to_owned())?;
         if let Some(pre_value) = write_res {
             panic!(
-                "failed to write new key vaule pair, the key={key} exists in etcd, \
+                "failed to write new key value pair, the key={key} exists in etcd, \
                     the previous value={pre_value:?}"
             );
         } else {
@@ -495,7 +495,8 @@ impl EtcdDelegate {
         Ok(())
     }
 
-    /// Write key value pair with timeout lease to etcd, if key exists, update it
+    /// Write key value pair with timeout lease to etcd, if key exists, update
+    /// it
     /// - `expire`: auto delete after expire
     #[inline]
     pub async fn write_or_update_kv_with_timeout<
@@ -656,7 +657,7 @@ impl EtcdDelegate {
     #[allow(clippy::integer_arithmetic, clippy::arithmetic_side_effects)] // for the auto generate code from tokio select!
     pub async fn wait_key_delete(&self, name: &str) -> DatenLordResult<()> {
         let mut etcd_rs_client = self.etcd_rs_client.clone();
-        // let reciver_opt = self.etcd_rs_client.watch()
+        // let receiver_opt = self.etcd_rs_client.watch()
         let res = etcd_rs_client.watch(name, None).await;
         let (mut watcher, mut stream) =
             res.with_context(|| format!("failed to `watch` at `wait_key_delete` for key={name}"))?;
@@ -671,7 +672,7 @@ impl EtcdDelegate {
                     tokio::select! {
                         _ = tokio::time::sleep(Duration::from_secs(1)) => {
                             sec_cnt=sec_cnt.overflow_add(1_i32);
-                            log::debug!("wait for dist lock {name_clone} for {sec_cnt} seconds, if this goes too long, there might be dead lock");
+                            tracing::debug!("wait for dist lock {name_clone} for {sec_cnt} seconds, if this goes too long, there might be dead lock");
                         }
                         _ = &mut stop_wait_log_task_chan_rx => {
                             break;

@@ -1,8 +1,10 @@
 //! `DatenLord` Error Code
-use super::async_fuse_error::KVEngineError;
-use grpcio::RpcStatusCode;
 use std::path::PathBuf;
+
+use grpcio::RpcStatusCode;
 use thiserror::Error;
+
+use super::async_fuse_error::KVEngineError;
 
 /// `DatenLord` Result type
 pub type DatenLordResult<T> = Result<T, DatenLordError>;
@@ -213,7 +215,7 @@ pub enum DatenLordError {
     /// Error caused by datenlord's internal logic
     #[error("InternalErr, the error is {:?} context is {:#?}", .source,.context)]
     InternalErr {
-        /// Error srouce
+        /// Error source
         source: anyhow::Error,
         /// Context of the error
         context: Vec<String>,
@@ -320,6 +322,7 @@ impl DatenLordError {
         );
         self
     }
+
     /// Add context for `DatenLordError` lazily
     #[inline]
     #[must_use]
@@ -334,7 +337,7 @@ impl DatenLordError {
 
 /// Implement from trait for `DatenLordError`
 macro_rules! implement_from {
-    ($source: path, $target: ident) => {
+    ($source:path, $target:ident) => {
         impl From<$source> for DatenLordError {
             #[inline]
             fn from(error: $source) -> Self {

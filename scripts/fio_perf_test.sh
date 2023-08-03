@@ -14,7 +14,7 @@ readonly OUTPUT_DIR="/tmp/output"
 readonly TEST_DIR_BASE="$(basename ${TEST_DIR})"
 readonly OUTPUT_SUBDIR="${OUTPUT_DIR}/${TEST_DIR_BASE}"
 
-# Test paramaters
+# Test parameters
 readonly BLOCK_SIZES="4k 8k 16k 32k 64k 128k 256k 512k"
 readonly BLOCK_SIZES_DIRS="$(
     block_size_dirs=""

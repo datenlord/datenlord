@@ -1,30 +1,28 @@
 //! Utility functions and const variables
 
-use clippy_utilities::Cast;
-use futures::prelude::*;
-use grpcio::{RpcStatus, UnarySink};
-use lazy_static::lazy_static;
-use log::{debug, info};
-use nix::mount::{self, MntFlags, MsFlags};
-use nix::unistd;
-use protobuf::RepeatedField;
 use std::ffi::OsStr;
 use std::fmt::Debug;
 use std::fs;
 use std::net::{IpAddr, ToSocketAddrs};
 use std::path::Path;
 use std::process::Command;
+
+use clippy_utilities::Cast;
+use futures::prelude::*;
+use grpcio::{RpcStatus, UnarySink};
+use lazy_static::lazy_static;
+use nix::mount::{self, MntFlags, MsFlags};
+use nix::unistd;
+use protobuf::RepeatedField;
+use tracing::{debug, info};
 use walkdir::WalkDir;
 
 use super::proto::csi::{
     CreateSnapshotRequest, CreateSnapshotResponse, CreateVolumeRequest, CreateVolumeResponse,
     Snapshot, Topology, Volume,
 };
-use crate::common::error::{
-    Context, DatenLordError,
-    DatenLordError::{IoErr, MountErr, NixErr, UmountErr},
-    DatenLordResult,
-};
+use crate::common::error::DatenLordError::{IoErr, MountErr, NixErr, UmountErr};
+use crate::common::error::{Context, DatenLordError, DatenLordResult};
 
 /// The CSI plugin name
 pub const CSI_PLUGIN_NAME: &str = "io.datenlord.csi.plugin";
@@ -178,13 +176,11 @@ pub async fn async_success<R: Send>(sink: UnarySink<R>, r: R) {
 
 /// Send async failure `gRPC` response
 pub async fn async_fail<R>(sink: UnarySink<R>, err: DatenLordError) {
-    /*
-    debug_assert_ne!(
-        rsc,
-        RpcStatusCode::OK,
-        "the input RpcStatusCode should not be OK"
-    );
-    */
+    // debug_assert_ne!(
+    // rsc,
+    // RpcStatusCode::OK,
+    // "the input RpcStatusCode should not be OK"
+    // );
     let details = format!("{err}");
     let rs = RpcStatus::with_message(err, details);
     let res = sink.fail(rs).await;
@@ -199,7 +195,8 @@ pub fn spawn_grpc_task<R: Send + 'static>(
     sink: UnarySink<R>,
     task: impl Future<Output = DatenLordResult<R>> + Send + 'static,
 ) {
-    // grpcio library is running outside of tokio default runtime, so need a dedicated runtime for grpc task.
+    // grpcio library is running outside of tokio default runtime, so need a
+    // dedicated runtime for grpc task.
     TOKIO_RUNTIME.spawn(async move {
         let result = task.await;
         match result {

@@ -1,28 +1,25 @@
+use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::sync::atomic::Ordering::Acquire;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
+
+use clippy_utilities::OverflowArithmetic;
+use parking_lot::RwLock;
+use serde::{Deserialize, Serialize};
+use thiserror::Error;
+use tokio::sync::Notify;
+use tokio::task::JoinHandle;
+use tracing::debug;
+
 use super::fs_util::FileAttr;
-use super::serial::SerialFileAttr;
-use super::serial::{self, file_attr_to_serial};
+use super::serial::{self, file_attr_to_serial, SerialFileAttr};
 use crate::async_fuse::fuse::file_system::FsAsyncResultSender;
 use crate::async_fuse::fuse::protocol::INum;
 use crate::async_fuse::memfs::dir::DirEntry;
 use crate::async_fuse::memfs::s3_node::S3NodeData;
 use crate::async_fuse::memfs::s3_wrapper::S3BackEnd;
-use crate::common::error::DatenLordError;
-use crate::common::error::DatenLordResult;
-use clippy_utilities::OverflowArithmetic;
-use log::debug;
-use parking_lot::RwLock;
-use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
-use std::sync::atomic::Ordering::Acquire;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::{
-    collections::{HashMap, VecDeque},
-    sync::Arc,
-    time::Duration,
-};
-use thiserror::Error;
-use tokio::sync::Notify;
-use tokio::task::JoinHandle;
+use crate::common::error::{DatenLordError, DatenLordResult};
 
 /// Dir prefix for s3 storage bucket key
 const DIR_DATA_KEY_PREFIX: &str = "dir_";
@@ -42,11 +39,13 @@ pub enum PersistError {
     //     expected: String,
     //     found: String,
     // },
-    /// Root dir should have a specific Option to store its attr, because it doesn't have a parent.
+    /// Root dir should have a specific Option to store its attr, because it
+    /// doesn't have a parent.
     #[error("missing root's file attr")]
     FileAttrMissingForRoot,
 
-    /// `try_persist_one_dirty` will return error when there's no more data to persist.
+    /// `try_persist_one_dirty` will return error when there's no more data to
+    /// persist.
     #[error("no more dirty to persist")]
     NoMoreDirtyToPersist,
 }
@@ -86,7 +85,7 @@ pub(crate) struct PersistDirContent {
     pub(crate) persist_serialized: PersistSerializePart,
 }
 impl PersistDirContent {
-    /// Root dir without parent need to store attr specificly
+    /// Root dir without parent need to store attr specifically
     pub(crate) fn try_get_root_attr(&self) -> anyhow::Result<FileAttr> {
         match self.persist_serialized.root_attr.as_ref() {
             Some(attr) => Ok(serial::serial_to_file_attr(attr)),
@@ -151,6 +150,7 @@ impl PersistDirContent {
         };
         Ok(new)
     }
+
     /// Serialize the content
     fn serialize(&self) -> Vec<u8> {
         bincode::serialize(&self.persist_serialized)
@@ -180,11 +180,12 @@ impl PersistHandle {
     fn new(shared: Arc<PersistSharedState>) -> PersistHandle {
         PersistHandle { shared }
     }
+
     /// For case of need to sync the persist of a directory.
     #[allow(dead_code)]
     pub(crate) async fn wait_persist(&self, inum: INum) {
         // check if persisted
-        // if not, regist notify and wait
+        // if not, register notify and wait
         let notify = self.shared.dirty_map.write().get_mut(&inum).map(
             |&mut (ref mut notify_queue, ref mut _dir_content)| {
                 let notify = Arc::new(Notify::new());
@@ -196,6 +197,7 @@ impl PersistHandle {
             notify.notified().await;
         }
     }
+
     /// Mark changed directory with inum and clone current content
     ///  currently only support directory
     #[allow(dead_code)]
@@ -205,6 +207,7 @@ impl PersistHandle {
             .entry(inum)
             .or_insert_with(|| (VecDeque::new(), data_clone));
     }
+
     /// Stop the persist task loop
     #[inline]
     pub(crate) fn system_end(&self) {
@@ -289,6 +292,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> PersistTask<S> {
             })
         }
     }
+
     /// Spawn the async persist task.
     pub(crate) fn spawn(
         s3_backend: Arc<S>,
@@ -303,7 +307,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> PersistTask<S> {
             tokio::spawn(async {
                 let fs_async_result_sender = fs_async_result_sender;
                 let taskstate = PersistTask { shared, s3_backend };
-                //lazy scan for dirty data
+                // lazy scan for dirty data
                 loop {
                     // persist dirty until there's no dirty data
                     while taskstate
@@ -328,6 +332,12 @@ impl<S: S3BackEnd + Sync + Send + 'static> PersistTask<S> {
 #[allow(clippy::unwrap_used, clippy::match_wild_err_arm)]
 #[cfg(test)]
 mod test {
+    use std::collections::HashMap;
+    use std::sync::Arc;
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    // use std::rc::Rc;
+    use parking_lot::RwLock;
     use rand::distributions::Alphanumeric;
     use rand::prelude::Distribution;
 
@@ -340,12 +350,6 @@ mod test {
     };
     use crate::async_fuse::memfs::s3_wrapper::{MockS3BackEnd, S3Error};
     use crate::async_fuse::memfs::serial::file_attr_to_serial;
-    use std::collections::HashMap;
-    use std::sync::Arc;
-    use std::time::UNIX_EPOCH;
-    use std::time::{Duration, SystemTime};
-    // use std::rc::Rc;
-    use parking_lot::RwLock;
 
     fn create_mock() -> Arc<MockS3BackEnd> {
         let mut mock = MockS3BackEnd::new();

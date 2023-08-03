@@ -1,11 +1,11 @@
 //! The implementation for CSI controller service
 
-use grpcio::Error;
-use grpcio::{RpcContext, UnarySink};
-use log::{debug, error, info, warn};
-use protobuf::RepeatedField;
 use std::cmp::Ordering;
 use std::sync::Arc;
+
+use grpcio::{Error, RpcContext, UnarySink};
+use protobuf::RepeatedField;
+use tracing::{debug, error, info, warn};
 
 use super::meta_data::{DatenLordSnapshot, MetaData, VolumeSource};
 use super::proto::csi::{
@@ -23,14 +23,11 @@ use super::proto::csi::{
 };
 use super::proto::csi_grpc::Controller;
 use super::util;
-use crate::common::error::{
-    Context,
-    DatenLordError::{
-        ArgumentInvalid, ArgumentOutOfRange, SnapshotAlreadyExist, SnapshotNotFound, Unimplemented,
-        VolumeAlreadyExist, VolumeNotFound,
-    },
-    DatenLordResult,
+use crate::common::error::DatenLordError::{
+    ArgumentInvalid, ArgumentOutOfRange, SnapshotAlreadyExist, SnapshotNotFound, Unimplemented,
+    VolumeAlreadyExist, VolumeNotFound,
 };
+use crate::common::error::{Context, DatenLordResult};
 
 /// for `ControllerService` implementation
 #[derive(Clone)]
@@ -491,7 +488,7 @@ impl Controller for ControllerImpl {
             if vol_caps.is_empty() {
                 return Err(ArgumentInvalid {
                     context: vec![format!(
-                        "volume ID={vol_id} has no volume capabilities in reqeust"
+                        "volume ID={vol_id} has no volume capabilities in request"
                     )],
                 });
             }
@@ -511,8 +508,9 @@ impl Controller for ControllerImpl {
                         context: vec!["access type block is not supported".to_owned()],
                     });
                 }
-                // TODO: a real driver would check the capabilities of the given volume with
-                // the set of requested capabilities.
+                // TODO: a real driver would check the capabilities of the given
+                // volume with the set of requested
+                // capabilities.
             }
 
             let mut r = ValidateVolumeCapabilitiesResponse::new();
@@ -715,7 +713,7 @@ impl Controller for ControllerImpl {
                                 )
                             });
                         match worker_delete_res {
-                            Ok(_r) => info!("successfully deleted sanpshot ID={}", snap_id),
+                            Ok(_r) => info!("successfully deleted snapshot ID={}", snap_id),
                             Err(e) => {
                                 error!(
                                     "failed to delete snapshot ID={} on node ID={}, the error is: {}",
@@ -764,7 +762,8 @@ impl Controller for ControllerImpl {
                 });
             }
 
-            // case 1: snapshot ID is not empty, return snapshots that match the snapshot id.
+            // case 1: snapshot ID is not empty, return snapshots that match the snapshot
+            // id.
             let snap_id = req.get_snapshot_id();
             if !snap_id.is_empty() {
                 match self_inner.meta_data.get_snapshot_by_id(snap_id).await {
@@ -786,7 +785,8 @@ impl Controller for ControllerImpl {
                 }
             }
 
-            // case 2: source volume ID is not empty, return snapshots that match the source volume id.
+            // case 2: source volume ID is not empty, return snapshots that match the source
+            // volume id.
             let src_volume_id = req.get_source_volume_id();
             if !src_volume_id.is_empty() {
                 match self_inner

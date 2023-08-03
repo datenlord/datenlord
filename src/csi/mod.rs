@@ -9,19 +9,20 @@ pub mod scheduler_extender;
 pub mod util;
 mod worker;
 
-use crate::common::error::{Context, DatenLordResult};
-use crate::common::etcd_delegate::EtcdDelegate;
-use crate::RunAsRole;
+use std::net::IpAddr;
+use std::sync::Arc;
+
 use controller::ControllerImpl;
+use grpcio::{Environment, Server};
 use identity::IdentityImpl;
 use meta_data::{DatenLordNode, MetaData};
 use node::NodeImpl;
+use tracing::info;
 use worker::WorkerImpl;
 
-use grpcio::{Environment, Server};
-use log::info;
-use std::net::IpAddr;
-use std::sync::Arc;
+use crate::common::error::{Context, DatenLordResult};
+use crate::common::etcd_delegate::EtcdDelegate;
+use crate::RunAsRole;
 
 /// Build meta data
 pub async fn build_meta_data(
@@ -111,9 +112,11 @@ pub fn build_grpc_controller_server(
 
     // let (mem_size, overflow) = 1024_usize.overflowing_mul(1024);
     // debug_assert!(!overflow, "computing memory size overflowed");
-    // let quota = ResourceQuota::new(Some("DatenLordWokerQuota")).resize_memory(mem_size);
-    // let ch_builder = ChannelBuilder::new(Arc::<Environment>::clone(&env)).set_resource_quota(quota);
-    // TODO: increase concurrent queue size
+    // let quota =
+    // ResourceQuota::new(Some("DatenLordWokerQuota")).resize_memory(mem_size);
+    // let ch_builder =
+    // ChannelBuilder::new(Arc::<Environment>::clone(&env)).
+    // set_resource_quota(quota); TODO: increase concurrent queue size
     let controller_server = grpcio::ServerBuilder::new(Arc::new(Environment::new(1)))
         .register_service(identity_service)
         .register_service(controller_service)
@@ -157,10 +160,14 @@ pub async fn run_grpc_servers(servers: &mut [Server]) {
 
 #[cfg(test)]
 mod test {
-    use super::util;
-    use super::*;
-    use crate::common::error::Context;
-    use log::debug;
+    use std::fs::{self, File};
+    use std::io::prelude::*;
+    use std::net::Ipv4Addr;
+    use std::path::{Path, PathBuf};
+    use std::sync::Once;
+
+    use clippy_utilities::{Cast, OverflowArithmetic};
+    use grpcio::{ChannelBuilder, EnvBuilder};
     use proto::csi::{
         ControllerExpandVolumeRequest, ControllerExpandVolumeResponse, CreateSnapshotRequest,
         CreateSnapshotResponse, CreateVolumeRequest, CreateVolumeResponse, DeleteSnapshotRequest,
@@ -173,16 +180,13 @@ mod test {
         VolumeCapability_MountVolume,
     };
     use proto::csi_grpc::{ControllerClient, IdentityClient, NodeClient};
-
-    use clippy_utilities::{Cast, OverflowArithmetic};
-    use grpcio::{ChannelBuilder, EnvBuilder};
-    use mock_etcd::MockEtcdServer;
+    // use mock_etcd::MockEtcdServer;
     use protobuf::RepeatedField;
-    use std::fs::{self, File};
-    use std::io::prelude::*;
-    use std::net::Ipv4Addr;
-    use std::path::{Path, PathBuf};
-    use std::sync::Once;
+    use tracing::debug;
+
+    use super::{util, *};
+    use crate::common::error::Context;
+    use crate::common::logger::init_logger;
 
     const NODE_PUBLISH_VOLUME_TARGET_PATH: &str = "/tmp/target_volume_path";
     const NODE_PUBLISH_VOLUME_TARGET_PATH_1: &str = "/tmp/target_volume_path_1";
@@ -203,17 +207,24 @@ mod test {
     const DATA_DIR: &str = "/tmp/csi-data-dir";
     static GRPC_SERVER: Once = Once::new();
 
+    #[ignore = "maybe conflict with other tests"]
+    #[allow(clippy::let_underscore_must_use)]
     #[tokio::test(flavor = "multi_thread")]
     async fn test_all() -> DatenLordResult<()> {
+        init_logger();
         // TODO: run test case in parallel
         // Because they all depend on etcd, so cannot run in parallel now
-        let mut etcd_server = MockEtcdServer::new();
-        etcd_server.start();
+        // let mut etcd_server = MockEtcdServer::new();
+        // etcd_server.start();
+        info!("test meta data");
         test_meta_data()
             .await
             .add_context("test meta data failed")?;
+        info!("test identity server");
         test_identity_server().add_context("test identity server failed")?;
+        info!("test controller server");
         test_controller_server().add_context("test controller server failed")?;
+        info!("test node server");
         test_node_server().add_context("test node server failed")?;
         Ok(())
     }
@@ -332,8 +343,8 @@ mod test {
 
         let snap_id = "the-fake-snapshot-id-for-meta-data-test";
         let snapshot = meta_data::DatenLordSnapshot::new(
-            "test-snapshot-name".to_owned(), //snap_name,
-            snap_id.to_owned(),              //snap_id,
+            "test-snapshot-name".to_owned(), // snap_name,
+            snap_id.to_owned(),              // snap_id,
             vol_id.to_owned(),
             meta_data.get_node_id().to_owned(),
             meta_data.get_snapshot_path(snap_id),
@@ -1182,10 +1193,13 @@ mod test {
     fn test_node_server() -> DatenLordResult<()> {
         let node_client = build_node_client()?;
 
+        info!("test node server publish unpublish");
         test_node_server_publish_unpublish(&node_client)
             .add_context("failed to test node publish unpublish")?;
+        info!("test node server remount publish");
         test_node_server_remount_publish(&node_client)
             .add_context("failed to test node remount")?;
+        info!("test node server multi publish");
         test_node_server_multiple_publish(&node_client)
             .add_context("failed to test node multi-mount")?;
         Ok(())

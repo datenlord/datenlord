@@ -1,10 +1,11 @@
 //! The implementation for CSI node service
 
+use std::sync::Arc;
+
 use grpcio::{RpcContext, UnarySink};
-use log::{debug, error, info, warn};
 use nix::sys::stat::{self, SFlag};
 use protobuf::RepeatedField;
-use std::sync::Arc;
+use tracing::{debug, error, info, warn};
 
 use super::meta_data::{DatenLordVolume, MetaData};
 use super::proto::csi::{
@@ -18,11 +19,8 @@ use super::proto::csi::{
 };
 use super::proto::csi_grpc::Node;
 use super::util;
-use crate::common::error::{
-    Context,
-    DatenLordError::{ArgumentInvalid, Unimplemented},
-    DatenLordResult,
-};
+use crate::common::error::DatenLordError::{ArgumentInvalid, Unimplemented};
+use crate::common::error::{Context, DatenLordResult};
 
 /// for `NodeService` implementation
 #[derive(Clone)]
@@ -477,8 +475,8 @@ impl Node for NodeImpl {
         });
     }
 
-    // node_expand_volume is only implemented so the driver can be used for e2e testing
-    // no actual volume expansion operation
+    // node_expand_volume is only implemented so the driver can be used for e2e
+    // testing no actual volume expansion operation
     fn node_expand_volume(
         &mut self,
         _ctx: RpcContext,

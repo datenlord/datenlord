@@ -17,7 +17,7 @@ kubectl delete namespace datenlord-monitoring
 ## Config details
 All configurations for Prometheus are part of `datenlord-monitor.yaml` file and are saved as a Kubernetes config map. By externalizing Prometheus configs to a Kubernetes config map, you don’t have to build the Prometheus image whenever you need to add or remove a configuration. You need to update the config map and restart the Prometheus pods to apply the new configuration.
 
-The `prometheus-server-conf` config map contains all the configurations to discover pods and services running in the Kubernetes cluster dynamically. The following scrape jobs are configed in our Prometheus monitor configuration:
+The `prometheus-server-conf` config map contains all the configurations to discover pods and services running in the Kubernetes cluster dynamically. The following scrape jobs are configured in our Prometheus monitor configuration:
 * kubernetes-apiservers: It gets all the metrics from the API servers.
 * kubernetes-nodes: It collects all the kubernetes node metrics.
 * kubernetes-pods: All pods metrics.
@@ -39,9 +39,9 @@ Now if you browse to `status -> Targets`, you will see all the Kubernetes endpoi
 
 Alert receiving configuration is saved in the `alertmanager-config` config map, you can change it to set up your custom alert receiver.
 
-The alerting rules are configed in `prometheus-server-conf` config map.
+The alerting rules are configured in `prometheus-server-conf` config map.
 
-Grafana server is also deployed as a `Deployment` with one replica, and is configed with prometheus as default data source. If you have more data sources, you can add more data sources with different YAMLs under the `grafana-datasources` config map. The Grafana dashboard is exposed as a Kubernetes service. Once created, you can access the Grafana dashboard using any of the Kubernetes nodes IP on port 32000. If you use Minikube, you can also run `minikube service grafana -n datenlord-monitoring`, which will open the Grafana dashboard page automatically.
+Grafana server is also deployed as a `Deployment` with one replica, and is configured with prometheus as default data source. If you have more data sources, you can add more data sources with different YAMLs under the `grafana-datasources` config map. The Grafana dashboard is exposed as a Kubernetes service. Once created, you can access the Grafana dashboard using any of the Kubernetes nodes IP on port 32000. If you use Minikube, you can also run `minikube service grafana -n datenlord-monitoring`, which will open the Grafana dashboard page automatically.
 
 Use the following default username and password to log in. Once you log in with default credentials, it will prompt you to change the default password.
 
@@ -85,7 +85,7 @@ As the fluentd needs to keep all the logs from the cluster, it has to be install
 * Input sources to control where to collect logs.
 * Output configuration to set Elasticsearch as the destination.
 
-Kibana is already configed with Elasticsearch as its default data source, and is exposed as a Kubernetes service. Once created, you can access the Kibana dashboard using any of the Kubernetes nodes IP on port 32001. If you use Minikube, you can also run `minikube service kibana -n datenlord-logging`, which will open the Kibana dashboard automatically.
+Kibana is already configured with Elasticsearch as its default data source, and is exposed as a Kubernetes service. Once created, you can access the Kibana dashboard using any of the Kubernetes nodes IP on port 32001. If you use Minikube, you can also run `minikube service kibana -n datenlord-logging`, which will open the Kibana dashboard automatically.
 
 Then you can create any index pattern under the `Index Patterns` page.
 

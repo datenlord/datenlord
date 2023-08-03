@@ -1,11 +1,14 @@
+use std::collections::HashSet;
+use std::sync::Arc;
+use std::time::Duration;
+
+use tracing::debug;
+
+use crate::async_fuse::fuse::protocol::INum;
 use crate::async_fuse::memfs::kv_engine::{
     self, KVEngine, KVEngineType, KeyType, LockKeyType, ValueType,
 };
 use crate::common::error::{Context, DatenLordResult};
-use log::debug;
-use std::collections::HashSet;
-use std::sync::Arc;
-use std::time::Duration;
 
 /// The kv lock 's timeout
 const LOCK_TIME_OUT_SECS: u64 = 10;
@@ -115,8 +118,9 @@ pub async fn register_volume(
     Ok(())
 }
 
-/// Get node list related to a volume, execluding the input `node_ide` as its the local node id.
-/// This function is used to sync metadata, the inode information.
+/// Get node list related to a volume, execluding the input `node_ide` as its
+/// the local node id. This function is used to sync metadata, the inode
+/// information.
 pub async fn get_volume_nodes(
     kv_engine: &Arc<KVEngineType>,
     node_id: &str,
@@ -153,46 +157,40 @@ pub async fn get_volume_nodes(
 /// Modify node list of a file
 async fn modify_file_node_list<F: Fn(Option<Vec<u8>>) -> HashSet<String>>(
     kv_engine: &Arc<KVEngineType>,
-    file_name: &[u8],
+    file_ino: INum,
     fun: F,
 ) -> DatenLordResult<()>
 where
     F: Send,
 {
-    let file_lock_key = file_name.to_vec();
-
-    // FIXME : lock key should be a string
     let lock_key = kv_engine
         .lock(
-            &LockKeyType::FileNodeListLock(file_lock_key.clone()),
+            &LockKeyType::FileNodeListLock(file_ino),
             Duration::from_secs(LOCK_TIME_OUT_SECS),
         )
         .await
         .with_context(|| "lock fail update file node list")?;
 
-    let node_list_key = file_name.to_vec();
-    let node_list_key_clone = node_list_key.clone();
-
     let node_list: Option<Vec<u8>> = kv_engine
-        .get(&KeyType::FileNodeList(node_list_key))
+        .get(&KeyType::FileNodeList(file_ino))
         .await
-        .with_context(|| format!("fail to get node list for file {file_name:?}",))?
+        .with_context(|| format!("fail to get node list for file {file_ino:?}",))?
         .map(kv_engine::ValueType::into_raw);
 
     let new_node_list = fun(node_list);
 
     let node_list_bin = bincode::serialize(&new_node_list).unwrap_or_else(|e| {
-        panic!("fail to serialize node list for file {file_name:?}, error: {e}")
+        panic!("fail to serialize node list for file {file_ino:?}, error: {e}")
     });
 
     kv_engine
         .set(
-            &KeyType::FileNodeList(node_list_key_clone),
+            &KeyType::FileNodeList(file_ino),
             &ValueType::Raw(node_list_bin.clone()),
             None,
         )
         .await
-        .with_context(|| format!("fail to set node list for file {file_name:?}"))?;
+        .with_context(|| format!("fail to set node list for file {file_ino:?}"))?;
 
     kv_engine
         .unlock(lock_key)
@@ -206,7 +204,7 @@ where
 pub async fn add_node_to_file_list(
     kv_engine: &Arc<KVEngineType>,
     node_id: &str,
-    file_name: &[u8],
+    file_ino: INum,
 ) -> DatenLordResult<()> {
     let add_node_fun = |node_list: Option<Vec<u8>>| -> HashSet<String> {
         node_list.map_or_else(
@@ -218,7 +216,7 @@ pub async fn add_node_to_file_list(
             |list| {
                 let mut node_set: HashSet<String> = bincode::deserialize(list.as_slice())
                     .unwrap_or_else(|e| {
-                        panic!("fail to deserialize node list for file {file_name:?}, error: {e}");
+                        panic!("fail to deserialize node list for file {file_ino:?}, error: {e}");
                     });
 
                 if !node_set.contains(node_id) {
@@ -230,21 +228,21 @@ pub async fn add_node_to_file_list(
         )
     };
 
-    modify_file_node_list(kv_engine, file_name, add_node_fun).await
+    modify_file_node_list(kv_engine, file_ino, add_node_fun).await
 }
 
 /// Remove a node to node list of a file
 pub async fn remove_node_from_file_list(
     kv_engine: &Arc<KVEngineType>,
     node_id: &str,
-    file_name: &[u8],
+    file_ino: INum,
 ) -> DatenLordResult<()> {
     let remove_node_fun = |node_list: Option<Vec<u8>>| -> HashSet<String> {
         match node_list {
             Some(list) => {
                 let mut node_set: HashSet<String> = bincode::deserialize(list.as_slice())
                     .unwrap_or_else(|e| {
-                        panic!("fail to deserialize node list for file {file_name:?}, error: {e}");
+                        panic!("fail to deserialize node list for file {file_ino:?}, error: {e}");
                     });
 
                 if node_set.contains(node_id) {
@@ -257,5 +255,5 @@ pub async fn remove_node_from_file_list(
         }
     };
 
-    modify_file_node_list(kv_engine, file_name, remove_node_fun).await
+    modify_file_node_list(kv_engine, file_ino, remove_node_fun).await
 }

@@ -1,50 +1,44 @@
-use super::cache::GlobalCache;
-use super::cache::IoMemBlock;
+use std::collections::{BTreeMap, VecDeque};
+use std::os::unix::ffi::OsStringExt;
+use std::os::unix::io::RawFd;
+use std::path::Path;
+use std::sync::atomic::AtomicU32;
+use std::sync::Arc;
+use std::time::Duration;
+
+use anyhow::Context;
+use async_trait::async_trait;
+use clippy_utilities::{Cast, OverflowArithmetic};
+use itertools::Itertools;
+use nix::errno::Errno;
+use nix::fcntl::OFlag;
+use nix::sys::stat::SFlag;
+use parking_lot::RwLock as SyncRwLock;
+use tokio::sync::Mutex;
+use tokio::task::JoinHandle;
+use tracing::{debug, instrument, warn};
+
+use super::cache::{GlobalCache, IoMemBlock};
 use super::dir::DirEntry;
 use super::dist::client as dist_client;
 use super::dist::server::CacheServer;
 use super::fs_util::{self, FileAttr};
 use super::id_alloc_used::INumAllocator;
-use super::kv_engine::KVEngineType;
-use super::kv_engine::{KVEngine, KeyType, ValueType};
+use super::kv_engine::{KVEngine, KVEngineType, KeyType, ValueType};
 use super::metadata::MetaData;
 use super::node::Node;
-use super::persist::PersistDirContent;
-use super::persist::PersistHandle;
-use super::persist::PersistTask;
-use super::s3_node::S3NodeWrap;
-use super::s3_node::{self, S3Node};
+use super::persist::{PersistDirContent, PersistHandle, PersistTask};
+use super::s3_node::S3Node;
 use super::s3_wrapper::S3BackEnd;
-use super::serial;
-use super::RenameParam;
-use super::SetAttrParam;
+use super::{serial, RenameParam, SetAttrParam};
 use crate::async_fuse::fuse::file_system::FsAsyncResultSender;
 #[cfg(feature = "abi-7-18")]
 use crate::async_fuse::fuse::fuse_reply::FuseDeleteNotification;
-use crate::async_fuse::fuse::fuse_reply::ReplyDirectory;
-use crate::async_fuse::fuse::fuse_reply::StatFsParam;
+use crate::async_fuse::fuse::fuse_reply::{ReplyDirectory, StatFsParam};
 use crate::async_fuse::fuse::protocol::{FuseAttr, INum, FUSE_ROOT_ID};
 use crate::async_fuse::util;
-use crate::common::error::{DatenLordError, DatenLordResult};
-use crate::common::etcd_delegate::EtcdDelegate;
-use anyhow::Context;
-use async_trait::async_trait;
-use clippy_utilities::{Cast, OverflowArithmetic};
-use itertools::Itertools;
-use log::debug;
-use log::warn;
-use nix::errno::Errno;
-use nix::fcntl::OFlag;
-use nix::sys::stat::SFlag;
-use parking_lot::RwLock as SyncRwLock;
-use std::collections::BTreeMap;
-use std::os::unix::io::RawFd;
-use std::os::unix::prelude::OsStringExt;
-use std::path::Path;
-use std::sync::{atomic::AtomicU32, Arc};
-use std::time::Duration;
-use tokio::sync::{Mutex, RwLock, RwLockWriteGuard};
-use tokio::task::JoinHandle; // conflict with tokio RwLock
+use crate::common::error::DatenLordResult;
+use crate::common::etcd_delegate::EtcdDelegate; // conflict with tokio RwLock
 
 /// The time-to-live seconds of FUSE attributes
 const MY_TTL_SEC: u64 = 3600; // TODO: should be a long value, say 1 hour
@@ -59,10 +53,6 @@ const S3_INFO_DELIMITER: char = ';';
 pub struct S3MetaData<S: S3BackEnd + Send + Sync + 'static> {
     /// S3 backend
     pub(crate) s3_backend: Arc<S>,
-    /// Etcd client
-    pub(crate) etcd_client: Arc<EtcdDelegate>,
-    /// The cache to hold opened directories and files
-    pub(crate) cache: RwLock<BTreeMap<INum, S3Node<S>>>,
     /// Global data cache
     pub(crate) data_cache: Arc<GlobalCache>,
     /// Current available fd, it'll increase after using
@@ -71,8 +61,6 @@ pub struct S3MetaData<S: S3BackEnd + Send + Sync + 'static> {
     pub(crate) node_id: Arc<str>,
     /// Volume Info
     pub(crate) volume_info: Arc<str>,
-    /// Full path and node mapping
-    pub(crate) path2inum: RwLock<BTreeMap<String, INum>>,
     /// Fuse fd
     fuse_fd: Mutex<RawFd>,
     /// Persist handle
@@ -94,27 +82,27 @@ fn parse_s3_info(info: &str) -> (&str, &str, &str, &str) {
 impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
     type N = S3Node<S>;
 
+    #[instrument(skip(self))]
     async fn release(&self, ino: u64, fh: u64, _flags: u32, _lock_owner: u64, flush: bool) {
-        {
-            // TODO: handle lock_owner
-            let mut cache = self.cache().write().await;
-            let inode = cache.get_mut(&ino).unwrap_or_else(|| {
-                panic!(
-                    "relese() found fs is inconsistent, \
+        let mut inode = self.get_node_from_kv_engine(ino).await.unwrap_or_else(|| {
+            panic!(
+                "release() found fs is inconsistent, \
                      the inode ino={ino} is not in cache"
-                );
-            });
-            inode.close(ino, fh, flush).await;
-            debug!(
-                "release() successfully closed the file handler={} of ino={} and name={:?}",
+            );
+        });
+        inode.close(ino, fh, flush).await;
+        debug!(
+                "release() successfully closed the file handler={} of ino={} and name={:?} open_count={}",
                 fh,
                 ino,
                 inode.get_name(),
+                inode.get_open_count()
             );
-        }
+        self.set_node_to_kv_engine(ino, inode).await;
         self.try_delete_node(ino).await;
     }
 
+    #[instrument(skip(self), err, ret)]
     async fn readdir(
         &self,
         ino: u64,
@@ -128,7 +116,8 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
                 let child_ino = child_entry.ino();
                 reply.add(
                     child_ino,
-                    offset.overflow_add(i.cast()).overflow_add(1), // i + 1 means the index of the next entry
+                    offset.overflow_add(i.cast()).overflow_add(1), /* i + 1 means the index of
+                                                                    * the next entry */
                     child_entry.entry_type(),
                     child_name,
                 );
@@ -146,10 +135,9 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
             num_child_entries
         };
 
-        let mut cache = self.cache().write().await;
-        let inode = cache.get_mut(&ino).unwrap_or_else(|| {
+        let mut inode = self.get_node_from_kv_engine(ino).await.unwrap_or_else(|| {
             panic!(
-                "relese() found fs is inconsistent, \
+                "release() found fs is inconsistent, \
                  the inode ino={ino} is not in cache"
             );
         });
@@ -158,7 +146,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
             if let Err(e) = load_res {
                 debug!(
                     "readdir() failed to load the data for directory of ino={} and name={:?}, \
-                        the error is: {}",
+                        the error is: {:?}",
                     ino,
                     inode.get_name(),
                     e
@@ -177,21 +165,23 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         reply.ok().await
     }
 
+    #[instrument(skip(self), err, ret)]
     async fn opendir(&self, ino: u64, flags: u32) -> DatenLordResult<RawFd> {
-        let cache = self.cache().read().await;
-        let node = cache.get(&ino).unwrap_or_else(|| {
+        let node = self.get_node_from_kv_engine(ino).await.unwrap_or_else(|| {
             panic!(
                 "opendir() found fs is inconsistent, \
                     the i-node of ino={ino} should be in cache",
             );
         });
         let o_flags = fs_util::parse_oflag(flags);
-        node.dup_fd(o_flags).await
+        let result = node.dup_fd(o_flags).await;
+        self.set_node_to_kv_engine(ino, node).await;
+        result
     }
 
+    #[instrument(skip(self))]
     async fn readlink(&self, ino: u64) -> Vec<u8> {
-        let cache = self.cache().read().await;
-        let node = cache.get(&ino).unwrap_or_else(|| {
+        let node = self.get_node_from_kv_engine(ino).await.unwrap_or_else(|| {
             panic!(
                 "readlink() found fs is inconsistent, \
                     the i-node of ino={ino} should be in cache",
@@ -200,9 +190,9 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         node.get_symlink_target().as_os_str().to_owned().into_vec()
     }
 
+    #[instrument(skip(self), err, ret)]
     async fn statfs(&self, ino: u64) -> DatenLordResult<StatFsParam> {
-        let cache = self.cache().read().await;
-        let node = cache.get(&ino).unwrap_or_else(|| {
+        let node = self.get_node_from_kv_engine(ino).await.unwrap_or_else(|| {
             panic!(
                 "statfs() found fs is inconsistent, \
                     the i-node of ino={ino} should be in cache",
@@ -211,9 +201,9 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         node.statefs().await
     }
 
+    #[instrument(skip(self))]
     async fn flush(&self, ino: u64, fh: u64) {
-        let mut cache = self.cache().write().await;
-        let node = cache.get_mut(&ino).unwrap_or_else(|| {
+        let mut node = self.get_node_from_kv_engine(ino).await.unwrap_or_else(|| {
             panic!(
                 "flush() found fs is inconsistent, \
                     the i-node of ino={ino} should be in cache",
@@ -222,20 +212,22 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         node.flush(ino, fh).await;
     }
 
+    #[instrument(skip(self))]
     async fn releasedir(&self, ino: u64, fh: u64) {
         {
-            let cache = self.cache().read().await;
-            let node = cache.get(&ino).unwrap_or_else(|| {
+            let node = self.get_node_from_kv_engine(ino).await.unwrap_or_else(|| {
                 panic!(
                     "releasedir() found fs is inconsistent, \
                     the i-node of ino={ino} should be in cache",
                 );
             });
             node.closedir(ino, fh).await;
-        }
+            self.set_node_to_kv_engine(ino, node).await;
+        };
         self.try_delete_node(ino).await;
     }
 
+    #[instrument(skip(self), err, ret)]
     async fn read_helper(
         &self,
         ino: INum,
@@ -243,8 +235,11 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         offset: i64,
         size: u32,
     ) -> DatenLordResult<Vec<IoMemBlock>> {
-        let mut cache = self.cache().write().await;
-        let inode = cache.get_mut(&ino).unwrap_or_else(|| {
+        debug!(
+            "read_helper() called, ino={}, offset={}, size={}",
+            ino, offset, size
+        );
+        let mut inode = self.get_node_from_kv_engine(ino).await.unwrap_or_else(|| {
             panic!(
                 "read() found fs is inconsistent, \
                  the inode ino={ino} is not in cache"
@@ -261,10 +256,11 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         // let node_type = node.get_type();
         // let file_data = if SFlag::S_IFREG == node_type {
         if inode.need_load_file_data(offset.cast(), size.cast()).await {
+            debug!("read() need to load file data of ino={}", ino,);
             let load_res = inode.load_data(offset.cast(), size.cast()).await;
             if let Err(e) = load_res {
                 debug!(
-                    "read() failed to load file data of ino={} and name={:?}, the error is: {}",
+                    "read() failed to load file data of ino={} and name={:?}, the error is: {:?}",
                     ino,
                     inode.get_name(),
                     e,
@@ -275,9 +271,9 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         return Ok(inode.get_file_data(offset.cast(), size.cast()).await);
     }
 
+    #[instrument(skip(self), err, ret)]
     async fn open(&self, ino: u64, flags: u32) -> DatenLordResult<RawFd> {
-        let cache = self.cache().read().await;
-        let node = cache.get(&ino).unwrap_or_else(|| {
+        let node = self.get_node_from_kv_engine(ino).await.unwrap_or_else(|| {
             panic!(
                 "open() found fs is inconsistent, \
                     the i-node of ino={ino} should be in cache",
@@ -293,17 +289,21 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         //         flags,
         //     ))
         // } else {
-        node.dup_fd(o_flags).await
+        let result = node.dup_fd(o_flags).await;
+        self.set_node_to_kv_engine(ino, node).await;
+        result
     }
 
+    #[instrument(skip(self), err, ret)]
     async fn getattr(&self, ino: u64) -> DatenLordResult<(Duration, FuseAttr)> {
-        let cache = self.cache().read().await;
-        let inode = cache.get(&ino).unwrap_or_else(|| {
+        let inode_wrap = self.get_node_from_kv_engine(ino).await.unwrap_or_else(|| {
             panic!(
                 "getattr() found fs is inconsistent, \
                  the inode ino={ino} is not in cache"
             );
         });
+
+        let inode = inode_wrap;
         let attr = inode.get_attr();
         debug!(
             "getattr() cache hit when searching the attribute of ino={} and name={:?}",
@@ -315,11 +315,11 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         Ok((ttl, fuse_attr))
     }
 
+    #[instrument(skip(self))]
     async fn forget(&self, ino: u64, nlookup: u64) {
         let current_count: i64;
         {
-            let cache = self.cache().read().await;
-            let inode = cache.get(&ino).unwrap_or_else(|| {
+            let inode = self.get_node_from_kv_engine(ino).await.unwrap_or_else(|| {
                 panic!(
                     "forget() found fs is inconsistent, \
                      the inode ino={ino} is not in cache"
@@ -340,18 +340,19 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
                 previous_count,
                 current_count,
             );
-        }
+            self.set_node_to_kv_engine(ino, inode).await;
+        };
         self.try_delete_node(ino).await;
     }
 
+    #[instrument(skip(self), err, ret)]
     async fn setattr_helper(
         &self,
         ino: u64,
         param: SetAttrParam,
     ) -> DatenLordResult<(Duration, FuseAttr)> {
         let ttl = Duration::new(MY_TTL_SEC, 0);
-        let mut cache = self.cache().write().await;
-        let inode = cache.get_mut(&ino).unwrap_or_else(|| {
+        let mut inode = self.get_node_from_kv_engine(ino).await.unwrap_or_else(|| {
             panic!(
                 "setattr() found fs is inconsistent, \
                     the i-node of ino={ino} should be in cache",
@@ -373,11 +374,12 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
                         inode.get_name(),
                     );
                 }
+                self.set_node_to_kv_engine(ino, inode).await;
                 Ok((ttl, fs_util::convert_to_fuse_attr(file_attr)))
             }
             Err(e) => {
                 debug!(
-                    "setattr() failed to set the attribute of ino={} and name={:?}, the error is: {}",
+                    "setattr() failed to set the attribute of ino={} and name={:?}, the error is: {:?}",
                     ino,
                     inode.get_name(),
                     e,
@@ -387,15 +389,18 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         }
     }
 
+    #[instrument(skip(self), err, ret)]
     async fn unlink(&self, parent: INum, name: &str) -> DatenLordResult<()> {
         let entry_type = {
-            let cache = self.cache().read().await;
-            let parent_node = cache.get(&parent).unwrap_or_else(|| {
-                panic!(
-                    "unlink() found fs is inconsistent, \
+            let parent_node = self
+                .get_node_from_kv_engine(parent)
+                .await
+                .unwrap_or_else(|| {
+                    panic!(
+                        "unlink() found fs is inconsistent, \
                         parent of ino={parent} should be in cache before remove its child",
-                );
-            });
+                    );
+                });
             let child_entry = parent_node.get_entry(name).unwrap_or_else(|| {
                 panic!(
                     "unlink() found fs is inconsistent, \
@@ -419,7 +424,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         capacity: usize,
         ip: &str,
         port: &str,
-        etcd_client: EtcdDelegate,
+        _: EtcdDelegate,
         kv_engine: Arc<KVEngineType>,
         node_id: &str,
         volume_info: &str,
@@ -436,7 +441,6 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         let (persist_handle, persist_join_handle) =
             PersistTask::spawn(Arc::clone(&s3_backend), fs_async_sender);
         async_tasks.push(persist_join_handle);
-        let etcd_arc = Arc::new(etcd_client);
         let data_cache = Arc::new(GlobalCache::new_dist_with_bz_and_capacity(
             10_485_760, // 10 * 1024 * 1024
             capacity,
@@ -446,25 +450,17 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
 
         let meta = Arc::new(Self {
             s3_backend: Arc::clone(&s3_backend),
-            cache: RwLock::new(BTreeMap::new()),
-            etcd_client: etcd_arc,
             data_cache: Arc::<GlobalCache>::clone(&data_cache),
             cur_fd: AtomicU32::new(4),
             node_id: Arc::<str>::from(node_id.to_owned()),
             volume_info: Arc::<str>::from(volume_info.to_owned()),
-            path2inum: RwLock::new(BTreeMap::new()),
             fuse_fd: Mutex::new(-1_i32),
             persist_handle,
             inum_allocator: INumAllocator::new(Arc::clone(&kv_engine)),
             kv_engine,
         });
 
-        let server = CacheServer::new(
-            ip.to_owned(),
-            port.to_owned(),
-            data_cache,
-            Arc::<Self>::clone(&meta),
-        );
+        let server = CacheServer::new(ip.to_owned(), port.to_owned(), data_cache);
 
         let root_inode = S3Node::open_root_node(FUSE_ROOT_ID, "/", s3_backend, Arc::clone(&meta))
             .await
@@ -472,17 +468,13 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
             .unwrap_or_else(|e| {
                 panic!("{}", e);
             });
-
         let full_path = root_inode.full_path().to_owned();
-        meta.cache.write().await.insert(FUSE_ROOT_ID, root_inode);
-        meta.path2inum.write().await.insert(full_path, FUSE_ROOT_ID);
-
+        // insert two K/V pairs into KV engine
+        // 1. FUSE_ROOT_ID -> root_inode
+        meta.set_node_to_kv_engine(FUSE_ROOT_ID, root_inode).await;
+        // 2. full_path -> FUSE_ROOT_ID
+        meta.set_inum_to_kv_engine(&full_path, FUSE_ROOT_ID).await;
         (meta, Some(server), async_tasks)
-    }
-
-    /// Get metadata cache
-    fn cache(&self) -> &RwLock<BTreeMap<INum, Self::N>> {
-        &self.cache
     }
 
     /// Set fuse fd into `MetaData`
@@ -490,28 +482,34 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         *self.fuse_fd.lock().await = fuse_fd;
     }
 
+    #[instrument(skip(self), ret)]
     /// Try to delete node that is marked as deferred deletion
     async fn try_delete_node(&self, ino: INum) -> bool {
-        let mut cache = self.cache.write().await;
-        let node = cache.get(&ino).unwrap_or_else(|| {
+        let node = self.get_node_from_kv_engine(ino).await.unwrap_or_else(|| {
             panic!(
                 "try_delete_node() found fs is inconsistent, \
-                    the i-node of ino={ino} is not in cache",
+                    the i-node of ino={ino} is not in K/V",
             );
         });
-
+        debug!(
+            "try_delete_node() try to delete i-node of ino={} and name={:?} full_path={:?} open_count={} lookup_count={}",
+            ino,
+            node.get_name(),
+            node.get_full_path(),
+            node.get_open_count(),
+            node.get_lookup_count(),
+        );
         if node.get_open_count() == 0 && node.get_lookup_count() == 0 {
             debug!(
-                "try_delete_node() deleted i-node of ino={} and name={:?}",
+                "try_delete_node() deleted i-node of ino={} and name={:?} full_path={:?}",
                 ino,
                 node.get_name(),
+                node.get_full_path()
             );
-            if let Some(node) = cache.remove(&ino) {
-                if let SFlag::S_IFREG = node.get_type() {
-                    self.data_cache
-                        .remove_file_cache(node.get_full_path().as_bytes())
-                        .await;
-                }
+            self.remove_inum_from_kv_engine(node.get_full_path()).await;
+            self.remove_node_from_kv_engine(ino).await;
+            if let SFlag::S_IFREG = node.get_type() {
+                self.data_cache.remove_file_cache(node.get_ino()).await;
             }
             true
         } else {
@@ -527,6 +525,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         }
     }
 
+    #[instrument(skip(self), err, ret)]
     /// Helper function to create node
     #[allow(clippy::too_many_lines)]
     async fn create_node_helper(
@@ -538,28 +537,20 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         target_path: Option<&Path>,
     ) -> DatenLordResult<(Duration, FuseAttr, u64)> {
         // pre-check
-        let (parent_full_path, new_node_attr, fuse_attr) = {
-            let mut cache = self.cache.write().await;
-            let parent_node = Self::create_node_pre_check(parent, node_name, &mut cache)
+        let (parent_full_path, fuse_attr) = {
+            let mut parent_node = self
+                .create_node_pre_check(parent, node_name)
+                .await
                 .context("create_node_helper() failed to pre check")?;
-            let full_path = format!("{}{}", parent_node.full_path(), node_name);
-            // check cluster conflict creating by trying to alloc ino
-            let (inum, is_new) = self
+            let inum = self
                 .inum_allocator
-                .alloc_inum_for_fnode(&self.kv_engine, full_path.as_str())
+                .alloc_inum_for_fnode()
                 .await
                 .with_context(|| {
                     format!(
                         "create_node_helper() failed to alloc ino for node of name={node_name:?}"
                     )
                 })?;
-            if !is_new {
-                // inum created by others or exist in remote cache
-                //todo delete parent node cache to update parent dir content
-                return Err(DatenLordError::from(anyhow::anyhow!("create_node_helper() failed to create node, ino alloc failed, \
-                    the node of name={:?} already exists under parent directory of ino={} and name={:?}",
-                    node_name, parent, parent_node.get_name())));
-            }
 
             let parent_name = parent_node.get_name().to_owned();
             // all checks are passed, ready to create new node
@@ -572,9 +563,9 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
                     node_name, m_flags, parent, parent_name,
                 );
                     parent_node
-                    .create_child_dir(inum,node_name, m_flags)
-                    .await
-                    .context(format!(
+                   .create_child_dir(inum,node_name, m_flags)
+                   .await
+                   .context(format!(
                         "create_node_helper() failed to create directory with name={node_name:?} and mode={m_flags:?} \
                             under parent directory of ino={parent} and name={parent_name:?}",
                     ))?
@@ -588,15 +579,15 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
                         node_name, o_flags, m_flags, parent, parent_name,
                     );
                     parent_node
-                        .create_child_file(
+                       .create_child_file(
                             inum,
                             node_name,
                             o_flags,
                             m_flags,
                             Arc::<GlobalCache>::clone(&self.data_cache),
                         )
-                        .await
-                        .context(format!(
+                       .await
+                       .context(format!(
                         "create_node_helper() failed to create file with name={node_name:?} and mode={m_flags:?} \
                             under parent directory of ino={parent} and name={parent_name:?}",
                     ))?
@@ -609,7 +600,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
                         node_name, target_path, parent, parent_name
                     );
                     parent_node
-                    .create_child_symlink(
+                   .create_child_symlink(
                         inum,
                         node_name,
                         target_path.unwrap_or_else(|| panic!(
@@ -619,8 +610,8 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
                             node_name, parent, parent_node.get_name(),
                         )).to_owned(),
                     )
-                    .await
-                    .context(format!(
+                   .await
+                   .context(format!(
                         "create_node_helper() failed to create symlink with name={node_name:?} to target path={target_path:?} \
                             under parent directory of ino={parent} and name={parent_name:?}",
                     ))?
@@ -635,34 +626,34 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
             let new_ino = new_node.get_ino();
             let new_node_attr = new_node.get_attr();
             let new_node_full_path = new_node.full_path().to_owned();
-            cache.insert(new_ino, new_node);
-            self.path2inum
-                .write()
-                .await
-                .insert(new_node_full_path, new_ino);
             let fuse_attr = fs_util::convert_to_fuse_attr(new_node_attr);
             debug!(
                 "create_node_helper() successfully created the new child name={:?} \
-                of ino={} and type={:?} under parent ino={} and name={:?}",
-                node_name, new_ino, node_type, parent, parent_name,
+                of ino={} and type={:?} under parent ino={} and name={:?} lookup_count={}",
+                node_name,
+                new_ino,
+                node_type,
+                parent,
+                parent_name,
+                new_node.get_lookup_count(),
             );
-            let pnode = cache.get(&parent).unwrap_or_else(|| {
-                panic!("failed to get parent inode {parent:?}, parent name {parent_name:?}")
-            });
-            let parent_full_path = pnode.full_path().to_owned();
+            let parent_full_path = parent_node.full_path().to_owned();
 
-            (parent_full_path, new_node_attr, fuse_attr)
+            self.set_node_to_kv_engine(new_ino, new_node).await;
+            self.set_node_to_kv_engine(parent, parent_node).await;
+            self.set_inum_to_kv_engine(&new_node_full_path, new_ino)
+                .await;
+            (parent_full_path, fuse_attr)
         };
         {
-            self.sync_attr_remote(&parent_full_path).await;
-            self.sync_dir_remote(&parent_full_path, node_name, &new_node_attr, target_path)
-                .await;
-            let cache = self.cache.read().await;
-            let pnode = cache.get(&parent).unwrap_or_else(|| {
-                panic!(
+            let pnode = self
+                .get_node_from_kv_engine(parent)
+                .await
+                .unwrap_or_else(|| {
+                    panic!(
                     "failed to get parent inode {parent:?}, parent fullpath {parent_full_path:?}"
                 )
-            });
+                });
             // After sync to other，we should do async persist
             self.persist_handle.mark_dirty(
                 parent,
@@ -672,12 +663,13 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
                     serial::file_attr_to_serial(&pnode.get_attr()),
                 ),
             );
-        }
+        };
 
         let ttl = Duration::new(MY_TTL_SEC, 0);
         Ok((ttl, fuse_attr, MY_GENERATION))
     }
 
+    #[instrument(skip(self), err, ret)]
     /// Helper function to remove node
     async fn remove_node_helper(
         &self,
@@ -692,11 +684,11 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         );
         self.remove_node_local(parent, node_name, node_type, false)
             .await?;
-        self.remove_remote(parent, node_name, node_type).await;
         self.load_parent_from_cache_and_mark_dirty(parent).await;
         Ok(())
     }
 
+    #[instrument(skip(self), err, ret)]
     /// Helper function to lookup
     #[allow(clippy::too_many_lines)]
     async fn lookup_helper(
@@ -704,11 +696,15 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         parent: INum,
         child_name: &str,
     ) -> DatenLordResult<(Duration, FuseAttr, u64)> {
+        debug!(
+            "lookup_helper() about to lookup parent ino={} and name={:?}",
+            parent, child_name
+        );
         let pre_check_res = self.lookup_pre_check(parent, child_name).await;
-        let (ino, child_type, child_attr) = match pre_check_res {
+        let (child_ino, child_type, child_attr) = match pre_check_res {
             Ok((ino, child_type, child_attr)) => (ino, child_type, child_attr),
             Err(e) => {
-                debug!("lookup() failed to pre-check, the error is: {}", e);
+                debug!("lookup() failed to pre-check, the error is: {:?}", e);
                 return Err(e);
             }
         };
@@ -716,19 +712,19 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         let ttl = Duration::new(MY_TTL_SEC, 0);
         {
             // cache hit
-            let cache = self.cache.read().await;
-            if let Some(node) = cache.get(&ino) {
+            let child_node = self.get_node_from_kv_engine(child_ino).await;
+            if let Some(node) = child_node {
                 debug!(
                     "lookup_helper() cache hit when searching i-node of \
-                        ino={} and name={:?} under parent ino={}",
-                    ino, child_name, parent,
+                    child_ino={} and name={:?} under parent ino={}",
+                    child_ino, child_name, parent,
                 );
                 let attr = node.lookup_attr();
                 let fuse_attr = fs_util::convert_to_fuse_attr(attr);
                 debug!(
                     "lookup_helper() successfully found in cache the i-node of \
-                        ino={} name={:?} under parent ino={}, the attr={:?}",
-                    ino, child_name, parent, &attr,
+                    child_ino={} name={:?} under parent ino={}, the attr={:?}",
+                    child_ino, child_name, parent, &attr,
                 );
                 return Ok((ttl, fuse_attr, MY_GENERATION));
             }
@@ -738,16 +734,18 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
             debug!(
                 "lookup_helper() cache missed when searching parent ino={} \
                     and i-node of ino={} and name={:?}",
-                parent, ino, child_name,
+                parent, child_ino, child_name,
             );
             let (mut child_node, parent_name) = {
-                let cache = self.cache.read().await;
-                let parent_node = cache.get(&parent).unwrap_or_else(|| {
-                    panic!(
-                        "lookup_helper() found fs is inconsistent, \
+                let parent_node = self
+                    .get_node_from_kv_engine(parent)
+                    .await
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "lookup_helper() found fs is inconsistent, \
                         parent i-node of ino={parent} should be in cache",
-                    );
-                });
+                        );
+                    });
                 let parent_name = parent_node.get_name().to_owned();
                 let child_node = match child_type {
                     SFlag::S_IFDIR => parent_node
@@ -759,15 +757,14 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
                         ))?,
                     SFlag::S_IFREG => {
                         let oflags = OFlag::O_RDWR;
-                        parent_node
-                            .open_child_file(
+                        parent_node.open_child_file(
                                 child_name,
                                 child_attr,
                                 oflags,
                                 Arc::<GlobalCache>::clone(&self.data_cache),
                             )
-                            .await
-                            .context(format!(
+                           .await
+                           .context(format!(
                             "lookup_helper() failed to open child file name={child_name:?} with flags={oflags:?} \
                                 under parent directory of ino={parent} and name={parent_name:?}",
                         ))?
@@ -784,17 +781,13 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
                 (child_node, parent_name)
             };
 
-            debug_assert_eq!(ino, child_node.get_ino());
-            child_node.set_ino(ino);
-            let child_ino = ino;
+            debug_assert_eq!(child_ino, child_node.get_ino());
+            child_node.set_ino(child_ino);
+            let child_ino = child_ino;
             let attr = child_node.lookup_attr();
             let full_path = child_node.full_path().to_owned();
-            {
-                let mut cache = self.cache.write().await;
-                cache.insert(child_ino, child_node);
-            }
-
-            self.path2inum.write().await.insert(full_path, child_ino);
+            self.set_node_to_kv_engine(child_ino, child_node).await;
+            self.set_inum_to_kv_engine(&full_path, child_ino).await;
 
             let fuse_attr = fs_util::convert_to_fuse_attr(attr);
             debug!(
@@ -811,7 +804,6 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         let old = param.old_parent;
         let new = param.new_parent;
         self.rename_exchange_local(&param).await?;
-        self.rename_remote(param).await;
         self.load_parent_from_cache_and_mark_dirty(old).await;
         self.load_parent_from_cache_and_mark_dirty(new).await;
         Ok(())
@@ -822,7 +814,6 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         let old = param.old_parent;
         let new = param.new_parent;
         self.rename_may_replace_local(&param, false).await?;
-        self.rename_remote(param).await;
         self.load_parent_from_cache_and_mark_dirty(old).await;
         self.load_parent_from_cache_and_mark_dirty(new).await;
         Ok(())
@@ -836,8 +827,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         _datasync: bool,
         // reply: ReplyEmpty,
     ) -> DatenLordResult<()> {
-        let mut cache = self.cache().write().await;
-        let inode = cache.get_mut(&ino).unwrap_or_else(|| {
+        let mut inode = self.get_node_from_kv_engine(ino).await.unwrap_or_else(|| {
             panic!(
                 "fsync_helper() found fs is inconsistent, \
                  the inode ino={ino} is not in cache"
@@ -849,6 +839,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         Ok(())
     }
 
+    #[instrument(skip(self), err, ret)]
     /// Helper function to write data
     async fn write_helper(
         &self,
@@ -859,9 +850,8 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         flags: u32,
     ) -> DatenLordResult<usize> {
         let data_len = data.len();
-        let (result, full_path, parent_ino) = {
-            let mut cache = self.cache().write().await;
-            let inode = cache.get_mut(&ino).unwrap_or_else(|| {
+        let (result, _, _) = {
+            let mut inode = self.get_node_from_kv_engine(ino).await.unwrap_or_else(|| {
                 panic!(
                     "write() found fs is inconsistent, \
                      the inode ino={ino} is not in cache"
@@ -882,28 +872,14 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
             let res = inode
                 .write_file(fh, offset, data, o_flags, write_to_disk)
                 .await;
-            (res, inode.get_full_path().to_owned(), parent_ino)
+            let full_path = inode.get_full_path().to_owned();
+            self.set_node_to_kv_engine(ino, inode).await;
+            (res, full_path, parent_ino)
         };
-        self.invalidate_remote(&full_path, offset, data_len).await;
-        self.sync_attr_remote(&full_path).await;
-        // update dir
-        let cache = self.cache().write().await;
-        let parent = cache.get(&parent_ino).unwrap_or_else(|| {
-            panic!(
-                "write() found fs is inconsistent, \
-                        the inode ino={ino} is not in cache"
-            );
-        });
-        self.persist_handle.mark_dirty(
-            parent.get_ino(),
-            PersistDirContent::new_from_cache(
-                parent.full_path().to_owned(),
-                parent.get_dir_data(),
-                serial::file_attr_to_serial(&parent.get_attr()),
-            ),
-        );
+        self.invalidate_remote(ino, offset, data_len).await;
         result
     }
+
     /// Stop all async tasks
     fn stop_all_async_tasks(&self) {
         self.persist_handle.system_end();
@@ -914,7 +890,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
     #[allow(dead_code)]
     #[allow(clippy::unwrap_used)]
     /// Get a node from kv engine by inum
-    pub async fn get_node_from_kv_engine(&self, inum: INum) -> Option<S3NodeWrap<S>> {
+    pub async fn get_node_from_kv_engine(&self, inum: INum) -> Option<S3Node<S>> {
         let inum_key = KeyType::INum2Node(inum);
         let raw_data = self.kv_engine.get(&inum_key).await.unwrap_or_else(|e| {
             panic!(
@@ -924,7 +900,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
         })?;
 
         // deserialize node
-        Some(S3NodeWrap::new(raw_data.into_s3_node(self).await, self))
+        Some(raw_data.into_s3_node(self).await)
     }
 
     #[allow(dead_code)]
@@ -963,10 +939,10 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
     /// If the key value is not matched
     pub async fn get_inum_from_kv_engine(&self, full_path: &str) -> Option<INum> {
         let res = self
-            .kv_engine
-            .get(&KeyType::Path2INum(full_path.to_owned()))
-            .await
-            .unwrap_or_else(|e| {
+           .kv_engine
+           .get(&KeyType::Path2INum(full_path.to_owned()))
+           .await
+           .unwrap_or_else(|e| {
                 panic!(
                     "get_inum_from_kv_engine() failed to get inum of full_path={full_path} from kv engine, \
                     error={e:?}"
@@ -978,6 +954,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
     #[allow(dead_code)]
     /// Set inum to kv engine use full path
     async fn set_inum_to_kv_engine(&self, full_path: &str, inum: INum) {
+        debug!("set_inum_to_kv_engine() about to set inum of full_path={full_path} to kv engine");
         self.kv_engine
             .set(&KeyType::Path2INum(full_path.to_owned()), &ValueType::INum(inum),None)
             .await
@@ -989,16 +966,33 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
             });
     }
 
+    /// Delete inum from kv engine use full path
+    async fn remove_inum_from_kv_engine(&self, full_path: &str) {
+        debug!("remove_inum_from_kv_engine() about to remove inum of full_path={full_path} from kv engine");
+        self.kv_engine
+            .delete(&KeyType::Path2INum(full_path.to_owned()),None)
+            .await
+            .unwrap_or_else(|e| {
+                panic!(
+                    "remove_inum_from_kv_engine() failed to remove inum of full_path={full_path} from kv engine, \
+                        error={e:?}"
+                );
+            });
+    }
+
     /// Get parent content from cache and do the persist operation.
-    /// This function will try to get the lock, so make sure there's no deadlock.
+    /// This function will try to get the lock, so make sure there's no
+    /// deadlock.
     async fn load_parent_from_cache_and_mark_dirty(&self, parent: INum) {
-        let cache = self.cache.read().await;
-        let p = cache.get(&parent).unwrap_or_else(|| {
-            panic!(
-                "load_parent_from_cache_and_mark_dirty() found fs is inconsistent, \
+        let p = self
+            .get_node_from_kv_engine(parent)
+            .await
+            .unwrap_or_else(|| {
+                panic!(
+                    "load_parent_from_cache_and_mark_dirty() found fs is inconsistent, \
                     parent of ino={parent} should be in cache",
-            );
-        });
+                );
+            });
         self.persist_handle.mark_dirty(
             parent,
             PersistDirContent::new_from_cache(
@@ -1010,18 +1004,20 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
     }
 
     /// The pre-check before create node
-    #[allow(single_use_lifetimes)]
-    fn create_node_pre_check<'b>(
+    async fn create_node_pre_check(
+        &self,
         parent: INum,
         node_name: &str,
-        cache: &'b mut RwLockWriteGuard<BTreeMap<INum, <Self as MetaData>::N>>,
-    ) -> DatenLordResult<&'b mut <Self as MetaData>::N> {
-        let parent_node = cache.get_mut(&parent).unwrap_or_else(|| {
-            panic!(
-                "create_node_pre_check() found fs is inconsistent, \
+    ) -> DatenLordResult<S3Node<S>> {
+        let parent_node = self
+            .get_node_from_kv_engine(parent)
+            .await
+            .unwrap_or_else(|| {
+                panic!(
+                    "create_node_pre_check() found fs is inconsistent, \
                     parent of ino={parent} should be in cache before create it new child",
-            );
-        });
+                );
+            });
         if let Some(occupied) = parent_node.get_entry(node_name) {
             debug!(
                 "create_node_pre_check() found the directory of ino={} and name={:?} \
@@ -1048,9 +1044,9 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
 
     /// Helper function to pre-check if node can be deferred deleted.
     fn deferred_delete_pre_check(inode: &S3Node<S>) -> (bool, INum, String) {
-        // pre-check whether deferred delete or not
         debug_assert!(inode.get_lookup_count() >= 0); // lookup count cannot be negative
-        debug_assert!(inode.get_open_count() >= 0); // open count cannot be negative
+        debug_assert!(inode.get_open_count() >= 0);
+        // pre-check whether deferred delete or not
         (
             inode.get_lookup_count() > 0 || inode.get_open_count() > 0,
             inode.get_parent_ino(),
@@ -1065,20 +1061,22 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
         from_remote: bool,
     ) -> DatenLordResult<()> {
         // remove entry from parent i-node
-        let mut cache = self.cache.write().await;
-        let inode = cache.get(&ino).unwrap_or_else(|| {
+        let inode = self.get_node_from_kv_engine(ino).await.unwrap_or_else(|| {
             panic!(
                 "may_deferred_delete_node_helper() failed to \
                          find the i-node of ino={ino} to remove",
             );
         });
-        let (deferred_deletion, parent_ino, node_name) = Self::deferred_delete_pre_check(inode);
-        let parent_node = cache.get_mut(&parent_ino).unwrap_or_else(|| {
-            panic!(
-                "may_deferred_delete_node_helper() failed to \
+        let (deferred_deletion, parent_ino, node_name) = Self::deferred_delete_pre_check(&inode);
+        let mut parent_node = self
+            .get_node_from_kv_engine(parent_ino)
+            .await
+            .unwrap_or_else(|| {
+                panic!(
+                    "may_deferred_delete_node_helper() failed to \
                      find the parent of ino={parent_ino} for i-node of ino={ino}",
-            );
-        });
+                );
+            });
         let deleted_entry = parent_node.unlink_entry(&node_name).await.context(format!(
             "may_deferred_delete_node_helper() failed to remove entry name={node_name:?} \
                  and ino={ino} from parent directory ino={parent_ino}",
@@ -1093,14 +1091,14 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
 
         if deferred_deletion {
             // Deferred deletion
-            let inode = cache.get(&ino).unwrap_or_else(|| {
+            let inode = self.get_node_from_kv_engine(ino).await.unwrap_or_else(|| {
                 panic!(
                     "impossible case, may_deferred_delete_node_helper() \
                      i-node of ino={ino} is not in cache",
                 );
             });
             debug!(
-                "may_deferred_delete_node_helper() defered removed \
+                "may_deferred_delete_node_helper() deferred removed \
                     the i-node name={:?} of ino={} under parent ino={}, \
                     open count={}, lookup count={}",
                 inode.get_name(),
@@ -1125,23 +1123,10 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
             }
         } else {
             // immediate deletion
-            let inode = cache.remove(&ino).unwrap_or_else(|| {
-                panic!(
-                    "impossible case, may_deferred_delete_node_helper() \
-                     i-node of ino={ino} is not in cache",
-                )
-            });
-            debug!(
-                "may_deferred_delete_node_helper() immediately removed \
-                    the i-node name={:?} of ino={} under parent ino={}, \
-                    open count={}, lookup count={}",
-                inode.get_name(),
-                ino,
-                parent_ino,
-                inode.get_open_count(),
-                inode.get_lookup_count(),
-            );
+            self.remove_inum_from_kv_engine(inode.full_path()).await;
+            self.remove_node_from_kv_engine(ino).await;
         }
+        self.set_node_to_kv_engine(parent_ino, parent_node).await;
         Ok(())
     }
 
@@ -1152,13 +1137,15 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
         name: &str,
     ) -> DatenLordResult<(INum, SFlag, Arc<SyncRwLock<FileAttr>>)> {
         // lookup child ino and type first
-        let cache = self.cache.read().await;
-        let parent_node = cache.get(&parent).unwrap_or_else(|| {
-            panic!(
-                "lookup_helper() found fs is inconsistent, \
+        let parent_node = self
+            .get_node_from_kv_engine(parent)
+            .await
+            .unwrap_or_else(|| {
+                panic!(
+                    "lookup_helper() found fs is inconsistent, \
                         the parent i-node of ino={parent} should be in cache",
-            );
-        });
+                );
+            });
         if let Some(child_entry) = parent_node.get_entry(name) {
             let ino = child_entry.ino();
             let child_type = child_entry.entry_type();
@@ -1194,13 +1181,15 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
         new_name: &str,
         no_replace: bool,
     ) -> DatenLordResult<(RawFd, INum, RawFd, Option<INum>)> {
-        let cache = self.cache.read().await;
-        let old_parent_node = cache.get(&old_parent).unwrap_or_else(|| {
-            panic!(
-                "rename() found fs is inconsistent, \
+        let old_parent_node = self
+            .get_node_from_kv_engine(old_parent)
+            .await
+            .unwrap_or_else(|| {
+                panic!(
+                    "rename() found fs is inconsistent, \
                     the parent i-node of ino={old_parent} should be in cache",
-            );
-        });
+                );
+            });
         let old_parent_fd = old_parent_node.get_fd();
         let old_entry_ino = match old_parent_node.get_entry(old_name) {
             None => {
@@ -1221,26 +1210,23 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
             }
             Some(old_entry) => {
                 debug_assert_eq!(&old_name, &old_entry.entry_name());
-                assert!(cache.get(&old_entry.ino()).is_some(), "rename() found fs is inconsistent, the i-node of ino={} and name={:?} \
-                            under parent directory of ino={} and name={:?} to rename should be in cache",
-                        old_entry.ino(), old_name, old_parent, old_parent_node.get_name(),);
                 old_entry.ino()
             }
         };
 
-        let new_parent_node = cache.get(&new_parent).unwrap_or_else(|| {
-            panic!(
-                "rename() found fs is inconsistent, \
+        let new_parent_node = self
+            .get_node_from_kv_engine(new_parent)
+            .await
+            .unwrap_or_else(|| {
+                panic!(
+                    "rename() found fs is inconsistent, \
                     the new parent i-node of ino={new_parent} should be in cache",
-            );
-        });
+                );
+            });
         let new_parent_fd = new_parent_node.get_fd();
         let new_entry_ino = if let Some(new_entry) = new_parent_node.get_entry(new_name) {
             debug_assert_eq!(&new_name, &new_entry.entry_name());
             let new_ino = new_entry.ino();
-            assert!(cache.get(&new_ino).is_some(), "rename() found fs is inconsistent, the i-node of ino={} and name={:?} \
-                        under parent directory of ino={} and name={:?} to replace should be in cache",
-                    new_ino, new_name, new_parent, new_parent_node.get_name(),);
             if no_replace {
                 debug!(
                     "rename() found i-node of ino={} and name={:?} under new parent ino={} and name={:?}, \
@@ -1264,7 +1250,47 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
         } else {
             None
         };
+        debug!(
+            "rename() pre-check passed, old parent ino={}, old name={:?}, new parent ino={}, new name={:?}, \
+                old entry ino={}, new entry ino={:?}",
+            old_parent, old_name, new_parent, new_name, old_entry_ino, new_entry_ino,
+        );
         Ok((old_parent_fd, old_entry_ino, new_parent_fd, new_entry_ino))
+    }
+
+    /// Recursive rename helper function
+    async fn rename_fullpath_recursive(&self, ino: INum, parent: INum) {
+        let mut node_pool: VecDeque<(INum, INum)> = VecDeque::new();
+        node_pool.push_back((ino, parent));
+
+        while let Some((child, parent)) = node_pool.pop_front() {
+            let parent_node = self.get_node_from_kv_engine(parent).await.unwrap_or_else(|| {
+                panic!(
+                    "impossible case when rename, the parent i-node of ino={parent} should be in the cache"
+                )
+            });
+            let parent_path = parent_node.get_full_path();
+
+            let mut child_node = self.get_node_from_kv_engine(child).await.unwrap_or_else(|| {
+                panic!(
+                    "impossible case when rename, the child i-node of ino={child} should be in the cache"
+                )
+            });
+            // The child node is still in the old path
+            self.remove_inum_from_kv_engine(child_node.get_full_path())
+                .await;
+
+            child_node.set_parent_ino(parent);
+            let new_path = child_node.push_child_for_rename(&mut node_pool, parent_path);
+
+            child_node.rename_in_s3_backend(new_path.clone()).await;
+
+            // remove the old path2inum ,and add the new path2inum
+
+            self.set_inum_to_kv_engine(&new_path, child).await;
+            // write back to kv engine
+            self.set_node_to_kv_engine(child, child_node).await;
+        }
     }
 
     /// Rename in cache helper
@@ -1275,8 +1301,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
         new_parent: INum,
         new_name: &str,
     ) -> Option<DirEntry> {
-        let mut cache = self.cache.write().await;
-        let old_parent_node = cache.get_mut(&old_parent).unwrap_or_else(|| {
+        let mut old_parent_node = self.get_node_from_kv_engine(old_parent).await.unwrap_or_else(|| {
             panic!(
                 "impossible case when rename, the from parent i-node of ino={old_parent} should be in cache",
             )
@@ -1294,15 +1319,22 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
                 Arc::clone(old_entry.file_attr_arc_ref()),
             ),
         };
+        self.set_node_to_kv_engine(old_parent, old_parent_node)
+            .await;
 
-        s3_node::rename_fullpath_recursive(entry_to_move.ino(), new_parent, &mut cache).await;
+        // TODO : the error is: {}
+        self.rename_fullpath_recursive(entry_to_move.ino(), new_parent)
+            .await;
 
-        let new_parent_node = cache.get_mut(&new_parent).unwrap_or_else(|| {
+        let mut new_parent_node = self.get_node_from_kv_engine(new_parent).await.unwrap_or_else(|| {
             panic!(
                 "impossible case when rename, the to parent i-node of ino={new_parent} should be in cache"
             )
         });
-        new_parent_node.insert_entry_for_rename(entry_to_move)
+        let result = new_parent_node.insert_entry_for_rename(entry_to_move);
+        self.set_node_to_kv_engine(new_parent, new_parent_node)
+            .await;
+        result
     }
 
     /// Rename exchange on local node
@@ -1326,7 +1358,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
                 (old_parent_fd, old_entry_ino, new_parent_fd, new_entry_ino)
             }
             Err(e) => {
-                debug!("rename() pre-check failed, the error is: {}", e);
+                debug!("rename() pre-check failed, the error is: {:?}", e);
                 return Err(e);
             }
         };
@@ -1347,8 +1379,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
             attr.write().ino = new_entry_ino;
             let exchange_entry = DirEntry::new(old_name.to_owned(), attr);
 
-            let mut cache = self.cache.write().await;
-            let old_parent_node = cache.get_mut(&old_parent).unwrap_or_else(|| {
+            let mut old_parent_node = self.get_node_from_kv_engine(old_parent).await.unwrap_or_else(|| {
                 panic!(
                     "impossible case when rename, the from parent i-node of ino={old_parent} should be in cache",
                 )
@@ -1364,21 +1395,21 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
             );
             // TODO: finish rename exchange when libc::rename2 is available
             // call rename2 here to exchange two nodes
-            let exchanged_node = cache.get_mut(&new_entry_ino).unwrap_or_else(|| {
+            let mut exchanged_node = self.get_node_from_kv_engine(new_entry_ino).await.unwrap_or_else(|| {
                 panic!(
                     "impossible case when rename, the new entry i-node of ino={new_entry_ino} should be in cache",
                 )
             });
             exchanged_node.set_parent_ino(old_parent);
             exchanged_node.set_name(old_name);
-            let exchanged_attr = exchanged_node
-                .load_attribute()
-                .await
-                .context(format!(
+            let exchanged_attr = exchanged_node.
+                load_attribute()
+               .await
+               .context(format!(
                     "rename_exchange_helper() failed to load attribute of \
                         to i-node of ino={new_entry_ino} and name={new_name:?} under parent directory",
                 ))
-                .unwrap_or_else(|e| {
+               .unwrap_or_else(|e| {
                     panic!(
                         "rename_exchange_helper() failed to load attributed of to i-node of ino={} and name={:?}, \
                             the error is: {}",
@@ -1422,7 +1453,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
                 (old_parent_fd, old_entry_ino, new_parent_fd, new_entry_ino)
             }
             Err(e) => {
-                debug!("rename() pre-check failed, the error is: {}", e);
+                debug!("rename() pre-check failed, the error is: {:?}", e);
                 return Err(e);
             }
         };
@@ -1438,8 +1469,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
         }
 
         {
-            let mut cache = self.cache.write().await;
-            let moved_node = cache.get_mut(&old_entry_ino).unwrap_or_else(|| {
+            let mut moved_node = self.get_node_from_kv_engine(old_entry_ino).await.unwrap_or_else(|| {
                 panic!(
                 "impossible case when rename, the from entry i-node of ino={old_entry_ino} should be in cache",
             )
@@ -1452,7 +1482,8 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
                 the to i-node of ino={} and name={:?} under to parent ino={}",
                 old_entry_ino, old_name, old_parent, old_entry_ino, new_name, new_parent,
             );
-        }
+            self.set_node_to_kv_engine(old_entry_ino, moved_node).await;
+        };
 
         let rename_replace_res = self
             .rename_in_cache_helper(old_parent, old_name, new_parent, new_name)
@@ -1466,6 +1497,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
     }
 
     /// Helper function to rename file locally
+    #[allow(dead_code)]
     pub(crate) async fn rename_local(&self, param: &RenameParam, from_remote: bool) {
         if param.flags == 2 {
             if let Err(e) = self.rename_exchange_local(param).await {
@@ -1493,13 +1525,15 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
         let node_ino: INum;
         {
             // pre-checks
-            let cache = self.cache.read().await;
-            let parent_node = cache.get(&parent).unwrap_or_else(|| {
-                panic!(
-                    "remove_node_local() found fs is inconsistent, \
+            let parent_node = self
+                .get_node_from_kv_engine(parent)
+                .await
+                .unwrap_or_else(|| {
+                    panic!(
+                        "remove_node_local() found fs is inconsistent, \
                         parent of ino={parent} should be in cache before remove its child",
-                );
-            });
+                    );
+                });
             match parent_node.get_entry(node_name) {
                 None => {
                     debug!(
@@ -1519,14 +1553,17 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
                     node_ino = child_entry.ino();
                     if let SFlag::S_IFDIR = node_type {
                         // check the directory to delete is empty
-                        let dir_node = cache.get(&node_ino).unwrap_or_else(|| {
-                            panic!(
-                                "remove_node_local() found fs is inconsistent, \
+                        let dir_node =
+                            self.get_node_from_kv_engine(node_ino)
+                                .await
+                                .unwrap_or_else(|| {
+                                    panic!(
+                                        "remove_node_local() found fs is inconsistent, \
                                     directory name={node_name:?} of ino={node_ino} \
                                     found under the parent of ino={parent}, \
                                     but no i-node found for this directory",
-                            );
-                        });
+                                    );
+                                });
                         if !dir_node.is_node_data_empty() {
                             debug!(
                                 "remove_node_local() cannot remove \
@@ -1545,7 +1582,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
                         }
                     }
 
-                    let child_node = cache.get(&node_ino).unwrap_or_else(|| {
+                    let child_node = self.get_node_from_kv_engine(node_ino).await.unwrap_or_else(|| {
                         panic!(
                             "remove_node_local() found fs is inconsistent, \
                                 i-node name={node_name:?} of ino={node_ino} found under the parent of ino={parent}, \
@@ -1565,8 +1602,8 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
             // all checks passed, ready to remove,
             // when deferred deletion, remove entry from directory first
             self.may_deferred_delete_node_helper(node_ino, from_remote)
-                .await
-                .context(format!(
+               .await
+               .context(format!(
                     "remove_node_local() failed to maybe deferred delete child i-node of ino={node_ino}, \
                         name={node_name:?} and type={node_type:?} under parent ino={parent}",
                 ))?;
@@ -1576,94 +1613,17 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
                     name={:?} and type={:?} under parent ino={}",
                 node_ino, node_name, node_type, parent,
             );
-        }
+        };
         Ok(())
     }
 
-    /// Sync attr to other nodes
-    async fn sync_attr_remote(&self, full_path: &str) {
-        let inum = {
-            let path2inum = self.path2inum.read().await;
-            path2inum
-                .get(full_path)
-                .unwrap_or_else(|| panic!("failed to find inum of {full_path:?} from path2inum"))
-                .to_owned()
-        };
-        let attr = self
-            .cache
-            .read()
-            .await
-            .get(&inum)
-            .unwrap_or_else(|| panic!("failed to find inum={inum:?} path={full_path:?} from cache"))
-            .get_attr();
-        if let Err(e) = dist_client::push_attr(
-            &self.kv_engine,
-            &self.node_id,
-            &self.volume_info,
-            full_path,
-            &attr,
-        )
-        .await
-        {
-            panic!("failed to sync attribute to others, error: {e}");
-        }
-    }
-
-    /// Sync dir to other nodes
-    async fn sync_dir_remote(
-        &self,
-        parent: &str,
-        child_name: &str,
-        child_attr: &FileAttr,
-        target_path: Option<&Path>,
-    ) {
-        if let Err(e) = dist_client::update_dir(
-            &self.kv_engine,
-            &self.node_id,
-            &self.volume_info,
-            parent,
-            child_name,
-            child_attr,
-            target_path,
-        )
-        .await
-        {
-            panic!("failed to sync dir to others, error: {e}");
-        }
-    }
-
-    /// Sync rename request to other nodes
-    async fn rename_remote(&self, args: RenameParam) {
-        if let Err(e) =
-            dist_client::rename(&self.kv_engine, &self.node_id, &self.volume_info, args).await
-        {
-            panic!("failed to sync rename request to others, error: {e}");
-        }
-    }
-
-    /// Sync remove request to other nodes
-    async fn remove_remote(&self, parent: INum, child_name: &str, child_type: SFlag) {
-        if let Err(e) = dist_client::remove(
-            &self.kv_engine,
-            &self.node_id,
-            &self.volume_info,
-            parent,
-            child_name,
-            child_type,
-        )
-        .await
-        {
-            panic!("failed to sync rename request to others, error: {e}");
-        }
-    }
-
     /// Invalidate cache from other nodes
-    async fn invalidate_remote(&self, full_path: &str, offset: i64, len: usize) {
+    async fn invalidate_remote(&self, full_ino: INum, offset: i64, len: usize) {
         if let Err(e) = dist_client::invalidate(
             &self.kv_engine,
             &self.node_id,
             &self.volume_info,
-            full_path,
+            full_ino,
             offset
                 .overflow_div(self.data_cache.get_align().cast())
                 .cast(),

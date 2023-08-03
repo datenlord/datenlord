@@ -1,11 +1,27 @@
 //! The implementation of FUSE session
 
+// #[cfg(target_os = "macos")]
+// use super::protocol::{
+//     FATTR_BKUPTIME, FATTR_CHGTIME, FATTR_CRTIME, FATTR_FLAGS,
+// FUSE_CASE_INSENSITIVE,     FUSE_VOL_RENAME, FUSE_XTIMES,
+// };
+use std::os::unix::io::RawFd;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::{Duration, UNIX_EPOCH};
+
+use aligned_utils::bytes::AlignedBytes;
+use anyhow::{anyhow, Context};
+use clippy_utilities::Cast;
+use crossbeam_channel::{Receiver, Sender};
+use crossbeam_utils::atomic::AtomicCell;
+use nix::errno::Errno;
+use nix::unistd;
+use tracing::{debug, error, info};
+
 use super::context::ProtoVersion;
 use super::file_system::{FileSystem, FsAsyncTaskController, FsController};
-use crate::async_fuse::memfs::MetaData;
-use crate::async_fuse::memfs::{FileLockParam, MemFs, RenameParam, SetAttrParam};
-
-//use super::channel::Channel;
+// use super::channel::Channel;
 // #[cfg(target_os = "macos")]
 // use super::fuse_reply::ReplyXTimes;
 use super::fuse_reply::{
@@ -23,26 +39,8 @@ use super::protocol::{
     FATTR_MTIME, FATTR_SIZE, FATTR_UID, FUSE_ASYNC_READ, FUSE_KERNEL_MINOR_VERSION,
     FUSE_KERNEL_VERSION, FUSE_RELEASE_FLUSH,
 };
+use crate::async_fuse::memfs::{FileLockParam, MemFs, MetaData, RenameParam, SetAttrParam};
 use crate::common::error::DatenLordError;
-// #[cfg(target_os = "macos")]
-// use super::protocol::{
-//     FATTR_BKUPTIME, FATTR_CHGTIME, FATTR_CRTIME, FATTR_FLAGS, FUSE_CASE_INSENSITIVE,
-//     FUSE_VOL_RENAME, FUSE_XTIMES,
-// };
-
-use std::os::unix::io::RawFd;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::time::{Duration, UNIX_EPOCH};
-
-use aligned_utils::bytes::AlignedBytes;
-use anyhow::{anyhow, Context};
-use clippy_utilities::Cast;
-use crossbeam_channel::{Receiver, Sender};
-use crossbeam_utils::atomic::AtomicCell;
-use log::{debug, error, info};
-use nix::errno::Errno;
-use nix::unistd;
 
 // #[cfg(target_os = "macos")]
 // use std::time::SystemTime;
@@ -52,8 +50,9 @@ use nix::unistd;
 const INIT_FLAGS: u32 = FUSE_ASYNC_READ;
 // TODO: Add FUSE_EXPORT_SUPPORT and FUSE_BIG_WRITES (requires ABI 7.10)
 
-/// On macOS, we additionally support case insensitiveness, volume renames and xtimes
-/// TODO: we should eventually let the filesystem implementation decide which flags to set
+/// On macOS, we additionally support case insensitiveness, volume renames and
+/// xtimes TODO: we should eventually let the filesystem implementation decide
+/// which flags to set
 #[cfg(target_os = "macos")]
 const INIT_FLAGS: u32 = FUSE_ASYNC_READ | FUSE_CASE_INSENSITIVE | FUSE_VOL_RENAME | FUSE_XTIMES;
 // TODO: Add FUSE_EXPORT_SUPPORT and FUSE_BIG_WRITES (requires ABI 7.10)
@@ -66,13 +65,15 @@ const MAX_WRITE_SIZE: u32 = 128 * 1024;
 #[cfg(target_os = "macos")]
 const MAX_WRITE_SIZE: u32 = 16 * 1024 * 1024;
 
-/// Size of the buffer for reading a request from the kernel. Since the kernel may send
-/// up to `MAX_WRITE_SIZE` bytes in a write request, we use that value plus some extra space.
+/// Size of the buffer for reading a request from the kernel. Since the kernel
+/// may send up to `MAX_WRITE_SIZE` bytes in a write request, we use that value
+/// plus some extra space.
 const BUFFER_SIZE: u32 = MAX_WRITE_SIZE + 512;
 
 /// We use `PAGE_SIZE` (4 KiB) as the alignment of the buffer.
 const PAGE_SIZE: usize = 4096;
-/// Max background pending requests under processing, at least to be 4, otherwise deadlock
+/// Max background pending requests under processing, at least to be 4,
+/// otherwise deadlock
 const MAX_BACKGROUND: u16 = 10; // TODO: set to larger value when release
 
 /// Static variable to indicate whether FUSE is initialized or not
@@ -428,9 +429,11 @@ impl<F: FileSystem + Send + Sync + 'static, A: FsAsyncTaskController + Send + Sy
         reply
             .init(FuseInitOut {
                 major: FUSE_KERNEL_VERSION,
-                minor: FUSE_KERNEL_MINOR_VERSION, // Do not change minor version, otherwise unknown panic
+                minor: FUSE_KERNEL_MINOR_VERSION, /* Do not change minor version, otherwise
+                                                   * unknown panic */
                 max_readahead: arg.max_readahead, // accept FUSE kernel module max_readahead
-                flags, // TODO: use features given in INIT_FLAGS and reported as capable
+                flags,                            /* TODO: use features given in INIT_FLAGS and
+                                                   * reported as capable */
                 #[cfg(not(feature = "abi-7-13"))]
                 unused,
                 #[cfg(feature = "abi-7-13")]
@@ -900,7 +903,7 @@ async fn dispatch<'a>(
     }
 }
 
-/// Replys ENOSYS
+/// Replies ENOSYS
 async fn not_implement_helper(req: &Request<'_>, fd: RawFd) -> nix::Result<usize> {
     let reply = ReplyEmpty::new(req.unique(), fd);
     reply.error_code(Errno::ENOSYS).await

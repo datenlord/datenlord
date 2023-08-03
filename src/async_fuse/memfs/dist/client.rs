@@ -1,20 +1,13 @@
+use std::sync::Arc;
+
+use tokio::net::TcpStream;
+use tracing::debug;
+
+use super::request::{self, Index};
+use super::{response, tcp};
 use crate::async_fuse::fuse::protocol::INum;
 use crate::async_fuse::memfs::kv_engine::kv_utils::{get_node_ip_and_port, get_volume_nodes};
 use crate::async_fuse::memfs::kv_engine::KVEngineType;
-use crate::async_fuse::memfs::RenameParam;
-
-use super::super::dir::DirEntry;
-use super::super::fs_util::FileAttr;
-use super::super::serial;
-use super::request::{self, Index};
-use super::response;
-use super::tcp;
-use log::debug;
-use nix::sys::stat::SFlag;
-use std::collections::BTreeMap;
-use std::path::Path;
-use std::sync::Arc;
-use tokio::net::TcpStream;
 
 /// Send message to all other nodes
 async fn send_to_others<F, T>(
@@ -52,145 +45,19 @@ where
     result
 }
 
-/// Load dir data from remote
-pub async fn load_dir(
-    kv_engine: &Arc<KVEngineType>,
-    node_id: &str,
-    volume_info: &str,
-    path: &str,
-) -> anyhow::Result<Option<BTreeMap<String, DirEntry>>> {
-    debug!("load_dir {}", path);
-    let load_dir_filter =
-        |data: &[u8]| -> (bool, anyhow::Result<Option<BTreeMap<String, DirEntry>>>) {
-            let de = response::deserialize_load_dir(data);
-            if de.is_some() {
-                (true, Ok(de))
-            } else {
-                (false, Ok(de))
-            }
-        };
-    let default: Option<BTreeMap<String, DirEntry>> = None;
-    send_to_others(
-        kv_engine,
-        node_id,
-        volume_info,
-        &request::load_dir(path),
-        load_dir_filter,
-        Ok(default),
-    )
-    .await
-}
-
-/// Update dir data to remote
-pub async fn update_dir(
-    kv_engine: &Arc<KVEngineType>,
-    node_id: &str,
-    volume_info: &str,
-    parent: &str,
-    child: &str,
-    child_attr: &FileAttr,
-    target_path: Option<&Path>,
-) -> anyhow::Result<()> {
-    debug!("update_dir parent {} child {}", parent, child);
-    let do_nothing = |_: &[u8]| -> (bool, anyhow::Result<()>) { (false, Ok(())) };
-
-    send_to_others(
-        kv_engine,
-        node_id,
-        volume_info,
-        &request::update_dir(parent, child, child_attr, target_path),
-        do_nothing,
-        Ok(()),
-    )
-    .await
-}
-
-#[allow(dead_code)]
-/// Remove dir entry from remote
-pub async fn remove_dir_entry(
-    kv_engine: &Arc<KVEngineType>,
-    node_id: &str,
-    volume_info: &str,
-    parent: &str,
-    child: &str,
-) -> anyhow::Result<()> {
-    debug!("remove_dir_entry parent {} child {}", parent, child);
-    let do_nothing = |_: &[u8]| -> (bool, anyhow::Result<()>) { (false, Ok(())) };
-
-    send_to_others(
-        kv_engine,
-        node_id,
-        volume_info,
-        &request::remove_dir_entry(parent, child),
-        do_nothing,
-        Ok(()),
-    )
-    .await
-}
-
-/// Get attr from remote
-pub async fn get_attr(
-    kv_engine: &Arc<KVEngineType>,
-    node_id: &str,
-    volume_info: &str,
-    path: &str,
-) -> anyhow::Result<Option<FileAttr>> {
-    debug!("get_attr {}", path);
-    let get_attr_filter = |data: &[u8]| -> (bool, anyhow::Result<Option<FileAttr>>) {
-        let de = response::deserialize_get_attr(data);
-        if de.is_some() {
-            (true, Ok(de))
-        } else {
-            (false, Ok(de))
-        }
-    };
-    let default: Option<FileAttr> = None;
-    send_to_others(
-        kv_engine,
-        node_id,
-        volume_info,
-        &request::get_file_attr(path),
-        get_attr_filter,
-        Ok(default),
-    )
-    .await
-}
-
-/// Push attr to remote
-pub async fn push_attr(
-    kv_engine: &Arc<KVEngineType>,
-    node_id: &str,
-    volume_info: &str,
-    path: &str,
-    attr: &FileAttr,
-) -> anyhow::Result<()> {
-    debug!("push_attr {}", path);
-    let do_nothing = |_: &[u8]| -> (bool, anyhow::Result<()>) { (false, Ok(())) };
-
-    send_to_others(
-        kv_engine,
-        node_id,
-        volume_info,
-        &request::push_file_attr(path, serial::file_attr_to_serial(attr)),
-        do_nothing,
-        Ok(()),
-    )
-    .await
-}
-
 /// Invalidate file cache to remote
 pub async fn invalidate(
     kv_engine: &Arc<KVEngineType>,
     node_id: &str,
     volume_info: &str,
-    path: &str,
+    ino: INum,
     start: usize,
     end: usize,
 ) -> anyhow::Result<()> {
-    debug!("invalidate {} start {} end {}", path, start, end);
+    debug!("invalidate {} start {} end {}", ino, start, end);
     let do_nothing = |_: &[u8]| -> (bool, anyhow::Result<()>) { (false, Ok(())) };
 
-    let invalid_req = request::invalidate(path.as_bytes().to_vec(), vec![Index::Range(start, end)]);
+    let invalid_req = request::invalidate(ino, vec![Index::Range(start, end)]);
 
     send_to_others(
         kv_engine,
@@ -208,13 +75,13 @@ pub async fn read_data(
     kv_engine: &Arc<KVEngineType>,
     node_id: &str,
     volume_info: &str,
-    path: &str,
+    ino: INum,
     start: usize,
     end: usize,
 ) -> anyhow::Result<Option<Vec<u8>>> {
-    debug!("read_data {} start {} end {}", path, start, end);
-    let check = request::check_available(path.as_bytes().to_vec(), vec![Index::Range(start, end)]);
-    let read_data = request::read(path.as_bytes().to_vec(), vec![Index::Range(start, end)]);
+    debug!("read_data {} start {} end {}", ino, start, end);
+    let check = request::check_available(ino, vec![Index::Range(start, end)]);
+    let read_data = request::read(ino, vec![Index::Range(start, end)]);
     if let Ok(nodes) = get_volume_nodes(kv_engine, node_id, volume_info).await {
         for other_id in nodes {
             if let Ok(ref ip_and_port) = get_node_ip_and_port(kv_engine, &other_id).await {
@@ -246,51 +113,4 @@ pub async fn read_data(
     }
 
     Ok(None)
-}
-
-/// Rename file request to remote
-pub async fn rename(
-    kv_engine: &Arc<KVEngineType>,
-    node_id: &str,
-    volume_info: &str,
-    rename_param: RenameParam,
-) -> anyhow::Result<()> {
-    debug!("rename {:?}", rename_param);
-    let do_nothing = |_: &[u8]| -> (bool, anyhow::Result<()>) { (false, Ok(())) };
-
-    send_to_others(
-        kv_engine,
-        node_id,
-        volume_info,
-        &request::rename(rename_param),
-        do_nothing,
-        Ok(()),
-    )
-    .await
-}
-
-/// Remove file request to remote
-pub async fn remove(
-    kv_engine: &Arc<KVEngineType>,
-    node_id: &str,
-    volume_info: &str,
-    parent: INum,
-    child_name: &str,
-    child_type: SFlag,
-) -> anyhow::Result<()> {
-    debug!(
-        "remove parent {:?} child_name {:?} child_type {:?}",
-        parent, child_name, child_type
-    );
-    let do_nothing = |_: &[u8]| -> (bool, anyhow::Result<()>) { (false, Ok(())) };
-
-    send_to_others(
-        kv_engine,
-        node_id,
-        volume_info,
-        &request::remove(parent, child_name, child_type),
-        do_nothing,
-        Ok(()),
-    )
-    .await
 }

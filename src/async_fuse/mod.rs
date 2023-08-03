@@ -1,11 +1,14 @@
 //! FUSE async implementation
 
+use std::sync::Arc;
+
+use memfs::s3_wrapper::{DoNothingImpl, S3BackEndImpl};
+
 use self::fuse::file_system::FsController;
 use self::memfs::kv_engine::KVEngineType;
 use crate::async_fuse::fuse::session;
-use crate::{common::etcd_delegate::EtcdDelegate, AsyncFuseArgs, VolumeType};
-use memfs::s3_wrapper::{DoNothingImpl, S3BackEndImpl};
-use std::sync::Arc;
+use crate::common::etcd_delegate::EtcdDelegate;
+use crate::{AsyncFuseArgs, VolumeType};
 
 pub mod fuse;
 pub mod memfs;
@@ -97,11 +100,10 @@ mod test {
     mod integration_tests;
     mod test_util;
 
-    use log::debug;
-    use std::fs;
-    use std::io;
+    use std::{fs, io};
 
     use futures::StreamExt;
+    use tracing::debug;
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_async_iter() -> io::Result<()> {

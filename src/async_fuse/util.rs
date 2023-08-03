@@ -6,10 +6,11 @@ use std::mem::MaybeUninit;
 use std::os::raw::{c_char, c_int};
 use std::{io, ptr, slice};
 
-use crate::common::error::{DatenLordError, DatenLordResult};
 use memchr::memchr;
 use nix::errno::Errno;
 use nix::sys::stat::SFlag;
+
+use crate::common::error::{DatenLordError, DatenLordResult};
 
 /// Format `nix::Error`
 // TODO: refactor this
@@ -64,7 +65,8 @@ pub fn mode_from_kind_and_perm(kind: SFlag, perm: u16) -> u32 {
     }
 }
 
-/// Stores short bytes on stack, stores long bytes on heap and provides [`CStr`].
+/// Stores short bytes on stack, stores long bytes on heap and provides
+/// [`CStr`].
 ///
 /// The threshold of allocation is [`libc::PATH_MAX`] (4096 on linux).
 ///

@@ -24,7 +24,6 @@ clippy-utilities = "0.1.0"
 crossbeam-channel = "0.5.0"
 crossbeam-queue = "0.3.1"
 crossbeam-utils = "0.8.1"
-env_logger = "0.10.0"
 event-listener = "2.5.1"
 flate2 = "1.0.16"
 futures = "0.3.5"
@@ -39,7 +38,6 @@ k8s-openapi = { version = "0.15.0", default-features = false, features = [
 lazy_static = "^1.4"
 libc = "0.2.79"
 lockfree-cuckoohash = "0.1.0"
-log = "0.4.11"
 memchr = "2.3.4"
 nix = "0.23.1"
 once_cell = "1.7.2"
@@ -65,6 +63,8 @@ tokio = { version = "1.19.2", features = ["full"] }
 # The version of smol should be same as the etcd-client used
 smol = "1.2.4"
 etcd-client = "0.11.1"
+tracing = "0.1"
+tracing-subscriber = "0.3"
 
 [build-dependencies]
 protoc-grpcio = "3.0.0"

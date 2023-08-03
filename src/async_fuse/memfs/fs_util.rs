@@ -1,8 +1,5 @@
 //! The implementation of filesystem related utilities
 
-use super::dir::{Dir, DirEntry};
-use crate::async_fuse::fuse::protocol::{FuseAttr, INum};
-
 use std::collections::BTreeMap;
 use std::os::unix::io::RawFd;
 use std::path::Path;
@@ -10,9 +7,12 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::Context;
 use clippy_utilities::Cast;
-use log::debug;
 use nix::fcntl::{self, OFlag};
 use nix::sys::stat::{self, FileStat, Mode, SFlag};
+use tracing::debug;
+
+use super::dir::{Dir, DirEntry};
+use crate::async_fuse::fuse::protocol::{FuseAttr, INum};
 
 /// File attributes
 #[derive(Copy, Clone, Debug)]
@@ -236,13 +236,9 @@ fn convert_to_file_attr(st: FileStat) -> FileAttr {
 // pub async fn load_symlink_target_attr(
 //     symlink_fd: RawFd,
 //     target_path: PathBuf,
-// ) -> anyhow::Result<FileAttr> {
-//     let nix_attr = blocking!(stat::fstatat(
-//         symlink_fd,
-//         target_path.as_os_str(),
-//         fcntl::AtFlags::AT_SYMLINK_FOLLOW
-//     ))?;
-//     Ok(convert_to_file_attr(nix_attr))
+// ) -> anyhow::Result<FileAttr> { let nix_attr = blocking!(stat::fstatat(
+//   symlink_fd, target_path.as_os_str(), fcntl::AtFlags::AT_SYMLINK_FOLLOW ))?;
+//   Ok(convert_to_file_attr(nix_attr))
 // }
 
 /// Load file attribute by fd
@@ -310,7 +306,7 @@ pub fn convert_to_fuse_attr(attr: FileAttr) -> FuseAttr {
     }
 }
 
-/// Helper funtion to load directory data
+/// Helper function to load directory data
 pub async fn load_dir_data(dirfd: RawFd) -> anyhow::Result<BTreeMap<String, DirEntry>> {
     tokio::task::spawn_blocking(move || {
         let dir = Dir::opendirat(dirfd, ".", OFlag::empty())

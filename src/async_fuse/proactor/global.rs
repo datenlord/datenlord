@@ -1,9 +1,5 @@
 //! Global proactor
 
-use super::small_box::SmallBox;
-
-use crate::async_fuse::util::{u32_to_usize, u64_to_ptr, usize_to_u64};
-
 use std::future::Future;
 use std::mem::{self, ManuallyDrop, MaybeUninit};
 use std::pin::Pin;
@@ -12,20 +8,21 @@ use std::sync::Arc;
 use std::task::{Context, Poll, Waker};
 use std::{io, ptr, thread};
 
+use crossbeam_queue::ArrayQueue;
+use event_listener::{Event, EventListener};
+use futures::channel::mpsc;
+use futures::StreamExt;
+use once_cell::sync::Lazy;
+use parking_lot::Mutex;
 use ring_io::cq::CompletionQueue;
 use ring_io::cqe::CQE;
 use ring_io::ring::RingBuilder;
 use ring_io::sq::SubmissionQueue;
 use ring_io::sqe::SQE;
+use tracing::trace;
 
-use futures::channel::mpsc;
-use futures::StreamExt;
-
-use crossbeam_queue::ArrayQueue;
-use event_listener::{Event, EventListener};
-use log::trace;
-use once_cell::sync::Lazy;
-use parking_lot::Mutex;
+use super::small_box::SmallBox;
+use crate::async_fuse::util::{u32_to_usize, u64_to_ptr, usize_to_u64};
 
 /// The global proactor
 struct Proactor {
@@ -101,9 +98,12 @@ pub trait Operation {
     /// # Safety
     /// + `self` must be movable during the lifetime of IO.
     /// + Moving self must not invalidate the pointers passed into the proactor.
-    /// + The `storage` has stable address. It will not be moved until the IO ends.
-    /// + All resources (fd, buffers) used by the proactor must be valid until the IO ends.
-    /// + When the IO ends, `storage` will be cleared and `self` will be returned or dropped.
+    /// + The `storage` has stable address. It will not be moved until the IO
+    ///   ends.
+    /// + All resources (fd, buffers) used by the proactor must be valid until
+    ///   the IO ends.
+    /// + When the IO ends, `storage` will be cleared and `self` will be
+    ///   returned or dropped.
     unsafe fn prepare(&mut self, storage: &mut SmallBox, sqe: &mut MaybeUninit<SQE>);
 }
 
@@ -299,14 +299,14 @@ impl Proactor {
 
         {
             let inner = Arc::clone(&inner);
-            tokio::task::spawn(async move { Self::submitter(&mut sq, &mut rx, &inner).await });
-        }
+            tokio::task::spawn(async move { Self::submitter(&mut sq, &mut rx, &inner).await })
+        };
         {
             let inner = Arc::clone(&inner);
             // using tokio::task::spawn / spawn_blocking here would cause deadlock
             // `Self::completer` is pure non-async routine
-            thread::spawn(move || Self::completer(&mut cq, &inner));
-        }
+            thread::spawn(move || Self::completer(&mut cq, &inner))
+        };
 
         Ok(Self { inner })
     }
@@ -366,7 +366,9 @@ impl Proactor {
             while let Some(cqe) = cq.peek_cqe() {
                 Self::complete(cqe, pool);
                 cqes_cnt = cqes_cnt.wrapping_add(1);
-                unsafe { cq.advance_unchecked(1) };
+                unsafe {
+                    cq.advance_unchecked(1);
+                }
             }
             trace!("completer completed {} cqes", cqes_cnt);
 

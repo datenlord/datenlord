@@ -1,21 +1,21 @@
+use std::collections::HashSet;
+use std::path::Path;
+use std::{fs, iter};
+
 use anyhow::Context;
 use clippy_utilities::OverflowArithmetic;
-use log::info;
 use nix::dir::Dir;
 use nix::fcntl::{self, OFlag};
 use nix::sys::stat::Mode;
 use nix::unistd::{self, Whence};
-use std::collections::HashSet;
-use std::fs;
-use std::iter;
-use std::path::Path;
+use tracing::info;
 
 use super::test_util;
 
-pub const BENCH_MOUNT_DIR: &str = "./fuse_bench";
+pub const BENCH_MOUNT_DIR: &str = "/tmp/datenlord_bench_dir";
 pub const S3_BENCH_MOUNT_DIR: &str = "./s3_fuse_bench";
-pub const DEFAULT_MOUNT_DIR: &str = "./fuse_test";
-pub const S3_DEFAULT_MOUNT_DIR: &str = "./s3_fuse_test";
+pub const DEFAULT_MOUNT_DIR: &str = "/tmp/datenlord_test_dir";
+pub const S3_DEFAULT_MOUNT_DIR: &str = "/tmp/datenlord_test_dir";
 pub const FILE_CONTENT: &str = "0123456789ABCDEF";
 
 #[cfg(test)]
@@ -319,11 +319,11 @@ fn test_rename_dir(mount_dir: &Path) -> anyhow::Result<()> {
 
     assert!(
         !old_sub_dir.exists(),
-        "the old direcotry {old_sub_dir:?} should have been removed"
+        "the old directory {old_sub_dir:?} should have been removed"
     );
     assert!(
         new_sub_dir.exists(),
-        "the new direcotry {new_sub_dir:?} should exist",
+        "the new directory {new_sub_dir:?} should exist",
     );
 
     // Clean up
@@ -350,11 +350,12 @@ fn test_symlink_dir(mount_dir: &Path) -> anyhow::Result<()> {
 
     let dst_dir = Path::new("dst_dir");
     unistd::symlinkat(src_dir, None, dst_dir).context("create symlink failed")?;
-    // std::os::unix::fs::symlink(&src_path, &dst_path).context("create symlink failed")?;
+    // std::os::unix::fs::symlink(&src_path, &dst_path).context("create symlink
+    // failed")?;
     let target_path = std::fs::read_link(dst_dir).context("read symlink failed ")?;
     assert_eq!(src_dir, target_path, "symlink target path not match");
 
-    //let dst_path = Path::new(&dst_dir).join(src_file_name);
+    // let dst_path = Path::new(&dst_dir).join(src_file_name);
     let dst_path = Path::new("./dst_dir").join(src_file_name);
     fs::write(&dst_path, FILE_CONTENT).context(format!("failed to write to file={dst_path:?}"))?;
     let content = fs::read_to_string(src_path).context("read symlink target file failed")?;
@@ -389,7 +390,9 @@ fn test_symlink_dir(mount_dir: &Path) -> anyhow::Result<()> {
         "directory entry name not match",
     );
 
+    info!("about to remove src_dir");
     fs::remove_dir_all(src_dir)?; // immediate deletion
+    info!("about to remove dst_dir");
     fs::remove_dir_all(dst_dir)?; // immediate deletion
     assert!(!src_dir.exists());
     assert!(!dst_dir.exists());
@@ -409,7 +412,8 @@ fn test_symlink_file(mount_dir: &Path) -> anyhow::Result<()> {
 
     let dst_path = Path::new("dst.txt");
     unistd::symlinkat(src_path, None, dst_path).context("create symlink failed")?;
-    // std::os::unix::fs::symlink(&src_path, &dst_path).context("create symlink failed")?;
+    // std::os::unix::fs::symlink(&src_path, &dst_path).context("create symlink
+    // failed")?;
     let target_path = std::fs::read_link(dst_path).context("read symlink failed ")?;
     assert_eq!(src_path, target_path, "symlink target path not match");
 
@@ -500,8 +504,12 @@ fn test_bind_mount(fuse_mount_dir: &Path) -> anyhow::Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn test_all() -> anyhow::Result<()> {
+    run_test().await
+}
+
 async fn run_test() -> anyhow::Result<()> {
-    _run_test(DEFAULT_MOUNT_DIR, false).await
+    _run_test(DEFAULT_MOUNT_DIR, true).await
 }
 
 #[ignore]
@@ -511,9 +519,9 @@ async fn run_s3_test() -> anyhow::Result<()> {
 }
 
 async fn _run_test(mount_dir_str: &str, is_s3: bool) -> anyhow::Result<()> {
+    info!("begin integration test");
     let mount_dir = Path::new(mount_dir_str);
     let th = test_util::setup(mount_dir, is_s3).await?;
-    info!("begin integration test");
 
     test_symlink_dir(mount_dir).context("test_symlink_dir() failed")?;
     test_symlink_file(mount_dir).context("test_symlink_file() failed")?;
@@ -533,9 +541,9 @@ async fn _run_test(mount_dir_str: &str, is_s3: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[allow(dead_code)]
 async fn run_bench() -> anyhow::Result<()> {
-    _run_bench(BENCH_MOUNT_DIR, false).await
+    _run_bench(BENCH_MOUNT_DIR, true).await
 }
 
 #[ignore]

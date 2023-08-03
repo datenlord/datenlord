@@ -1,10 +1,5 @@
 //! The utilities of meta data management
 
-use clippy_utilities::Cast;
-use grpcio::{ChannelBuilder, Environment};
-use log::{debug, error, info, warn};
-use rand::{seq::IteratorRandom, Rng};
-use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::convert::From;
 use std::fmt::Debug;
@@ -12,6 +7,13 @@ use std::fs::{self, File};
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+
+use clippy_utilities::Cast;
+use grpcio::{ChannelBuilder, Environment};
+use rand::seq::IteratorRandom;
+use rand::Rng;
+use serde::{Deserialize, Serialize};
+use tracing::{debug, error, info, warn};
 
 use super::proto::csi::{
     CreateVolumeRequest, ListSnapshotsResponse_Entry, ListVolumesResponse_Entry, Topology,
@@ -21,14 +23,11 @@ use super::proto::csi::{
 };
 use super::proto::datenlord_worker_grpc::WorkerClient;
 use super::util::{self, BindMountMode};
-use crate::common::error::{
-    Context,
-    DatenLordError::{
-        ArgumentInvalid, NodeNotFound, SnapshotNotFound, SnapshotNotReady, StartingTokenInvalid,
-        VolumeNotFound,
-    },
-    DatenLordResult,
+use crate::common::error::DatenLordError::{
+    ArgumentInvalid, NodeNotFound, SnapshotNotFound, SnapshotNotReady, StartingTokenInvalid,
+    VolumeNotFound,
 };
+use crate::common::error::{Context, DatenLordResult};
 use crate::common::etcd_delegate::EtcdDelegate;
 use crate::RunAsRole;
 
@@ -418,7 +417,8 @@ impl MetaData {
         self.get_snapshot_by_id(&snap_id).await
     }
 
-    /// Find snapshot by source volume ID, each source volume ID has one snapshot at most
+    /// Find snapshot by source volume ID, each source volume ID has one
+    /// snapshot at most
     pub async fn get_snapshot_by_src_volume_id(
         &self,
         src_volume_id: &str,
@@ -510,7 +510,7 @@ impl MetaData {
         let (next_pos, ofnp) = starting_pos.overflowing_add(num_to_list);
         debug_assert!(
             !ofnp,
-            "sarting_pos={starting_pos} add num_to_list={num_to_list} overflowed",
+            "starting_pos={starting_pos} add num_to_list={num_to_list} overflowed",
         );
 
         let result_vec = vector
@@ -558,7 +558,8 @@ impl MetaData {
         })
     }
 
-    /// List snapshots except those creation time failed to convert to proto timestamp
+    /// List snapshots except those creation time failed to convert to proto
+    /// timestamp
     pub async fn list_snapshots(
         &self,
         starting_token: &str,
@@ -768,17 +769,15 @@ impl MetaData {
 
         // Volume ephemeral field cannot be changed
         let node_vol_key = format!("{}/{}/{}", NODE_VOLUME_PREFIX, self.get_node_id(), vol_id);
-        //let node_vol_pre_value = self
+        // let node_vol_pre_value = self
         self.etcd_delegate
             .write_or_update_kv(node_vol_key.clone(), &volume.ephemeral)
             .await?;
-        /*
-        debug_assert_eq!(
-            node_vol_pre_value, vol_id_pre_value.ephemeral,
-            "replaced volume key={} value not match",
-            node_vol_key,
-        );
-        */
+        // debug_assert_eq!(
+        // node_vol_pre_value, vol_id_pre_value.ephemeral,
+        // "replaced volume key={} value not match",
+        // node_vol_key,
+        // );
 
         Ok(vol_id_pre_value)
     }
@@ -815,7 +814,7 @@ impl MetaData {
 
     /// Delete node id from the volume meta data.
     /// If the node id is the last one then delete the whole meta data.
-    /// Delete voume meta data from etcd
+    /// Delete volume meta data from etcd
     pub async fn delete_volume_meta_data(
         &self,
         vol_id: &str,
@@ -1364,6 +1363,7 @@ impl MetaData {
         }
         Ok(())
     }
+
     /// Build snapshot from source volume
     pub async fn build_snapshot_from_volume(
         &self,
@@ -1515,7 +1515,7 @@ pub struct DatenLordVolume {
     pub node_ids: Vec<String>,
     /// The vector of nodes that the volume can be accessible
     pub accessible_nodes: Vec<String>,
-    /// The volume diretory path
+    /// The volume directory path
     pub vol_path: PathBuf,
     /// Volume access mode
     pub vol_access_mode: Vec<VolumeAccessMode>,
@@ -1537,7 +1537,7 @@ struct DatenLordVolumeBasicFields {
     pub node_ids: Vec<String>,
     /// The vector of nodes that the volume can be accessible
     pub accessible_nodes: Vec<String>,
-    /// The volume diretory path
+    /// The volume directory path
     pub vol_path: PathBuf,
     /// The volume is ephemeral or not
     pub ephemeral: bool,

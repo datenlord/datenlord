@@ -55,6 +55,7 @@ jobs:
           profile: minimal
           toolchain: ${{ env.CI_RUST_TOOLCHAIN }}
           override: true
+      - uses: Swatinem/rust-cache@v2
       - uses: actions-rs/cargo@v1
         with:
           command: check
@@ -75,38 +76,23 @@ jobs:
           profile: default
           toolchain: ${{ env.CI_RUST_TOOLCHAIN }}
           override: true
-      - name: Build bind_mounter
-        uses: actions-rs/cargo@v1
-        with:
-          command: build
-          args: --bin bind_mounter
+      - uses: Swatinem/rust-cache@v2
+      - name: Run etcd service
+        run: |
+            docker pull $ETCD_IMAGE
+            docker run -d --rm --net host --name $ETCD_CONTAINER_NAME $ETCD_IMAGE
+            docker ps
+            docker logs $ETCD_CONTAINER_NAME    
+      - name: Modify fuse.conf
+        run: sudo sed -i 's/#user_allow_other/user_allow_other/g' /etc/fuse.conf
       - name: Enable bind_mounter permission and run cargo test with not-root and root
         run: |
-          sudo chown root:root $BIND_MOUNTER
-          sudo chmod u+s $BIND_MOUNTER
-          ls -lsh $BIND_MOUNTER
-          export ETCD_END_POINT=127.0.0.1:2379
-          export BIND_MOUNTER=`realpath $BIND_MOUNTER`
-          cargo test |& tee datenlord_cargo_test.log
-          export TEST_CMD=`grep Running datenlord_cargo_test.log | grep datenlord | awk -F"[()]" '{print $2}'`
-          sudo $TEST_CMD
+          export RUST_LOG=info
+          cargo test
 
   csi-sanity-test:
     name: CSI-Sanity-Test
     runs-on: ubuntu-latest
-    #services:
-    #  etcd:
-    #    image: gcr.io/etcd-development/etcd:latest
-    #    # Set health checks to wait until etcd has started
-    #    options: >-
-    #      --health-cmd "/usr/local/bin/etcdctl cluster-health"
-    #      --health-interval 10s
-    #      --health-timeout 5s
-    #      --health-retries 5
-    #      --entrypoint /usr/local/bin/etcd
-    #    ports:
-    #      - 2379:2379
-    #      - 2380:2380
     steps:
       - name: Install CSI dependencies
         run: |
@@ -125,23 +111,11 @@ jobs:
           profile: minimal
           toolchain: ${{ env.CI_RUST_TOOLCHAIN }}
           override: true
+      - uses: Swatinem/rust-cache@v2
       - name: Cargo build
         uses: actions-rs/cargo@v1
         with:
           command: build
-      #- name: Cargo test
-      #  uses: actions-rs/cargo@v1
-      #  with:
-      #    command: test
-      #- name: Cargo build
-      #  uses: actions-rs/cargo@v1
-      #  with:
-      #    command: build
-      #- name: Enable bind_mounter permission again
-      #  run: |
-      #    sudo chown root:root $BIND_MOUNTER
-      #    sudo chmod u+s $BIND_MOUNTER
-      #    ls -lsh $BIND_MOUNTER
       - name: Enable bind_mounter permission
         run: |
           sudo chown root:root $BIND_MOUNTER
@@ -162,9 +136,6 @@ jobs:
           repository: kubernetes-csi/csi-test
           path: ./csi-test
       - name: Build csi-sanity code
-        #uses: actions/setup-go@v3
-        #with:
-        #  go-version: 'stable'
         env:
           PROJECT_PATH: "./csi-test/cmd/csi-sanity"
         run: |
@@ -212,119 +183,18 @@ jobs:
           profile: minimal
           toolchain: ${{ env.CI_RUST_TOOLCHAIN }}
           override: true
+      - uses: Swatinem/rust-cache@v2
       - run: rustup component add clippy
       - uses: actions-rs/cargo@v1
         with:
           command: clippy
           args: --all-features --all-targets -- -D warnings
-
-  fs-e2e:
-    name: FS-E2E
+  spellcheck:
+    name: Spell Check with Typos
     runs-on: ubuntu-latest
     steps:
-      - name: Install CSI dependencies
-        run: | 
-          sudo apt update
-          sudo apt install -y cmake g++ libprotobuf-dev protobuf-compiler
-      - name: Checkout repository
-        uses: actions/checkout@v2
-      - name: Install toolchain
-        uses: actions-rs/toolchain@v1
-        with:
-          profile: minimal
-          toolchain: ${{ env.CI_RUST_TOOLCHAIN }}
-          override: true
-      - name: Build DatenLord
-        uses: actions-rs/cargo@v1
-        with:
-          command: build
-      #- name: Check out xfstest code
-      #  uses: actions/checkout@v2
-      #  with:
-      #    repository: kdave/xfstests
-      #    path: ./xfstests
-      #- name: Build xfstests
-      #  run: |
-      #    cd xfstests
-      #    make
-      #    cd -
-      - name: Check out fuse-xfstests code
-        uses: actions/checkout@v2
-        with:
-          repository: pwang7/fuse-xfstests
-          path: ./fuse-xfstests
-      #- name: Run fuse-xfstests
-      #  run: |
-      #    sudo apt update
-      #    sudo apt install xfslibs-dev uuid-dev libtool-bin \
-      #        e2fsprogs automake gcc libuuid1 quota attr libattr1-dev make \
-      #        libacl1-dev libaio-dev xfsprogs libgdbm-dev gawk fio dbench \
-      #        uuid-runtime python sqlite3 # liburing-dev
-      #    sudo useradd -m fsgqa
-      #    sudo groupadd fsgqa || true
-      #    sudo useradd 123456-fsgqa
-      #    sudo useradd fsgqa2
-      #    cd fuse-xfstests
-      #    make
-      #    #sudo ./check-datenlord
-      #    cd -
-      - name: Run etcd service
-        run: |
-          docker pull $ETCD_IMAGE
-          docker run -d --rm --net host --name $ETCD_CONTAINER_NAME $ETCD_IMAGE
-          docker ps
-          docker logs $ETCD_CONTAINER_NAME
-      - name: Run ntfs-3g-pjd-fstest
-        run: |
-          git clone https://git.code.sf.net/p/ntfs-3g/pjd-fstest ntfs-3g-pjd-fstest
-          cd ntfs-3g-pjd-fstest
-          cp tests/conf tests/conf.bak
-          cat >tests/conf <<END
-            # fstest configuration file
-            # Known operating systems: FreeBSD, SunOS, Linux
-            os=`uname`
-            # Known file systems: UFS, ZFS, ext3, ext4, ntfs-3g, xfs, btrfs, glusterfs
-            fs="ext4"
-          END
-          cat tests/conf
-          gcc -Wall -DHAS_TRUNCATE64 -DHAS_STAT64 fstest.c -o fstest
-          cd -
-          mkdir fuse_mount_dir
-          sudo RUST_LOG=debug target/debug/datenlord start_async_fuse --mountpoint=./fuse_mount_dir --volume_info="fuse-test-bucket;http://127.0.0.1:9000;test;test1234" --volume_type=none --etcd=127.0.0.1:2379 --serverport=8800 --nodeid=test --nodeip=127.0.0.1 --capacity=1073741824 &>datenlord.log &
-          cd fuse_mount_dir
-          sudo prove -rv ../ntfs-3g-pjd-fstest/tests/chflags
-          sudo prove -rv ../ntfs-3g-pjd-fstest/tests/xacl
-      - name: Setup tmate session
-        if: ${{ failure() }}
-        uses: mxschmitt/action-tmate@v3
+    - name: Checkout Actions Repository
+      uses: actions/checkout@v3
 
-#  coverage:
-#    name: Coverage
-#    runs-on: ubuntu-latest
-#    steps:
-#      - name: Checkout repository
-#        uses: actions/checkout@v2
-#
-#      - name: Install toolchain
-#        uses: actions-rs/toolchain@v1
-#        with:
-#          profile: default
-#          toolchain: ${{ env.CI_RUST_TOOLCHAIN }}
-#          override: true
-#
-#      - name: Run cargo-tarpaulin
-#        uses: actions-rs/tarpaulin@v0.1
-#        with:
-#          version: '0.9.0'
-#          args: '-- --test-threads 1'
-#
-#      - name: Upload to codecov.io
-#        uses: codecov/codecov-action@v1.0.2
-#        with:
-#          token: ${{secrets.CODECOV_TOKEN}}
-#
-#      - name: Archive code coverage results
-#        uses: actions/upload-artifact@v1
-#        with:
-#          name: code-coverage-report
-#          path: cobertura.xml
+    - name: Check spelling of the entire repository
+      uses: crate-ci/typos@v1.15.0

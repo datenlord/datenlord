@@ -1,8 +1,9 @@
-use crate::async_fuse::fuse::fuse_reply::AsIoVec;
-use crate::async_fuse::memfs::cache::IoMemBlock;
 use clippy_utilities::Cast;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
+
+use crate::async_fuse::fuse::fuse_reply::AsIoVec;
+use crate::async_fuse::memfs::cache::IoMemBlock;
 
 /// Read message from tcp stream
 pub async fn read_message(stream: &mut TcpStream, buf: &mut Vec<u8>) -> anyhow::Result<usize> {
@@ -11,9 +12,7 @@ pub async fn read_message(stream: &mut TcpStream, buf: &mut Vec<u8>) -> anyhow::
     let len = u64::from_be_bytes(local_buf);
 
     Vec::reserve(buf, len.cast());
-    unsafe {
-        buf.set_len(len.cast());
-    }
+    unsafe { buf.set_len(len.cast()) }
     stream.read_exact(buf).await?;
     Ok(len.cast())
 }

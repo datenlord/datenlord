@@ -1,7 +1,7 @@
 //! The implementation for CSI identity service
 
 use grpcio::{RpcContext, UnarySink};
-use log::debug;
+use tracing::debug;
 
 use super::proto::csi::{
     GetPluginCapabilitiesRequest, GetPluginCapabilitiesResponse, GetPluginInfoRequest,
@@ -11,7 +11,7 @@ use super::proto::csi::{
 use super::proto::csi_grpc::Identity;
 use super::util;
 
-/// for `IdentityService` implmentation
+/// for `IdentityService` implementation
 #[derive(Clone)]
 pub struct IdentityImpl {
     /// The name of the CSI plugin

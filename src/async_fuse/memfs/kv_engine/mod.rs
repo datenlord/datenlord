@@ -1,12 +1,17 @@
-use super::{s3_node::S3Node, s3_wrapper::S3BackEnd, INum, S3MetaData};
+use core::fmt::Debug;
+use std::fmt;
+use std::fmt::Display;
+use std::time::Duration;
+
+use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
+
+use super::s3_node::S3Node;
+use super::s3_wrapper::S3BackEnd;
+use super::{INum, S3MetaData};
 use crate::async_fuse::memfs::dist::id_alloc::IdType;
 use crate::common::async_fuse_error::KVEngineError;
 use crate::common::error::{DatenLordError, DatenLordResult};
-use async_trait::async_trait;
-use core::fmt::Debug;
-use serde::{Deserialize, Serialize};
-use std::fmt::Display;
-use std::{fmt, time::Duration};
 
 /// The `KVEngineType` is used to provide support for metadata.
 /// We use this alias to avoid tem
@@ -106,8 +111,9 @@ impl ValueType {
 
 /// The `KeyType` is used to locate the value in the distributed K/V storage.
 /// Every key is prefixed with a string to indicate the type of the value.
-/// If you want to add a new type of value, you need to add a new variant to the enum.
-/// And you need to add a new match arm to the `get_key` function , make sure the key is unique.
+/// If you want to add a new type of value, you need to add a new variant to the
+/// enum. And you need to add a new match arm to the `get_key` function , make
+/// sure the key is unique.
 #[allow(dead_code)]
 #[derive(Debug, Eq, PartialEq)]
 pub enum KeyType {
@@ -131,7 +137,7 @@ pub enum KeyType {
     VolumeInfo(String),
     /// Node list
     /// The corresponding value type is ValueType::RawData
-    FileNodeList(Vec<u8>),
+    FileNodeList(INum),
 }
 
 // ::<KeyType>::get() -> ValueType
@@ -144,7 +150,7 @@ pub enum LockKeyType {
     /// ETCD volume information lock
     VolumeInfoLock,
     /// ETCD file node list lock
-    FileNodeListLock(Vec<u8>),
+    FileNodeListLock(INum),
 }
 
 impl Display for KeyType {
@@ -347,10 +353,12 @@ pub struct KeyRange {
     /// The ending key of the range.
     pub(crate) range_end: Vec<u8>,
 
-    /// A flag that, when set to true, causes the `build` method to treat `key` as a prefix.
+    /// A flag that, when set to true, causes the `build` method to treat `key`
+    /// as a prefix.
     pub(crate) with_prefix: bool,
 
-    /// A flag that, when set to true, causes the `build` method to include all keys in the range.
+    /// A flag that, when set to true, causes the `build` method to include all
+    /// keys in the range.
     pub(crate) with_all_keys: bool,
 }
 
@@ -397,7 +405,8 @@ impl KeyRange {
     }
 }
 
-/// To support different K/V storage engines, we need to a trait to abstract the K/V storage engine.
+/// To support different K/V storage engines, we need to a trait to abstract the
+/// K/V storage engine.
 #[async_trait]
 pub trait KVEngine: Send + Sync + Debug + Sized {
     /// create a new KVEngine.
@@ -461,7 +470,7 @@ pub const RETRY_TXN_BREAK: DatenLordResult<bool> = Ok(true);
 /// For example: `Ok((txn.commit().await,...))`
 /// For example: `Ok((BREAK_RETRY_TXN,...))`
 macro_rules! retry_txn {
-    ($retry_num : expr ,$logic: block) => {{
+    ($retry_num:expr, $logic:block) => {{
         use crate::common::error::DatenLordError;
 
         let mut result = Err(DatenLordError::TransactionRetryLimitExceededErr {
