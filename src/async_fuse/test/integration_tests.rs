@@ -19,9 +19,11 @@ pub const S3_DEFAULT_MOUNT_DIR: &str = "/tmp/datenlord_test_dir";
 pub const FILE_CONTENT: &str = "0123456789ABCDEF";
 
 #[cfg(test)]
-fn test_create_file(mount_dir: &Path) -> anyhow::Result<()> {
+fn test_create_file(mount_dir: &str) -> anyhow::Result<()> {
     use smol::fs::unix::MetadataExt;
     info!("test create file");
+
+    let mount_dir = Path::new(&mount_dir);
     let file_path = Path::new(mount_dir).join("test_create_file_user.txt");
     let file_mode = Mode::from_bits_truncate(0o644);
     let file_fd = fcntl::open(&file_path, OFlag::O_CREAT, file_mode)?;
@@ -44,10 +46,12 @@ fn test_create_file(mount_dir: &Path) -> anyhow::Result<()> {
 }
 
 #[cfg(test)]
-fn test_name_too_long(mount_dir: &Path) -> anyhow::Result<()> {
+#[tracing::instrument(err, ret)]
+fn test_name_too_long(mount_dir: &str) -> anyhow::Result<()> {
     use nix::fcntl::open;
     info!("test_name_too_long");
 
+    let mount_dir = Path::new(&mount_dir);
     let file_name = "a".repeat(256);
     // try to create file, dir, symlink with name too long
     // expect to fail with ENAMETOOLONG
@@ -82,8 +86,11 @@ fn test_name_too_long(mount_dir: &Path) -> anyhow::Result<()> {
 }
 
 #[cfg(test)]
-fn test_file_manipulation_rust_way(mount_dir: &Path) -> anyhow::Result<()> {
+#[tracing::instrument(err, ret)]
+fn test_file_manipulation_rust_way(mount_dir: &str) -> anyhow::Result<()> {
     info!("file manipulation Rust style");
+
+    let mount_dir = Path::new(&mount_dir);
     let file_path = Path::new(mount_dir).join("tmp.txt");
     fs::write(&file_path, FILE_CONTENT)?;
     let bytes = fs::read(&file_path)?;
@@ -99,8 +106,11 @@ fn test_file_manipulation_rust_way(mount_dir: &Path) -> anyhow::Result<()> {
 }
 
 #[cfg(test)]
-fn test_file_manipulation_nix_way(mount_dir: &Path) -> anyhow::Result<()> {
+#[tracing::instrument(err, ret)]
+fn test_file_manipulation_nix_way(mount_dir: &str) -> anyhow::Result<()> {
     info!("file manipulation C style");
+
+    let mount_dir = Path::new(&mount_dir);
     let file_path = Path::new(mount_dir).join("tmp.test");
     let oflags = OFlag::O_CREAT | OFlag::O_EXCL | OFlag::O_RDWR;
     let fd = fcntl::open(&file_path, oflags, Mode::empty())?;
@@ -140,8 +150,11 @@ fn test_file_manipulation_nix_way(mount_dir: &Path) -> anyhow::Result<()> {
 }
 
 #[cfg(test)]
-fn test_dir_manipulation_nix_way(mount_dir: &Path) -> anyhow::Result<()> {
+#[tracing::instrument(err, ret)]
+fn test_dir_manipulation_nix_way(mount_dir: &str) -> anyhow::Result<()> {
     info!("directory manipulation C style");
+
+    let mount_dir = Path::new(&mount_dir);
     let dir_path = Path::new(mount_dir).join("test_dir");
     let dir_mode = Mode::from_bits_truncate(0o755);
     if dir_path.exists() {
@@ -193,8 +206,11 @@ fn test_dir_manipulation_nix_way(mount_dir: &Path) -> anyhow::Result<()> {
 }
 
 #[cfg(test)]
-fn test_deferred_deletion(mount_dir: &Path) -> anyhow::Result<()> {
+#[tracing::instrument(err, ret)]
+fn test_deferred_deletion(mount_dir: &str) -> anyhow::Result<()> {
     info!("file deletion deferred");
+
+    let mount_dir = Path::new(&mount_dir);
     let file_path = Path::new(mount_dir).join("test_file.txt");
     let oflags = OFlag::O_CREAT | OFlag::O_EXCL | OFlag::O_RDWR;
     let file_mode = Mode::from_bits_truncate(0o644);
@@ -243,8 +259,11 @@ fn test_deferred_deletion(mount_dir: &Path) -> anyhow::Result<()> {
 }
 
 #[cfg(test)]
-fn test_rename_file(mount_dir: &Path) -> anyhow::Result<()> {
+#[tracing::instrument(err, ret)]
+fn test_rename_file(mount_dir: &str) -> anyhow::Result<()> {
     info!("rename file");
+
+    let mount_dir = Path::new(&mount_dir);
     let from_dir = Path::new(mount_dir).join("from_dir");
     if from_dir.exists() {
         fs::remove_dir_all(&from_dir)?;
@@ -284,11 +303,13 @@ fn test_rename_file(mount_dir: &Path) -> anyhow::Result<()> {
 }
 
 #[cfg(test)]
-fn test_rename_file_replace(mount_dir: &Path) -> anyhow::Result<()> {
+#[tracing::instrument(err, ret)]
+fn test_rename_file_replace(mount_dir: &str) -> anyhow::Result<()> {
     info!("rename file no replace");
     let oflags = OFlag::O_CREAT | OFlag::O_EXCL | OFlag::O_RDWR;
     let file_mode = Mode::from_bits_truncate(0o644);
 
+    let mount_dir = Path::new(&mount_dir);
     let old_file = Path::new(mount_dir).join("old.txt");
     let old_fd = fcntl::open(&old_file, oflags, file_mode)?;
     let old_file_write_size = unistd::write(old_fd, FILE_CONTENT.as_bytes())?;
@@ -361,8 +382,11 @@ fn test_rename_file_replace(mount_dir: &Path) -> anyhow::Result<()> {
 }
 
 #[cfg(test)]
-fn test_rename_dir(mount_dir: &Path) -> anyhow::Result<()> {
+#[tracing::instrument(err, ret)]
+fn test_rename_dir(mount_dir: &str) -> anyhow::Result<()> {
     info!("rename directory");
+
+    let mount_dir = Path::new(&mount_dir);
     let from_dir = Path::new(mount_dir).join("from_dir");
     if from_dir.exists() {
         fs::remove_dir_all(&from_dir)?;
@@ -396,10 +420,12 @@ fn test_rename_dir(mount_dir: &Path) -> anyhow::Result<()> {
 }
 
 #[cfg(test)]
-fn test_symlink_dir(mount_dir: &Path) -> anyhow::Result<()> {
+#[tracing::instrument(err, ret)]
+fn test_symlink_dir(mount_dir: &str) -> anyhow::Result<()> {
     info!("create and read symlink to directory");
 
     let current_dir = std::env::current_dir()?;
+    let mount_dir = Path::new(&mount_dir);
     std::env::set_current_dir(Path::new(mount_dir))?;
 
     let src_dir = Path::new("src_dir");
@@ -464,9 +490,11 @@ fn test_symlink_dir(mount_dir: &Path) -> anyhow::Result<()> {
 }
 
 #[cfg(test)]
-fn test_symlink_file(mount_dir: &Path) -> anyhow::Result<()> {
+#[tracing::instrument(err, ret)]
+fn test_symlink_file(mount_dir: &str) -> anyhow::Result<()> {
     info!("create and read symlink to file");
 
+    let mount_dir = Path::new(&mount_dir);
     let current_dir = std::env::current_dir()?;
     std::env::set_current_dir(Path::new(mount_dir))?;
 
@@ -505,22 +533,25 @@ fn test_symlink_file(mount_dir: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn cleanup_dir(directory: &Path) -> anyhow::Result<()> {
+    let umount_res = nix::mount::umount2(directory, nix::mount::MntFlags::MNT_FORCE);
+    if umount_res.is_err() {
+        info!("cleanup_dir() failed to un-mount {:?}", directory);
+    }
+    fs::remove_dir_all(directory)
+        .context(format!("cleanup_dir() failed to remove {directory:?}"))?;
+    Ok(())
+}
+
 /// Test bind mount a FUSE directory to a tmpfs directory
 /// this test case need root privilege
 #[cfg(target_os = "linux")]
 #[cfg(test)]
-fn test_bind_mount(fuse_mount_dir: &Path) -> anyhow::Result<()> {
+#[tracing::instrument(err, ret)]
+fn test_bind_mount(fuse_mount_dir: &str) -> anyhow::Result<()> {
     use nix::mount::MsFlags;
 
-    pub fn cleanup_dir(directory: &Path) -> anyhow::Result<()> {
-        let umount_res = nix::mount::umount2(directory, nix::mount::MntFlags::MNT_FORCE);
-        if umount_res.is_err() {
-            info!("cleanup_dir() failed to un-mount {:?}", directory);
-        }
-        fs::remove_dir_all(directory)
-            .context(format!("cleanup_dir() failed to remove {directory:?}"))?;
-        Ok(())
-    }
+    let fuse_mount_dir = Path::new(&fuse_mount_dir);
 
     if unistd::geteuid().is_root() {
         info!("test bind mount with root user");
@@ -581,28 +612,46 @@ async fn run_s3_test() -> anyhow::Result<()> {
     _run_test(S3_DEFAULT_MOUNT_DIR, false).await
 }
 
+use uuid::Uuid;
+
+#[allow(clippy::expect_used)]
 async fn _run_test(mount_dir_str: &str, is_s3: bool) -> anyhow::Result<()> {
     info!("begin integration test");
+
+    let tests: Vec<fn(&str) -> anyhow::Result<()>> = vec![
+        test_create_file,
+        test_name_too_long,
+        test_symlink_dir,
+        test_symlink_file,
+        test_file_manipulation_rust_way,
+        test_file_manipulation_nix_way,
+        test_dir_manipulation_nix_way,
+        test_deferred_deletion,
+        test_rename_file_replace,
+        test_rename_file,
+        test_rename_dir,
+        #[cfg(target_os = "linux")]
+        test_bind_mount,
+    ];
+
     let mount_dir = Path::new(mount_dir_str);
     let th = test_util::setup(mount_dir, is_s3).await?;
 
-    test_create_file(mount_dir).context("test_create_file() failed")?;
-    test_name_too_long(mount_dir).context("test_name_too_long() failed")?;
-    test_symlink_dir(mount_dir).context("test_symlink_dir() failed")?;
-    test_symlink_file(mount_dir).context("test_symlink_file() failed")?;
-    #[cfg(target_os = "linux")]
-    test_bind_mount(mount_dir).context("test_bind_mount() failed")?;
-    test_file_manipulation_rust_way(mount_dir)
-        .context("test_file_manipulation_rust_way() failed")?;
-    test_file_manipulation_nix_way(mount_dir).context("test_file_manipulation_nix_way() failed")?;
-    test_dir_manipulation_nix_way(mount_dir).context("test_dir_manipulation_nix_way() failed")?;
-    test_deferred_deletion(mount_dir).context("test_deferred_deletion() failed")?;
-    test_rename_file_replace(mount_dir).context("test_rename_file_replace() failed")?;
-    test_rename_file(mount_dir).context("test_rename_file() failed")?;
-    test_rename_dir(mount_dir).context("test_rename_dir() failed")?;
+    let mut tasks = Vec::new();
+    for test_fn in tests {
+        let test_dir = format!("{}/{}", mount_dir_str, Uuid::new_v4());
+        let test_dir_path = Path::new(&test_dir);
+        fs::create_dir_all(test_dir_path)?;
+        let task = tokio::task::spawn_blocking(move || test_fn(&test_dir));
+        tasks.push(task);
+    }
+
+    for task in tasks {
+        let result = task.await.expect("Task panicked");
+        result?;
+    }
 
     test_util::teardown(mount_dir, th).await?;
-
     Ok(())
 }
 
