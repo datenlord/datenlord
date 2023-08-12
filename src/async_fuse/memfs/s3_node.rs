@@ -371,7 +371,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
 
     /// Increase node lookup count
     fn inc_lookup_count(&self) -> i64 {
-        self.lookup_count.fetch_add(1, Ordering::AcqRel)
+        self.lookup_count.fetch_add(1, Ordering::Relaxed)
     }
 
     /// Helper function to check need to load node data or not
