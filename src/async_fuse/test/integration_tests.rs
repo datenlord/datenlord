@@ -539,6 +539,7 @@ async fn _run_test(mount_dir_str: &str, is_s3: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
+// TODO: check the logic of this benchmark and make it could be run in CI
 #[allow(dead_code)]
 async fn run_bench() -> anyhow::Result<()> {
     _run_bench(BENCH_MOUNT_DIR, true).await

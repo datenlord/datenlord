@@ -873,7 +873,6 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
 }
 
 impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
-    #[allow(dead_code)]
     #[allow(clippy::unwrap_used)]
     /// Get a node from kv engine by inum
     pub async fn get_node_from_kv_engine(&self, inum: INum) -> Option<S3Node<S>> {
@@ -889,7 +888,6 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
         Some(raw_data.into_s3_node(self).await)
     }
 
-    #[allow(dead_code)]
     /// Set node to kv engine use inum
     pub async fn set_node_to_kv_engine(&self, inum: INum, node: S3Node<S>) {
         let inum_key = KeyType::INum2Node(inum);
@@ -918,7 +916,6 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
             });
     }
 
-    #[allow(dead_code)]
     #[allow(clippy::unwrap_used)]
     /// Get inum from kv engine use full path
     /// # Panics
@@ -937,7 +934,6 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
         res.map(ValueType::into_inum)
     }
 
-    #[allow(dead_code)]
     /// Set inum to kv engine use full path
     async fn set_inum_to_kv_engine(&self, full_path: &str, inum: INum) {
         debug!("set_inum_to_kv_engine() about to set inum of full_path={full_path} to kv engine");
@@ -1479,19 +1475,6 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
                 deleted the target i-node to be replaced",
         );
         Ok(())
-    }
-
-    /// Helper function to rename file locally
-    #[allow(dead_code)]
-    pub(crate) async fn rename_local(&self, param: &RenameParam, from_remote: bool) {
-        if param.flags == 2 {
-            if let Err(e) = self.rename_exchange_local(param).await {
-                panic!("failed to rename local param={param:?}, error is {e:?}");
-            }
-        } else if let Err(e) = self.rename_may_replace_local(param, from_remote).await {
-            panic!("failed to rename local param={param:?}, error is {e:?}");
-        } else {
-        }
     }
 
     /// Helper function to remove node locally
