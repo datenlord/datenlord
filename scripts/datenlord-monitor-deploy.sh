@@ -1,8 +1,6 @@
-#! /bin/sh
+#!/bin/bash
 
-set -o errexit
-set -o nounset
-set -o xtrace
+source scripts/config.sh
 
 # wait for port forward to be ready
 PORT_FORWARD_WAIT_TIME=3
@@ -52,8 +50,8 @@ then
     kubectl apply -f scripts/alertmanager_alerts.yaml
     kubectl apply -f scripts/datenlord-logging.yaml
     kubectl apply -f scripts/datenlord-monitor-deploy.yaml
-    kubectl wait --for=condition=Ready pod -l app=prometheus-server -n datenlord-monitoring --timeout=10s
-    kubectl wait --for=condition=Ready pod -l app=grafana -n datenlord-monitoring --timeout=10s
+    kubectl wait --for=condition=Ready pod -l app=prometheus-server -n datenlord-monitoring --timeout=60s
+    kubectl wait --for=condition=Ready pod -l app=grafana -n datenlord-monitoring --timeout=60s
     kubectl wait --for=condition=Ready pod -l app=kibana -n datenlord-logging --timeout=120s
     kubectl wait --for=condition=Ready pod -l app=elasticsearch -n datenlord-logging --timeout=120s
     POD_NAME=`kubectl get pods -l app=grafana -n datenlord-monitoring | grep grafana | awk '{print $1}'`

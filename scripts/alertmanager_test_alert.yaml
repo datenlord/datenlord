@@ -6,4 +6,4 @@
         labels:
           severity: email
         annotations:
-          summary: "High Memory Usage"
+          summary: "Mock High Memory Usage"
