@@ -549,8 +549,9 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
             OFlag::O_RDONLY => 4,
             OFlag::O_WRONLY => 2,
             OFlag::O_RDWR => 6,
-            _ => panic!("invalid open flags"),
+            _ => 6,
         };
+
         attr.check_perm(uid, gid, access_mode)
     }
 }
