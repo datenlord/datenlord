@@ -318,25 +318,6 @@ impl GlobalCache {
         let check_fn = |global_index: usize| -> Option<usize> {
             let hash_index = global_index.overflow_div(bucket_size);
             let bucket_opt = file_cache.get(&hash_index, &guard);
-            // if let Some(bucket) = bucket_opt {
-            // if bucket
-            // .write()
-            // .get(global_index.overflow_rem(bucket_size))
-            // .unwrap_or_else(|| {
-            // panic!(
-            // "error when getting range of {} in the cache bucket",
-            // global_index.overflow_rem(bucket_size)
-            // )
-            // })
-            // .is_some()
-            // {
-            // Some(global_index)
-            // } else {
-            // None
-            // }
-            // } else {
-            // None
-            // }
 
             bucket_opt.and_then(|bucket| {
                 bucket

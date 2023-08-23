@@ -1,10 +1,5 @@
 //! The implementation of FUSE session
 
-// #[cfg(target_os = "macos")]
-// use super::protocol::{
-//     FATTR_BKUPTIME, FATTR_CHGTIME, FATTR_CRTIME, FATTR_FLAGS,
-// FUSE_CASE_INSENSITIVE,     FUSE_VOL_RENAME, FUSE_XTIMES,
-// };
 use std::os::unix::io::RawFd;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -21,9 +16,7 @@ use tracing::{debug, error, info};
 
 use super::context::ProtoVersion;
 use super::file_system::{FileSystem, FsAsyncTaskController, FsController};
-// use super::channel::Channel;
-// #[cfg(target_os = "macos")]
-// use super::fuse_reply::ReplyXTimes;
+
 use super::fuse_reply::{
     ReplyAttr, ReplyBMap, ReplyCreate, ReplyData, ReplyDirectory, ReplyEmpty, ReplyEntry,
     ReplyInit, ReplyLock, ReplyOpen, ReplyStatFs, ReplyWrite, ReplyXAttr,
@@ -41,9 +34,6 @@ use super::protocol::{
 };
 use crate::async_fuse::memfs::{FileLockParam, MemFs, MetaData, RenameParam, SetAttrParam};
 use crate::common::error::DatenLordError;
-
-// #[cfg(target_os = "macos")]
-// use std::time::SystemTime;
 
 /// We generally support async reads
 #[cfg(target_os = "linux")]

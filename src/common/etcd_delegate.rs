@@ -657,7 +657,6 @@ impl EtcdDelegate {
     #[allow(clippy::integer_arithmetic, clippy::arithmetic_side_effects)] // for the auto generate code from tokio select!
     pub async fn wait_key_delete(&self, name: &str) -> DatenLordResult<()> {
         let mut etcd_rs_client = self.etcd_rs_client.clone();
-        // let receiver_opt = self.etcd_rs_client.watch()
         let res = etcd_rs_client.watch(name, None).await;
         let (mut watcher, mut stream) =
             res.with_context(|| format!("failed to `watch` at `wait_key_delete` for key={name}"))?;

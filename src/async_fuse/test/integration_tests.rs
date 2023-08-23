@@ -248,7 +248,6 @@ fn test_rename_file_replace(mount_dir: &Path) -> anyhow::Result<()> {
         FILE_CONTENT.len(),
     );
 
-    // fs::rename(&old_file, &new_file).expect_err("rename no replace should fail");
     fs::rename(&old_file, &new_file).context("rename replace should not fail")?;
 
     let mut buffer: Vec<u8> = iter::repeat(0_u8).take(FILE_CONTENT.len()).collect();
@@ -292,7 +291,6 @@ fn test_rename_file_replace(mount_dir: &Path) -> anyhow::Result<()> {
     assert!(new_file.exists(), "the new file {new_file:?} should exist",);
 
     // Clean up
-    // fs::remove_file(&old_file)?;
     fs::remove_file(&new_file)?;
     Ok(())
 }
@@ -350,12 +348,9 @@ fn test_symlink_dir(mount_dir: &Path) -> anyhow::Result<()> {
 
     let dst_dir = Path::new("dst_dir");
     unistd::symlinkat(src_dir, None, dst_dir).context("create symlink failed")?;
-    // std::os::unix::fs::symlink(&src_path, &dst_path).context("create symlink
-    // failed")?;
     let target_path = std::fs::read_link(dst_dir).context("read symlink failed ")?;
     assert_eq!(src_dir, target_path, "symlink target path not match");
 
-    // let dst_path = Path::new(&dst_dir).join(src_file_name);
     let dst_path = Path::new("./dst_dir").join(src_file_name);
     fs::write(&dst_path, FILE_CONTENT).context(format!("failed to write to file={dst_path:?}"))?;
     let content = fs::read_to_string(src_path).context("read symlink target file failed")?;
@@ -412,8 +407,6 @@ fn test_symlink_file(mount_dir: &Path) -> anyhow::Result<()> {
 
     let dst_path = Path::new("dst.txt");
     unistd::symlinkat(src_path, None, dst_path).context("create symlink failed")?;
-    // std::os::unix::fs::symlink(&src_path, &dst_path).context("create symlink
-    // failed")?;
     let target_path = std::fs::read_link(dst_path).context("read symlink failed ")?;
     assert_eq!(src_path, target_path, "symlink target path not match");
 
@@ -422,11 +415,6 @@ fn test_symlink_file(mount_dir: &Path) -> anyhow::Result<()> {
         content, FILE_CONTENT,
         "symlink target file content not match"
     );
-
-    // let oflags = OFlag::O_RDWR;
-    // let fd = fcntl::open(&dst_path, oflags, Mode::empty())
-    //     .context("open symlink target file failed ")?;
-    // unistd::close(fd).context("failed to close symlink target file")?;
 
     let md = std::fs::symlink_metadata(dst_path).context("read symlink metadata failed")?;
     assert!(
@@ -496,8 +484,6 @@ fn test_bind_mount(fuse_mount_dir: &Path) -> anyhow::Result<()> {
 
     nix::mount::umount(target_dir).context(format!("failed to un-mount {target_dir:?}"))?;
 
-    // cleanup_dir(&from_dir)?;
-    // cleanup_dir(target_dir)?
     fs::remove_dir_all(&from_dir).context(format!("failed to remove {from_dir:?}"))?;
     fs::remove_dir_all(target_dir).context(format!("failed to remove {target_dir:?}"))?;
     Ok(())
