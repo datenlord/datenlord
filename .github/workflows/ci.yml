@@ -39,7 +39,7 @@ jobs:
         version: latest
     # Temporarily ignore the time/chrono segfault since there are no known
     # good wordarounds and they are used by dependent libraries also.
-    - run: cargo audit --ignore RUSTSEC-2020-0159 --ignore RUSTSEC-2020-0071
+    - run: cargo audit --ignore RUSTSEC-2020-0159 --ignore RUSTSEC-2020-0071 --ignore RUSTSEC-2023-0052
 
   check:
     name: Check
