@@ -1134,18 +1134,6 @@ impl Node for DefaultNode {
             }
             DefaultNodeData::SymLink(..) => {
                 panic!("forbidden to load symlink target data");
-                // let target_data = self
-                //     .load_symlink_target_helper()
-                //     .await
-                //     .context("load_data() failed to load symlink target node
-                // data")?; let data_size = target_data.size();
-                // self.data =
-                // DefaultNodeData::SymLink(Box::new(SymLinkData::from(
-                //     self.get_symlink_target().to_owned(),
-                //     target_data,
-                // )));
-                // debug!("load_data() successfully load symlink target node
-                // data"); Ok(data_size)
             }
         }
     }

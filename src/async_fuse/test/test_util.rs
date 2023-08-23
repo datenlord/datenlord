@@ -12,10 +12,6 @@ use crate::async_fuse::memfs::s3_wrapper::DoNothingImpl;
 use crate::common::etcd_delegate::EtcdDelegate;
 use crate::common::logger::init_logger;
 
-// pub const TEST_BUCKET_NAME: &str = "fuse-test-bucket";
-// pub const TEST_ENDPOINT: &str = "http://127.0.0.1:9000";
-// pub const TEST_ACCESS_KEY: &str = "test";
-// pub const TEST_SECRET_KEY: &str = "test1234";
 pub const TEST_VOLUME_INFO: &str = "fuse-test-bucket;http://127.0.0.1:9000;test;test1234";
 pub const TEST_NODE_IP: &str = "127.0.0.1";
 pub const TEST_NODE_ID: &str = "test_node";

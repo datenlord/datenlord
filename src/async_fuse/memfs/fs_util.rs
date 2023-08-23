@@ -232,15 +232,6 @@ fn convert_to_file_attr(st: FileStat) -> FileAttr {
     }
 }
 
-// /// Load symlink target attribute
-// pub async fn load_symlink_target_attr(
-//     symlink_fd: RawFd,
-//     target_path: PathBuf,
-// ) -> anyhow::Result<FileAttr> { let nix_attr = blocking!(stat::fstatat(
-//   symlink_fd, target_path.as_os_str(), fcntl::AtFlags::AT_SYMLINK_FOLLOW ))?;
-//   Ok(convert_to_file_attr(nix_attr))
-// }
-
 /// Load file attribute by fd
 pub async fn load_attr(fd: RawFd) -> anyhow::Result<FileAttr> {
     let st = tokio::task::spawn_blocking(move || stat::fstat(fd))
