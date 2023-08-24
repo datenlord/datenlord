@@ -32,7 +32,8 @@ use super::serial::{
 use super::{persist, SetAttrParam};
 use crate::async_fuse::fuse::fuse_reply::{AsIoVec, StatFsParam};
 use crate::async_fuse::fuse::protocol::INum;
-use crate::async_fuse::{metrics, util};
+use crate::async_fuse::metrics;
+use crate::async_fuse::util::build_error_result_from_errno;
 use crate::common::error::{DatenLordError, DatenLordResult};
 
 /// S3's available fd count
@@ -1333,7 +1334,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
 
         if let Some(gid) = param.g_id {
             if ctx_uid != 0 && cur_attr.uid != ctx_uid {
-                return util::build_error_result_from_errno(
+                return build_error_result_from_errno(
                     Errno::EPERM,
                     "setattr() cannot change gid".to_owned(),
                 );
@@ -1349,7 +1350,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
         if let Some(uid) = param.u_id {
             if cur_attr.uid != uid {
                 if ctx_uid != 0 {
-                    return util::build_error_result_from_errno(
+                    return build_error_result_from_errno(
                         Errno::EPERM,
                         "setattr() cannot change uid".to_owned(),
                     );
@@ -1371,7 +1372,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
             }
             if mode != cur_attr.perm {
                 if ctx_uid != 0 && ctx_uid != cur_attr.uid {
-                    return util::build_error_result_from_errno(
+                    return build_error_result_from_errno(
                         Errno::EPERM,
                         "setattr() cannot change mode".to_owned(),
                     );
