@@ -21,3 +21,5 @@ localtest.sh
 *.log
 /local_test/
 
+
+tests/fstest_util/fstest
