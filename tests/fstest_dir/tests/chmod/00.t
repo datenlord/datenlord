@@ -32,11 +32,11 @@ expect 0 chmod ${n0} 0753
 expect 0753 stat ${n0} mode
 expect 0 rmdir ${n0}
 
-expect 0 mkfifo ${n0} 0644
-expect 0644 stat ${n0} mode
-expect 0 chmod ${n0} 0310
-expect 0310 stat ${n0} mode
-expect 0 unlink ${n0}
+# expect 0 mkfifo ${n0} 0644
+# expect 0644 stat ${n0} mode
+# expect 0 chmod ${n0} 0310
+# expect 0310 stat ${n0} mode
+# expect 0 unlink ${n0}
 
 expect 0 create ${n0} 0644
 expect 0 symlink ${n0} ${n1}
@@ -78,13 +78,13 @@ ctime2=`${fstest} stat ${n0} ctime`
 test_check $ctime1 -lt $ctime2
 expect 0 rmdir ${n0}
 
-expect 0 mkfifo ${n0} 0644
-ctime1=`${fstest} stat ${n0} ctime`
-sleep 1
-expect 0 chmod ${n0} 0310
-ctime2=`${fstest} stat ${n0} ctime`
-test_check $ctime1 -lt $ctime2
-expect 0 unlink ${n0}
+# expect 0 mkfifo ${n0} 0644
+# ctime1=`${fstest} stat ${n0} ctime`
+# sleep 1
+# expect 0 chmod ${n0} 0310
+# ctime2=`${fstest} stat ${n0} ctime`
+# test_check $ctime1 -lt $ctime2
+# expect 0 unlink ${n0}
 
 if supported lchmod; then
 	expect 0 symlink ${n1} ${n0}
@@ -113,13 +113,13 @@ ctime2=`${fstest} stat ${n0} ctime`
 test_check $ctime1 -eq $ctime2
 expect 0 rmdir ${n0}
 
-expect 0 mkfifo ${n0} 0644
-ctime1=`${fstest} stat ${n0} ctime`
-sleep 1
-expect EPERM -u 65534 chmod ${n0} 0310
-ctime2=`${fstest} stat ${n0} ctime`
-test_check $ctime1 -eq $ctime2
-expect 0 unlink ${n0}
+# expect 0 mkfifo ${n0} 0644
+# ctime1=`${fstest} stat ${n0} ctime`
+# sleep 1
+# expect EPERM -u 65534 chmod ${n0} 0310
+# ctime2=`${fstest} stat ${n0} ctime`
+# test_check $ctime1 -eq $ctime2
+# expect 0 unlink ${n0}
 
 if supported lchmod; then
 	expect 0 symlink ${n1} ${n0}

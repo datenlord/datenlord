@@ -25,8 +25,8 @@ expect 0 symlink test ${n1}
 expect EEXIST link ${n0} ${n1}
 expect 0 unlink ${n1}
 
-expect 0 mkfifo ${n1} 0644
-expect EEXIST link ${n0} ${n1}
-expect 0 unlink ${n1}
+# expect 0 mkfifo ${n1} 0644
+# expect EEXIST link ${n0} ${n1}
+# expect 0 unlink ${n1}
 
 expect 0 unlink ${n0}

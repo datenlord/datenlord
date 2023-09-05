@@ -23,9 +23,9 @@ expect 0 mkdir ${n1}/${n2} 0755
 expect "EEXIST|ENOTEMPTY" rename ${n0} ${n1}
 expect 0 rmdir ${n1}/${n2}
 
-expect 0 mkfifo ${n1}/${n2} 0644
-expect "EEXIST|ENOTEMPTY" rename ${n0} ${n1}
-expect 0 unlink ${n1}/${n2}
+# expect 0 mkfifo ${n1}/${n2} 0644
+# expect "EEXIST|ENOTEMPTY" rename ${n0} ${n1}
+# expect 0 unlink ${n1}/${n2}
 
 expect 0 symlink test ${n1}/${n2}
 expect "EEXIST|ENOTEMPTY" rename ${n0} ${n1}

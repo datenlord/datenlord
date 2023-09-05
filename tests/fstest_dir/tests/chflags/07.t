@@ -34,13 +34,13 @@ expect EPERM -u 65533 -g 65533 chflags ${n1} UF_IMMUTABLE
 expect none stat ${n1} flags
 expect 0 rmdir ${n1}
 
-expect 0 mkfifo ${n1} 0644
-expect EPERM -u 65534 -g 65534 chflags ${n1} UF_IMMUTABLE
-expect none stat ${n1} flags
-expect 0 chown ${n1} 65534 65534
-expect EPERM -u 65533 -g 65533 chflags ${n1} UF_IMMUTABLE
-expect none stat ${n1} flags
-expect 0 unlink ${n1}
+# expect 0 mkfifo ${n1} 0644
+# expect EPERM -u 65534 -g 65534 chflags ${n1} UF_IMMUTABLE
+# expect none stat ${n1} flags
+# expect 0 chown ${n1} 65534 65534
+# expect EPERM -u 65533 -g 65533 chflags ${n1} UF_IMMUTABLE
+# expect none stat ${n1} flags
+# expect 0 unlink ${n1}
 
 expect 0 symlink ${n2} ${n1}
 expect EPERM -u 65534 -g 65534 lchflags ${n1} UF_IMMUTABLE

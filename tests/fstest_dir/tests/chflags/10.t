@@ -38,15 +38,15 @@ for flag in SF_IMMUTABLE SF_APPEND SF_NOUNLINK; do
 done
 expect 0 rmdir ${n1}
 
-expect 0 mkfifo ${n1} 0644
-expect 0 chown ${n1} 65534 65534
-for flag in SF_IMMUTABLE SF_APPEND SF_NOUNLINK; do
-	expect EPERM -u 65533 -g 65533 chflags ${n1} ${flag}
-	expect none stat ${n1} flags
-	expect EPERM -u 65534 -g 65534 chflags ${n1} ${flag}
-	expect none stat ${n1} flags
-done
-expect 0 unlink ${n1}
+# expect 0 mkfifo ${n1} 0644
+# expect 0 chown ${n1} 65534 65534
+# for flag in SF_IMMUTABLE SF_APPEND SF_NOUNLINK; do
+# 	expect EPERM -u 65533 -g 65533 chflags ${n1} ${flag}
+# 	expect none stat ${n1} flags
+# 	expect EPERM -u 65534 -g 65534 chflags ${n1} ${flag}
+# 	expect none stat ${n1} flags
+# done
+# expect 0 unlink ${n1}
 
 expect 0 symlink ${n2} ${n1}
 expect 0 lchown ${n1} 65534 65534

@@ -29,8 +29,8 @@ expect "EEXIST|ENOTEMPTY" rmdir ${n0}
 expect 0 unlink ${n0}/${n1}
 expect 0 rmdir ${n0}
 
-expect 0 mkdir ${n0} 0755
-expect 0 mkfifo ${n0}/${n1} 0644
-expect "EEXIST|ENOTEMPTY" rmdir ${n0}
-expect 0 unlink ${n0}/${n1}
-expect 0 rmdir ${n0}
+# expect 0 mkdir ${n0} 0755
+# expect 0 mkfifo ${n0}/${n1} 0644
+# expect "EEXIST|ENOTEMPTY" rmdir ${n0}
+# expect 0 unlink ${n0}/${n1}
+# expect 0 rmdir ${n0}

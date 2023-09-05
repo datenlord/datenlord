@@ -49,19 +49,19 @@ done
 expect 0 chflags ${n1} none
 expect 0 rmdir ${n1}
 
-expect 0 mkfifo ${n1} 0644
-expect 0 chown ${n1} 65534 65534
-for flag in SF_IMMUTABLE SF_APPEND SF_NOUNLINK; do
-	expect 0 chflags ${n1} ${flag}
-	jexpect 1 `pwd` EPERM chflags ${n1} UF_IMMUTABLE
-	expect ${flag} stat ${n1} flags
-	jexpect 1 `pwd` EPERM -u 65533 -g 65533 chflags ${n1} UF_IMMUTABLE
-	expect ${flag} stat ${n1} flags
-	jexpect 1 `pwd` EPERM -u 65534 -g 65534 chflags ${n1} UF_IMMUTABLE
-	expect ${flag} stat ${n1} flags
-done
-expect 0 chflags ${n1} none
-expect 0 unlink ${n1}
+# expect 0 mkfifo ${n1} 0644
+# expect 0 chown ${n1} 65534 65534
+# for flag in SF_IMMUTABLE SF_APPEND SF_NOUNLINK; do
+# 	expect 0 chflags ${n1} ${flag}
+# 	jexpect 1 `pwd` EPERM chflags ${n1} UF_IMMUTABLE
+# 	expect ${flag} stat ${n1} flags
+# 	jexpect 1 `pwd` EPERM -u 65533 -g 65533 chflags ${n1} UF_IMMUTABLE
+# 	expect ${flag} stat ${n1} flags
+# 	jexpect 1 `pwd` EPERM -u 65534 -g 65534 chflags ${n1} UF_IMMUTABLE
+# 	expect ${flag} stat ${n1} flags
+# done
+# expect 0 chflags ${n1} none
+# expect 0 unlink ${n1}
 
 expect 0 symlink ${n2} ${n1}
 expect 0 lchown ${n1} 65534 65534

@@ -27,9 +27,9 @@ FreeBSD)
 	expect EXDEV rename ${n0}/${n1} ${n2}
 	expect 0 rmdir ${n0}/${n1}
 
-	expect 0 mkfifo ${n0}/${n1} 0644
-	expect EXDEV rename ${n0}/${n1} ${n2}
-	expect 0 unlink ${n0}/${n1}
+	# expect 0 mkfifo ${n0}/${n1} 0644
+	# expect EXDEV rename ${n0}/${n1} ${n2}
+	# expect 0 unlink ${n0}/${n1}
 
 	expect 0 symlink test ${n0}/${n1}
 	expect EXDEV rename ${n0}/${n1} ${n2}

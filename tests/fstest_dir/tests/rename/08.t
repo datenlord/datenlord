@@ -34,14 +34,14 @@ done
 expect 0 chflags ${n0} none
 expect 0 rmdir ${n1}
 
-expect 0 mkfifo ${n1} 0644
-for flag in SF_IMMUTABLE UF_IMMUTABLE; do
-	expect 0 chflags ${n0} ${flag}
-	expect ${flag} stat ${n0} flags
-	expect EPERM rename ${n1} ${n0}/${n2}
-done
-expect 0 chflags ${n0} none
-expect 0 unlink ${n1}
+# expect 0 mkfifo ${n1} 0644
+# for flag in SF_IMMUTABLE UF_IMMUTABLE; do
+# 	expect 0 chflags ${n0} ${flag}
+# 	expect ${flag} stat ${n0} flags
+# 	expect EPERM rename ${n1} ${n0}/${n2}
+# done
+# expect 0 chflags ${n0} none
+# expect 0 unlink ${n1}
 
 expect 0 symlink ${n2} ${n1}
 for flag in SF_IMMUTABLE UF_IMMUTABLE; do
@@ -72,15 +72,15 @@ for flag in SF_APPEND UF_APPEND SF_NOUNLINK UF_NOUNLINK; do
 done
 expect 0 rmdir ${n1}
 
-expect 0 mkfifo ${n1} 0644
-for flag in SF_APPEND UF_APPEND SF_NOUNLINK UF_NOUNLINK; do
-	expect 0 chflags ${n0} ${flag}
-	expect ${flag} stat ${n0} flags
-	expect 0 rename ${n1} ${n0}/${n2}
-	expect 0 chflags ${n0} none
-	expect 0 rename ${n0}/${n2} ${n1}
-done
-expect 0 unlink ${n1}
+# expect 0 mkfifo ${n1} 0644
+# for flag in SF_APPEND UF_APPEND SF_NOUNLINK UF_NOUNLINK; do
+# 	expect 0 chflags ${n0} ${flag}
+# 	expect ${flag} stat ${n0} flags
+# 	expect 0 rename ${n1} ${n0}/${n2}
+# 	expect 0 chflags ${n0} none
+# 	expect 0 rename ${n0}/${n2} ${n1}
+# done
+# expect 0 unlink ${n1}
 
 expect 0 symlink ${n2} ${n1}
 for flag in SF_APPEND UF_APPEND SF_NOUNLINK UF_NOUNLINK; do

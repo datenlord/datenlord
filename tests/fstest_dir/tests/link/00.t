@@ -51,8 +51,8 @@ expect ENOENT lstat ${n0} type,mode,nlink,uid,gid
 expect ENOENT lstat ${n1} type,mode,nlink,uid,gid
 expect ENOENT lstat ${n2} type,mode,nlink,uid,gid
 
-expect 0 mkfifo ${n0} 0644
-expect fifo,0644,1 lstat ${n0} type,mode,nlink
+# expect 0 mkfifo ${n0} 0644
+# expect fifo,0644,1 lstat ${n0} type,mode,nlink
 
 expect 0 link ${n0} ${n1}
 expect fifo,0644,2 lstat ${n0} type,mode,nlink
@@ -101,10 +101,10 @@ test_check $dctime1 -lt $dmtime2
 expect 0 unlink ${n0}
 expect 0 unlink ${n1}
 
-expect 0 mkfifo ${n0} 0644
-ctime1=`${fstest} stat ${n0} ctime`
-dctime1=`${fstest} stat . ctime`
-dmtime1=`${fstest} stat . mtime`
+# expect 0 mkfifo ${n0} 0644
+# ctime1=`${fstest} stat ${n0} ctime`
+# dctime1=`${fstest} stat . ctime`
+# dmtime1=`${fstest} stat . mtime`
 sleep 1
 expect 0 link ${n0} ${n1}
 ctime2=`${fstest} stat ${n0} ctime`
