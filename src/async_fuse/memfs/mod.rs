@@ -154,7 +154,7 @@ pub struct FileLockParam {
     pub pid: u32,
 }
 
-// MAX NAME LEN
+/// MAX NAME LEN
 const MAX_NAME_LEN: usize = 255;
 
 /// Check the name length is valid or not

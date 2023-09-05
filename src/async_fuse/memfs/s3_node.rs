@@ -549,7 +549,6 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
         let access_mode = match flags & (OFlag::O_RDONLY | OFlag::O_WRONLY | OFlag::O_RDWR) {
             OFlag::O_RDONLY => 4,
             OFlag::O_WRONLY => 2,
-            OFlag::O_RDWR => 6,
             _ => 6,
         };
 

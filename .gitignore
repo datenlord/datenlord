@@ -23,4 +23,3 @@ localtest.sh
 
 
 tests/fstest_dir/fstest
-tests/fstest_dir/tests/conf
