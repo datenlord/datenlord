@@ -6,7 +6,7 @@ desc="open returns EEXIST when O_CREAT and O_EXCL were specified and the file ex
 dir=`dirname $0`
 . ${dir}/../misc.sh
 
-echo "1..12"
+echo "1..9"
 
 n0=`namegen`
 
