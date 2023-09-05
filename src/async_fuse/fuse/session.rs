@@ -513,6 +513,7 @@ async fn dispatch<'a>(
             fs.getattr(req, reply).await
         }
         Operation::SetAttr { arg } => {
+            error!("set attr arg {arg:?}");
             let mode = match arg.valid & FATTR_MODE {
                 0 => None,
                 _ => Some(arg.mode),
@@ -541,16 +542,16 @@ async fn dispatch<'a>(
                 0 => None,
                 _ => Some(arg.fh),
             };
-            // #[cfg(feature = "abi-7-9")]
-            // let a_time = match arg.valid & FATTR_ATIME_NOW {
-            //     0 => None,
-            //     _ => Some(SystemTime::now()),
-            // };
-            // #[cfg(feature = "abi-7-9")]
-            // let m_time = match arg.valid & FATTR_MTIME_NOW {
-            //     0 => None,
-            //     _ => Some(SystemTime::now()),
-            // };
+            #[cfg(feature = "abi-7-9")]
+            let a_time = match arg.valid & FATTR_ATIME_NOW {
+                0 => None,
+                _ => Some(SystemTime::now()),
+            };
+            #[cfg(feature = "abi-7-9")]
+            let m_time = match arg.valid & FATTR_MTIME_NOW {
+                0 => None,
+                _ => Some(SystemTime::now()),
+            };
             #[cfg(feature = "abi-7-9")]
             let lock_owner = match arg.valid & FATTR_LOCKOWNER {
                 0 => None,

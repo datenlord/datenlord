@@ -1332,6 +1332,10 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
         let st_now = SystemTime::now();
         let mut attr_changed = false;
 
+        if param.u_id.is_some() || param.g_id.is_some() {
+            attr_changed = true;
+        }
+
         if let Some(gid) = param.g_id {
             if ctx_uid != 0 && cur_attr.uid != ctx_uid {
                 return build_error_result_from_errno(
@@ -1342,7 +1346,6 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
 
             if cur_attr.gid != gid {
                 dirty_attr.gid = gid;
-                dirty_attr.ctime = st_now;
                 attr_changed = true;
             }
         }
@@ -1357,16 +1360,13 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
                 }
                 // ctx_uid == 0
                 dirty_attr.uid = uid;
-                dirty_attr.ctime = st_now;
                 attr_changed = true;
             }
         }
 
         if let Some(mode) = param.mode {
             let mut mode: u16 = mode.cast();
-            debug!("setattr() mode={:o}", mode);
             mode &= 0o7777;
-            debug!("setattr() mode={:o}", mode);
             if ctx_uid != 0 && mode & 0o3000 != 0 && ctx_gid != cur_attr.gid {
                 mode &= 0o0777;
             }
@@ -1378,35 +1378,67 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
                     );
                 }
                 dirty_attr.perm = mode;
-                dirty_attr.ctime = st_now;
-                dirty_attr.crtime = st_now;
                 attr_changed = true;
             }
         }
 
         if let Some(atime) = param.a_time {
+            //   owner is root check the ctx_uid
+            if cur_attr.uid == 0 && ctx_uid != 0 {
+                return build_error_result_from_errno(
+                    Errno::EPERM,
+                    "setattr() cannot change atime".to_owned(),
+                );
+            }
             self.attr.read().check_perm(ctx_uid, ctx_gid, 2)?;
-            dirty_attr.atime = atime;
-            attr_changed = true;
+            if ctx_uid != cur_attr.uid {
+                return build_error_result_from_errno(
+                    Errno::EACCES,
+                    "setattr() cannot change atime".to_owned(),
+                );
+            }
+            if atime != cur_attr.atime {
+                dirty_attr.atime = atime;
+                attr_changed = true;
+            }
         }
 
         if let Some(mtime) = param.m_time {
+            //   owner is root check the ctx_uid
+            if cur_attr.uid == 0 && ctx_uid != 0 {
+                return build_error_result_from_errno(
+                    Errno::EPERM,
+                    "setattr() cannot change atime".to_owned(),
+                );
+            }
             self.attr.read().check_perm(ctx_uid, ctx_gid, 2)?;
-            dirty_attr.mtime = mtime;
-            attr_changed = true;
+            if ctx_uid != cur_attr.uid {
+                return build_error_result_from_errno(
+                    Errno::EACCES,
+                    "setattr() cannot change atime".to_owned(),
+                );
+            }
+            if mtime != cur_attr.mtime {
+                dirty_attr.mtime = mtime;
+                attr_changed = true;
+            }
         }
 
         #[cfg(feature = "abi-7-23")]
         if let Some(c_time) = param.c_time {
             dirty_attr.ctime = c_time;
+            panic!("c_time is not supported in this version of statefs")
             // TODO: how to change ctime directly on ext4?
         }
 
         if let Some(file_size) = param.size {
             dirty_attr.size = file_size;
             dirty_attr.mtime = st_now;
-            dirty_attr.ctime = st_now;
             attr_changed = true;
+        }
+
+        if attr_changed {
+            dirty_attr.ctime = st_now;
         }
 
         Ok((attr_changed, dirty_attr))
