@@ -15,6 +15,12 @@ src/csi/proto/*.rs
 
 .idea/*
 fuse_bench/*
-bench.log
 .vscode/*
 localtest.sh
+/log/*
+*.log
+/local_test/
+
+
+tests/fstest_dir/fstest
+tests/fstest_dir/tests/conf

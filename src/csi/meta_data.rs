@@ -773,6 +773,11 @@ impl MetaData {
         self.etcd_delegate
             .write_or_update_kv(node_vol_key.clone(), &volume.ephemeral)
             .await?;
+        // debug_assert_eq!(
+        // node_vol_pre_value, vol_id_pre_value.ephemeral,
+        // "replaced volume key={} value not match",
+        // node_vol_key,
+        // );
 
         Ok(vol_id_pre_value)
     }

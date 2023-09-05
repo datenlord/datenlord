@@ -127,8 +127,6 @@ pub enum KeyType {
     INum2Attr(INum),
     /// IdAllocator value key
     IdAllocatorValue(IdType),
-    /// Csi related key
-    Csi(String),
     /// Node ip and port info : node_id -> "{node_ipaddr}:{port}"
     /// The corresponding value type is ValueType::String
     NodeIpPort(String),
@@ -163,7 +161,6 @@ impl Display for KeyType {
             KeyType::IdAllocatorValue(ref id_type) => {
                 write!(f, "IdAllocatorValue{{unique_id: {id_type:?}}}")
             }
-            KeyType::Csi(ref s) => write!(f, "Csi{{s: {s}}}"),
             KeyType::NodeIpPort(ref s) => write!(f, "NodeIpPort{{s: {s}}}"),
             KeyType::VolumeInfo(ref s) => write!(f, "VolumeInfo{{s: {s}}}"),
             KeyType::FileNodeList(ref s) => write!(f, "FileNodeList{{s: {s:?}}}"),
@@ -189,14 +186,27 @@ impl Display for LockKeyType {
 
 /// Get key serialized data with prefix and key.
 #[inline]
-fn serialize_key<K: ?Sized + Serialize>(key_prefix: u16, key: &K) -> Vec<u8> {
+#[allow(unused_variables)]
+fn serialize_key<K: ?Sized + Serialize>(key_prefix: u16, key: &K, debug_prefix: &str) -> Vec<u8> {
     let mut v = vec![];
-    bincode::serialize_into(&mut v, &key_prefix).unwrap_or_else(|e| {
-        panic!("serialize key prefix failed, err:{e}");
-    });
-    assert_eq!(v.len(), 2);
+
+    #[cfg(debug_assertions)]
+    {
+        let key_prefix = debug_prefix;
+        bincode::serialize_into(&mut v, &key_prefix).unwrap_or_else(|e| {
+            panic!("serialize key prefix failed for key: {debug_prefix}, err: {e:?}");
+        });
+    }
+
+    #[cfg(not(debug_assertions))]
+    {
+        bincode::serialize_into(&mut v, &key_prefix).unwrap_or_else(|e| {
+            panic!("serialize key prefix failed, err: {:?}", e);
+        });
+    }
+
     bincode::serialize_into(&mut v, key).unwrap_or_else(|e| {
-        panic!("serialize key failed, err:{e}");
+        panic!("serialize key failed for key: {debug_prefix}, err: {e:?}");
     });
 
     v
@@ -207,15 +217,16 @@ impl KeyType {
     #[must_use]
     pub fn get_key(&self) -> Vec<u8> {
         match *self {
-            KeyType::INum2Node(ref i) => serialize_key(0, i),
-            KeyType::INum2DirEntry(ref i) => serialize_key(1, i),
-            KeyType::Path2INum(ref p) => serialize_key(2, p),
-            KeyType::INum2Attr(ref i) => serialize_key(3, i),
-            KeyType::IdAllocatorValue(ref id_type) => serialize_key(4, &id_type.to_unique_id()),
-            KeyType::Csi(ref s) => serialize_key(5, s),
-            KeyType::NodeIpPort(ref s) => serialize_key(6, s),
-            KeyType::VolumeInfo(ref s) => serialize_key(8, s),
-            KeyType::FileNodeList(ref s) => serialize_key(10, s),
+            KeyType::INum2Node(ref i) => serialize_key(0, i, "INum2Node"),
+            KeyType::INum2DirEntry(ref i) => serialize_key(1, i, "INum2DirEntry"),
+            KeyType::Path2INum(ref p) => serialize_key(2, p, "Path2INum"),
+            KeyType::INum2Attr(ref i) => serialize_key(3, i, "INum2Attr"),
+            KeyType::IdAllocatorValue(ref id_type) => {
+                serialize_key(4, &id_type.to_unique_id(), "IdAllocatorValue")
+            }
+            KeyType::NodeIpPort(ref s) => serialize_key(6, s, "NodeIpPort"),
+            KeyType::VolumeInfo(ref s) => serialize_key(8, s, "VolumeInfo"),
+            KeyType::FileNodeList(ref s) => serialize_key(10, s, "FileNodeList"),
         }
     }
 }
@@ -225,10 +236,12 @@ impl LockKeyType {
     fn get_key(&self) -> Vec<u8> {
         match *self {
             LockKeyType::IdAllocatorLock(ref id_type) => {
-                serialize_key(100, &id_type.to_unique_id())
+                serialize_key(100, &id_type.to_unique_id(), "IdAllocatorLock")
             }
-            LockKeyType::VolumeInfoLock => serialize_key(101, &0_i32),
-            LockKeyType::FileNodeListLock(ref file_name) => serialize_key(102, file_name),
+            LockKeyType::VolumeInfoLock => serialize_key(101, &0_i32, "VolumeInfoLock"),
+            LockKeyType::FileNodeListLock(ref file_name) => {
+                serialize_key(102, file_name, "FileNodeListLock")
+            }
         }
     }
 }

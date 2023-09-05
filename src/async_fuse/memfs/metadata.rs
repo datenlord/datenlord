@@ -23,7 +23,7 @@ use super::dist::server::CacheServer;
 use super::fs_util::{self, FileAttr};
 use super::kv_engine::KVEngineType;
 use super::node::{self, DefaultNode, Node};
-use super::{RenameParam, SetAttrParam};
+use super::{CreateParam, RenameParam, SetAttrParam};
 use crate::async_fuse::fuse::file_system::FsAsyncResultSender;
 use crate::async_fuse::fuse::fuse_reply::{ReplyDirectory, StatFsParam};
 use crate::async_fuse::fuse::protocol::{FuseAttr, INum, FUSE_ROOT_ID};
@@ -35,6 +35,15 @@ use crate::common::etcd_delegate::EtcdDelegate;
 const MY_TTL_SEC: u64 = 3600; // TODO: should be a long value, say 1 hour
 /// The generation ID of FUSE attributes
 const MY_GENERATION: u64 = 1; // TODO: find a proper way to set generation
+
+/// The context of a request contains the uid and gid
+#[derive(Debug, Clone)]
+pub struct ReqContext {
+    /// The uid of the user who sends the request
+    pub uid: u32,
+    /// The gid of the user who sends the request
+    pub gid: u32,
+}
 
 /// MetaData of fs
 #[async_trait]
@@ -59,11 +68,7 @@ pub trait MetaData {
     /// Helper function to create node
     async fn create_node_helper(
         &self,
-        parent: INum,
-        node_name: &str,
-        mode: u32,
-        node_type: SFlag,
-        target_path: Option<&Path>,
+        param: CreateParam,
     ) -> DatenLordResult<(Duration, FuseAttr, u64)>;
 
     /// Helper function to remove node
@@ -77,6 +82,7 @@ pub trait MetaData {
     /// Helper function to lookup
     async fn lookup_helper(
         &self,
+        context: ReqContext,
         parent: INum,
         name: &str,
     ) -> DatenLordResult<(Duration, FuseAttr, u64)>;
@@ -112,6 +118,7 @@ pub trait MetaData {
     /// Set Node's attribute
     async fn setattr_helper(
         &self,
+        context: ReqContext,
         ino: u64,
         param: SetAttrParam,
     ) -> DatenLordResult<(Duration, FuseAttr)>;
@@ -123,7 +130,7 @@ pub trait MetaData {
     async fn getattr(&self, ino: u64) -> DatenLordResult<(Duration, FuseAttr)>;
 
     /// Open a file or directory by ino and flags
-    async fn open(&self, ino: u64, flags: u32) -> DatenLordResult<RawFd>;
+    async fn open(&self, context: ReqContext, ino: u64, flags: u32) -> DatenLordResult<RawFd>;
 
     /// Forget a i-node by ino
     async fn forget(&self, ino: u64, nlookup: u64);
@@ -144,22 +151,23 @@ pub trait MetaData {
     async fn releasedir(&self, ino: u64, fh: u64);
 
     /// Statfs helper
-    async fn statfs(&self, ino: u64) -> DatenLordResult<StatFsParam>;
+    async fn statfs(&self, context: ReqContext, ino: u64) -> DatenLordResult<StatFsParam>;
 
     /// Helper function to readlink
     async fn readlink(&self, ino: u64) -> Vec<u8>;
 
     /// Helper function to opendir
-    async fn opendir(&self, ino: u64, flags: u32) -> DatenLordResult<RawFd>;
+    async fn opendir(&self, context: ReqContext, ino: u64, flags: u32) -> DatenLordResult<RawFd>;
 
     /// Helper function to readdir
     async fn readdir(
         &self,
+        context: ReqContext,
         ino: u64,
         fh: u64,
         offset: i64,
-        reply: ReplyDirectory,
-    ) -> nix::Result<usize>;
+        reply: &mut ReplyDirectory,
+    ) -> DatenLordResult<()>;
 
     /// Helper function to release
     async fn release(&self, ino: u64, fh: u64, flags: u32, lock_owner: u64, flush: bool);
@@ -208,11 +216,12 @@ impl MetaData for DefaultMetaData {
 
     async fn readdir(
         &self,
+        _context: ReqContext,
         ino: u64,
         _fh: u64,
         offset: i64,
-        mut reply: ReplyDirectory,
-    ) -> nix::Result<usize> {
+        reply: &mut ReplyDirectory,
+    ) -> DatenLordResult<()> {
         let mut readdir_helper = |data: &BTreeMap<String, DirEntry>| -> usize {
             let mut num_child_entries = 0;
             for (i, (child_name, child_entry)) in data.iter().enumerate().skip(offset.cast()) {
@@ -246,17 +255,7 @@ impl MetaData for DefaultMetaData {
             );
         });
         if inode.need_load_dir_data() {
-            let load_res = inode.load_data(0_usize, 0_usize).await;
-            if let Err(e) = load_res {
-                debug!(
-                    "readdir() failed to load the data for directory of ino={} and name={:?}, \
-                        the error is: {:?}",
-                    ino,
-                    inode.get_name(),
-                    e
-                );
-                return reply.error(e).await;
-            }
+            inode.load_data(0_usize, 0_usize).await?;
         }
         let num_child_entries = inode.read_dir(&mut readdir_helper);
         debug!(
@@ -266,10 +265,10 @@ impl MetaData for DefaultMetaData {
             ino,
             inode.get_name(),
         );
-        reply.ok().await
+        Ok(())
     }
 
-    async fn opendir(&self, ino: u64, flags: u32) -> DatenLordResult<RawFd> {
+    async fn opendir(&self, context: ReqContext, ino: u64, flags: u32) -> DatenLordResult<RawFd> {
         let cache = self.cache().read().await;
         let node = cache.get(&ino).unwrap_or_else(|| {
             panic!(
@@ -277,6 +276,7 @@ impl MetaData for DefaultMetaData {
                     the i-node of ino={ino} should be in cache",
             );
         });
+        node.get_attr().check_perm(context.uid, context.gid, 1)?;
         let o_flags = fs_util::parse_oflag(flags);
         node.dup_fd(o_flags).await
     }
@@ -292,7 +292,7 @@ impl MetaData for DefaultMetaData {
         node.get_symlink_target().as_os_str().to_owned().into_vec()
     }
 
-    async fn statfs(&self, ino: u64) -> DatenLordResult<StatFsParam> {
+    async fn statfs(&self, _context: ReqContext, ino: u64) -> DatenLordResult<StatFsParam> {
         let cache = self.cache().read().await;
         let node = cache.get(&ino).unwrap_or_else(|| {
             panic!(
@@ -367,7 +367,7 @@ impl MetaData for DefaultMetaData {
         return Ok(inode.get_file_data(offset.cast(), size.cast()).await);
     }
 
-    async fn open(&self, ino: u64, flags: u32) -> DatenLordResult<RawFd> {
+    async fn open(&self, _context: ReqContext, ino: u64, flags: u32) -> DatenLordResult<RawFd> {
         let cache = self.cache().read().await;
         let node = cache.get(&ino).unwrap_or_else(|| {
             panic!(
@@ -438,6 +438,7 @@ impl MetaData for DefaultMetaData {
 
     async fn setattr_helper(
         &self,
+        context: ReqContext,
         ino: u64,
         param: SetAttrParam,
     ) -> DatenLordResult<(Duration, FuseAttr)> {
@@ -450,7 +451,10 @@ impl MetaData for DefaultMetaData {
             );
         });
 
-        match inode.setattr_precheck(param).await {
+        match inode
+            .setattr_precheck(param, context.uid, context.gid)
+            .await
+        {
             Ok((attr_changed, file_attr)) => {
                 if attr_changed {
                     inode.set_attr(file_attr);
@@ -595,12 +599,17 @@ impl MetaData for DefaultMetaData {
     /// Helper function to create node
     async fn create_node_helper(
         &self,
-        parent: INum,
-        node_name: &str,
-        mode: u32,
-        node_type: SFlag,
-        target_path: Option<&Path>,
+        param: CreateParam,
     ) -> DatenLordResult<(Duration, FuseAttr, u64)> {
+        // parent node_name mode node_type(SFlag)
+        let parent = param.parent;
+        let node_name = &param.name;
+        let mode = param.mode;
+        let node_type = param.node_type;
+        let target_path: Option<&Path> = match param.link {
+            Some(ref path) => Some(path.as_ref()),
+            None => None,
+        };
         // pre-check
         let mut cache = self.cache.write().await;
         let parent_node = Self::create_node_pre_check(parent, node_name, &mut cache)
@@ -616,7 +625,7 @@ impl MetaData for DefaultMetaData {
                     node_name, m_flags, parent, parent_name,
                 );
                 parent_node
-                    .create_child_dir(0, node_name, m_flags)
+                    .create_child_dir(0, node_name, m_flags, param.uid, param.gid)
                     .await
                     .context(format!(
                     "create_node_helper() failed to create directory with name={node_name:?} and mode={m_flags:?} \
@@ -637,6 +646,8 @@ impl MetaData for DefaultMetaData {
                         node_name,
                         o_flags,
                         m_flags,
+                        param.uid,
+                        param.gid,
                         Arc::<GlobalCache>::clone(&self.data_cache),
                     )
                     .await
@@ -789,6 +800,7 @@ impl MetaData for DefaultMetaData {
     /// Helper function to lookup
     async fn lookup_helper(
         &self,
+        _context: ReqContext,
         parent: INum,
         child_name: &str,
     ) -> DatenLordResult<(Duration, FuseAttr, u64)> {

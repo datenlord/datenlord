@@ -176,6 +176,11 @@ pub async fn async_success<R: Send>(sink: UnarySink<R>, r: R) {
 
 /// Send async failure `gRPC` response
 pub async fn async_fail<R>(sink: UnarySink<R>, err: DatenLordError) {
+    // debug_assert_ne!(
+    // rsc,
+    // RpcStatusCode::OK,
+    // "the input RpcStatusCode should not be OK"
+    // );
     let details = format!("{err}");
     let rs = RpcStatus::with_message(err, details);
     let res = sink.fail(rs).await;

@@ -22,7 +22,7 @@ pub mod s3_wrapper;
 pub mod serial;
 
 use std::os::unix::prelude::RawFd;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::SystemTime;
 
@@ -35,10 +35,11 @@ use nix::errno::Errno;
 use nix::sys::stat::SFlag;
 pub use s3_metadata::S3MetaData;
 use serde::{Deserialize, Serialize};
-use tracing::{debug, warn};
+use tracing::{debug, error, info, warn};
 
 use self::kv_engine::KVEngineType;
 use super::fuse::file_system::FsController;
+use super::util::build_error_result_from_errno;
 use crate::async_fuse::fuse::file_system;
 use crate::async_fuse::fuse::file_system::{FileSystem, FsAsyncTaskController};
 use crate::async_fuse::fuse::fuse_reply::{
@@ -47,6 +48,7 @@ use crate::async_fuse::fuse::fuse_reply::{
 };
 use crate::async_fuse::fuse::fuse_request::Request;
 use crate::async_fuse::fuse::protocol::{INum, FUSE_ROOT_ID};
+use crate::async_fuse::memfs::metadata::ReqContext;
 use crate::common::error::{Context, DatenLordResult};
 use crate::common::etcd_delegate::EtcdDelegate;
 
@@ -99,6 +101,27 @@ pub struct SetAttrParam {
     pub flags: Option<u32>,
 }
 
+/// Create parameters
+#[derive(Debug)]
+pub struct CreateParam {
+    /// Parent directory i-number
+    pub parent: INum,
+    /// File name
+    pub name: String,
+    /// File mode
+    pub mode: u32,
+    /// File flags
+    pub rdev: u32,
+    /// User ID
+    pub uid: u32,
+    /// Group ID
+    pub gid: u32,
+    /// Type
+    pub node_type: SFlag,
+    /// For symlink
+    pub link: Option<PathBuf>,
+}
+
 /// Rename parameters
 #[derive(Serialize, Deserialize, Debug)]
 pub struct RenameParam {
@@ -129,6 +152,20 @@ pub struct FileLockParam {
     pub typ: u32,
     /// The process ID of the lock
     pub pid: u32,
+}
+
+// MAX NAME LEN
+const MAX_NAME_LEN: usize = 255;
+
+/// Check the name length is valid or not
+pub fn check_name_length(name: &str) -> DatenLordResult<()> {
+    debug!("check name length = {}", name.chars().count());
+    if name.len() > MAX_NAME_LEN {
+        error!("name = {} is too long ,size = {}", name, name.len());
+        build_error_result_from_errno(Errno::ENAMETOOLONG, "name too long ".to_owned())
+    } else {
+        Ok(())
+    }
 }
 
 impl<M: MetaData + Send + Sync + 'static> MemFs<M> {
@@ -171,7 +208,7 @@ impl<M: MetaData + Send + Sync + 'static> MemFs<M> {
     /// Read content check
     fn read_helper(content: Vec<IoMemBlock>, size: usize) -> DatenLordResult<Vec<IoMemBlock>> {
         if content.iter().filter(|c| !c.can_convert()).count() > 0 {
-            return super::util::build_error_result_from_errno(
+            return build_error_result_from_errno(
                 Errno::EIO,
                 "The content is out of scope".to_owned(),
             );
@@ -208,7 +245,15 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         reply: ReplyEntry,
     ) -> nix::Result<usize> {
         debug!("lookup(parent={}, name={:?}, req={:?})", parent, name, req,);
-        let lookup_res = self.metadata.lookup_helper(parent, name).await;
+        let context = ReqContext {
+            uid: req.uid(),
+            gid: req.gid(),
+        };
+        // check the dir_name is valid
+        if let Err(e) = check_name_length(name) {
+            return reply.error(e).await;
+        }
+        let lookup_res = self.metadata.lookup_helper(context, parent, name).await;
         match lookup_res {
             Ok((ttl, fuse_attr, generation)) => {
                 debug!(
@@ -262,7 +307,12 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         let ino = req.nodeid();
         debug!("open(ino={}, flags={}, req={:?})", ino, flags, req);
 
-        match self.metadata.open(ino, flags).await {
+        let context = ReqContext {
+            uid: req.uid(),
+            gid: req.gid(),
+        };
+
+        match self.metadata.open(context, ino, flags).await {
             Ok(new_fd) => {
                 debug!(
                     "open() successfully duplicated the file handler of ino={} , fd={}, flags={:?}",
@@ -328,7 +378,11 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         if 0 == valid {
             warn!("setattr() encountered valid=0, the req={:?}", req);
         };
-        let set_res = self.metadata.setattr_helper(ino, param).await;
+        let context = ReqContext {
+            uid: req.uid(),
+            gid: req.gid(),
+        };
+        let set_res = self.metadata.setattr_helper(context, ino, param).await;
         match set_res {
             Ok((ttl, fuse_attr)) => reply.attr(ttl, fuse_attr).await,
             Err(e) => reply.error(e).await,
@@ -341,34 +395,15 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
     async fn mknod(
         &self,
         req: &Request<'_>,
-        parent: INum,
-        name: &str,
-        mode: u32,
-        rdev: u32,
+        param: CreateParam,
         reply: ReplyEntry,
     ) -> nix::Result<usize> {
-        debug!(
-            "mknod(parent={}, name={:?}, mode={}, rdev={}, req={:?})",
-            parent, name, mode, rdev, req,
-        );
-        let mknod_res = self
-            .metadata
-            .create_node_helper(parent, name, mode, SFlag::S_IFREG, None)
-            .await
-            .add_context(format!(
-                "mknod() failed to create an i-node name={name:?} and mode={mode:?} under parent ino={parent},",
-            ));
+        debug!("mknod param = {:?}, req = {:?}", param, req);
+        let mknod_res = self.metadata.create_node_helper(param).await;
         match mknod_res {
             Ok((ttl, fuse_attr, generation)) => reply.entry(ttl, fuse_attr, generation).await,
             Err(e) => {
-                debug!(
-                    "mknod() failed to create an i-node name={:?} and mode={:?} under parent ino={}, \
-                        the error is: {:?}",
-                    name,
-                    mode,
-                    parent,
-                    e,
-                );
+                info!("mknod() failed , the error is: {:?}", e);
                 reply.error(e).await
             }
         }
@@ -387,9 +422,19 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
             "mkdir(parent={}, name={:?}, mode={}, req={:?})",
             parent, name, mode, req,
         );
+        let param = CreateParam {
+            parent,
+            name: name.to_owned(),
+            mode,
+            rdev: 0,
+            uid: req.uid(),
+            gid: req.gid(),
+            node_type: SFlag::S_IFDIR,
+            link: None,
+        };
         let mkdir_res = self
             .metadata
-            .create_node_helper(parent, name, mode, SFlag::S_IFDIR, None)
+            .create_node_helper(param)
             .await
             .add_context(format!(
                 "mkdir() failed to create a directory name={name:?} and mode={mode:?} under parent ino={parent}",
@@ -419,6 +464,10 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         reply: ReplyEmpty,
     ) -> nix::Result<usize> {
         debug!("unlink(parent={}, name={:?}, req={:?}", parent, name, req,);
+        // check the dir_name is valid
+        if let Err(e) = check_name_length(name) {
+            return reply.error(e).await;
+        }
         match self.metadata.unlink(parent, name).await {
             Ok(()) => reply.ok().await,
             Err(e) => {
@@ -444,6 +493,11 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
             "rmdir(parent={}, name={:?}, req={:?})",
             parent, dir_name, req,
         );
+        // check the dir_name is valid
+        if let Err(e) = check_name_length(dir_name) {
+            return reply.error(e).await;
+        }
+
         let rmdir_res = self
             .metadata
             .remove_node_helper(parent, dir_name, SFlag::S_IFDIR)
@@ -699,8 +753,12 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
     async fn opendir(&self, req: &Request<'_>, flags: u32, reply: ReplyOpen) -> nix::Result<usize> {
         let ino = req.nodeid();
         debug!("opendir(ino={}, flags={}, req={:?})", ino, flags, req,);
+        let context = ReqContext {
+            uid: req.uid(),
+            gid: req.gid(),
+        };
         let o_flags = fs_util::parse_oflag(flags);
-        match self.metadata.opendir(ino, flags).await {
+        match self.metadata.opendir(context, ino, flags).await {
             Ok(new_fd) => {
                 debug!(
                     "opendir() successfully duplicated the file handler of \
@@ -730,7 +788,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         req: &Request<'_>,
         fh: u64,
         offset: i64,
-        reply: ReplyDirectory,
+        mut reply: ReplyDirectory,
     ) -> nix::Result<usize> {
         let ino = req.nodeid();
         debug!(
@@ -738,7 +796,21 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
             ino, fh, offset, req,
         );
 
-        self.metadata.readdir(ino, fh, offset, reply).await
+        let context = ReqContext {
+            uid: req.uid(),
+            gid: req.gid(),
+        };
+        match self
+            .metadata
+            .readdir(context, ino, fh, offset, &mut reply)
+            .await
+        {
+            Ok(_) => reply.ok().await,
+            Err(e) => {
+                debug!("readdir() failed, the error is: {:?}", e);
+                reply.error(e).await
+            }
+        }
     }
 
     /// Release an open directory.
@@ -798,7 +870,11 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
             req.nodeid()
         };
         debug!("statfs(ino={}, req={:?})", ino, req);
-        match self.metadata.statfs(ino).await {
+        let context = ReqContext {
+            uid: req.uid(),
+            gid: req.gid(),
+        };
+        match self.metadata.statfs(context, ino).await {
             Ok(statvfs) => {
                 debug!(
                     "statfs() successfully read the statvfs of ino={} the statvfs={:?}",
@@ -836,12 +912,18 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
             "symlink(parent={}, name={:?}, target_path={:?}, req={:?})",
             parent, name, target_path, req
         );
-        let symlink_res = self.metadata.create_node_helper(
+        let param = CreateParam {
             parent,
-            name,
-            0o777, // Symbolic links have no permissions
-            SFlag::S_IFLNK,
-            Some(target_path),
+            name: name.to_owned(),
+            mode: 0o777,
+            rdev: 0,
+            uid: req.uid(),
+            gid: req.gid(),
+            node_type: SFlag::S_IFLNK,
+            link: Some(target_path.to_owned()),
+        };
+        let symlink_res = self.metadata.create_node_helper(
+            param
         )
         .await
         .add_context(format!(

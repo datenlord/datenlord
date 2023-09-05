@@ -11,8 +11,10 @@ use anyhow::anyhow;
 use async_trait::async_trait;
 use clippy_utilities::{Cast, OverflowArithmetic};
 use futures::future::{BoxFuture, FutureExt};
+use nix::errno::Errno;
 use nix::fcntl::OFlag;
 use nix::sys::stat::{Mode, SFlag};
+use nix::unistd;
 use parking_lot::RwLock;
 use tracing::debug;
 
@@ -31,6 +33,7 @@ use super::{persist, SetAttrParam};
 use crate::async_fuse::fuse::fuse_reply::{AsIoVec, StatFsParam};
 use crate::async_fuse::fuse::protocol::INum;
 use crate::async_fuse::metrics;
+use crate::async_fuse::util::build_error_result_from_errno;
 use crate::common::error::{DatenLordError, DatenLordResult};
 
 /// S3's available fd count
@@ -262,6 +265,19 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
             S3NodeData::SymLink(..) => debug_assert_eq!(new_attr.kind, SFlag::S_IFLNK),
         }
 
+        // if broadcast {
+        // if let Err(e) = dist_client::push_attr(
+        // self.meta.etcd_client.clone(),
+        // &self.meta.node_id,
+        // &self.meta.volume_info,
+        // &self.full_path,
+        // &new_attr,
+        // )
+        // .await
+        // {
+        // panic!("failed to push attribute to others, error: {}", e);
+        // }
+        // }
         self.attr.write().clone_from(&new_attr);
         old_attr
     }
@@ -357,7 +373,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
 
     /// Increase node lookup count
     fn inc_lookup_count(&self) -> i64 {
-        self.lookup_count.fetch_add(1, Ordering::Relaxed)
+        self.lookup_count.fetch_add(1, Ordering::AcqRel)
     }
 
     /// Helper function to check need to load node data or not
@@ -436,6 +452,9 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
                     ctime: now,
                     crtime: now,
                     kind: SFlag::S_IFDIR,
+                    perm: 0o777,
+                    uid: unistd::getuid().as_raw(),
+                    gid: unistd::getgid().as_raw(),
                     ..FileAttr::default()
                 }));
 
@@ -522,6 +541,19 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
                 Err(DatenLordError::from(anyhow!(e)))
             }
         }
+    }
+
+    /// Check if given uid and gid can access this node
+    pub fn open_pre_check(&self, flags: OFlag, uid: u32, gid: u32) -> DatenLordResult<()> {
+        let attr = self.get_attr();
+        let access_mode = match flags & (OFlag::O_RDONLY | OFlag::O_WRONLY | OFlag::O_RDWR) {
+            OFlag::O_RDONLY => 4,
+            OFlag::O_WRONLY => 2,
+            OFlag::O_RDWR => 6,
+            _ => 6,
+        };
+
+        attr.check_perm(uid, gid, access_mode)
     }
 }
 
@@ -877,12 +909,15 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
         Ok(child_node)
     }
 
+    #[allow(clippy::similar_names)] // uid and gid are common
     /// Create sub-directory in a directory
     async fn create_child_dir(
         &mut self,
         inum: INum,
         child_dir_name: &str,
         mode: Mode,
+        uid: u32,
+        gid: u32,
     ) -> DatenLordResult<Self> {
         let absolute_path = self.absolute_dir_with_child(child_dir_name);
         let dir_data = self.get_dir_data();
@@ -900,6 +935,9 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
             ino: inum,
             kind: SFlag::S_IFDIR,
             perm: fs_util::parse_mode_bits(mode.bits()),
+            uid,
+            gid,
+            nlink: 2,
             ..FileAttr::now()
         }));
         debug_assert_eq!(SFlag::S_IFDIR, child_attr.read().kind);
@@ -951,6 +989,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
         ))
     }
 
+    #[allow(clippy::similar_names)]
     /// Create file in a directory
     async fn create_child_file(
         &mut self,
@@ -958,6 +997,8 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
         child_file_name: &str,
         oflags: OFlag,
         mode: Mode,
+        uid: u32,
+        gid: u32,
         global_cache: Arc<GlobalCache>,
     ) -> DatenLordResult<Self> {
         let absolute_path = self.absolute_path_with_child(child_file_name);
@@ -975,6 +1016,14 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
             panic!("failed to put data of file {absolute_path:?} to s3 backend, error is {e:?}");
         }
 
+        // debug the perm
+        debug!(
+            "create_child_file() perm debug oflags={:?}, mode={:?}, perm={:?}",
+            oflags,
+            mode,
+            fs_util::parse_mode_bits(mode.bits()),
+        );
+
         // get new file attribute
         let child_attr = Arc::new(RwLock::new(FileAttr {
             ino: inum,
@@ -982,6 +1031,9 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
             perm: fs_util::parse_mode_bits(mode.bits()),
             size: 0,
             blocks: 0,
+            uid,
+            gid,
+            nlink: 1,
             ..FileAttr::now()
         }));
         debug_assert_eq!(SFlag::S_IFREG, child_attr.read().kind);
@@ -1268,67 +1320,127 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
         self.dec_open_count();
     }
 
-    async fn setattr_precheck(&self, param: SetAttrParam) -> DatenLordResult<(bool, FileAttr)> {
-        let mut attr = self.get_attr();
+    async fn setattr_precheck(
+        &self,
+        param: SetAttrParam,
+        ctx_uid: u32,
+        ctx_gid: u32,
+    ) -> DatenLordResult<(bool, FileAttr)> {
+        let mut dirty_attr = self.get_attr();
+        let cur_attr = self.get_attr();
 
         let st_now = SystemTime::now();
         let mut attr_changed = false;
-        let mut mtime_ctime_changed = false;
-        if let Some(mode_bits) = param.mode {
-            attr.perm = fs_util::parse_mode_bits(mode_bits);
-            debug!(
-                "setattr_helper() set permission={:#o}={} from input bits={:#o}={}",
-                attr.perm, attr.perm, mode_bits, mode_bits,
-            );
-            let kind = fs_util::parse_sflag(mode_bits);
-            debug_assert_eq!(kind, attr.kind);
 
-            // Change mode also need to change ctime
-            attr.ctime = st_now;
-            attr_changed = true;
-        }
         if param.u_id.is_some() || param.g_id.is_some() {
-            if let Some(raw_uid) = param.u_id {
-                attr.uid = raw_uid;
-            }
-            if let Some(raw_gid) = param.g_id {
-                attr.gid = raw_gid;
-            }
-            // Change uid or gid also need to change ctime
-            attr.ctime = st_now;
             attr_changed = true;
         }
-        if let Some(file_size) = param.size {
-            attr.size = file_size;
-            attr.mtime = st_now;
-            attr.ctime = st_now;
-            mtime_ctime_changed = true;
-            attr_changed = true;
-        }
-        if param.a_time.is_some() || param.m_time.is_some() {
-            if mtime_ctime_changed {
-                panic!("setattr_helper() cannot change atime and mtime explicitly in the mean while with truncate");
-            } else {
-                if let Some(st_atime) = param.a_time {
-                    attr.atime = st_atime;
-                    // Change atime do not need to change ctime
-                }
-                if let Some(st_mtime) = param.a_time {
-                    attr.mtime = st_mtime;
-                    // Change mtime also need to change ctime
-                    attr.ctime = st_now;
-                }
+
+        if let Some(gid) = param.g_id {
+            if ctx_uid != 0 && cur_attr.uid != ctx_uid {
+                return build_error_result_from_errno(
+                    Errno::EPERM,
+                    "setattr() cannot change gid".to_owned(),
+                );
+            }
+
+            if cur_attr.gid != gid {
+                dirty_attr.gid = gid;
                 attr_changed = true;
             }
         }
-        // TODO: change lock owner
-        // #[cfg(feature = "abi-7-9")]
-        // let lock_owner = param.lock_owner;
+
+        if let Some(uid) = param.u_id {
+            if cur_attr.uid != uid {
+                if ctx_uid != 0 {
+                    return build_error_result_from_errno(
+                        Errno::EPERM,
+                        "setattr() cannot change uid".to_owned(),
+                    );
+                }
+                // ctx_uid == 0
+                dirty_attr.uid = uid;
+                attr_changed = true;
+            }
+        }
+
+        if let Some(mode) = param.mode {
+            let mut mode: u16 = mode.cast();
+            mode &= 0o7777;
+            if ctx_uid != 0 && mode & 0o3000 != 0 && ctx_gid != cur_attr.gid {
+                mode &= 0o0777;
+            }
+            if mode != cur_attr.perm {
+                if ctx_uid != 0 && ctx_uid != cur_attr.uid {
+                    return build_error_result_from_errno(
+                        Errno::EPERM,
+                        "setattr() cannot change mode".to_owned(),
+                    );
+                }
+                dirty_attr.perm = mode;
+                attr_changed = true;
+            }
+        }
+
+        if let Some(atime) = param.a_time {
+            //   owner is root check the ctx_uid
+            if cur_attr.uid == 0 && ctx_uid != 0 {
+                return build_error_result_from_errno(
+                    Errno::EPERM,
+                    "setattr() cannot change atime".to_owned(),
+                );
+            }
+            self.attr.read().check_perm(ctx_uid, ctx_gid, 2)?;
+            if ctx_uid != cur_attr.uid {
+                return build_error_result_from_errno(
+                    Errno::EACCES,
+                    "setattr() cannot change atime".to_owned(),
+                );
+            }
+            if atime != cur_attr.atime {
+                dirty_attr.atime = atime;
+                attr_changed = true;
+            }
+        }
+
+        if let Some(mtime) = param.m_time {
+            //   owner is root check the ctx_uid
+            if cur_attr.uid == 0 && ctx_uid != 0 {
+                return build_error_result_from_errno(
+                    Errno::EPERM,
+                    "setattr() cannot change atime".to_owned(),
+                );
+            }
+            self.attr.read().check_perm(ctx_uid, ctx_gid, 2)?;
+            if ctx_uid != cur_attr.uid {
+                return build_error_result_from_errno(
+                    Errno::EACCES,
+                    "setattr() cannot change atime".to_owned(),
+                );
+            }
+            if mtime != cur_attr.mtime {
+                dirty_attr.mtime = mtime;
+                attr_changed = true;
+            }
+        }
+
         #[cfg(feature = "abi-7-23")]
         if let Some(c_time) = param.c_time {
-            attr.ctime = c_time;
+            dirty_attr.ctime = c_time;
+            panic!("c_time is not supported in this version of statefs")
             // TODO: how to change ctime directly on ext4?
         }
-        Ok((attr_changed, attr))
+
+        if let Some(file_size) = param.size {
+            dirty_attr.size = file_size;
+            dirty_attr.mtime = st_now;
+            attr_changed = true;
+        }
+
+        if attr_changed {
+            dirty_attr.ctime = st_now;
+        }
+
+        Ok((attr_changed, dirty_attr))
     }
 }

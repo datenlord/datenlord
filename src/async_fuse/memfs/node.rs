@@ -103,6 +103,8 @@ pub trait Node: Sized {
         inum: INum,
         child_dir_name: &str,
         mode: Mode,
+        uid: u32,
+        gid: u32,
     ) -> DatenLordResult<Self>;
     /// Open file in a directory
     async fn open_child_file(
@@ -112,6 +114,7 @@ pub trait Node: Sized {
         oflags: OFlag,
         global_cache: Arc<GlobalCache>,
     ) -> DatenLordResult<Self>;
+    #[allow(clippy::too_many_arguments)]
     /// Create file in a directory
     async fn create_child_file(
         &mut self,
@@ -119,6 +122,8 @@ pub trait Node: Sized {
         child_file_name: &str,
         oflags: OFlag,
         mode: Mode,
+        uid: u32,
+        gid: u32,
         global_cache: Arc<GlobalCache>,
     ) -> DatenLordResult<Self>;
     /// Load data from directory, file or symlink target.
@@ -151,7 +156,12 @@ pub trait Node: Sized {
     /// Close dir
     async fn closedir(&self, ino: INum, fh: u64);
     /// Precheck before set attr
-    async fn setattr_precheck(&self, param: SetAttrParam) -> DatenLordResult<(bool, FileAttr)>;
+    async fn setattr_precheck(
+        &self,
+        param: SetAttrParam,
+        uid: u32,
+        gid: u32,
+    ) -> DatenLordResult<(bool, FileAttr)>;
     /// Mark as deferred deletion
     fn mark_deferred_deletion(&self);
     /// If node is marked as deferred deletion
@@ -914,6 +924,8 @@ impl Node for DefaultNode {
         _inum: INum,
         child_dir_name: &str,
         mode: Mode,
+        _uid: u32,
+        _gid: u32,
     ) -> DatenLordResult<Self> {
         let ino = self.get_ino();
         let fd = self.fd;
@@ -1026,6 +1038,8 @@ impl Node for DefaultNode {
         child_file_name: &str,
         oflags: OFlag,
         mode: Mode,
+        _uid: u32,
+        _gid: u32,
         global_cache: Arc<GlobalCache>,
     ) -> DatenLordResult<Self> {
         let ino = self.get_ino();
@@ -1134,6 +1148,18 @@ impl Node for DefaultNode {
             }
             DefaultNodeData::SymLink(..) => {
                 panic!("forbidden to load symlink target data");
+                // let target_data = self
+                //     .load_symlink_target_helper()
+                //     .await
+                //     .context("load_data() failed to load symlink target node
+                // data")?; let data_size = target_data.size();
+                // self.data =
+                // DefaultNodeData::SymLink(Box::new(SymLinkData::from(
+                //     self.get_symlink_target().to_owned(),
+                //     target_data,
+                // )));
+                // debug!("load_data() successfully load symlink target node
+                // data"); Ok(data_size)
             }
         }
     }
@@ -1411,7 +1437,12 @@ impl Node for DefaultNode {
 
     /// Precheck before set attr
     #[allow(clippy::too_many_lines)]
-    async fn setattr_precheck(&self, param: SetAttrParam) -> DatenLordResult<(bool, FileAttr)> {
+    async fn setattr_precheck(
+        &self,
+        param: SetAttrParam,
+        _uid: u32,
+        _gid: u32,
+    ) -> DatenLordResult<(bool, FileAttr)> {
         let fd = self.get_fd();
         let mut attr = self.get_attr();
 

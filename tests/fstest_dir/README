@@ -1,0 +1,28 @@
+$FreeBSD: src/tools/regression/fstest/README,v 1.1 2007/01/28 00:10:28 pjd Exp $
+
+Few notes on how to use fstest in short steps:
+
+	# cd fstest
+	# vi tests/conf
+	Change 'fs' to file system type you want to test. These can be:
+	UFS, ZFS, ext3, ntfs-3g and xfs.
+	# vi Makefile
+	You may need to manually tweak few things by editing CFLAGS lines
+	at the top of the file.
+	# make
+	It will compile fstest utility which is used by regression tests.
+	# cd /path/to/file/system/you/want/to/test/
+	The test must be run as root user.
+	# prove -r /path/to/fstest/
+
+That's all. Enjoy.
+
+Currently supported operating systems: FreeBSD, Solaris, Linux.
+Currently supported file system types: UFS, ZFS, ext3, ntfs-3g, xfs.
+
+Author: 
+Pawel Jakub Dawidek <pjd@FreeBSD.org>
+
+Linux port:
+Jean-Pierre Andre <jean-pierre.andre@wanadoo.fr>
+Szabolcs Szakacsits <szaka@ntfs-3g.org>

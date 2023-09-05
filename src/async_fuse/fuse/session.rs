@@ -1,5 +1,10 @@
 //! The implementation of FUSE session
 
+// #[cfg(target_os = "macos")]
+// use super::protocol::{
+//     FATTR_BKUPTIME, FATTR_CHGTIME, FATTR_CRTIME, FATTR_FLAGS,
+// FUSE_CASE_INSENSITIVE,     FUSE_VOL_RENAME, FUSE_XTIMES,
+// };
 use std::os::unix::io::RawFd;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -11,11 +16,15 @@ use clippy_utilities::Cast;
 use crossbeam_channel::{Receiver, Sender};
 use crossbeam_utils::atomic::AtomicCell;
 use nix::errno::Errno;
+use nix::sys::stat::SFlag;
 use nix::unistd;
 use tracing::{debug, error, info};
 
 use super::context::ProtoVersion;
 use super::file_system::{FileSystem, FsAsyncTaskController, FsController};
+// use super::channel::Channel;
+// #[cfg(target_os = "macos")]
+// use super::fuse_reply::ReplyXTimes;
 use super::fuse_reply::{
     ReplyAttr, ReplyBMap, ReplyCreate, ReplyData, ReplyDirectory, ReplyEmpty, ReplyEntry,
     ReplyInit, ReplyLock, ReplyOpen, ReplyStatFs, ReplyWrite, ReplyXAttr,
@@ -31,8 +40,13 @@ use super::protocol::{
     FATTR_MTIME, FATTR_SIZE, FATTR_UID, FUSE_ASYNC_READ, FUSE_KERNEL_MINOR_VERSION,
     FUSE_KERNEL_VERSION, FUSE_RELEASE_FLUSH,
 };
-use crate::async_fuse::memfs::{FileLockParam, MemFs, MetaData, RenameParam, SetAttrParam};
+use crate::async_fuse::memfs::{
+    CreateParam, FileLockParam, MemFs, MetaData, RenameParam, SetAttrParam,
+};
 use crate::common::error::DatenLordError;
+
+// #[cfg(target_os = "macos")]
+// use std::time::SystemTime;
 
 /// We generally support async reads
 #[cfg(target_os = "linux")]
@@ -499,6 +513,7 @@ async fn dispatch<'a>(
             fs.getattr(req, reply).await
         }
         Operation::SetAttr { arg } => {
+            error!("set attr arg {arg:?}");
             let mode = match arg.valid & FATTR_MODE {
                 0 => None,
                 _ => Some(arg.mode),
@@ -527,16 +542,16 @@ async fn dispatch<'a>(
                 0 => None,
                 _ => Some(arg.fh),
             };
-            // #[cfg(feature = "abi-7-9")]
-            // let a_time = match arg.valid & FATTR_ATIME_NOW {
-            //     0 => None,
-            //     _ => Some(SystemTime::now()),
-            // };
-            // #[cfg(feature = "abi-7-9")]
-            // let m_time = match arg.valid & FATTR_MTIME_NOW {
-            //     0 => None,
-            //     _ => Some(SystemTime::now()),
-            // };
+            #[cfg(feature = "abi-7-9")]
+            let a_time = match arg.valid & FATTR_ATIME_NOW {
+                0 => None,
+                _ => Some(SystemTime::now()),
+            };
+            #[cfg(feature = "abi-7-9")]
+            let m_time = match arg.valid & FATTR_MTIME_NOW {
+                0 => None,
+                _ => Some(SystemTime::now()),
+            };
             #[cfg(feature = "abi-7-9")]
             let lock_owner = match arg.valid & FATTR_LOCKOWNER {
                 0 => None,
@@ -615,9 +630,18 @@ async fn dispatch<'a>(
             fs.readlink(req, reply).await
         }
         Operation::MkNod { arg, name } => {
+            let param = CreateParam {
+                parent: req.nodeid(),
+                name: name.to_owned(),
+                mode: arg.mode,
+                rdev: arg.rdev,
+                uid: req.uid(),
+                gid: req.gid(),
+                node_type: SFlag::S_IFREG,
+                link: None,
+            };
             let reply = ReplyEntry::new(req.unique(), fd);
-            fs.mknod(req, req.nodeid(), name, arg.mode, arg.rdev, reply)
-                .await
+            fs.mknod(req, param, reply).await
         }
         Operation::MkDir { arg, name } => {
             let reply = ReplyEntry::new(req.unique(), fd);
