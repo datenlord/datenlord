@@ -262,6 +262,19 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
             S3NodeData::SymLink(..) => debug_assert_eq!(new_attr.kind, SFlag::S_IFLNK),
         }
 
+        // if broadcast {
+        // if let Err(e) = dist_client::push_attr(
+        // self.meta.etcd_client.clone(),
+        // &self.meta.node_id,
+        // &self.meta.volume_info,
+        // &self.full_path,
+        // &new_attr,
+        // )
+        // .await
+        // {
+        // panic!("failed to push attribute to others, error: {}", e);
+        // }
+        // }
         self.attr.write().clone_from(&new_attr);
         old_attr
     }
@@ -357,7 +370,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
 
     /// Increase node lookup count
     fn inc_lookup_count(&self) -> i64 {
-        self.lookup_count.fetch_add(1, Ordering::Relaxed)
+        self.lookup_count.fetch_add(1, Ordering::AcqRel)
     }
 
     /// Helper function to check need to load node data or not
@@ -747,6 +760,12 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
         child_symlink_name: &str,
         target_path: PathBuf,
     ) -> DatenLordResult<Self> {
+        debug!(
+            "create_child_symlink() called, parent ={}, child_symlink_name={:?}, target_path={:?}",
+            self.get_full_path(),
+            child_symlink_name,
+            target_path,
+        );
         let absolute_path = self.absolute_path_with_child(child_symlink_name);
         let dir_data = self.get_dir_data();
         debug_assert!(
@@ -883,7 +902,15 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
         inum: INum,
         child_dir_name: &str,
         mode: Mode,
+        user_id: u32,
+        group_id: u32,
     ) -> DatenLordResult<Self> {
+        debug!(
+            "create_child_dir() called, parent name={}, child name={:?} mode = {:?}",
+            self.get_full_path(),
+            child_dir_name,
+            mode,
+        );
         let absolute_path = self.absolute_dir_with_child(child_dir_name);
         let dir_data = self.get_dir_data();
         // TODO return error
@@ -900,6 +927,9 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
             ino: inum,
             kind: SFlag::S_IFDIR,
             perm: fs_util::parse_mode_bits(mode.bits()),
+            uid: user_id,
+            gid: group_id,
+            nlink: 1,
             ..FileAttr::now()
         }));
         debug_assert_eq!(SFlag::S_IFDIR, child_attr.read().kind);
@@ -958,8 +988,17 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
         child_file_name: &str,
         oflags: OFlag,
         mode: Mode,
+        user_id: u32,
+        group_id: u32,
         global_cache: Arc<GlobalCache>,
     ) -> DatenLordResult<Self> {
+        debug!(
+            "create_child_file() called, parent name={}, child name={:?} oflags={:?} mode = {:?}",
+            self.get_full_path(),
+            child_file_name,
+            oflags,
+            mode,
+        );
         let absolute_path = self.absolute_path_with_child(child_file_name);
         let dir_data = self.get_dir_data();
         debug_assert!(
@@ -982,6 +1021,9 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
             perm: fs_util::parse_mode_bits(mode.bits()),
             size: 0,
             blocks: 0,
+            uid: user_id,
+            gid: group_id,
+            nlink: 1,
             ..FileAttr::now()
         }));
         debug_assert_eq!(SFlag::S_IFREG, child_attr.read().kind);

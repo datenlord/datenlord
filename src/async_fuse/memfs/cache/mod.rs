@@ -318,7 +318,6 @@ impl GlobalCache {
         let check_fn = |global_index: usize| -> Option<usize> {
             let hash_index = global_index.overflow_div(bucket_size);
             let bucket_opt = file_cache.get(&hash_index, &guard);
-
             bucket_opt.and_then(|bucket| {
                 bucket
                     .write()
@@ -379,7 +378,6 @@ impl GlobalCache {
         let read_fn = |global_index: usize| -> IoMemBlock {
             let hash_index = global_index.overflow_div(bucket_size);
             let bucket_opt = file_cache.get(&hash_index, &guard);
-
             bucket_opt.map_or_else(
                 || IoMemBlock::new(None, 0, 0),
                 |bucket| {

@@ -11,6 +11,7 @@ use clippy_utilities::Cast;
 use crossbeam_channel::{Receiver, Sender};
 use crossbeam_utils::atomic::AtomicCell;
 use nix::errno::Errno;
+use nix::sys::stat::SFlag;
 use nix::unistd;
 use tracing::{debug, error, info};
 
@@ -31,7 +32,9 @@ use super::protocol::{
     FATTR_MTIME, FATTR_SIZE, FATTR_UID, FUSE_ASYNC_READ, FUSE_KERNEL_MINOR_VERSION,
     FUSE_KERNEL_VERSION, FUSE_RELEASE_FLUSH,
 };
-use crate::async_fuse::memfs::{FileLockParam, MemFs, MetaData, RenameParam, SetAttrParam};
+use crate::async_fuse::memfs::{
+    CreateParam, FileLockParam, MemFs, MetaData, RenameParam, SetAttrParam,
+};
 use crate::common::error::DatenLordError;
 
 /// We generally support async reads
@@ -615,9 +618,18 @@ async fn dispatch<'a>(
             fs.readlink(req, reply).await
         }
         Operation::MkNod { arg, name } => {
+            let param = CreateParam {
+                parent: req.nodeid(),
+                name: name.to_owned(),
+                mode: arg.mode,
+                rdev: arg.rdev,
+                uid: req.uid(),
+                gid: req.gid(),
+                node_type: SFlag::S_IFREG,
+                link: None,
+            };
             let reply = ReplyEntry::new(req.unique(), fd);
-            fs.mknod(req, req.nodeid(), name, arg.mode, arg.rdev, reply)
-                .await
+            fs.mknod(req, param, reply).await
         }
         Operation::MkDir { arg, name } => {
             let reply = ReplyEntry::new(req.unique(), fd);
