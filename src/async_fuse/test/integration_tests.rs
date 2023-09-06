@@ -489,6 +489,30 @@ fn test_bind_mount(fuse_mount_dir: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
+fn test_create_file(mount_dir: &Path) -> anyhow::Result<()> {
+    use smol::fs::unix::MetadataExt;
+    info!("file manipulation Rust style");
+    let file_path = Path::new(mount_dir).join("test_create_file_user.txt");
+    let file_mode = Mode::from_bits_truncate(0o644);
+    let file_fd = fcntl::open(&file_path, OFlag::O_CREAT, file_mode)?;
+    unistd::close(file_fd)?;
+    let file_metadata = fs::metadata(&file_path)?;
+    assert_eq!(file_metadata.mode() & 0o777, 0o644);
+    // check the file owner
+    let file_owner = file_metadata.uid();
+    let cur_user_id = unistd::getuid();
+    assert_eq!(file_owner, cur_user_id.as_raw());
+    // check the file group
+    let file_group = file_metadata.gid();
+    let cur_group_id = unistd::getgid();
+    assert_eq!(file_group, cur_group_id.as_raw());
+    // check nlink == 1
+    assert_eq!(file_metadata.nlink(), 1);
+    fs::remove_file(&file_path)?; // immediate deletion
+    Ok(())
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn test_all() -> anyhow::Result<()> {
     run_test().await
@@ -521,6 +545,7 @@ async fn _run_test(mount_dir_str: &str, is_s3: bool) -> anyhow::Result<()> {
     test_rename_file_replace(mount_dir).context("test_rename_file_replace() failed")?;
     test_rename_file(mount_dir).context("test_rename_file() failed")?;
     test_rename_dir(mount_dir).context("test_rename_dir() failed")?;
+    test_create_file(mount_dir).context("test_create_file() failed")?;
 
     test_util::teardown(mount_dir, th).await?;
 

@@ -12,7 +12,7 @@ use super::fuse_reply::{
 };
 use super::fuse_request::Request;
 use super::protocol::INum;
-use crate::async_fuse::memfs::{FileLockParam, RenameParam, SetAttrParam};
+use crate::async_fuse::memfs::{CreateParam, FileLockParam, RenameParam, SetAttrParam};
 use crate::common::error::DatenLordResult;
 
 /// FUSE filesystem trait
@@ -57,10 +57,7 @@ pub trait FileSystem {
     async fn mknod(
         &self,
         req: &Request<'_>,
-        parent: INum,
-        name: &str,
-        mode: u32,
-        rdev: u32,
+        param: CreateParam,
         reply: ReplyEntry,
     ) -> nix::Result<usize>;
 
