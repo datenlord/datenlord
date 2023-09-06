@@ -262,19 +262,6 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
             S3NodeData::SymLink(..) => debug_assert_eq!(new_attr.kind, SFlag::S_IFLNK),
         }
 
-        // if broadcast {
-        // if let Err(e) = dist_client::push_attr(
-        // self.meta.etcd_client.clone(),
-        // &self.meta.node_id,
-        // &self.meta.volume_info,
-        // &self.full_path,
-        // &new_attr,
-        // )
-        // .await
-        // {
-        // panic!("failed to push attribute to others, error: {}", e);
-        // }
-        // }
         self.attr.write().clone_from(&new_attr);
         old_attr
     }

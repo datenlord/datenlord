@@ -1143,18 +1143,6 @@ impl Node for DefaultNode {
             }
             DefaultNodeData::SymLink(..) => {
                 panic!("forbidden to load symlink target data");
-                // let target_data = self
-                //     .load_symlink_target_helper()
-                //     .await
-                //     .context("load_data() failed to load symlink target node
-                // data")?; let data_size = target_data.size();
-                // self.data =
-                // DefaultNodeData::SymLink(Box::new(SymLinkData::from(
-                //     self.get_symlink_target().to_owned(),
-                //     target_data,
-                // )));
-                // debug!("load_data() successfully load symlink target node
-                // data"); Ok(data_size)
             }
         }
     }
@@ -1605,9 +1593,6 @@ mod test {
     use nix::sys::stat::Mode;
     use nix::unistd;
 
-    // use std::fs::File;
-    // use std::io::prelude::*;
-    // use std::os::unix::io::FromRawFd;
     use crate::common::error::{DatenLordError, DatenLordResult};
 
     #[test]
@@ -1646,13 +1631,6 @@ mod test {
             let write_size = unistd::write(dup_fd, file_content.as_bytes())?;
             assert_eq!(write_size, file_content.len(), "write size not match");
 
-            // unistd::lseek(dup_fd, 0, unistd::Whence::SeekSet)?;
-            // let mut buffer: Vec<u8> =
-            // std::iter::repeat(0_u8).take(file_content.len()).collect();
-            // let read_size = unistd::read(dup_fd, &mut *buffer)?;
-            // assert_eq!(read_size, file_content.len(), "read size not match");
-            // let content = String::from_utf8(buffer)?;
-            // assert_eq!(content, file_content, "file content not match");
             unistd::close(dup_fd)?;
         }
         {

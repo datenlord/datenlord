@@ -908,7 +908,6 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
             });
     }
 
-    #[allow(dead_code)]
     #[allow(clippy::unwrap_used)]
     /// Get inum from kv engine use full path
     /// # Panics
@@ -927,7 +926,6 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
         res.map(ValueType::into_inum)
     }
 
-    #[allow(dead_code)]
     /// Set inum to kv engine use full path
     async fn set_inum_to_kv_engine(&self, full_path: &str, inum: INum) {
         debug!("set_inum_to_kv_engine() about to set inum of full_path={full_path} to kv engine");
@@ -981,6 +979,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
 
     /// The pre-check before create node
     /// # Return
+    /// If successful, return the created child node
     async fn create_node_pre_check(
         &self,
         parent: INum,
@@ -1471,19 +1470,6 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
                 deleted the target i-node to be replaced",
         );
         Ok(())
-    }
-
-    /// Helper function to rename file locally
-    #[allow(dead_code)]
-    pub(crate) async fn rename_local(&self, param: &RenameParam, from_remote: bool) {
-        if param.flags == 2 {
-            if let Err(e) = self.rename_exchange_local(param).await {
-                panic!("failed to rename local param={param:?}, error is {e:?}");
-            }
-        } else if let Err(e) = self.rename_may_replace_local(param, from_remote).await {
-            panic!("failed to rename local param={param:?}, error is {e:?}");
-        } else {
-        }
     }
 
     /// Helper function to remove node locally
