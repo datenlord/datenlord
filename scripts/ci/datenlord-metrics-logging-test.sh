@@ -1,6 +1,6 @@
 #!/bin/bash
 
-source scripts/config.sh
+source scripts/setup/config.sh
 
 # Need to wait for some time before metrics are collected by Prometheus
 PROMETHEUS_WAIT_TIME=5 

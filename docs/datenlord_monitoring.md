@@ -5,7 +5,7 @@
 ## Quick start
 To quickly start all the things just do this:
 ```
-kubectl apply -f scripts/datenlord-monitor.yaml
+kubectl apply -f scripts/setup/datenlord-monitor.yaml
 ```
 This will create the namespace `datenlord-monitoring` and bring up all components in there.
 
@@ -49,7 +49,7 @@ Use the following default username and password to log in. Once you log in with 
 User: admin
 Pass: admin
 ```
-Datenlord has already built a dashboard templates. To use Datenlord dashboard, just import [datanlord_dashboard.json](../scripts/datenlord-e2e-test.yaml) file in Grafana.
+Datenlord has already built a dashboard templates. To use Datenlord dashboard, just import [datanlord_dashboard.json](../scripts/setup/Datenlord-Dashboard.json) file in Grafana.
 
 ![Grafana import](images/Grafana-import.png "Grafana import")
 
@@ -67,7 +67,7 @@ Datenlord uses `Elasticsearch`, `Fluentd` and `Kibana` to collect and display al
 ## Quick start
 To quickly start all the things just do this:
 ```
-kubectl apply -f scripts/datenlord-logging.yaml
+kubectl apply -f scripts/setup/datenlord-logging.yaml
 ```
 This will create the namespace `datenlord-logging` and bring up all components in there.
 

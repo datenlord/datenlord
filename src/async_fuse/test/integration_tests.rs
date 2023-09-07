@@ -569,7 +569,7 @@ async fn _run_bench(mount_dir_str: &str, is_s3: bool) -> anyhow::Result<()> {
     let th = test_util::setup(mount_dir, is_s3).await?;
 
     let fio_handle = std::process::Command::new("fio")
-        .arg("./scripts/fio_jobs.ini")
+        .arg("./scripts/perf/fio-jobs.ini")
         .env("BENCH_DIR", mount_dir)
         .output()
         .context("fio command failed to start, maybe install fio first")?;
