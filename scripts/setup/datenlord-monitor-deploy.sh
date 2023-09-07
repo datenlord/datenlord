@@ -1,6 +1,6 @@
 #!/bin/bash
 
-source scripts/config.sh
+source scripts/setup/config.sh
 
 # wait for port forward to be ready
 PORT_FORWARD_WAIT_TIME=3
@@ -46,9 +46,9 @@ elif [ "$1" = "deploy" ]
 then
     sed -e "s/ALERTMANAGER_ADDRESS/'alertmanager.datenlord-monitoring.svc:8080'/g" \
         -e "s/KUBE_STATE_METRICS_ADDRESS/['kube-state-metrics.datenlord-monitoring.svc.cluster.local:8080']/g" \
-        -e "s/NODE_EXPORTER_NAME/'node_exporter'/g" scripts/datenlord-monitor.yaml > scripts/datenlord-monitor-deploy.yaml
-    kubectl apply -f scripts/alertmanager_alerts.yaml
-    kubectl apply -f scripts/datenlord-logging.yaml
+        -e "s/NODE_EXPORTER_NAME/'node_exporter'/g" scripts/setup/datenlord-monitor.yaml > scripts/datenlord-monitor-deploy.yaml
+    kubectl apply -f scripts/setup/alertmanager-alerts.yaml
+    kubectl apply -f scripts/setup/datenlord-logging.yaml
     kubectl apply -f scripts/datenlord-monitor-deploy.yaml
     kubectl wait --for=condition=Ready pod -l app=prometheus-server -n datenlord-monitoring --timeout=60s
     kubectl wait --for=condition=Ready pod -l app=grafana -n datenlord-monitoring --timeout=60s

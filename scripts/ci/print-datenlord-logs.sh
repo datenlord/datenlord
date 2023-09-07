@@ -1,6 +1,6 @@
 #!/bin/bash
 
-source scripts/config.sh
+source scripts/setup/config.sh
 
 echo “check disk usage”
 df -h

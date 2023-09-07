@@ -32,7 +32,7 @@ jobs:
       - name: Cron tests
         run: |
           echo "Cron test"
-          bash scripts/cron_test.sh false
+          bash scripts/ci/cron-test.sh false
       - name: Archive Perf Result
         uses: actions/upload-artifact@v2
         with:
@@ -42,7 +42,7 @@ jobs:
       - name: Print DatenLord logs
         if: ${{ failure() }}
         run: |
-          bash scripts/print_datenlord_logs.sh
+          bash scripts/ci/print-datenlord-logs.sh
       
       - name: Debugging with ssh
         if: ${{ failure() }}

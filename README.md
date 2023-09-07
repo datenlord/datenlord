@@ -65,7 +65,7 @@ DatenLord has several target scenarios, which fall into two main categories:
 Currently DatenLord has been built as Docker images and can be deployed via K8S.
 
 To deploy DatenLord via K8S, just simply run:
-* `sed -e 's/e2e_test/latest/g' scripts/datenlord.yaml > datenlord-deploy.yaml`
+* `sed -e 's/e2e_test/latest/g' scripts/setup/datenlord.yaml > datenlord-deploy.yaml`
 * `kubectl apply -f datenlord-deploy.yaml`
 
 To use DatenLord, just define PVC using DatenLord Storage Class, and then deploy a Pod using this PVC:
@@ -123,11 +123,11 @@ Datenlord monitoring guideline is in [datenlord monitoring](docs/datenlord_monit
 
 To use `YAML` method, just run
 ```
-sh ./scripts/datenlord-monitor-deploy.sh
+sh ./scripts/setup/datenlord-monitor-deploy.sh
 ```
 To use `Helm` method, run
 ```
-sh ./scripts/datenlord-monitor-deploy.sh helm
+sh ./scripts/setup/datenlord-monitor-deploy.sh helm
 ```
 
 ## Performance Test
@@ -139,7 +139,7 @@ To run performance test,
 sudo apt-get update
 sudo apt-get install -y fio python3-pip
 sudo pip3 install matplotlib numpy fio-plot
-sh ./scripts/fio_perf_test.sh TEST_DIR
+sh ./scripts/perf/fio-perf-test.sh TEST_DIR
 ```
 
 Four histograms will be generated.

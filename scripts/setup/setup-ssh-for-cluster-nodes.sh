@@ -1,6 +1,6 @@
 #!/bin/bash
 
-source scripts/config.sh
+source scripts/setup/config.sh
 
 rm -f /tmp/sources.list
 cat > /tmp/sources.list <<'END'

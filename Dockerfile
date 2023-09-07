@@ -10,7 +10,7 @@ LABEL maintainers="DatenLord Authors"
 LABEL description="DatenLord Distributed Storage"
 
 COPY --from=builder /tmp/build/target/release/datenlord /usr/local/bin/datenlord
-COPY --from=builder /tmp/build/scripts/umount-in-container.sh /usr/local/bin/umount-in-container.sh
-COPY --from=builder /tmp/build/scripts/datenlord-entrypoint.sh /usr/local/bin/datenlord-entrypoint.sh
+COPY --from=builder /tmp/build/scripts/setup/umount-in-container.sh /usr/local/bin/umount-in-container.sh
+COPY --from=builder /tmp/build/scripts/build/datenlord-entrypoint.sh /usr/local/bin/datenlord-entrypoint.sh
 ENTRYPOINT ["/usr/local/bin/datenlord-entrypoint.sh"]
 CMD []

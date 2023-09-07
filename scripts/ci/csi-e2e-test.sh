@@ -1,6 +1,6 @@
 #!/bin/bash
 
-source scripts/config.sh
+source scripts/setup/config.sh
 
 # CSI E2E Test
 # clean up nodes temporarily
@@ -16,7 +16,7 @@ kubectl delete -f $CONFIG_KIND
 NODES_IP="$(kubectl get nodes -A -o wide | awk 'FNR > 2 {print $6}')"
 USER="$(whoami)"
 for ip in ${NODES_IP}; do
-  ssh -t ${USER}@${ip} 'sudo bash -s' < scripts/umount-in-container.sh /var/opt/datenlord-data
+  ssh -t ${USER}@${ip} 'sudo bash -s' < scripts/setup/umount-in-container.sh /var/opt/datenlord-data
   echo "done umount in node $ip"
 done
 
