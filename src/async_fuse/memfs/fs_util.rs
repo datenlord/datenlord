@@ -7,12 +7,16 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::Context;
 use clippy_utilities::Cast;
+use nix::errno::Errno;
 use nix::fcntl::{self, OFlag};
 use nix::sys::stat::{self, FileStat, Mode, SFlag};
 use tracing::debug;
 
 use super::dir::{Dir, DirEntry};
 use crate::async_fuse::fuse::protocol::{FuseAttr, INum};
+use crate::async_fuse::util::build_error_result_from_errno;
+use crate::common::error::DatenLordResult;
+use crate::common::util;
 
 /// File attributes
 #[derive(Copy, Clone, Debug)]
@@ -67,6 +71,62 @@ impl FileAttr {
             rdev: 0,
             flags: 0,
         }
+    }
+
+    /// ```
+    ///     File permissions in Unix/Linux systems are represented as a 12-bit structure, laid out as follows:
+    ///     ┌─────────────┬─────────┬─────────┬─────────┐
+    ///     │   Special   │  User   │  Group  │  Other  │
+    ///     ├─────────────┼─────────┼─────────┼─────────┤
+    ///     │2 Bits       │3 Bits   │3 Bits   │3 Bits   │
+    ///     ├─────────────┼─────────┼─────────┼─────────┤
+    ///     │suid |sgid   │r  w  x  │r  w  x  │r  w  x  │
+    ///     └──────┬──────┴───┬────┴───┬────┴───┬──────┘
+    ///            │          │        │        │
+    ///            │          │        │        └─ Other: Read, Write, Execute permissions for users
+    ///            |          |        |                   other than the owner or members of the group.
+    ///            │          │        └─ Group: Read, Write, Execute permissions for group members.
+    ///            │          └─ User: Read, Write, Execute permissions for the owner of the file.
+    ///            └─ Special: Set User ID (suid) and Set Group ID (sgid).
+    ///  The suid and sgid bits are beyond the scope of a simple permissions
+    ///  check and are not considered in this function.
+    /// ```
+    pub fn check_perm(&self, user_id: u32, group_id: u32, access_mode: u8) -> DatenLordResult<()> {
+        debug_assert!(
+            access_mode <= 0o7 && access_mode != 0,
+            "check_perm() found access_mode={access_mode} invalid",
+        );
+        if user_id == 0 {
+            return Ok(());
+        }
+
+        let file_mode = self.get_access_mode(user_id, group_id);
+        debug!(
+            "check_perm() got access_mode={access_mode} and file_mode={file_mode} \
+            from uid={user_id} gid={group_id}",
+        );
+        if file_mode & access_mode != access_mode {
+            return build_error_result_from_errno(
+                Errno::EACCES,
+                format!("check_perm() failed {user_id} {group_id} {file_mode}"),
+            );
+        }
+        Ok(())
+    }
+
+    /// For given uid and gid, get the access mode of the file
+    #[allow(clippy::default_numeric_fallback)]
+    #[allow(clippy::integer_arithmetic)]
+    fn get_access_mode(&self, user_id: u32, group_id: u32) -> u8 {
+        let perm = self.perm;
+        let mode = if user_id == self.uid {
+            (perm >> 6) & 0o7
+        } else if group_id == self.gid {
+            (perm >> 3) & 0o7
+        } else {
+            perm & 0o7
+        };
+        mode.cast()
     }
 }
 
@@ -255,7 +315,7 @@ pub fn time_from_system_time(system_time: &SystemTime) -> (u64, u32) {
                 "time_from_system_time() failed to convert SystemTime={:?} \
                 to timestamp(seconds, nano-seconds), the error is: {}",
                 system_time,
-                crate::common::util::format_anyhow_error(&e),
+                util::format_anyhow_error(&e),
             )
         });
     (duration.as_secs(), duration.subsec_nanos())
@@ -344,4 +404,57 @@ pub async fn load_file_data(fd: RawFd, offset: usize, len: usize) -> anyhow::Res
     .await??;
     debug_assert_eq!(file_data_vec.len(), len);
     Ok(file_data_vec)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[allow(clippy::assertions_on_result_states)]
+    fn test_permission_check() {
+        let file = FileAttr {
+            ino: 0,
+            size: 0,
+            blocks: 0,
+            atime: SystemTime::now(),
+            mtime: SystemTime::now(),
+            ctime: SystemTime::now(),
+            crtime: SystemTime::now(),
+            kind: SFlag::S_IFREG,
+            perm: 0o741,
+            nlink: 0,
+            uid: 1000,
+            gid: 1000,
+            rdev: 0,
+            flags: 0,
+        };
+
+        // Owner permission checks
+        assert!(file.check_perm(1000, 1001, 7).is_ok());
+        assert!(file.check_perm(1000, 1001, 6).is_ok());
+        assert!(file.check_perm(1000, 1001, 5).is_ok());
+        assert!(file.check_perm(1000, 1001, 4).is_ok());
+        assert!(file.check_perm(1000, 1001, 3).is_ok());
+        assert!(file.check_perm(1000, 1001, 2).is_ok());
+        assert!(file.check_perm(1000, 1001, 1).is_ok());
+
+        // Group permission checks
+        assert!(file.check_perm(1001, 1000, 7).is_err());
+        assert!(file.check_perm(1001, 1000, 6).is_err());
+        assert!(file.check_perm(1001, 1000, 5).is_err());
+        assert!(file.check_perm(1001, 1000, 4).is_ok());
+        assert!(file.check_perm(1001, 1000, 3).is_err());
+        assert!(file.check_perm(1001, 1000, 2).is_err());
+        assert!(file.check_perm(1001, 1000, 1).is_err());
+
+        // Other permission checks
+        assert!(file.check_perm(1002, 1002, 7).is_err());
+        assert!(file.check_perm(1002, 1002, 6).is_err());
+        assert!(file.check_perm(1002, 1002, 5).is_err());
+        assert!(file.check_perm(1002, 1002, 4).is_err());
+        assert!(file.check_perm(1002, 1002, 3).is_err());
+        assert!(file.check_perm(1002, 1002, 2).is_err());
+        assert!(file.check_perm(1002, 1002, 1).is_ok());
+    }
 }

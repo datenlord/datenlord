@@ -103,8 +103,8 @@ pub trait Node: Sized {
         inum: INum,
         child_dir_name: &str,
         mode: Mode,
-        uid: u32,
-        gid: u32,
+        user_id: u32,
+        group_id: u32,
     ) -> DatenLordResult<Self>;
     /// Open file in a directory
     async fn open_child_file(
@@ -114,8 +114,8 @@ pub trait Node: Sized {
         oflags: OFlag,
         global_cache: Arc<GlobalCache>,
     ) -> DatenLordResult<Self>;
-    /// Create file in a directory
     #[allow(clippy::too_many_arguments)]
+    /// Create file in a directory
     async fn create_child_file(
         &mut self,
         inum: INum,
@@ -156,7 +156,12 @@ pub trait Node: Sized {
     /// Close dir
     async fn closedir(&self, ino: INum, fh: u64);
     /// Precheck before set attr
-    async fn setattr_precheck(&self, param: SetAttrParam) -> DatenLordResult<(bool, FileAttr)>;
+    async fn setattr_precheck(
+        &self,
+        param: SetAttrParam,
+        uid: u32,
+        gid: u32,
+    ) -> DatenLordResult<(bool, FileAttr)>;
     /// Mark as deferred deletion
     fn mark_deferred_deletion(&self);
     /// If node is marked as deferred deletion
@@ -1420,7 +1425,12 @@ impl Node for DefaultNode {
 
     /// Precheck before set attr
     #[allow(clippy::too_many_lines)]
-    async fn setattr_precheck(&self, param: SetAttrParam) -> DatenLordResult<(bool, FileAttr)> {
+    async fn setattr_precheck(
+        &self,
+        param: SetAttrParam,
+        _uid: u32,
+        _gid: u32,
+    ) -> DatenLordResult<(bool, FileAttr)> {
         let fd = self.get_fd();
         let mut attr = self.get_attr();
 
