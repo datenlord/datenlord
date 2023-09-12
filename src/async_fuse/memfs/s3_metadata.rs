@@ -16,7 +16,7 @@ use nix::sys::stat::SFlag;
 use parking_lot::RwLock as SyncRwLock;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
-use tracing::{debug, instrument, warn};
+use tracing::{debug, error, instrument, warn};
 
 use super::cache::{GlobalCache, IoMemBlock};
 use super::dir::DirEntry;
@@ -482,6 +482,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
     }
 
     /// Set fuse fd into `MetaData`
+    #[tracing::instrument(skip(self))]
     async fn set_fuse_fd(&self, fuse_fd: RawFd) {
         *self.fuse_fd.lock().await = fuse_fd;
     }
@@ -684,10 +685,6 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         parent: INum,
         child_name: &str,
     ) -> DatenLordResult<(Duration, FuseAttr, u64)> {
-        debug!(
-            "lookup_helper() about to lookup parent ino={} and name={:?}",
-            parent, child_name
-        );
         let pre_check_res = self
             .lookup_pre_check(parent, child_name, context.user_id, context.group_id)
             .await;
@@ -704,25 +701,21 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
             // cache hit
             let child_node = self.get_node_from_kv_engine(child_ino).await;
             if let Some(node) = child_node {
-                // if the child node is directory, we should check its permission
-                debug!(
-                    "lookup_helper() cache hit when searching i-node of \
-                    child_ino={} and name={:?} under parent ino={}",
-                    child_ino, child_name, parent,
-                );
                 let attr = node.lookup_attr();
-                let fuse_attr = fs_util::convert_to_fuse_attr(attr);
                 debug!(
-                    "lookup_helper() successfully found in cache the i-node of \
-                    child_ino={} name={:?} under parent ino={}, the attr={:?}",
-                    child_ino, child_name, parent, &attr,
+                    "ino={} lookup_count={} lookup_attr={:?}",
+                    child_ino,
+                    node.get_lookup_count(),
+                    attr
                 );
+                self.set_node_to_kv_engine(child_ino, node).await;
+                let fuse_attr = fs_util::convert_to_fuse_attr(attr);
                 return Ok((ttl, fuse_attr, MY_GENERATION));
             }
         }
         {
             // cache miss
-            debug!(
+            error!(
                 "lookup_helper() cache missed when searching parent ino={} \
                     and i-node of ino={} and name={:?}",
                 parent, child_ino, child_name,
@@ -1494,6 +1487,19 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
         Ok(())
     }
 
+    /// Helper function to rename file locally
+    #[allow(dead_code)]
+    pub(crate) async fn rename_local(&self, param: &RenameParam, from_remote: bool) {
+        if param.flags == 2 {
+            if let Err(e) = self.rename_exchange_local(param).await {
+                panic!("failed to rename local param={param:?}, error is {e:?}");
+            }
+        } else if let Err(e) = self.rename_may_replace_local(param, from_remote).await {
+            panic!("failed to rename local param={param:?}, error is {e:?}");
+        } else {
+        }
+    }
+
     /// Helper function to remove node locally
     pub(crate) async fn remove_node_local(
         &self,
@@ -1502,11 +1508,6 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
         node_type: SFlag,
         from_remote: bool,
     ) -> DatenLordResult<()> {
-        debug!(
-            "remove_node_local() about to remove parent ino={:?}, \
-            child_name={:?}, child_type={:?}",
-            parent, node_name, node_type
-        );
         let node_ino: INum;
         {
             // pre-checks
@@ -1602,6 +1603,13 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
         Ok(())
     }
 
+    /// Allocate a new uinque inum for new node
+    async fn alloc_inum(&self) -> DatenLordResult<INum> {
+        let result = self.inum_allocator.alloc_inum_for_fnode().await;
+        debug!("alloc_inum_for_fnode() result={result:?}");
+        result
+    }
+
     /// Invalidate cache from other nodes
     async fn invalidate_remote(&self, full_ino: INum, offset: i64, len: usize) {
         if let Err(e) = dist_client::invalidate(
@@ -1622,10 +1630,5 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
         {
             panic!("failed to invlidate others' cache, error: {e}");
         }
-    }
-
-    /// Allocate a new uinque inum for new node
-    async fn alloc_inum(&self) -> DatenLordResult<INum> {
-        self.inum_allocator.alloc_inum_for_fnode().await
     }
 }

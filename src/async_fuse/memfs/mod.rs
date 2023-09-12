@@ -35,7 +35,7 @@ use nix::errno::Errno;
 use nix::sys::stat::SFlag;
 pub use s3_metadata::S3MetaData;
 use serde::{Deserialize, Serialize};
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 use self::kv_engine::KVEngineType;
 use super::fuse::file_system::FsController;
@@ -48,6 +48,7 @@ use crate::async_fuse::fuse::fuse_reply::{
 use crate::async_fuse::fuse::fuse_request::Request;
 use crate::async_fuse::fuse::protocol::{INum, FUSE_ROOT_ID};
 use crate::async_fuse::memfs::metadata::ReqContext;
+use crate::async_fuse::util::build_error_result_from_errno;
 use crate::common::error::{Context, DatenLordResult};
 use crate::common::etcd_delegate::EtcdDelegate;
 
@@ -153,6 +154,20 @@ pub struct FileLockParam {
     pub pid: u32,
 }
 
+/// MAX NAME LEN
+const MAX_NAME_LEN: usize = 255;
+
+/// Check the name length is valid or not
+pub fn check_name_length(name: &str) -> DatenLordResult<()> {
+    debug!("check name length = {}", name.chars().count());
+    if name.len() > MAX_NAME_LEN {
+        error!("name = {} is too long ,size = {}", name, name.len());
+        build_error_result_from_errno(Errno::ENAMETOOLONG, "name too long ".to_owned())
+    } else {
+        Ok(())
+    }
+}
+
 impl<M: MetaData + Send + Sync + 'static> MemFs<M> {
     /// Create `FileSystem`
     #[allow(clippy::too_many_arguments)]
@@ -193,7 +208,7 @@ impl<M: MetaData + Send + Sync + 'static> MemFs<M> {
     /// Read content check
     fn read_helper(content: Vec<IoMemBlock>, size: usize) -> DatenLordResult<Vec<IoMemBlock>> {
         if content.iter().filter(|c| !c.can_convert()).count() > 0 {
-            return super::util::build_error_result_from_errno(
+            return build_error_result_from_errno(
                 Errno::EIO,
                 "The content is out of scope".to_owned(),
             );
@@ -234,6 +249,10 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
             user_id: req.uid(),
             group_id: req.gid(),
         };
+        // check the dir_name is valid
+        if let Err(e) = check_name_length(name) {
+            return reply.error(e).await;
+        }
         let lookup_res = self.metadata.lookup_helper(context, parent, name).await;
         match lookup_res {
             Ok((ttl, fuse_attr, generation)) => {
@@ -318,7 +337,6 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
     /// inodes will receive a forget message.
     async fn forget(&self, req: &Request<'_>, nlookup: u64) {
         let ino = req.nodeid();
-        debug!("forget(ino={}, nlookup={}, req={:?})", ino, nlookup, req,);
         self.metadata.forget(ino, nlookup).await;
     }
 
@@ -445,6 +463,10 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         reply: ReplyEmpty,
     ) -> nix::Result<usize> {
         debug!("unlink(parent={}, name={:?}, req={:?}", parent, name, req,);
+        // check the dir_name is valid
+        if let Err(e) = check_name_length(name) {
+            return reply.error(e).await;
+        }
         match self.metadata.unlink(parent, name).await {
             Ok(()) => reply.ok().await,
             Err(e) => {
@@ -470,6 +492,11 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
             "rmdir(parent={}, name={:?}, req={:?})",
             parent, dir_name, req,
         );
+        // check the dir_name is valid
+        if let Err(e) = check_name_length(dir_name) {
+            return reply.error(e).await;
+        }
+
         let rmdir_res = self
             .metadata
             .remove_node_helper(parent, dir_name, SFlag::S_IFDIR)
