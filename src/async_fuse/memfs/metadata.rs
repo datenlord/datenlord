@@ -526,7 +526,6 @@ impl MetaData for DefaultMetaData {
             .canonicalize()
             .with_context(|| format!("failed to canonicalize the mount path={root_path:?}"))
             .unwrap_or_else(|e| panic!("{}", e));
-
         let root_path = root_path
             .as_os_str()
             .to_str()
