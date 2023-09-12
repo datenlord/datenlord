@@ -11,6 +11,7 @@ use anyhow::anyhow;
 use async_trait::async_trait;
 use clippy_utilities::{Cast, OverflowArithmetic};
 use futures::future::{BoxFuture, FutureExt};
+use nix::errno::Errno;
 use nix::fcntl::OFlag;
 use nix::sys::stat::{Mode, SFlag};
 use parking_lot::RwLock;
@@ -30,7 +31,7 @@ use super::serial::{
 use super::{persist, SetAttrParam};
 use crate::async_fuse::fuse::fuse_reply::{AsIoVec, StatFsParam};
 use crate::async_fuse::fuse::protocol::INum;
-use crate::async_fuse::metrics;
+use crate::async_fuse::{metrics, util};
 use crate::common::error::{DatenLordError, DatenLordResult};
 
 /// S3's available fd count
@@ -522,6 +523,18 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
                 Err(DatenLordError::from(anyhow!(e)))
             }
         }
+    }
+
+    /// Check if given uid and gid can access this node
+    pub fn open_pre_check(&self, flags: OFlag, user_id: u32, group_id: u32) -> DatenLordResult<()> {
+        let attr = self.get_attr();
+        let access_mode = match flags & (OFlag::O_RDONLY | OFlag::O_WRONLY | OFlag::O_RDWR) {
+            OFlag::O_RDONLY => 4,
+            OFlag::O_WRONLY => 2,
+            OFlag::O_RDWR => 6,
+            _ => panic!("invalid open flags"),
+        };
+        attr.check_perm(user_id, group_id, access_mode)
     }
 }
 
@@ -1297,67 +1310,92 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
         self.dec_open_count();
     }
 
-    async fn setattr_precheck(&self, param: SetAttrParam) -> DatenLordResult<(bool, FileAttr)> {
-        let mut attr = self.get_attr();
+    async fn setattr_precheck(
+        &self,
+        param: SetAttrParam,
+        user_id: u32,
+        group_id: u32,
+    ) -> DatenLordResult<(bool, FileAttr)> {
+        let mut dirty_attr = self.get_attr();
+        let cur_attr = self.get_attr();
 
         let st_now = SystemTime::now();
         let mut attr_changed = false;
-        let mut mtime_ctime_changed = false;
-        if let Some(mode_bits) = param.mode {
-            attr.perm = fs_util::parse_mode_bits(mode_bits);
-            debug!(
-                "setattr_helper() set permission={:#o}={} from input bits={:#o}={}",
-                attr.perm, attr.perm, mode_bits, mode_bits,
-            );
-            let kind = fs_util::parse_sflag(mode_bits);
-            debug_assert_eq!(kind, attr.kind);
 
-            // Change mode also need to change ctime
-            attr.ctime = st_now;
-            attr_changed = true;
-        }
-        if param.u_id.is_some() || param.g_id.is_some() {
-            if let Some(raw_uid) = param.u_id {
-                attr.uid = raw_uid;
+        if let Some(gid) = param.g_id {
+            if user_id != 0 && cur_attr.uid != user_id {
+                return util::build_error_result_from_errno(
+                    Errno::EPERM,
+                    "setattr() cannot change gid".to_owned(),
+                );
             }
-            if let Some(raw_gid) = param.g_id {
-                attr.gid = raw_gid;
-            }
-            // Change uid or gid also need to change ctime
-            attr.ctime = st_now;
-            attr_changed = true;
-        }
-        if let Some(file_size) = param.size {
-            attr.size = file_size;
-            attr.mtime = st_now;
-            attr.ctime = st_now;
-            mtime_ctime_changed = true;
-            attr_changed = true;
-        }
-        if param.a_time.is_some() || param.m_time.is_some() {
-            if mtime_ctime_changed {
-                panic!("setattr_helper() cannot change atime and mtime explicitly in the mean while with truncate");
-            } else {
-                if let Some(st_atime) = param.a_time {
-                    attr.atime = st_atime;
-                    // Change atime do not need to change ctime
-                }
-                if let Some(st_mtime) = param.a_time {
-                    attr.mtime = st_mtime;
-                    // Change mtime also need to change ctime
-                    attr.ctime = st_now;
-                }
+
+            if cur_attr.gid != gid {
+                dirty_attr.gid = gid;
+                dirty_attr.ctime = st_now;
                 attr_changed = true;
             }
         }
-        // TODO: change lock owner
-        // #[cfg(feature = "abi-7-9")]
-        // let lock_owner = param.lock_owner;
+
+        if let Some(uid) = param.u_id {
+            if cur_attr.uid != uid {
+                if user_id != 0 {
+                    return util::build_error_result_from_errno(
+                        Errno::EPERM,
+                        "setattr() cannot change uid".to_owned(),
+                    );
+                }
+                // ctx_uid == 0
+                dirty_attr.uid = uid;
+                dirty_attr.ctime = st_now;
+                attr_changed = true;
+            }
+        }
+
+        if let Some(mode) = param.mode {
+            let mode: u16 = mode.cast();
+            debug!("setattr() mode={:o}", mode);
+            // mode &= 0o0777;
+            debug!("setattr() mode={:o}", mode);
+            if mode != cur_attr.perm {
+                if user_id != 0 && user_id != cur_attr.uid {
+                    return util::build_error_result_from_errno(
+                        Errno::EPERM,
+                        "setattr() cannot change mode".to_owned(),
+                    );
+                }
+                dirty_attr.perm = mode;
+                dirty_attr.ctime = st_now;
+                dirty_attr.crtime = st_now;
+                attr_changed = true;
+            }
+        }
+
+        if let Some(atime) = param.a_time {
+            self.attr.read().check_perm(user_id, group_id, 2)?;
+            dirty_attr.atime = atime;
+            attr_changed = true;
+        }
+
+        if let Some(mtime) = param.m_time {
+            self.attr.read().check_perm(user_id, group_id, 2)?;
+            dirty_attr.mtime = mtime;
+            attr_changed = true;
+        }
+
         #[cfg(feature = "abi-7-23")]
         if let Some(c_time) = param.c_time {
-            attr.ctime = c_time;
+            dirty_attr.ctime = c_time;
             // TODO: how to change ctime directly on ext4?
         }
-        Ok((attr_changed, attr))
+
+        if let Some(file_size) = param.size {
+            dirty_attr.size = file_size;
+            dirty_attr.mtime = st_now;
+            dirty_attr.ctime = st_now;
+            attr_changed = true;
+        }
+
+        Ok((attr_changed, dirty_attr))
     }
 }

@@ -47,6 +47,7 @@ use crate::async_fuse::fuse::fuse_reply::{
 };
 use crate::async_fuse::fuse::fuse_request::Request;
 use crate::async_fuse::fuse::protocol::{INum, FUSE_ROOT_ID};
+use crate::async_fuse::memfs::metadata::ReqContext;
 use crate::common::error::{Context, DatenLordResult};
 use crate::common::etcd_delegate::EtcdDelegate;
 
@@ -229,7 +230,11 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         reply: ReplyEntry,
     ) -> nix::Result<usize> {
         debug!("lookup(parent={}, name={:?}, req={:?})", parent, name, req,);
-        let lookup_res = self.metadata.lookup_helper(parent, name).await;
+        let context = ReqContext {
+            user_id: req.uid(),
+            group_id: req.gid(),
+        };
+        let lookup_res = self.metadata.lookup_helper(context, parent, name).await;
         match lookup_res {
             Ok((ttl, fuse_attr, generation)) => {
                 debug!(
@@ -283,7 +288,12 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         let ino = req.nodeid();
         debug!("open(ino={}, flags={}, req={:?})", ino, flags, req);
 
-        match self.metadata.open(ino, flags).await {
+        let context = ReqContext {
+            user_id: req.uid(),
+            group_id: req.gid(),
+        };
+
+        match self.metadata.open(context, ino, flags).await {
             Ok(new_fd) => {
                 debug!(
                     "open() successfully duplicated the file handler of ino={} , fd={}, flags={:?}",
@@ -349,7 +359,11 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         if 0 == valid {
             warn!("setattr() encountered valid=0, the req={:?}", req);
         };
-        let set_res = self.metadata.setattr_helper(ino, param).await;
+        let context = ReqContext {
+            user_id: req.uid(),
+            group_id: req.gid(),
+        };
+        let set_res = self.metadata.setattr_helper(context, ino, param).await;
         match set_res {
             Ok((ttl, fuse_attr)) => reply.attr(ttl, fuse_attr).await,
             Err(e) => reply.error(e).await,
@@ -711,8 +725,12 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
     async fn opendir(&self, req: &Request<'_>, flags: u32, reply: ReplyOpen) -> nix::Result<usize> {
         let ino = req.nodeid();
         debug!("opendir(ino={}, flags={}, req={:?})", ino, flags, req,);
+        let context = ReqContext {
+            user_id: req.uid(),
+            group_id: req.gid(),
+        };
         let o_flags = fs_util::parse_oflag(flags);
-        match self.metadata.opendir(ino, flags).await {
+        match self.metadata.opendir(context, ino, flags).await {
             Ok(new_fd) => {
                 debug!(
                     "opendir() successfully duplicated the file handler of \
@@ -742,7 +760,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         req: &Request<'_>,
         fh: u64,
         offset: i64,
-        reply: ReplyDirectory,
+        mut reply: ReplyDirectory,
     ) -> nix::Result<usize> {
         let ino = req.nodeid();
         debug!(
@@ -750,7 +768,21 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
             ino, fh, offset, req,
         );
 
-        self.metadata.readdir(ino, fh, offset, reply).await
+        let context = ReqContext {
+            user_id: req.uid(),
+            group_id: req.gid(),
+        };
+        match self
+            .metadata
+            .readdir(context, ino, fh, offset, &mut reply)
+            .await
+        {
+            Ok(_) => reply.ok().await,
+            Err(e) => {
+                debug!("readdir() failed, the error is: {:?}", e);
+                reply.error(e).await
+            }
+        }
     }
 
     /// Release an open directory.
@@ -810,7 +842,11 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
             req.nodeid()
         };
         debug!("statfs(ino={}, req={:?})", ino, req);
-        match self.metadata.statfs(ino).await {
+        let context = ReqContext {
+            user_id: req.uid(),
+            group_id: req.gid(),
+        };
+        match self.metadata.statfs(context, ino).await {
             Ok(statvfs) => {
                 debug!(
                     "statfs() successfully read the statvfs of ino={} the statvfs={:?}",

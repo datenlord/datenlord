@@ -19,6 +19,69 @@ pub const S3_DEFAULT_MOUNT_DIR: &str = "/tmp/datenlord_test_dir";
 pub const FILE_CONTENT: &str = "0123456789ABCDEF";
 
 #[cfg(test)]
+fn test_create_file(mount_dir: &Path) -> anyhow::Result<()> {
+    use smol::fs::unix::MetadataExt;
+    info!("test create file");
+    let file_path = Path::new(mount_dir).join("test_create_file_user.txt");
+    let file_mode = Mode::from_bits_truncate(0o644);
+    let file_fd = fcntl::open(&file_path, OFlag::O_CREAT, file_mode)?;
+    unistd::close(file_fd)?;
+    info!("try get file metadata");
+    let file_metadata = fs::metadata(&file_path)?;
+    assert_eq!(file_metadata.mode() & 0o777, 0o644);
+    // check the file owner
+    let file_owner = file_metadata.uid();
+    let create_user_id = unistd::getuid();
+    assert_eq!(file_owner, create_user_id.as_raw());
+    // check the file group
+    let file_group = file_metadata.gid();
+    let create_group_id = unistd::getgid();
+    assert_eq!(file_group, create_group_id.as_raw());
+    // check nlink == 1
+    assert_eq!(file_metadata.nlink(), 1);
+    fs::remove_file(&file_path)?; // immediate deletion
+    Ok(())
+}
+
+#[cfg(test)]
+fn test_name_too_long(mount_dir: &Path) -> anyhow::Result<()> {
+    use nix::fcntl::open;
+    info!("test_name_too_long");
+
+    let file_name = "a".repeat(256);
+    // try to create file, dir, symlink with name too long
+    // expect to fail with ENAMETOOLONG
+    let file_path = Path::new(mount_dir).join(file_name);
+    let file_mode = Mode::from_bits_truncate(0o644);
+
+    info!("try to create a file with name too long");
+    let result = open(&file_path, OFlag::O_CREAT, file_mode);
+    match result {
+        Ok(_) => panic!("File creation should have failed with ENAMETOOLONG"),
+        Err(nix::Error::ENAMETOOLONG) => {} // expected this error
+        Err(e) => return Err(e.into()),
+    }
+
+    info!("try to create a dir with name too long");
+    let result = fs::create_dir_all(&file_path);
+    match result {
+        Ok(_) => panic!("Directory creation should have failed with ENAMETOOLONG"),
+        Err(ref e) if e.raw_os_error() == Some(libc::ENAMETOOLONG) => {} // expected this error
+        Err(e) => return Err(e.into()),
+    }
+
+    info!("try to create a symlink with name too long");
+    let result = std::os::unix::fs::symlink(mount_dir, &file_path);
+    match result {
+        Ok(_) => panic!("Symlink creation should have failed with ENAMETOOLONG"),
+        Err(ref e) if e.raw_os_error() == Some(libc::ENAMETOOLONG) => {} // expected this error
+        Err(e) => return Err(e.into()),
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
 fn test_file_manipulation_rust_way(mount_dir: &Path) -> anyhow::Result<()> {
     info!("file manipulation Rust style");
     let file_path = Path::new(mount_dir).join("tmp.txt");
@@ -99,7 +162,7 @@ fn test_dir_manipulation_nix_way(mount_dir: &Path) -> anyhow::Result<()> {
     let mut dir_fd = Dir::open(&dir_path, oflags, Mode::empty())?;
     let count = dir_fd
         .iter()
-        .filter_map(nix::Result::ok)
+        .filter_map(Result::ok)
         .filter_map(|e| {
             let bytes = e.file_name().to_bytes();
             if bytes.starts_with(&[b'.']) {
@@ -348,7 +411,7 @@ fn test_symlink_dir(mount_dir: &Path) -> anyhow::Result<()> {
 
     let dst_dir = Path::new("dst_dir");
     unistd::symlinkat(src_dir, None, dst_dir).context("create symlink failed")?;
-    let target_path = std::fs::read_link(dst_dir).context("read symlink failed ")?;
+    let target_path = fs::read_link(dst_dir).context("read symlink failed ")?;
     assert_eq!(src_dir, target_path, "symlink target path not match");
 
     let dst_path = Path::new("./dst_dir").join(src_file_name);
@@ -359,7 +422,7 @@ fn test_symlink_dir(mount_dir: &Path) -> anyhow::Result<()> {
         "symlink target file content not match"
     );
 
-    let md = std::fs::symlink_metadata(dst_dir).context("read symlink metadata failed")?;
+    let md = fs::symlink_metadata(dst_dir).context("read symlink metadata failed")?;
     assert!(
         md.file_type().is_symlink(),
         "file type should be symlink other than {:?}",
@@ -407,7 +470,7 @@ fn test_symlink_file(mount_dir: &Path) -> anyhow::Result<()> {
 
     let dst_path = Path::new("dst.txt");
     unistd::symlinkat(src_path, None, dst_path).context("create symlink failed")?;
-    let target_path = std::fs::read_link(dst_path).context("read symlink failed ")?;
+    let target_path = fs::read_link(dst_path).context("read symlink failed ")?;
     assert_eq!(src_path, target_path, "symlink target path not match");
 
     let content = fs::read_to_string(dst_path).context("read symlink target file failed")?;
@@ -416,7 +479,7 @@ fn test_symlink_file(mount_dir: &Path) -> anyhow::Result<()> {
         "symlink target file content not match"
     );
 
-    let md = std::fs::symlink_metadata(dst_path).context("read symlink metadata failed")?;
+    let md = fs::symlink_metadata(dst_path).context("read symlink metadata failed")?;
     assert!(
         md.file_type().is_symlink(),
         "file type should be symlink other than {:?}",
@@ -489,30 +552,6 @@ fn test_bind_mount(fuse_mount_dir: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-#[cfg(test)]
-fn test_create_file(mount_dir: &Path) -> anyhow::Result<()> {
-    use smol::fs::unix::MetadataExt;
-    info!("file manipulation Rust style");
-    let file_path = Path::new(mount_dir).join("test_create_file_user.txt");
-    let file_mode = Mode::from_bits_truncate(0o644);
-    let file_fd = fcntl::open(&file_path, OFlag::O_CREAT, file_mode)?;
-    unistd::close(file_fd)?;
-    let file_metadata = fs::metadata(&file_path)?;
-    assert_eq!(file_metadata.mode() & 0o777, 0o644);
-    // check the file owner
-    let file_owner = file_metadata.uid();
-    let cur_user_id = unistd::getuid();
-    assert_eq!(file_owner, cur_user_id.as_raw());
-    // check the file group
-    let file_group = file_metadata.gid();
-    let cur_group_id = unistd::getgid();
-    assert_eq!(file_group, cur_group_id.as_raw());
-    // check nlink == 1
-    assert_eq!(file_metadata.nlink(), 1);
-    fs::remove_file(&file_path)?; // immediate deletion
-    Ok(())
-}
-
 #[tokio::test(flavor = "multi_thread")]
 async fn test_all() -> anyhow::Result<()> {
     run_test().await
@@ -533,6 +572,8 @@ async fn _run_test(mount_dir_str: &str, is_s3: bool) -> anyhow::Result<()> {
     let mount_dir = Path::new(mount_dir_str);
     let th = test_util::setup(mount_dir, is_s3).await?;
 
+    test_create_file(mount_dir).context("test_create_file() failed")?;
+    test_name_too_long(mount_dir).context("test_name_too_long() failed")?;
     test_symlink_dir(mount_dir).context("test_symlink_dir() failed")?;
     test_symlink_file(mount_dir).context("test_symlink_file() failed")?;
     #[cfg(target_os = "linux")]
@@ -574,7 +615,7 @@ async fn _run_bench(mount_dir_str: &str, is_s3: bool) -> anyhow::Result<()> {
         .output()
         .context("fio command failed to start, maybe install fio first")?;
     let fio_res = if fio_handle.status.success() {
-        std::fs::write("bench.log", &fio_handle.stdout).context("failed to write bench log")?;
+        fs::write("bench.log", &fio_handle.stdout).context("failed to write bench log")?;
         Ok(())
     } else {
         let stderr = String::from_utf8_lossy(&fio_handle.stderr);
