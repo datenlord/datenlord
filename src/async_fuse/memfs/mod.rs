@@ -245,14 +245,14 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         reply: ReplyEntry,
     ) -> nix::Result<usize> {
         debug!("lookup(parent={}, name={:?}, req={:?})", parent, name, req,);
-        let context = ReqContext {
-            user_id: req.uid(),
-            group_id: req.gid(),
-        };
         // check the dir_name is valid
         if let Err(e) = check_name_length(name) {
             return reply.error(e).await;
         }
+        let context = ReqContext {
+            user_id: req.uid(),
+            group_id: req.gid(),
+        };
         let lookup_res = self.metadata.lookup_helper(context, parent, name).await;
         match lookup_res {
             Ok((ttl, fuse_attr, generation)) => {
