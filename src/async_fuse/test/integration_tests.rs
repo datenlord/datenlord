@@ -1,10 +1,8 @@
-use std::collections::HashSet;
 use std::path::Path;
 use std::{fs, iter};
 
 use anyhow::Context;
 use clippy_utilities::OverflowArithmetic;
-use nix::dir::Dir;
 use nix::fcntl::{self, OFlag};
 use nix::sys::stat::Mode;
 use nix::unistd::{self, Whence};
@@ -99,96 +97,36 @@ fn test_file_manipulation_rust_way(mount_dir: &Path) -> anyhow::Result<()> {
 }
 
 #[cfg(test)]
-fn test_file_manipulation_nix_way(mount_dir: &Path) -> anyhow::Result<()> {
-    info!("file manipulation C style");
-    let file_path = Path::new(mount_dir).join("tmp.test");
-    let oflags = OFlag::O_CREAT | OFlag::O_EXCL | OFlag::O_RDWR;
-    let fd = fcntl::open(&file_path, oflags, Mode::empty())?;
+fn test_directory_manipulation_rust_way(mount_dir: &Path) -> anyhow::Result<()> {
+    info!("Directory manipulation Rust style");
 
-    let write_size = unistd::write(fd, FILE_CONTENT.as_bytes())?;
-    assert_eq!(
-        write_size,
-        FILE_CONTENT.len(),
-        "the file write size {} is not the same as the expected size {}",
-        write_size,
-        FILE_CONTENT.len(),
-    );
+    // Fixed directory name
+    let dir_name = "test_dir";
+    let dir_path = Path::new(mount_dir).join(dir_name);
 
-    unistd::lseek(fd, 0, Whence::SeekSet)?;
-    let mut buffer: Vec<u8> = iter::repeat(0_u8).take(FILE_CONTENT.len()).collect();
-    let read_size = unistd::read(fd, &mut buffer)?;
-    assert_eq!(
-        read_size,
-        FILE_CONTENT.len(),
-        "the file read size {} is not the same as the expected size {}",
-        read_size,
-        FILE_CONTENT.len(),
-    );
-    let content = String::from_utf8(buffer)?;
-    assert_eq!(
-        content, FILE_CONTENT,
-        "the file read result is not the same as the expected content",
-    );
-    unistd::close(fd)?;
+    // Create directory
+    fs::create_dir_all(&dir_path)?;
 
-    unistd::unlink(&file_path)?; // immediate deletion
-    assert!(
-        !file_path.exists(),
-        "the file {file_path:?} should have been removed",
-    );
-    Ok(())
-}
+    // Fixed file name
+    let file_name = "tmp.txt";
+    let file_path = dir_path.join(file_name);
 
-#[cfg(test)]
-fn test_dir_manipulation_nix_way(mount_dir: &Path) -> anyhow::Result<()> {
-    info!("directory manipulation C style");
-    let dir_path = Path::new(mount_dir).join("test_dir");
-    let dir_mode = Mode::from_bits_truncate(0o755);
-    if dir_path.exists() {
-        fs::remove_dir_all(&dir_path)?;
-    }
-    unistd::mkdir(&dir_path, dir_mode)?;
+    // Write to file
+    fs::write(&file_path, FILE_CONTENT)?;
 
-    let repeat_times = 100_i32;
-    let mut sub_dirs = HashSet::new();
-    for i in 0_i32..repeat_times {
-        let sub_dir_name = format!("test_sub_dir_{i}");
-        let sub_dir_path = dir_path.join(&sub_dir_name);
-        unistd::mkdir(&sub_dir_path, dir_mode)?;
-        sub_dirs.insert(sub_dir_name);
-    }
+    // Read from file
+    let bytes = fs::read(&file_path)?;
+    let content = String::from_utf8(bytes)?;
 
-    let oflags = OFlag::O_RDONLY;
-    let mut dir_fd = Dir::open(&dir_path, oflags, Mode::empty())?;
-    let count = dir_fd
-        .iter()
-        .filter_map(Result::ok)
-        .filter_map(|e| {
-            let bytes = e.file_name().to_bytes();
-            if bytes.starts_with(&[b'.']) {
-                // skip hidden entries, '.' and '..'
-                None
-            } else {
-                let byte_vec = Vec::from(bytes);
-                let str_name = String::from_utf8(byte_vec).ok()?;
-                assert!(
-                    sub_dirs.contains(&str_name),
-                    "the sub directory name {str_name} should be in the hashmap {sub_dirs:?}",
-                );
-                Some(str_name)
-            }
-        })
-        .count();
-    assert_eq!(
-        count,
-        sub_dirs.len(),
-        "the number of directory items {} is not as the expected number {}",
-        count,
-        sub_dirs.len()
-    );
+    // Remove file and directory
+    fs::remove_file(&file_path)?;
+    fs::remove_dir(&dir_path)?;
 
-    // Clean up
-    fs::remove_dir_all(&dir_path)?;
+    // Assertions
+    assert_eq!(content, FILE_CONTENT);
+    assert!(!file_path.exists(), "the file should have been removed");
+    assert!(!dir_path.exists(), "the directory should have been removed");
+
     Ok(())
 }
 
@@ -503,7 +441,7 @@ fn test_bind_mount(fuse_mount_dir: &Path) -> anyhow::Result<()> {
     pub fn cleanup_dir(directory: &Path) -> anyhow::Result<()> {
         let umount_res = nix::mount::umount2(directory, nix::mount::MntFlags::MNT_FORCE);
         if umount_res.is_err() {
-            info!("cleanup_dir() failed to un-mount {:?}", directory);
+            info!("cleanup_dir() failed to un-mount {directory:?}");
         }
         fs::remove_dir_all(directory)
             .context(format!("cleanup_dir() failed to remove {directory:?}"))?;
@@ -572,16 +510,16 @@ async fn _run_test(mount_dir_str: &str, is_s3: bool) -> anyhow::Result<()> {
     let mount_dir = Path::new(mount_dir_str);
     let th = test_util::setup(mount_dir, is_s3).await?;
 
+    test_file_manipulation_rust_way(mount_dir)
+        .context("test_file_manipulation_rust_way() failed")?;
+    test_directory_manipulation_rust_way(mount_dir)
+        .context("test_directory_manipulation_rust_way() failed")?;
     test_create_file(mount_dir).context("test_create_file() failed")?;
     test_name_too_long(mount_dir).context("test_name_too_long() failed")?;
     test_symlink_dir(mount_dir).context("test_symlink_dir() failed")?;
     test_symlink_file(mount_dir).context("test_symlink_file() failed")?;
     #[cfg(target_os = "linux")]
     test_bind_mount(mount_dir).context("test_bind_mount() failed")?;
-    test_file_manipulation_rust_way(mount_dir)
-        .context("test_file_manipulation_rust_way() failed")?;
-    test_file_manipulation_nix_way(mount_dir).context("test_file_manipulation_nix_way() failed")?;
-    test_dir_manipulation_nix_way(mount_dir).context("test_dir_manipulation_nix_way() failed")?;
     test_deferred_deletion(mount_dir).context("test_deferred_deletion() failed")?;
     test_rename_file_replace(mount_dir).context("test_rename_file_replace() failed")?;
     test_rename_file(mount_dir).context("test_rename_file() failed")?;

@@ -105,7 +105,7 @@ impl FileAttr {
             "check_perm() got access_mode={access_mode} and file_mode={file_mode} \
             from uid={user_id} gid={group_id}",
         );
-        if file_mode & access_mode != access_mode {
+        if (file_mode & access_mode) != access_mode {
             return build_error_result_from_errno(
                 Errno::EACCES,
                 format!("check_perm() failed {user_id} {group_id} {file_mode}"),

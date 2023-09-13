@@ -36,9 +36,10 @@ use crate::async_fuse::fuse::file_system::FsAsyncResultSender;
 use crate::async_fuse::fuse::fuse_reply::FuseDeleteNotification;
 use crate::async_fuse::fuse::fuse_reply::{ReplyDirectory, StatFsParam};
 use crate::async_fuse::fuse::protocol::{FuseAttr, INum, FUSE_ROOT_ID};
+use crate::async_fuse::memfs::check_name_length;
 use crate::async_fuse::util;
 use crate::common::error::DatenLordResult;
-use crate::common::etcd_delegate::EtcdDelegate; // conflict with tokio RwLock
+use crate::common::etcd_delegate::EtcdDelegate;
 
 /// The time-to-live seconds of FUSE attributes
 const MY_TTL_SEC: u64 = 3600; // TODO: should be a long value, say 1 hour
@@ -539,6 +540,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         &self,
         param: CreateParam,
     ) -> DatenLordResult<(Duration, FuseAttr, u64)> {
+        check_name_length(&param.name)?;
         let parent = param.parent;
         let node_name = &param.name;
         let mode = param.mode;
@@ -549,15 +551,6 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         };
         let uid = param.uid;
         let gid = param.gid;
-        if node_name.chars().count() > 255 {
-            return util::build_error_result_from_errno(
-                Errno::ENAMETOOLONG,
-                format!(
-                    "create_node_helper() found the length of child name_length={} is too long",
-                    node_name.chars().count()
-                ),
-            );
-        }
         // pre-check : check whether the child name is valid
         let mut parent_node = self
             .create_node_pre_check(parent, node_name, uid, gid)
