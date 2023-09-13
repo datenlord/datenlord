@@ -14,6 +14,7 @@ use futures::future::{BoxFuture, FutureExt};
 use nix::errno::Errno;
 use nix::fcntl::OFlag;
 use nix::sys::stat::{Mode, SFlag};
+use nix::unistd;
 use parking_lot::RwLock;
 use tracing::debug;
 
@@ -438,6 +439,8 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
                     ctime: now,
                     crtime: now,
                     kind: SFlag::S_IFDIR,
+                    uid: unistd::getuid().as_raw(),
+                    gid: unistd::getgid().as_raw(),
                     ..FileAttr::default()
                 }));
 
