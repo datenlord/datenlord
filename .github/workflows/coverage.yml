@@ -18,7 +18,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v2
-      - run: sudo bash ./.github/scripts/install_cov_deps.sh
+      - run: sudo sh ./.github/scripts/install_cov_deps.sh
       - name: Install CSI dependencies
         run: |
           sudo apt update

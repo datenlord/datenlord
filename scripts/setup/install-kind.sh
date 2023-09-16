@@ -1,6 +1,6 @@
-#!/bin/bash
+#!/bin/sh
 
-source scripts/setup/config.sh
+. scripts/setup/config.sh
 
 # Check if kind is installed
 if command -v kind &> /dev/null; then

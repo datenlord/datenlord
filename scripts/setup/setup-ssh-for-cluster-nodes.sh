@@ -1,6 +1,6 @@
-#!/bin/bash
+#!/bin/sh
 
-source scripts/setup/config.sh
+. scripts/setup/config.sh
 
 rm -f /tmp/sources.list
 cat > /tmp/sources.list <<'END'
@@ -49,4 +49,4 @@ if [ ! -f ~/.ssh/id_rsa ]; then
   ssh-keygen -N '' -f ~/.ssh/id_rsa
 fi
 
-/bin/bash /tmp/setup.sh
+/bin/sh /tmp/setup.sh

@@ -1,6 +1,6 @@
-#!/bin/bash
+#!/bin/sh
 
-source scripts/setup/config.sh
+. scripts/setup/config.sh
 
 rm -f /tmp/kind-config.yaml
 cat >> /tmp/kind-config.yaml << END

@@ -1,6 +1,6 @@
-#!/bin/bash
+#!/bin/sh
 
-source scripts/setup/config.sh
+. scripts/setup/config.sh
 
 LOCAL_TEST=${1:-true}
 if [ "$LOCAL_TEST" = true ]; then

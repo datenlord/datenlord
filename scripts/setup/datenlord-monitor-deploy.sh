@@ -1,6 +1,6 @@
-#!/bin/bash
+#!/bin/sh
 
-source scripts/setup/config.sh
+. scripts/setup/config.sh
 
 # wait for port forward to be ready
 PORT_FORWARD_WAIT_TIME=3
