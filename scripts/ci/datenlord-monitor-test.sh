@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/sh
 
 . scripts/setup/config.sh
 
@@ -11,9 +11,6 @@ ELASTIICSEARCH_VERSION=${ELASTIICSEARCH_VERSION:-"7.4.2"}
 KIBANA_VERSION=${KIBANA_VERSION:-"7.2.0"}
 
 # Datenlord Monitoring test
-if ! grep -q "alertmanager_demo" scripts/setup/alertmanager-alerts.yaml; then
-  cat scripts/ci/alertmanager-test-alert.yaml >> scripts/setup/alertmanager-alerts.yaml
-fi
 docker pull quay.io/coreos/kube-state-metrics:$KUBE_STATE_METRICS_VERSION
 docker pull prom/alertmanager:$ALERTMANAGER_VERSION
 docker pull prom/prometheus:$PROMETHEUS_VERSION
@@ -30,7 +27,13 @@ kind load docker-image prom/alertmanager:$ALERTMANAGER_VERSION
 kind load docker-image docker.elastic.co/elasticsearch/elasticsearch-oss:$ELASTIICSEARCH_VERSION
 kind load docker-image docker.elastic.co/kibana/kibana-oss:$KIBANA_VERSION
 kind load docker-image prom/node-exporter
-bash scripts/setup/datenlord-monitor-deploy.sh deploy
+
+cp scripts/setup/alertmanager-alerts.yaml scripts/setup/alertmanager-alerts-backup.yaml
+cat scripts/ci/alertmanager-test-alert.yaml >> scripts/setup/alertmanager-alerts.yaml
+sh scripts/setup/datenlord-monitor-deploy.sh deploy
+# restore the alertmanager-alerts.yaml
+mv -f scripts/setup/alertmanager-alerts-backup.yaml scripts/setup/alertmanager-alerts.yaml
+
 NODE_IP=`kubectl get nodes -A -o wide | awk 'FNR == 2 {print $6}'`
 FOUND_PATH=`curl --silent $NODE_IP:30000 | grep Found`
 test -n "$FOUND_PATH" || (echo "FAILED TO FIND PROMETHEUS SERVICE" && /bin/false)
