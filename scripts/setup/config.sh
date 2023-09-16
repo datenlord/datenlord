@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/sh
 
 export RUST_VERSION=1.67.1
 export BUSYBOX_IMAGE=busybox:1.35.0

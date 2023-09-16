@@ -1,4 +1,4 @@
-#/bin/bash
+#/bin/sh
 apt-get install -y cmake g++
 
 # install protoc

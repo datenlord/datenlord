@@ -1,6 +1,6 @@
 #!/bin/bash
 
-source scripts/setup/config.sh
+. scripts/setup/config.sh
 
 KUBE_STATE_METRICS_VERSION=${KUBE_STATE_METRICS_VERSION:-"v1.8.0"}
 ALERTMANAGER_VERSION=${ALERTMANAGER_VERSION:-"v0.19.0"}

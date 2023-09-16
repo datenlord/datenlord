@@ -1,11 +1,11 @@
-#!/bin/bash
+#!/bin/sh
 
-source scripts/setup/config.sh
+. scripts/setup/config.sh
 
 # CSI E2E Test
 # clean up nodes temporarily
 cat > /tmp/clean_up_mount_dir.sh <<'END'
-#!/bin/bash
+#!/bin/sh
 
 CONFIG_KIND=$1
 NODE_APP_LABEL=$2
@@ -16,7 +16,7 @@ kubectl delete -f $CONFIG_KIND
 NODES_IP="$(kubectl get nodes -A -o wide | awk 'FNR > 2 {print $6}')"
 USER="$(whoami)"
 for ip in ${NODES_IP}; do
-  ssh -t ${USER}@${ip} 'sudo bash -s' < scripts/setup/umount-in-container.sh /var/opt/datenlord-data
+  ssh -t ${USER}@${ip} 'sudo sh -s' < scripts/setup/umount-in-container.sh /var/opt/datenlord-data
   echo "done umount in node $ip"
 done
 
@@ -35,12 +35,11 @@ if [ ! -d "kubernetes" ]; then
 fi
 
 kubectl config view --raw > $K8S_CONFIG
-#kubernetes/test/bin/e2e.test -v=5 -ginkgo.failFast -ginkgo.failOnPending -ginkgo.debug -ginkgo.v -ginkgo.focus='External.Storage' -kubectl-path=`which kubectl` -kubeconfig=$K8S_CONFIG -storage.testdriver=`realpath $E2E_TEST_CONFIG`
 kubernetes/test/bin/ginkgo -v -failFast -failOnPending -debug -focus='External.Storage' -skip='\[Feature:|\[Disruptive\]|\[Serial\]' kubernetes/test/bin/e2e.test -- -v=5 -kubectl-path=`which kubectl` -kubeconfig=`realpath $K8S_CONFIG` -storage.testdriver=`realpath $E2E_TEST_CONFIG`
-/bin/bash /tmp/clean_up_mount_dir.sh $CONFIG_KIND $NODE_APP_LABEL $DATENLORD_NAMESPACE true
+/bin/sh /tmp/clean_up_mount_dir.sh $CONFIG_KIND $NODE_APP_LABEL $DATENLORD_NAMESPACE true
 # Run [Disruptive] test in serial and separately
 kubernetes/test/bin/ginkgo -v -failFast -failOnPending -debug -focus='External.Storage.*(\[Feature:|\[Disruptive\]|\[Serial\])' kubernetes/test/bin/e2e.test -- -v=5 -kubectl-path=`which kubectl` -kubeconfig=`realpath $K8S_CONFIG` -storage.testdriver=`realpath $E2E_TEST_CONFIG`
-/bin/bash /tmp/clean_up_mount_dir.sh $CONFIG_KIND $NODE_APP_LABEL $DATENLORD_NAMESPACE false
+/bin/sh /tmp/clean_up_mount_dir.sh $CONFIG_KIND $NODE_APP_LABEL $DATENLORD_NAMESPACE false
 
 # # Quick Start Test
 sed -e 's/e2e_test/latest/g' $CONFIG_KIND > $CONFIG_DOCKERHUB
