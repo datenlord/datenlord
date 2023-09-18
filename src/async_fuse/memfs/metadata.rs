@@ -74,6 +74,7 @@ pub trait MetaData {
     /// Helper function to remove node
     async fn remove_node_helper(
         &self,
+        context: ReqContext,
         parent: INum,
         node_name: &str,
         node_type: SFlag,
@@ -88,10 +89,18 @@ pub trait MetaData {
     ) -> DatenLordResult<(Duration, FuseAttr, u64)>;
 
     /// Rename helper to exchange on disk
-    async fn rename_exchange_helper(&self, param: RenameParam) -> DatenLordResult<()>;
+    async fn rename_exchange_helper(
+        &self,
+        context: ReqContext,
+        param: RenameParam,
+    ) -> DatenLordResult<()>;
 
     /// Rename helper to move on disk, it may replace destination entry
-    async fn rename_may_replace_helper(&self, param: RenameParam) -> DatenLordResult<()>;
+    async fn rename_may_replace_helper(
+        &self,
+        context: ReqContext,
+        param: RenameParam,
+    ) -> DatenLordResult<()>;
 
     /// Helper function of fsync
     async fn fsync_helper(&self, ino: u64, fh: u64, datasync: bool) -> DatenLordResult<()>;
@@ -124,7 +133,7 @@ pub trait MetaData {
     ) -> DatenLordResult<(Duration, FuseAttr)>;
 
     /// Helper function to unlink
-    async fn unlink(&self, parent: INum, name: &str) -> DatenLordResult<()>;
+    async fn unlink(&self, context: ReqContext, parent: INum, name: &str) -> DatenLordResult<()>;
 
     /// Get attribute of i-node by ino
     async fn getattr(&self, ino: u64) -> DatenLordResult<(Duration, FuseAttr)>;
@@ -484,7 +493,7 @@ impl MetaData for DefaultMetaData {
         }
     }
 
-    async fn unlink(&self, parent: INum, name: &str) -> DatenLordResult<()> {
+    async fn unlink(&self, _context: ReqContext, parent: INum, name: &str) -> DatenLordResult<()> {
         let entry_type = {
             let cache = self.cache().read().await;
             let parent_node = cache.get(&parent).unwrap_or_else(|| {
@@ -508,7 +517,8 @@ impl MetaData for DefaultMetaData {
             entry_type
         };
 
-        self.remove_node_helper(parent, name, entry_type).await
+        self.remove_node_helper(_context, parent, name, entry_type)
+            .await
     }
 
     async fn new(
@@ -704,6 +714,7 @@ impl MetaData for DefaultMetaData {
     /// Helper function to remove node
     async fn remove_node_helper(
         &self,
+        _context: ReqContext,
         parent: INum,
         node_name: &str,
         node_type: SFlag,
@@ -894,7 +905,11 @@ impl MetaData for DefaultMetaData {
     }
 
     /// Rename helper to exchange on disk
-    async fn rename_exchange_helper(&self, param: RenameParam) -> DatenLordResult<()> {
+    async fn rename_exchange_helper(
+        &self,
+        _context: ReqContext,
+        param: RenameParam,
+    ) -> DatenLordResult<()> {
         let old_parent = param.old_parent;
         let old_name = param.old_name.as_str();
         let new_parent = param.new_parent;
@@ -992,7 +1007,11 @@ impl MetaData for DefaultMetaData {
     }
 
     /// Rename helper to move on disk, it may replace destination entry
-    async fn rename_may_replace_helper(&self, param: RenameParam) -> DatenLordResult<()> {
+    async fn rename_may_replace_helper(
+        &self,
+        _context: ReqContext,
+        param: RenameParam,
+    ) -> DatenLordResult<()> {
         let old_parent = param.old_parent;
         let old_name = param.old_name;
         let new_parent = param.new_parent;
