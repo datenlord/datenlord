@@ -1,0 +1,8 @@
+# $FreeBSD: src/tools/regression/fstest/tests/conf,v 1.1 2007/01/17 01:42:08 pjd Exp $
+# fstest configuration file
+
+# Known operating systems: FreeBSD, SunOS, Linux
+os=`uname`
+
+# Known file systems: UFS, ZFS, ext3, ntfs-3g, xfs
+fs="ZFS"
