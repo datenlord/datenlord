@@ -37,9 +37,9 @@ use crate::async_fuse::fuse::fuse_reply::FuseDeleteNotification;
 use crate::async_fuse::fuse::fuse_reply::{ReplyDirectory, StatFsParam};
 use crate::async_fuse::fuse::protocol::{FuseAttr, INum, FUSE_ROOT_ID};
 use crate::async_fuse::memfs::check_name_length;
-use crate::async_fuse::util;
+use crate::async_fuse::util::build_error_result_from_errno;
 use crate::common::error::DatenLordResult;
-use crate::common::etcd_delegate::EtcdDelegate;
+use crate::common::etcd_delegate::EtcdDelegate; // conflict with tokio RwLock
 
 /// The time-to-live seconds of FUSE attributes
 const MY_TTL_SEC: u64 = 3600; // TODO: should be a long value, say 1 hour
@@ -395,7 +395,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
     }
 
     #[instrument(skip(self), err, ret)]
-    async fn unlink(&self, parent: INum, name: &str) -> DatenLordResult<()> {
+    async fn unlink(&self, context: ReqContext, parent: INum, name: &str) -> DatenLordResult<()> {
         let entry_type = {
             let parent_node = self
                 .get_node_from_kv_engine(parent)
@@ -407,11 +407,11 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
                     );
                 });
             let child_entry = parent_node.get_entry(name).unwrap_or_else(|| {
-                panic!(
-                    "unlink() found fs is inconsistent, \
-                        the child entry name={name:?} to remove is not under parent of ino={parent}",
-                );
-            });
+                    panic!(
+                        "unlink() found fs is inconsistent, \
+                            the child entry name={name:?} to remove is not under parent of ino={parent}",
+                    );
+                });
             let entry_type = child_entry.entry_type();
             debug_assert_ne!(
                 SFlag::S_IFDIR,
@@ -421,7 +421,8 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
             entry_type
         };
 
-        self.remove_node_helper(parent, name, entry_type).await
+        self.remove_node_helper(context, parent, name, entry_type)
+            .await
     }
 
     async fn new(
@@ -654,6 +655,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
     /// Helper function to remove node
     async fn remove_node_helper(
         &self,
+        context: ReqContext,
         parent: INum,
         node_name: &str,
         node_type: SFlag,
@@ -663,7 +665,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
             child_name={:?}, child_type={:?}",
             parent, node_name, node_type
         );
-        self.remove_node_local(parent, node_name, node_type, false)
+        self.remove_node_local(context, parent, node_name, node_type, false)
             .await?;
         self.load_parent_from_cache_and_mark_dirty(parent).await;
         Ok(())
@@ -778,10 +780,14 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
 
     #[instrument(skip(self), err, ret)]
     /// Rename helper to exchange on disk
-    async fn rename_exchange_helper(&self, param: RenameParam) -> DatenLordResult<()> {
+    async fn rename_exchange_helper(
+        &self,
+        context: ReqContext,
+        param: RenameParam,
+    ) -> DatenLordResult<()> {
         let old = param.old_parent;
         let new = param.new_parent;
-        self.rename_exchange_local(&param).await?;
+        self.rename_exchange_local(context, &param).await?;
         self.load_parent_from_cache_and_mark_dirty(old).await;
         self.load_parent_from_cache_and_mark_dirty(new).await;
         Ok(())
@@ -789,10 +795,15 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
 
     #[instrument(skip(self), err, ret)]
     /// Rename helper to move on disk, it may replace destination entry
-    async fn rename_may_replace_helper(&self, param: RenameParam) -> DatenLordResult<()> {
+    async fn rename_may_replace_helper(
+        &self,
+        context: ReqContext,
+        param: RenameParam,
+    ) -> DatenLordResult<()> {
         let old = param.old_parent;
         let new = param.new_parent;
-        self.rename_may_replace_local(&param, false).await?;
+        self.rename_may_replace_local(context, &param, false)
+            .await?;
         self.load_parent_from_cache_and_mark_dirty(old).await;
         self.load_parent_from_cache_and_mark_dirty(new).await;
         Ok(())
@@ -1008,7 +1019,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
                 node_name,
                 occupied.ino(),
             );
-            return util::build_error_result_from_errno(
+            return build_error_result_from_errno(
                 Errno::EEXIST,
                 format!(
                     "create_node_pre_check() found the directory of ino={} and name={:?} \
@@ -1143,7 +1154,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
                 parent_node.get_name(),
             );
             // lookup() didn't find anything, this is normal
-            util::build_error_result_from_errno(
+            build_error_result_from_errno(
                 Errno::ENOENT,
                 format!(
                     "lookup_helper() failed to find the file name={:?} \
@@ -1159,6 +1170,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
     /// Rename helper function to pre-check
     async fn rename_pre_check(
         &self,
+        context: ReqContext,
         old_parent: INum,
         old_name: &str,
         new_parent: INum,
@@ -1181,7 +1193,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
                     "rename() failed to find child entry of name={:?} under parent directory ino={} and name={:?}",
                     old_name, old_parent, old_parent_node.get_name(),
                 );
-                return util::build_error_result_from_errno(
+                return build_error_result_from_errno(
                     Errno::ENOENT,
                     format!(
                         "rename_pre_check() failed to find child entry of name={:?} \
@@ -1193,6 +1205,17 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
                 );
             }
             Some(old_entry) => {
+                let parent_attr = old_parent_node.get_attr();
+                if context.user_id != 0
+                    && (parent_attr.perm & 0o1000 != 0)
+                    && context.user_id != parent_attr.uid
+                    && context.user_id != old_entry.file_attr_arc_ref().read().uid
+                {
+                    return build_error_result_from_errno(
+                        Errno::EACCES,
+                        "Sticky bit set".to_owned(),
+                    );
+                }
                 debug_assert_eq!(&old_name, &old_entry.entry_name());
                 old_entry.ino()
             }
@@ -1217,7 +1240,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
                         but RENAME_NOREPLACE is specified",
                     new_ino, new_name, new_parent, new_parent_node.get_name(),
                 );
-                return util::build_error_result_from_errno(
+                return build_error_result_from_errno(
                     Errno::EEXIST, // RENAME_NOREPLACE
                     format!(
                         "rename() found i-node of ino={} and name={:?} under new parent ino={} and name={:?}, \
@@ -1322,7 +1345,11 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
     }
 
     /// Rename exchange on local node
-    async fn rename_exchange_local(&self, param: &RenameParam) -> DatenLordResult<()> {
+    async fn rename_exchange_local(
+        &self,
+        context: ReqContext,
+        param: &RenameParam,
+    ) -> DatenLordResult<()> {
         let old_parent = param.old_parent;
         let old_name = param.old_name.as_str();
         let new_parent = param.new_parent;
@@ -1335,7 +1362,9 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
         let no_replace = flags == 1; // RENAME_NOREPLACE
 
         let pre_check_res = self
-            .rename_pre_check(old_parent, old_name, new_parent, new_name, no_replace)
+            .rename_pre_check(
+                context, old_parent, old_name, new_parent, new_name, no_replace,
+            )
             .await;
         let (_, _, _, new_entry_ino) = match pre_check_res {
             Ok((old_parent_fd, old_entry_ino, new_parent_fd, new_entry_ino)) => {
@@ -1415,6 +1444,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
     /// Rename to move on disk locally, it may replace destination entry
     async fn rename_may_replace_local(
         &self,
+        context: ReqContext,
         param: &RenameParam,
         from_remote: bool,
     ) -> DatenLordResult<()> {
@@ -1430,7 +1460,9 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
         let no_replace = flags == 1; // RENAME_NOREPLACE
 
         let pre_check_res = self
-            .rename_pre_check(old_parent, old_name, new_parent, new_name, no_replace)
+            .rename_pre_check(
+                context, old_parent, old_name, new_parent, new_name, no_replace,
+            )
             .await;
         let (_, old_entry_ino, _, new_entry_ino) = match pre_check_res {
             Ok((old_parent_fd, old_entry_ino, new_parent_fd, new_entry_ino)) => {
@@ -1480,22 +1512,10 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
         Ok(())
     }
 
-    /// Helper function to rename file locally
-    #[allow(dead_code)]
-    pub(crate) async fn rename_local(&self, param: &RenameParam, from_remote: bool) {
-        if param.flags == 2 {
-            if let Err(e) = self.rename_exchange_local(param).await {
-                panic!("failed to rename local param={param:?}, error is {e:?}");
-            }
-        } else if let Err(e) = self.rename_may_replace_local(param, from_remote).await {
-            panic!("failed to rename local param={param:?}, error is {e:?}");
-        } else {
-        }
-    }
-
     /// Helper function to remove node locally
     pub(crate) async fn remove_node_local(
         &self,
+        context: ReqContext,
         parent: INum,
         node_name: &str,
         node_type: SFlag,
@@ -1520,7 +1540,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
                             under parent of ino={}",
                         node_name, parent,
                     );
-                    return util::build_error_result_from_errno(
+                    return build_error_result_from_errno(
                         Errno::ENOENT,
                         format!(
                             "remove_node_local() failed to find i-node name={node_name:?} \
@@ -1529,6 +1549,17 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
                     );
                 }
                 Some(child_entry) => {
+                    let parent_attr = parent_node.get_attr();
+                    if context.user_id != 0
+                        && (parent_attr.perm & 0o1000 != 0)
+                        && context.user_id != parent_attr.uid
+                        && context.user_id != child_entry.file_attr_arc_ref().read().uid
+                    {
+                        return build_error_result_from_errno(
+                            Errno::EACCES,
+                            "Sticky bit set".to_owned(),
+                        );
+                    }
                     node_ino = child_entry.ino();
                     if let SFlag::S_IFDIR = node_type {
                         // check the directory to delete is empty
@@ -1550,7 +1581,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
                                     under the parent directory of ino={}",
                                 node_name, node_ino, parent,
                             );
-                            return util::build_error_result_from_errno(
+                            return build_error_result_from_errno(
                                 Errno::ENOTEMPTY,
                                 format!(
                                     "remove_node_local() cannot remove \

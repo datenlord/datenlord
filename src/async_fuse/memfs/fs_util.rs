@@ -74,22 +74,22 @@ impl FileAttr {
     }
 
     /// ```
-    ///     File permissions in Unix/Linux systems are represented as a 12-bit structure, laid out as follows:
-    ///     ┌─────────────┬─────────┬─────────┬─────────┐
-    ///     │   Special   │  User   │  Group  │  Other  │
-    ///     ├─────────────┼─────────┼─────────┼─────────┤
-    ///     │2 Bits       │3 Bits   │3 Bits   │3 Bits   │
-    ///     ├─────────────┼─────────┼─────────┼─────────┤
-    ///     │suid |sgid   │r  w  x  │r  w  x  │r  w  x  │
-    ///     └──────┬──────┴───┬────┴───┬────┴───┬──────┘
-    ///            │          │        │        │
-    ///            │          │        │        └─ Other: Read, Write, Execute permissions for users
-    ///            |          |        |                   other than the owner or members of the group.
-    ///            │          │        └─ Group: Read, Write, Execute permissions for group members.
-    ///            │          └─ User: Read, Write, Execute permissions for the owner of the file.
-    ///            └─ Special: Set User ID (suid) and Set Group ID (sgid).
-    ///  The suid and sgid bits are beyond the scope of a simple permissions
-    ///  check and are not considered in this function.
+    /// File permissions in Unix/Linux systems are represented as a 12-bit structure,
+    /// laid out as follows:
+    /// ┌───────────────┬─────────┬─────────┬─────────┐
+    /// │   Special     │  User   │  Group  │  Other  │
+    /// ├───────────────┼─────────┼─────────┼─────────┤
+    /// │   3 Bits      │ 3 Bits  │ 3 Bits  │ 3 Bits  │
+    /// ├───────────────┼─────────┼─────────┼─────────┤
+    /// │ suid|sgid|stky│  r w x  │  r w x  │  r w x  │
+    /// └──────┬───────┴────┬────┴────┬────┴────┬────┘
+    ///        │             │         │         │
+    ///        │             │         │         └─ Other: Read, Write, Execute permissions for other users.
+    ///        │             │         └─ Group: Read, Write, Execute permissions for group members.
+    ///        │             └─ User:  Read, Write, Execute permissions for the owner of the file.
+    ///        └─ Special: Set User ID (suid), Set Group ID (sgid), and Sticky Bit (stky).
+    /// When Sticky Bit set on a directory, files in that directory may only be unlinked or -
+    /// renamed by root or the directory owner or the file owner.
     /// ```
     pub fn check_perm(&self, user_id: u32, group_id: u32, access_mode: u8) -> DatenLordResult<()> {
         debug_assert!(

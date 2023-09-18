@@ -467,7 +467,13 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         if let Err(e) = check_name_length(name) {
             return reply.error(e).await;
         }
-        match self.metadata.unlink(parent, name).await {
+
+        let context = ReqContext {
+            user_id: req.uid(),
+            group_id: req.gid(),
+        };
+
+        match self.metadata.unlink(context, parent, name).await {
             Ok(()) => reply.ok().await,
             Err(e) => {
                 debug!(
@@ -497,9 +503,14 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
             return reply.error(e).await;
         }
 
+        let context = ReqContext {
+            user_id: req.uid(),
+            group_id: req.gid(),
+        };
+
         let rmdir_res = self
             .metadata
-            .remove_node_helper(parent, dir_name, SFlag::S_IFDIR)
+            .remove_node_helper(context,parent,dir_name, SFlag::S_IFDIR)
             .await
             .add_context(format!(
                 "rmdir() failed to remove sub-directory name={dir_name:?} under parent ino={parent}",
@@ -533,16 +544,22 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
     /// exist and neither may be deleted.
     async fn rename(
         &self,
-        _: &Request<'_>,
+        req: &Request<'_>,
         param: RenameParam,
         reply: ReplyEmpty,
     ) -> nix::Result<usize> {
         let exchange = param.flags == 2; // RENAME_EXCHANGE
+        let context = ReqContext {
+            user_id: req.uid(),
+            group_id: req.gid(),
+        };
         let rename_res = if exchange {
-            self.metadata.rename_exchange_helper(param).await
+            self.metadata.rename_exchange_helper(context, param).await
         } else {
             // Rename replace
-            self.metadata.rename_may_replace_helper(param).await
+            self.metadata
+                .rename_may_replace_helper(context, param)
+                .await
         };
 
         match rename_res {

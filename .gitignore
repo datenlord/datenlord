@@ -18,3 +18,4 @@ fuse_bench/*
 bench.log
 .vscode/*
 localtest.sh
+*.log
