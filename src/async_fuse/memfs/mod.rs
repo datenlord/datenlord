@@ -30,7 +30,7 @@ use async_trait::async_trait;
 use cache::IoMemBlock;
 use clippy_utilities::Cast;
 use dist::server::CacheServer;
-pub use metadata::{DefaultMetaData, MetaData};
+pub use metadata::MetaData;
 use nix::errno::Errno;
 use nix::sys::stat::SFlag;
 pub use s3_metadata::S3MetaData;

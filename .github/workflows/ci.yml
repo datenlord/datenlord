@@ -30,17 +30,13 @@ jobs:
     name: Audit
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v2
-    #- uses: actions-rs/audit-check@v1.2.0
-    #  with:
-    #    token: ${{ secrets.GITHUB_TOKEN }}
-    - uses: actions-rs/install@v0.1
+    - uses: actions/checkout@v3
+    - uses: rustsec/audit-check@v1.4.1
       with:
-        crate: cargo-audit
-        version: latest
-    # Temporarily ignore the time/chrono segfault since there are no known
-    # good wordarounds and they are used by dependent libraries also.
-    - run: cargo audit --ignore RUSTSEC-2020-0071 --ignore RUSTSEC-2023-0052
+        token: ${{ secrets.GITHUB_TOKEN }}
+        # Temporarily ignore the time/chrono segfault since there are no known
+        # good wordarounds and they are used by dependent libraries also.
+        ignore: RUSTSEC-2020-0071,RUSTSEC-2023-0052
 
   check:
     name: Check
