@@ -198,7 +198,7 @@ if supported lchmod; then
 	expect 0 unlink ${n0}
 fi
 
-# successfull chown(2) call (except uid and gid equal to -1) updates ctime.
+# successful chown(2) call (except uid and gid equal to -1) updates ctime.
 # 109
 expect 0 create ${n0} 0644
 ctime1=`${fstest} stat ${n0} ctime`
