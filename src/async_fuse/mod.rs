@@ -36,23 +36,6 @@ pub async fn start_async_fuse(
         .await?;
     let mount_point = std::path::Path::new(&args.mount_dir);
     match args.volume_type {
-        VolumeType::Local => {
-            let (fs, fs_controller): (memfs::MemFs<memfs::DefaultMetaData>, FsController) =
-                memfs::MemFs::new(
-                    &args.mount_dir,
-                    args.cache_capacity,
-                    &args.ip_address.to_string(),
-                    &args.server_port,
-                    etcd_delegate,
-                    kv_engine,
-                    &args.node_id,
-                    &args.volume_info,
-                )
-                .await?;
-
-            let ss = session::new_session_of_memfs(mount_point, fs, fs_controller).await?;
-            ss.run().await?;
-        }
         VolumeType::S3 => {
             let (fs, fs_controller): (
                 memfs::MemFs<memfs::S3MetaData<S3BackEndImpl>>,

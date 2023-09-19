@@ -135,8 +135,6 @@ pub enum VolumeType {
     None,
     /// S3 volume
     S3,
-    /// Local volume
-    Local,
 }
 
 /// Async fuse args type
@@ -478,10 +476,10 @@ fn get_volume_type(matches: &ArgMatches) -> VolumeType {
             } else if vt == "none" {
                 VolumeType::None
             } else {
-                VolumeType::Local
+                panic!("Invalid volume type");
             }
         }
-        None => VolumeType::Local,
+        None => VolumeType::S3,
     };
     volume_type
 }

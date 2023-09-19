@@ -13,12 +13,11 @@ use std::sync::Arc;
 
 use libc::ino_t;
 use memchr::memchr;
-use nix::fcntl::OFlag;
-use nix::sys::stat::{Mode, SFlag};
+use nix::sys::stat::SFlag;
 use parking_lot::RwLock;
 
 use super::fs_util::FileAttr;
-use crate::async_fuse::util::{clear_errno, cstr_to_bytes, errno, nix_to_io_error, with_c_str};
+use crate::async_fuse::util::{clear_errno, cstr_to_bytes, errno, with_c_str};
 
 /// Directory meta-data
 pub struct Dir(NonNull<libc::DIR>);
@@ -77,26 +76,6 @@ impl Dir {
     #[allow(dead_code)]
     pub unsafe fn try_from_raw_fd(fd: RawFd) -> io::Result<Self> {
         Self::fdopendir(fd)
-    }
-
-    /// Opens the directory relative to `dirfd`.
-    ///
-    /// See also <https://github.com/coreutils/gnulib/blob/master/lib/opendirat.c>
-    ///
-    /// # Errors
-    /// This method will return `io::Error` if the underlying syscalls fails.
-    pub fn opendirat<P: AsRef<Path>>(
-        dirfd: RawFd,
-        pathname: P,
-        extra_oflag: OFlag,
-    ) -> io::Result<Self> {
-        let oflag: OFlag =
-            OFlag::O_RDONLY | OFlag::O_CLOEXEC | OFlag::O_DIRECTORY | OFlag::O_NOCTTY | extra_oflag;
-
-        let result = nix::fcntl::openat(dirfd, pathname.as_ref(), oflag, Mode::empty());
-        let new_fd = result.map_err(nix_to_io_error)?;
-
-        unsafe { Self::fdopendir(new_fd) }
     }
 }
 

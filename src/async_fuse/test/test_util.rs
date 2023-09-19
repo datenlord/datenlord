@@ -22,6 +22,7 @@ pub const TEST_ETCD_ENDPOINT: &str = "127.0.0.1:2379";
 const CACHE_DEFAULT_CAPACITY: usize = 1024 * 1024 * 1024;
 
 #[allow(clippy::let_underscore_must_use)]
+// TODO : Remove `is_s3` arg due too we only support s3 now
 pub async fn setup(mount_dir: &Path, is_s3: bool) -> anyhow::Result<tokio::task::JoinHandle<()>> {
     init_logger();
     debug!("setup started with mount_dir: {:?}", mount_dir);
