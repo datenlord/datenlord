@@ -20,5 +20,7 @@ fi
 
 # Start the new container
 echo "==> Starting container $ETCD_CONTAINER_NAME"
-docker run -d --rm --net host --name $ETCD_CONTAINER_NAME $ETCD_IMAGE 
+docker run -d --rm --net host --name $ETCD_CONTAINER_NAME $ETCD_IMAGE
+docker ps
+docker logs $ETCD_CONTAINER_NAME
 
