@@ -490,6 +490,26 @@ fn test_bind_mount(fuse_mount_dir: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
+fn test_delete_file(mount_dir: &Path) -> anyhow::Result<()> {
+    info!("test delete file");
+    let file_path = Path::new(mount_dir).join("test_delete_file.txt");
+    let file_mode = Mode::from_bits_truncate(0o644);
+    let file_fd = fcntl::open(&file_path, OFlag::O_CREAT, file_mode)?;
+    unistd::close(file_fd)?;
+
+    fs::remove_file(&file_path)?;
+
+    let result = fs::metadata(&file_path);
+    match result {
+        Ok(_) => panic!("File deletion failed"),
+        Err(ref e) if e.kind() == std::io::ErrorKind::NotFound => {} // expected this error
+        Err(e) => return Err(e.into()),
+    }
+
+    Ok(())
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn test_all() -> anyhow::Result<()> {
     run_test().await
@@ -510,6 +530,7 @@ async fn _run_test(mount_dir_str: &str, is_s3: bool) -> anyhow::Result<()> {
     let mount_dir = Path::new(mount_dir_str);
     let th = test_util::setup(mount_dir, is_s3).await?;
 
+    test_delete_file(mount_dir).context("test_delete_file() failed")?;
     test_file_manipulation_rust_way(mount_dir)
         .context("test_file_manipulation_rust_way() failed")?;
     test_directory_manipulation_rust_way(mount_dir)
