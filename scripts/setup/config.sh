@@ -36,6 +36,8 @@ export NODE_CONTAINER_NAME=datenlord
 export PROMETHEUS_LABEL=prometheus-server
 export SCHEDULER_IMAGE=k8s.gcr.io/kube-scheduler:v1.19.1
 export SNAPSHOTTER_VERSION=v5.0.0
+export ETCD_CONTAINER_NAME=etcd
+export DATENLORD_LOCAL_BIND_DIR=/tmp/datenlord_data_dir
 
 set -xv # enable debug
 set -e # exit on error
