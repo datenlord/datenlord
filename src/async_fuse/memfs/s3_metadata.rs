@@ -1232,6 +1232,14 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
             });
         let new_parent_fd = new_parent_node.get_fd();
         let new_entry_ino = if let Some(new_entry) = new_parent_node.get_entry(new_name) {
+            let parent_attr = new_parent_node.get_attr();
+            if context.user_id != 0
+                && (parent_attr.perm & 0o1000 != 0)
+                && context.user_id != parent_attr.uid
+                && context.user_id != new_entry.file_attr_arc_ref().read().uid
+            {
+                return build_error_result_from_errno(Errno::EACCES, "Sticky bit set".to_owned());
+            }
             debug_assert_eq!(&new_name, &new_entry.entry_name());
             let new_ino = new_entry.ino();
             if no_replace {
