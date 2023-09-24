@@ -36,3 +36,7 @@ fio-plot -i ${BLOCK_SIZES_DIRS} -T "Different Block Size Read" -C --rw randread 
 bench-fio --target ${TEST_DIR} --type directory --size 5M --output ${OUTPUT_DIR} --iodepth 1 --block-size 4k --numjobs ${THREAD_NUMS} --engine sync --direct 1 --destructive
 fio-plot -i ${OUTPUT_SUBDIR}/4k/  -T "Different Thread Num Write" -N --rw randwrite -o ${OUTPUT_DIR}/4k_multithread_write.png
 fio-plot -i ${OUTPUT_SUBDIR}/4k/  -T "Different Thread Num Read" -N --rw randread -o ${OUTPUT_DIR}/4k_multithread_read.png
+
+# Test the correctness of the data
+export WRITE_AND_VERIFY_FILE=${TEST_DIR}/write_and_verify_file
+fio write_and_verify.fio
