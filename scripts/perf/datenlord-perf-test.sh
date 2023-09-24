@@ -10,6 +10,7 @@ readonly ASYNC_FUSE_APP="datenlord-async-fuse"
 readonly TEST_DIR="/var/opt/datenlord-data"
 readonly OUTPUT_DIR="/tmp/output"
 readonly PERF_SCRIPT="fio-perf-test.sh"
+readonly FIO_VERIFY_CONFIG="scripts/perf/write_and_verify.fio"
 
 # Deploy datenlord for perf test
 kubectl apply -f ${PERF_CONFIG}
@@ -23,6 +24,7 @@ kubectl exec ${FIRST_NODE} -n ${NAMESPACE} -- apt-get update
 kubectl exec ${FIRST_NODE} -n ${NAMESPACE} -- apt-get install -y fio python3-pip
 kubectl exec ${FIRST_NODE} -n ${NAMESPACE} -- pip3 install matplotlib numpy fio-plot==1.0.28
 kubectl cp scripts/perf/${PERF_SCRIPT} ${FIRST_NODE}:/tmp -n ${NAMESPACE}
+kubectl cp ${FIO_VERIFY_CONFIG} ${FIRST_NODE}:/tmp -n ${NAMESPACE}
 kubectl exec ${FIRST_NODE} -n ${NAMESPACE} -- sh /tmp/${PERF_SCRIPT} ${TEST_DIR}
 
 rm -rf ${OUTPUT_DIR}
