@@ -550,11 +550,11 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
             Some(ref path) => Some(path.as_ref()),
             None => None,
         };
-        let uid = param.uid;
-        let gid = param.gid;
+        let user_id = param.uid;
+        let group_id = param.gid;
         // pre-check : check whether the child name is valid
         let mut parent_node = self
-            .create_node_pre_check(parent, node_name, uid, gid)
+            .create_node_pre_check(parent, node_name, user_id, group_id)
             .await
             .context("create_node_helper() failed to pre check")?;
         // allocate a new i-node number
@@ -581,8 +581,8 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
                             node_name,
                             o_flags,
                             m_flags,
-                            uid,
-                            gid,
+                            user_id,
+                            group_id,
                             Arc::<GlobalCache>::clone(&self.data_cache),
                         )
                        .await
@@ -602,6 +602,8 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
                                 under parent directory of ino={} and name={:?}",
                             node_name, parent, parent_node.get_name(),
                         )).to_owned(),
+                        user_id,
+                        group_id,
                     )
                    .await
                    .context(format!(
@@ -1168,6 +1170,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
     }
 
     /// Rename helper function to pre-check
+    #[allow(clippy::too_many_lines)]
     async fn rename_pre_check(
         &self,
         context: ReqContext,
@@ -1206,14 +1209,18 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
             }
             Some(old_entry) => {
                 let parent_attr = old_parent_node.get_attr();
+                let child_owner = old_entry.file_attr_arc_ref().read().uid;
                 if context.user_id != 0
                     && (parent_attr.perm & 0o1000 != 0)
                     && context.user_id != parent_attr.uid
-                    && context.user_id != old_entry.file_attr_arc_ref().read().uid
+                    && context.user_id != child_owner
                 {
                     return build_error_result_from_errno(
                         Errno::EACCES,
-                        "Sticky bit set".to_owned(),
+                        format!(
+                            "sticky check fialed user_id={} parent_owner={} child_owner={}",
+                            context.user_id, parent_attr.uid, child_owner
+                        ),
                     );
                 }
                 debug_assert_eq!(&old_name, &old_entry.entry_name());
@@ -1233,12 +1240,19 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
         let new_parent_fd = new_parent_node.get_fd();
         let new_entry_ino = if let Some(new_entry) = new_parent_node.get_entry(new_name) {
             let parent_attr = new_parent_node.get_attr();
+            let child_owner = new_entry.file_attr_arc_ref().read().uid;
             if context.user_id != 0
                 && (parent_attr.perm & 0o1000 != 0)
                 && context.user_id != parent_attr.uid
-                && context.user_id != new_entry.file_attr_arc_ref().read().uid
+                && context.user_id != child_owner
             {
-                return build_error_result_from_errno(Errno::EACCES, "Sticky bit set".to_owned());
+                return build_error_result_from_errno(
+                    Errno::EACCES,
+                    format!(
+                        "sticky check fialed user_id={} parent_owner={} child_owner={}",
+                        context.user_id, parent_attr.uid, child_owner
+                    ),
+                );
             }
             debug_assert_eq!(&new_name, &new_entry.entry_name());
             let new_ino = new_entry.ino();
@@ -1521,6 +1535,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
     }
 
     /// Helper function to remove node locally
+    #[allow(clippy::too_many_lines)]
     pub(crate) async fn remove_node_local(
         &self,
         context: ReqContext,
@@ -1558,14 +1573,18 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
                 }
                 Some(child_entry) => {
                     let parent_attr = parent_node.get_attr();
+                    let child_owner = child_entry.file_attr_arc_ref().read().uid;
                     if context.user_id != 0
                         && (parent_attr.perm & 0o1000 != 0)
                         && context.user_id != parent_attr.uid
-                        && context.user_id != child_entry.file_attr_arc_ref().read().uid
+                        && context.user_id != child_owner
                     {
                         return build_error_result_from_errno(
                             Errno::EACCES,
-                            "Sticky bit set".to_owned(),
+                            format!(
+                                "sticky check fialed user_id={} parent_owner={} child_owner={}",
+                                context.user_id, parent_attr.uid, child_owner
+                            ),
                         );
                     }
                     node_ino = child_entry.ino();

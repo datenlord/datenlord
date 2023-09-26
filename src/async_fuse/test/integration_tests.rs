@@ -18,7 +18,7 @@ pub const FILE_CONTENT: &str = "0123456789ABCDEF";
 
 #[cfg(test)]
 fn test_create_file(mount_dir: &Path) -> anyhow::Result<()> {
-    use smol::fs::unix::MetadataExt;
+    use std::os::unix::fs::MetadataExt;
     info!("test create file");
     let file_path = Path::new(mount_dir).join("test_create_file_user.txt");
     let file_mode = Mode::from_bits_truncate(0o644);
@@ -38,6 +38,74 @@ fn test_create_file(mount_dir: &Path) -> anyhow::Result<()> {
     // check nlink == 1
     assert_eq!(file_metadata.nlink(), 1);
     fs::remove_file(&file_path)?; // immediate deletion
+    Ok(())
+}
+
+#[cfg(test)]
+fn test_create_directory(mount_dir: &Path) -> anyhow::Result<()> {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+    info!("test create directory");
+    let dir_path = Path::new(mount_dir).join("test_create_dir_");
+    let dir_mode: u32 = 0o755;
+    fs::create_dir_all(&dir_path)?;
+    fs::set_permissions(dir_path.clone(), fs::Permissions::from_mode(dir_mode))?;
+
+    let dir_metadata = fs::metadata(&dir_path)?;
+    assert_eq!(dir_metadata.mode() & 0o777, dir_mode);
+
+    let dir_owner = dir_metadata.uid();
+    let create_user_id = unistd::getuid();
+    assert_eq!(dir_owner, create_user_id.as_raw());
+
+    let dir_group = dir_metadata.gid();
+    let create_group_id = unistd::getgid();
+    assert_eq!(dir_group, create_group_id.as_raw());
+
+    fs::remove_dir(&dir_path)?; // immediate deletion
+    Ok(())
+}
+
+#[cfg(test)]
+fn test_create_symlink(mount_dir: &Path) -> anyhow::Result<()> {
+    use std::fs::OpenOptions;
+    use std::os::unix::fs::{symlink, MetadataExt, OpenOptionsExt};
+
+    info!("test create symlink");
+    let target_path = Path::new(mount_dir).join("target_file.txt");
+    let symlink_path = Path::new(mount_dir).join("symlink_to_target.txt");
+
+    // Create target file
+    OpenOptions::new()
+        .create(true)
+        .write(true)
+        .mode(0o644)
+        .open(&target_path)?;
+
+    // Create symlink
+    symlink(&target_path, &symlink_path)?;
+
+    let symlink_metadata = fs::symlink_metadata(&symlink_path)?;
+    assert!(symlink_metadata.file_type().is_symlink());
+    // Check symlink permissions
+    assert_eq!(symlink_metadata.mode() & 0o777, 0o777);
+
+    // Check symlink owner
+    let symlink_owner = symlink_metadata.uid();
+    let create_user_id = unistd::getuid();
+    assert_eq!(symlink_owner, create_user_id.as_raw());
+
+    // Check symlink group owner
+    let symlink_group = symlink_metadata.gid();
+    let create_group_id = unistd::getgid();
+    assert_eq!(symlink_group, create_group_id.as_raw());
+
+    // Check symlink points to the right target
+    let resolved_path = fs::read_link(&symlink_path)?;
+    assert_eq!(resolved_path, target_path);
+
+    fs::remove_file(&target_path)?;
+    fs::remove_file(&symlink_path)?;
     Ok(())
 }
 
@@ -536,6 +604,8 @@ async fn _run_test(mount_dir_str: &str, is_s3: bool) -> anyhow::Result<()> {
     test_directory_manipulation_rust_way(mount_dir)
         .context("test_directory_manipulation_rust_way() failed")?;
     test_create_file(mount_dir).context("test_create_file() failed")?;
+    test_create_directory(mount_dir).context("test_create_directory() failed")?;
+    test_create_symlink(mount_dir).context("test_create_symlink() failed")?;
     test_name_too_long(mount_dir).context("test_name_too_long() failed")?;
     test_symlink_dir(mount_dir).context("test_symlink_dir() failed")?;
     test_symlink_file(mount_dir).context("test_symlink_file() failed")?;
@@ -545,7 +615,6 @@ async fn _run_test(mount_dir_str: &str, is_s3: bool) -> anyhow::Result<()> {
     test_rename_file_replace(mount_dir).context("test_rename_file_replace() failed")?;
     test_rename_file(mount_dir).context("test_rename_file() failed")?;
     test_rename_dir(mount_dir).context("test_rename_dir() failed")?;
-    test_create_file(mount_dir).context("test_create_file() failed")?;
 
     test_util::teardown(mount_dir, th).await?;
 

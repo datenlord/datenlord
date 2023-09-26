@@ -683,6 +683,8 @@ impl MetaData for DefaultMetaData {
                                 under parent directory of ino={} and name={:?}",
                             node_name, parent, parent_node.get_name(),
                         )).to_owned(),
+                        param.uid,
+                        param.gid,
                     )
                     .await
                     .context(format!(

@@ -84,6 +84,8 @@ pub trait Node: Sized {
         inum: INum,
         child_symlink_name: &str,
         target_path: PathBuf,
+        user_id: u32,
+        group_id: u32,
     ) -> DatenLordResult<Self>;
     /// Read symlink itself in a directory, not follow symlink
     async fn load_child_symlink(
@@ -755,6 +757,8 @@ impl Node for DefaultNode {
         _inum: INum,
         child_symlink_name: &str,
         target_path: PathBuf,
+        _user_id: u32,
+        _group_id: u32,
     ) -> DatenLordResult<Self> {
         let ino = self.get_ino();
         let fd = self.fd;

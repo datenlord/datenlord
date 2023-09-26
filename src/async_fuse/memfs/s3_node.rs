@@ -762,6 +762,8 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
         inum: INum,
         child_symlink_name: &str,
         target_path: PathBuf,
+        user_id: u32,
+        group_id: u32,
     ) -> DatenLordResult<Self> {
         let absolute_path = self.absolute_path_with_child(child_symlink_name);
         let dir_data = self.get_dir_data();
@@ -796,6 +798,8 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
                 .cast(),
             blocks: 0,
             perm: 0o777,
+            uid: user_id,
+            gid: group_id,
             ..FileAttr::now()
         }));
 
