@@ -1,5 +1,4 @@
 use std::fmt::Write;
-use std::time::SystemTime;
 
 use async_trait::async_trait;
 use clippy_utilities::{Cast, OverflowArithmetic};
@@ -52,16 +51,6 @@ pub trait S3BackEnd {
     async fn put_data_vec(&self, file: &str, data: Vec<IoMemBlock>) -> S3Result<()>;
     /// Delete a file from S3 backend
     async fn delete_data(&self, file: &str) -> S3Result<()>;
-    /// List file from S3 backend
-    async fn list_file(&self, dir: &str) -> S3Result<Vec<String>>;
-    /// Create a dir to S3 backend
-    async fn create_dir(&self, dir: &str) -> S3Result<()>;
-    /// Get len of a file from S3 backend
-    async fn get_len(&self, file: &str) -> S3Result<usize>;
-    /// Get last modified time of a file from S3 backend
-    async fn get_last_modified(&self, file: &str) -> S3Result<SystemTime>;
-    /// Get meta of a file from S3 backend
-    async fn get_meta(&self, file: &str) -> S3Result<(usize, SystemTime)>;
     /// Rename a file to S3 backend
     async fn rename(&self, old_file: &str, new_file: &str) -> S3Result<()>;
 }
@@ -151,89 +140,6 @@ impl S3BackEnd for S3BackEndImpl {
                 .await
         )
         .map(|_| ())
-    }
-
-    async fn get_len(&self, file: &str) -> S3Result<usize> {
-        match resultify_anyhow!(self.bucket.head_object(file.to_owned()).await) {
-            Ok((head_object, _)) => match head_object.content_length {
-                None => Err(S3Error::S3InternalError("Can't get S3 file length".into())),
-                Some(size) => Ok(size.cast()),
-            },
-            Err(e) => Err(e),
-        }
-    }
-
-    async fn list_file(&self, dir: &str) -> S3Result<Vec<String>> {
-        resultify_anyhow!(
-            self.bucket
-                .list(
-                    if dir.ends_with('/') {
-                        dir.into()
-                    } else {
-                        format!("{dir}/")
-                    },
-                    Some("/".into()),
-                )
-                .await
-        )
-        .map(|list| {
-            let mut result: Vec<String> = vec![];
-            for lbr in &list {
-                lbr.contents.iter().for_each(|c| {
-                    result.push(c.key.clone());
-                });
-                if let Some(ref vec) = lbr.common_prefixes {
-                    for cp in vec.iter() {
-                        result.push(cp.prefix.clone());
-                    }
-                }
-            }
-            result
-        })
-    }
-
-    async fn create_dir(&self, dir: &str) -> S3Result<()> {
-        self.put_data(dir, b"", 0, 0).await
-    }
-
-    async fn get_last_modified(&self, file: &str) -> S3Result<SystemTime> {
-        match resultify_anyhow!(self.bucket.head_object(file.to_owned()).await) {
-            Ok((head_object, _)) => match head_object.last_modified {
-                None => Err(S3Error::S3InternalError(
-                    "Can't get S3 file last_modified time".into(),
-                )),
-                Some(ref lm) => Ok(chrono::DateTime::parse_from_str(lm, "%a, %e %b %Y %T %Z")
-                    .unwrap_or_else(|e| {
-                        panic!("failed to DateTime::parse_from_str {lm:?}, error is {e:?}")
-                    })
-                    .into()),
-            },
-            Err(e) => Err(e),
-        }
-    }
-
-    async fn get_meta(&self, file: &str) -> S3Result<(usize, SystemTime)> {
-        match resultify_anyhow!(self.bucket.head_object(file.to_owned()).await) {
-            Ok((head_object, _)) => match head_object.last_modified {
-                None => Err(S3Error::S3InternalError(
-                    "Can't get S3 file last_modified time".into(),
-                )),
-                Some(ref lm) => match head_object.content_length {
-                    None => Err(S3Error::S3InternalError("Can't get S3 file length".into())),
-                    Some(size) => Ok((
-                        size.cast(),
-                        chrono::DateTime::parse_from_rfc2822(lm)
-                            .unwrap_or_else(|e| {
-                                panic!(
-                                    "failed to DateTime::parse_from_rfc2822 {lm:?}, error is {e:?}"
-                                )
-                            })
-                            .into(),
-                    )),
-                },
-            },
-            Err(e) => Err(e),
-        }
     }
 
     async fn delete_data(&self, data: &str) -> S3Result<()> {
@@ -356,26 +262,6 @@ impl S3BackEnd for DoNothingImpl {
         Ok(())
     }
 
-    async fn get_len(&self, _: &str) -> S3Result<usize> {
-        Ok(0)
-    }
-
-    async fn list_file(&self, _: &str) -> S3Result<Vec<String>> {
-        Ok(vec![])
-    }
-
-    async fn create_dir(&self, _: &str) -> S3Result<()> {
-        Ok(())
-    }
-
-    async fn get_last_modified(&self, _: &str) -> S3Result<SystemTime> {
-        Ok(SystemTime::now())
-    }
-
-    async fn get_meta(&self, _: &str) -> S3Result<(usize, SystemTime)> {
-        Ok((0, SystemTime::now()))
-    }
-
     async fn delete_data(&self, _: &str) -> S3Result<()> {
         Ok(())
     }
@@ -386,38 +272,5 @@ impl S3BackEnd for DoNothingImpl {
 
     async fn rename(&self, _: &str, _: &str) -> S3Result<()> {
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod test {
-    use super::{S3BackEnd, S3BackEndImpl};
-
-    const TEST_BUCKET_NAME: &str = "s3-wrapper-test-bucket";
-    const TEST_ENDPOINT: &str = "http://127.0.0.1:9000";
-    const TEST_ACCESS_KEY: &str = "test";
-    const TEST_SECRET_KEY: &str = "test1234";
-
-    async fn create_backend() -> S3BackEndImpl {
-        S3BackEndImpl::new_backend(
-            TEST_BUCKET_NAME,
-            TEST_ENDPOINT,
-            TEST_ACCESS_KEY,
-            TEST_SECRET_KEY,
-        )
-        .await
-        .unwrap_or_else(|e| panic!("failed to create s3 backend, error is {e:?}"))
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    #[ignore]
-    async fn test_get_meta() {
-        let s3_backend = create_backend().await;
-        if let Err(e) = s3_backend.create_dir("test_dir").await {
-            panic!("failed to create dir in s3 backend, error is {e:?}");
-        }
-        if let Err(e) = s3_backend.get_meta("test_dir").await {
-            panic!("failed to get meta from s3 backend, error is {e:?}");
-        }
     }
 }

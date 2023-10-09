@@ -1423,23 +1423,6 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
             });
             exchanged_node.set_parent_ino(old_parent);
             exchanged_node.set_name(old_name);
-            let exchanged_attr = exchanged_node.
-                load_attribute()
-               .await
-               .context(format!(
-                    "rename_exchange_helper() failed to load attribute of \
-                        to i-node of ino={new_entry_ino} and name={new_name:?} under parent directory",
-                ))
-               .unwrap_or_else(|e| {
-                    panic!(
-                        "rename_exchange_helper() failed to load attributed of to i-node of ino={} and name={:?}, \
-                            the error is: {}",
-                        exchanged_node.get_ino(), exchanged_node.get_name(),
-                        crate::common::util::format_anyhow_error(&e),
-                    )
-                });
-            debug_assert_eq!(exchanged_attr.ino, exchanged_node.get_ino());
-            debug_assert_eq!(exchanged_attr.ino, new_entry_ino);
             panic!("rename2 system call has not been supported in libc to exchange two nodes yet!");
         } else {
             panic!(
