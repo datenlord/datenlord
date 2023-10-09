@@ -64,8 +64,6 @@ pub trait Node: Sized {
     fn get_lookup_count(&self) -> i64;
     /// Decrease node lookup count
     fn dec_lookup_count_by(&self, nlookup: u64) -> i64;
-    /// Load node attr
-    async fn load_attribute(&mut self) -> DatenLordResult<FileAttr>;
     /// Flush node data
     async fn flush(&mut self, ino: INum, fh: u64);
     /// Duplicate fd
@@ -611,20 +609,6 @@ impl Node for DefaultNode {
     /// If node is marked as deferred deletion
     fn is_deferred_deletion(&self) -> bool {
         self.deferred_deletion.load(Ordering::Relaxed)
-    }
-
-    /// Load attribute
-    async fn load_attribute(&mut self) -> DatenLordResult<FileAttr> {
-        let attr = fs_util::load_attr(self.fd).await.context(format!(
-            "load_attribute() failed to get the attribute of the node ino={}",
-            self.get_ino(),
-        ))?;
-        match self.data {
-            DefaultNodeData::Directory(..) => debug_assert_eq!(SFlag::S_IFDIR, attr.kind),
-            DefaultNodeData::RegFile(..) => debug_assert_eq!(SFlag::S_IFREG, attr.kind),
-            DefaultNodeData::SymLink(..) => debug_assert_eq!(SFlag::S_IFLNK, attr.kind),
-        };
-        Ok(attr)
     }
 
     /// flush node data

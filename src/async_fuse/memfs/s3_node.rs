@@ -651,34 +651,6 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
         self.deferred_deletion.load(Ordering::SeqCst)
     }
 
-    /// Load attribute
-    async fn load_attribute(&mut self) -> DatenLordResult<FileAttr> {
-        let (content_len, last_modified) = self
-            .s3_backend
-            .get_meta(&self.full_path)
-            .await
-            .unwrap_or_else(|e| panic!("failed to get meta from s3 backend, error is {e:?}"));
-
-        let attr = FileAttr {
-            ino: self.get_ino(),
-            kind: match self.data {
-                S3NodeData::Directory(..) => SFlag::S_IFDIR,
-                S3NodeData::RegFile(..) => SFlag::S_IFREG,
-                S3NodeData::SymLink(..) => SFlag::S_IFLNK,
-            },
-            size: content_len.cast(),
-            atime: last_modified,
-            mtime: last_modified,
-            ctime: last_modified,
-            crtime: last_modified,
-            ..FileAttr::default()
-        };
-
-        self.set_attr(attr);
-
-        Ok(attr)
-    }
-
     async fn flush(&mut self, _ino: INum, _fh: u64) {
         if let Err(e) = self.flush_all_data().await {
             panic!(
@@ -902,16 +874,12 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
         user_id: u32,
         group_id: u32,
     ) -> DatenLordResult<Self> {
-        let absolute_path = self.absolute_dir_with_child(child_dir_name);
         let dir_data = self.get_dir_data();
         // TODO return error
         debug_assert!(
             !dir_data.contains_key(child_dir_name),
             "create_child_dir() cannot create duplicated directory name={child_dir_name:?}"
         );
-        if let Err(e) = self.s3_backend.create_dir(absolute_path.as_str()).await {
-            panic!("failed to create dir={absolute_path:?} in s3 backend, error is {e:?}");
-        }
 
         // get new directory attribute
         let child_attr = Arc::new(RwLock::new(FileAttr {

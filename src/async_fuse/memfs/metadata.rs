@@ -980,23 +980,6 @@ impl MetaData for DefaultMetaData {
             });
             exchanged_node.set_parent_ino(old_parent);
             exchanged_node.set_name(old_name);
-            let exchanged_attr = exchanged_node
-                .load_attribute()
-                .await
-                .context(format!(
-                    "rename_exchange_helper() failed to load attribute of \
-                        to i-node of ino={new_entry_ino} and name={new_name:?} under parent directory",
-                ))
-                .unwrap_or_else(|e| {
-                    panic!(
-                        "rename_exchange_helper() failed to load attributed of to i-node of ino={} and name={:?}, \
-                            the error is: {}",
-                        exchanged_node.get_ino(), exchanged_node.get_name(),
-                        crate::common::util::format_anyhow_error(&e),
-                    )
-                });
-            debug_assert_eq!(exchanged_attr.ino, exchanged_node.get_ino());
-            debug_assert_eq!(exchanged_attr.ino, new_entry_ino);
             panic!("rename2 system call has not been supported in libc to exchange two nodes yet!");
         } else {
             panic!(
@@ -1071,21 +1054,6 @@ impl MetaData for DefaultMetaData {
             });
             moved_node.set_parent_ino(new_parent);
             moved_node.set_name(&new_name);
-            let moved_attr = moved_node
-                .load_attribute()
-                .await
-                .context(format!(
-                    "rename_may_replace_helper() failed to \
-                    load attribute of old entry i-node of ino={old_entry_ino}",
-                ))
-                .unwrap_or_else(|e| {
-                    panic!(
-                        "rename() failed, the error is: {}",
-                        crate::common::util::format_anyhow_error(&e)
-                    )
-                });
-            debug_assert_eq!(moved_attr.ino, moved_node.get_ino());
-            debug_assert_eq!(moved_attr.ino, old_entry_ino);
             debug!(
                 "rename_may_replace_helper() successfully moved the from i-node \
                 of ino={} and name={:?} under from parent ino={} to \
