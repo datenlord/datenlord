@@ -123,7 +123,7 @@ Datenlord monitoring guideline is in [datenlord monitoring](docs/datenlord_monit
 
 To use `YAML` method, just run
 ```
-sh ./scripts/setup/datenlord-monitor-deploy.sh
+sh ./scripts/setup/datenlord-monitor-deploy.sh deploy
 ```
 To use `Helm` method, run
 ```
@@ -148,7 +148,7 @@ Four histograms will be generated.
 - Random read IOPS and latency for different read thread numbers with 4k block size
 - Random write IOPS and latency for different write thread numbers with 4k block size
 
-Performance test is added to GitHub Action([cron.yml](.github/workflows/cron.yml)) and performance report is generated and archived as artifacts([Example](https://github.com/datenlord/datenlord/actions/runs/1650821578)) for every four hours.
+Performance test is added to GitHub Action([cron.yml](.github/workflows/cron.yml)) and performance report is generated and archived as artifacts([Example](https://github.com/datenlord/datenlord/actions/workflows/cron.yml)) for every four hours.
 
 ## How to Contribute
 
