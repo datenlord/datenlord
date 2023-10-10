@@ -21,6 +21,13 @@ use super::kv_engine::KVEngineType;
 use crate::async_fuse::fuse::fuse_reply::{AsIoVec, CouldBeAsIoVecList};
 use crate::async_fuse::fuse::protocol::INum;
 
+#[allow(dead_code)]
+/// Disk cache impl
+pub mod diskcache;
+
+/// Block
+pub mod block;
+
 /// Page Size
 const PAGE_SIZE: usize = 4096;
 /// The size of a memory block in KB, default is 64kB
@@ -34,6 +41,9 @@ const MEMORY_BUCKET_VEC_SIZE: usize = 16;
 const MEMORY_BUCKET_SIZE_IN_BYTE: usize = MEMORY_BUCKET_VEC_SIZE * MEMORY_BLOCK_SIZE_IN_KB * 1024;
 /// The default capacity in bytes, 10GB
 const GLOBAL_CACHE_DEFAULT_CAPACITY: usize = 10 * 1024 * 1024 * 1024;
+
+/// `BlockId` is the offset of the block in the file.
+pub type BlockId = u64;
 
 /// A mapping from file name to per-file memory block mapping
 pub struct GlobalCache {
