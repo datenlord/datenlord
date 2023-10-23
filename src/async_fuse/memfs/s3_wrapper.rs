@@ -14,6 +14,8 @@ use s3::surf_request::SurfRequest as RequestImpl;
 use s3::Region;
 use serde_xml_rs as serde_xml;
 
+use crate::async_fuse::fuse::protocol::INum;
+
 use super::cache::IoMemBlock;
 
 /// S3 backend error
@@ -41,18 +43,16 @@ pub trait S3BackEnd {
     ) -> S3Result<Self>
     where
         Self: Sized;
-    /// Get data of a file from S3 backend
-    async fn get_data(&self, file: &str) -> S3Result<Vec<u8>>;
+    /// Get data of a whole file from S3 backend
+    async fn get_data(&self, file: INum) -> S3Result<Vec<u8>>;
     /// Get partial data of a file from S3 backend
-    async fn get_partial_data(&self, file: &str, offset: usize, len: usize) -> S3Result<Vec<u8>>;
+    async fn get_partial_data(&self, file: INum, offset: usize, len: usize) -> S3Result<Vec<u8>>;
     /// Put data of a file to S3 backend
-    async fn put_data(&self, file: &str, data: &[u8], offset: usize, len: usize) -> S3Result<()>;
+    async fn put_data(&self, file: INum, data: &[u8], offset: usize, len: usize) -> S3Result<()>;
     /// Put data vector of a file to S3 backend
-    async fn put_data_vec(&self, file: &str, data: Vec<IoMemBlock>) -> S3Result<()>;
+    async fn put_data_vec(&self, file: INum, data: Vec<IoMemBlock>) -> S3Result<()>;
     /// Delete a file from S3 backend
-    async fn delete_data(&self, file: &str) -> S3Result<()>;
-    /// Rename a file to S3 backend
-    async fn rename(&self, old_file: &str, new_file: &str) -> S3Result<()>;
+    async fn delete_data(&self, file: INum) -> S3Result<()>;
 }
 
 /// S3 backend implementation
@@ -106,15 +106,15 @@ impl S3BackEnd for S3BackEndImpl {
         })
     }
 
-    async fn get_data(&self, file: &str) -> S3Result<Vec<u8>> {
-        resultify_anyhow!(self.bucket.get_object(file.to_owned()).await).map(|(data, _)| data)
+    async fn get_data(&self, file: INum) -> S3Result<Vec<u8>> {
+        resultify_anyhow!(self.bucket.get_object(file.to_string()).await).map(|(data, _)| data)
     }
 
-    async fn get_partial_data(&self, file: &str, offset: usize, len: usize) -> S3Result<Vec<u8>> {
+    async fn get_partial_data(&self, file: INum, offset: usize, len: usize) -> S3Result<Vec<u8>> {
         resultify_anyhow!(
             self.bucket
                 .get_object_range(
-                    file.to_owned(),
+                    file.to_string(),
                     offset.cast(),
                     Some((offset.overflow_add(len)).cast())
                 )
@@ -123,12 +123,12 @@ impl S3BackEnd for S3BackEndImpl {
         .map(|(data, _)| data)
     }
 
-    async fn put_data(&self, file: &str, data: &[u8], offset: usize, len: usize) -> S3Result<()> {
+    async fn put_data(&self, file: INum, data: &[u8], offset: usize, len: usize) -> S3Result<()> {
         resultify_anyhow!(
             self.bucket
                 //.put_object(file.to_owned(), &data[offset..(offset.overflow_add(len))])
                 .put_object(
-                    file.to_owned(),
+                    file.to_string(),
                     data.get(offset..(offset.overflow_add(len)))
                         .unwrap_or_else(|| panic!(
                             "failed to get slice index {}..{}, slice size={}",
@@ -142,11 +142,11 @@ impl S3BackEnd for S3BackEndImpl {
         .map(|_| ())
     }
 
-    async fn delete_data(&self, data: &str) -> S3Result<()> {
-        resultify_anyhow!(self.bucket.delete_object(data).await).map(|_| ())
+    async fn delete_data(&self, data: INum) -> S3Result<()> {
+        resultify_anyhow!(self.bucket.delete_object(data.to_string()).await).map(|_| ())
     }
 
-    async fn put_data_vec(&self, file: &str, vec: Vec<IoMemBlock>) -> S3Result<()> {
+    async fn put_data_vec(&self, file: INum, vec: Vec<IoMemBlock>) -> S3Result<()> {
         if vec.is_empty() {
             return Ok(());
         }
@@ -161,7 +161,8 @@ impl S3BackEnd for S3BackEndImpl {
         }
 
         let command = Command::InitiateMultipartUpload;
-        let request = RequestImpl::new(&self.bucket, file, command);
+        let file_inum_str = file.to_string();
+        let request = RequestImpl::new(&self.bucket, &file_inum_str, command);
         let (data, _) = resultify_anyhow!(request.response_data(false).await)?;
         let msg: InitiateMultipartUploadResponse = serde_xml::from_str(
             std::str::from_utf8(data.as_slice())
@@ -209,16 +210,6 @@ impl S3BackEnd for S3BackEndImpl {
         }
         Ok(())
     }
-
-    async fn rename(&self, old_file: &str, new_file: &str) -> S3Result<()> {
-        let _ret = resultify_anyhow!(
-            self.bucket
-                .copy_object_in_same_bucket(old_file, new_file)
-                .await
-        )?;
-
-        resultify_anyhow!(self.bucket.delete_object(old_file).await).map(|_| ())
-    }
 }
 
 /// Format anyhow error to string
@@ -250,27 +241,23 @@ impl S3BackEnd for DoNothingImpl {
         Ok(Self {})
     }
 
-    async fn get_data(&self, _: &str) -> S3Result<Vec<u8>> {
+    async fn get_data(&self, _: INum) -> S3Result<Vec<u8>> {
         Ok(vec![])
     }
 
-    async fn get_partial_data(&self, _: &str, _: usize, _: usize) -> S3Result<Vec<u8>> {
+    async fn get_partial_data(&self, _: INum, _: usize, _: usize) -> S3Result<Vec<u8>> {
         Ok(vec![])
     }
 
-    async fn put_data(&self, _: &str, _: &[u8], _: usize, _: usize) -> S3Result<()> {
+    async fn put_data(&self, _: INum, _: &[u8], _: usize, _: usize) -> S3Result<()> {
         Ok(())
     }
 
-    async fn delete_data(&self, _: &str) -> S3Result<()> {
+    async fn delete_data(&self, _: INum) -> S3Result<()> {
         Ok(())
     }
 
-    async fn put_data_vec(&self, _: &str, _: Vec<IoMemBlock>) -> S3Result<()> {
-        Ok(())
-    }
-
-    async fn rename(&self, _: &str, _: &str) -> S3Result<()> {
+    async fn put_data_vec(&self, _: INum, _: Vec<IoMemBlock>) -> S3Result<()> {
         Ok(())
     }
 }

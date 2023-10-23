@@ -11,8 +11,6 @@ pub mod kv_engine;
 /// fs metadata module
 mod metadata;
 mod node;
-/// Persist module
-mod persist;
 /// fs metadata with S3 backend module
 mod s3_metadata;
 mod s3_node;
@@ -38,9 +36,7 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, error, info, warn};
 
 use self::kv_engine::KVEngineType;
-use super::fuse::file_system::FsController;
-use crate::async_fuse::fuse::file_system;
-use crate::async_fuse::fuse::file_system::{FileSystem, FsAsyncTaskController};
+use crate::async_fuse::fuse::file_system::FileSystem;
 use crate::async_fuse::fuse::fuse_reply::{
     AsIoVec, ReplyAttr, ReplyBMap, ReplyCreate, ReplyData, ReplyDirectory, ReplyEmpty, ReplyEntry,
     ReplyLock, ReplyOpen, ReplyStatFs, ReplyWrite, ReplyXAttr,
@@ -180,14 +176,13 @@ impl<M: MetaData + Send + Sync + 'static> MemFs<M> {
         kv_engine: Arc<KVEngineType>,
         node_id: &str,
         volume_info: &str,
-    ) -> anyhow::Result<(Self, FsController)> {
+    ) -> anyhow::Result<Self> {
         // print the args
         debug!(
             "mount_point: ${}$, capacity: ${}$, ip: ${}$, port: ${}$, node_id: {}, volume_info: {}",
             mount_point, capacity, ip, port, node_id, volume_info
         );
-        let (sender, receiver) = file_system::new_fs_async_result_chan();
-        let (metadata, server, async_task_join_handles) = M::new(
+        let (metadata, server) = M::new(
             mount_point,
             capacity,
             ip,
@@ -196,13 +191,9 @@ impl<M: MetaData + Send + Sync + 'static> MemFs<M> {
             kv_engine,
             node_id,
             volume_info,
-            sender,
         )
         .await;
-        Ok((
-            Self { metadata, server },
-            FsController::new(receiver, async_task_join_handles),
-        ))
+        Ok(Self { metadata, server })
     }
 
     /// Read content check
@@ -1114,14 +1105,6 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
     /// Set fuse fd into `FileSystem`
     async fn set_fuse_fd(&self, fuse_fd: RawFd) {
         self.metadata.set_fuse_fd(fuse_fd).await;
-    }
-}
-
-#[async_trait]
-impl<M: MetaData + Send + Sync + 'static> FsAsyncTaskController for MemFs<M> {
-    /// Stop all async tasks
-    fn stop_all_async_tasks(&self) {
-        self.metadata.stop_all_async_tasks();
     }
 }
 

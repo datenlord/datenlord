@@ -4,14 +4,12 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use nix::sys::stat::SFlag;
-use tokio::task::JoinHandle;
 
 use super::cache::IoMemBlock;
 use super::dist::server::CacheServer;
 use super::kv_engine::KVEngineType;
 use super::node::Node;
 use super::{CreateParam, RenameParam, SetAttrParam};
-use crate::async_fuse::fuse::file_system::FsAsyncResultSender;
 use crate::async_fuse::fuse::fuse_reply::{ReplyDirectory, StatFsParam};
 use crate::async_fuse::fuse::protocol::{FuseAttr, INum};
 use crate::common::error::DatenLordResult;
@@ -43,8 +41,7 @@ pub trait MetaData {
         kv_engine: Arc<KVEngineType>,
         node_id: &str,
         volume_info: &str,
-        fs_async_sender: FsAsyncResultSender,
-    ) -> (Arc<Self>, Option<CacheServer>, Vec<JoinHandle<()>>);
+    ) -> (Arc<Self>, Option<CacheServer>);
 
     /// Helper function to create node
     async fn create_node_helper(
@@ -101,9 +98,6 @@ pub trait MetaData {
 
     /// Set fuse fd into `MetaData`
     async fn set_fuse_fd(&self, fuse_fd: RawFd);
-
-    /// Stop all async tasks
-    fn stop_all_async_tasks(&self);
 
     /// Set Node's attribute
     async fn setattr_helper(

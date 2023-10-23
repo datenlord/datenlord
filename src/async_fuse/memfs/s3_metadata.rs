@@ -15,7 +15,6 @@ use nix::fcntl::OFlag;
 use nix::sys::stat::SFlag;
 use parking_lot::RwLock as SyncRwLock;
 use tokio::sync::Mutex;
-use tokio::task::JoinHandle;
 use tracing::{debug, error, instrument, warn};
 
 use super::cache::{GlobalCache, IoMemBlock};
@@ -27,18 +26,16 @@ use super::id_alloc_used::INumAllocator;
 use super::kv_engine::{KVEngine, KVEngineType, KeyType, ValueType};
 use super::metadata::{MetaData, ReqContext};
 use super::node::Node;
-use super::persist::{PersistDirContent, PersistHandle, PersistTask};
 use super::s3_node::S3Node;
 use super::s3_wrapper::S3BackEnd;
-use super::{serial, CreateParam, RenameParam, SetAttrParam};
-use crate::async_fuse::fuse::file_system::FsAsyncResultSender;
+use super::{CreateParam, RenameParam, SetAttrParam};
 #[cfg(feature = "abi-7-18")]
 use crate::async_fuse::fuse::fuse_reply::FuseDeleteNotification;
 use crate::async_fuse::fuse::fuse_reply::{ReplyDirectory, StatFsParam};
 use crate::async_fuse::fuse::protocol::{FuseAttr, INum, FUSE_ROOT_ID};
 use crate::async_fuse::memfs::check_name_length;
 use crate::async_fuse::util::build_error_result_from_errno;
-use crate::common::error::DatenLordResult;
+use crate::common::error::{DatenLordError, DatenLordResult};
 use crate::common::etcd_delegate::EtcdDelegate; // conflict with tokio RwLock
 
 /// The time-to-live seconds of FUSE attributes
@@ -64,8 +61,6 @@ pub struct S3MetaData<S: S3BackEnd + Send + Sync + 'static> {
     pub(crate) volume_info: Arc<str>,
     /// Fuse fd
     fuse_fd: Mutex<RawFd>,
-    /// Persist handle
-    persist_handle: PersistHandle,
     /// KV engine
     pub(crate) kv_engine: Arc<KVEngineType>,
     /// Inum allocator
@@ -434,8 +429,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         kv_engine: Arc<KVEngineType>,
         node_id: &str,
         volume_info: &str,
-        fs_async_sender: FsAsyncResultSender,
-    ) -> (Arc<Self>, Option<CacheServer>, Vec<JoinHandle<()>>) {
+    ) -> (Arc<Self>, Option<CacheServer>) {
         let (bucket_name, endpoint, access_key, secret_key) = parse_s3_info(s3_info);
         let s3_backend = Arc::new(
             match S::new_backend(bucket_name, endpoint, access_key, secret_key).await {
@@ -443,10 +437,6 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
                 Err(e) => panic!("{e:?}"),
             },
         );
-        let mut async_tasks = vec![];
-        let (persist_handle, persist_join_handle) =
-            PersistTask::spawn(Arc::clone(&s3_backend), fs_async_sender);
-        async_tasks.push(persist_join_handle);
         let data_cache = Arc::new(GlobalCache::new_dist_with_bz_and_capacity(
             10_485_760, // 10 * 1024 * 1024
             capacity,
@@ -461,7 +451,6 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
             node_id: Arc::<str>::from(node_id.to_owned()),
             volume_info: Arc::<str>::from(volume_info.to_owned()),
             fuse_fd: Mutex::new(-1_i32),
-            persist_handle,
             inum_allocator: INumAllocator::new(Arc::clone(&kv_engine)),
             kv_engine,
         });
@@ -480,7 +469,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         meta.set_node_to_kv_engine(FUSE_ROOT_ID, root_inode).await;
         // 2. full_path -> FUSE_ROOT_ID
         meta.set_inum_to_kv_engine(&full_path, FUSE_ROOT_ID).await;
-        (meta, Some(server), async_tasks)
+        (meta, Some(server))
     }
 
     /// Set fuse fd into `MetaData`
@@ -630,17 +619,6 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
             parent_name,
             new_node.get_lookup_count(),
         );
-        let parent_full_path = parent_node.full_path().to_owned();
-
-        // After sync to other，we should do async persist
-        self.persist_handle.mark_dirty(
-            parent,
-            PersistDirContent::new_from_cache(
-                parent_full_path,
-                parent_node.get_dir_data(),
-                serial::file_attr_to_serial(&parent_node.get_attr()),
-            ),
-        );
 
         self.set_node_to_kv_engine(new_ino, new_node).await;
         self.set_node_to_kv_engine(parent, parent_node).await;
@@ -667,7 +645,6 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         );
         self.remove_node_local(context, parent, node_name, node_type, false)
             .await?;
-        self.load_parent_from_cache_and_mark_dirty(parent).await;
         Ok(())
     }
 
@@ -727,13 +704,11 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
                     });
                 let parent_name = parent_node.get_name().to_owned();
                 let child_node = match child_type {
-                    SFlag::S_IFDIR => parent_node
-                        .open_child_dir(child_name, child_attr)
-                        .await
-                        .context(format!(
-                            "lookup_helper() failed to open sub-directory name={child_name:?} \
-                            under parent directory of ino={parent} and name={parent_name:?}",
-                        ))?,
+                    SFlag::S_IFDIR =>
+                            self.get_node_from_kv_engine(child_ino).await.ok_or_else(|| -> DatenLordError {
+                                anyhow::anyhow!("lookup_helper() failed to open sub-directory name={child_name:?} under parent directory of ino={parent}, name={parent_name:?} and ino={child_ino}").into()
+                            })?
+                        ,
                     SFlag::S_IFREG => {
                         let oflags = OFlag::O_RDWR;
                         parent_node.open_child_file(
@@ -785,11 +760,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         context: ReqContext,
         param: RenameParam,
     ) -> DatenLordResult<()> {
-        let old = param.old_parent;
-        let new = param.new_parent;
         self.rename_exchange_local(context, &param).await?;
-        self.load_parent_from_cache_and_mark_dirty(old).await;
-        self.load_parent_from_cache_and_mark_dirty(new).await;
         Ok(())
     }
 
@@ -800,12 +771,8 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         context: ReqContext,
         param: RenameParam,
     ) -> DatenLordResult<()> {
-        let old = param.old_parent;
-        let new = param.new_parent;
         self.rename_may_replace_local(context, &param, false)
             .await?;
-        self.load_parent_from_cache_and_mark_dirty(old).await;
-        self.load_parent_from_cache_and_mark_dirty(new).await;
         Ok(())
     }
 
@@ -869,11 +836,6 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         };
         self.invalidate_remote(ino, offset, data_len).await;
         result
-    }
-
-    /// Stop all async tasks
-    fn stop_all_async_tasks(&self) {
-        self.persist_handle.system_end();
     }
 }
 
@@ -965,29 +927,6 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
                         error={e:?}"
                 );
             });
-    }
-
-    /// Get parent content from cache and do the persist operation.
-    /// This function will try to get the lock, so make sure there's no
-    /// deadlock.
-    async fn load_parent_from_cache_and_mark_dirty(&self, parent: INum) {
-        let p = self
-            .get_node_from_kv_engine(parent)
-            .await
-            .unwrap_or_else(|| {
-                panic!(
-                    "load_parent_from_cache_and_mark_dirty() found fs is inconsistent, \
-                    parent of ino={parent} should be in cache",
-                );
-            });
-        self.persist_handle.mark_dirty(
-            parent,
-            PersistDirContent::new_from_cache(
-                p.full_path().to_owned(),
-                p.get_dir_data(),
-                serial::file_attr_to_serial(&p.get_attr()),
-            ),
-        );
     }
 
     /// The pre-check before create node
@@ -1297,8 +1236,6 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
 
             child_node.set_parent_ino(parent);
             let new_path = child_node.push_child_for_rename(&mut node_pool, parent_path);
-
-            child_node.rename_in_s3_backend(new_path.clone()).await;
 
             // remove the old path2inum ,and add the new path2inum
 

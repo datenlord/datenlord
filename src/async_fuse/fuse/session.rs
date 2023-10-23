@@ -16,7 +16,7 @@ use nix::unistd;
 use tracing::{debug, error, info};
 
 use super::context::ProtoVersion;
-use super::file_system::{FileSystem, FsAsyncTaskController, FsController};
+use super::file_system::FileSystem;
 use super::fuse_reply::{
     ReplyAttr, ReplyBMap, ReplyCreate, ReplyData, ReplyDirectory, ReplyEmpty, ReplyEntry,
     ReplyInit, ReplyLock, ReplyOpen, ReplyStatFs, ReplyWrite, ReplyXAttr,
@@ -35,7 +35,6 @@ use super::protocol::{
 use crate::async_fuse::memfs::{
     CreateParam, FileLockParam, MemFs, MetaData, RenameParam, SetAttrParam,
 };
-use crate::common::error::DatenLordError;
 
 /// We generally support async reads
 #[cfg(target_os = "linux")]
@@ -75,10 +74,7 @@ const MAX_BACKGROUND: u16 = 10; // TODO: set to larger value when release
 
 /// FUSE session
 #[allow(missing_debug_implementations)]
-pub struct Session<
-    F: FileSystem + Send + Sync + 'static,
-    A: FsAsyncTaskController + Send + Sync + 'static,
-> {
+pub struct Session<F: FileSystem + Send + Sync + 'static> {
     /// FUSE device fd
     fuse_fd: Arc<FuseFd>,
     /// Kernel FUSE protocol version
@@ -87,12 +83,8 @@ pub struct Session<
     mount_path: PathBuf,
     /// The underlying FUSE file system
     filesystem: Arc<F>,
-    /// The underlying FUSE file system
-    fs_async_task_controller: Arc<A>,
     /// All sub-tasks
     tasks: Vec<tokio::task::JoinHandle<()>>,
-    /// Some state held by session to communicate with and control the fs
-    fs_controller: FsController,
 }
 
 /// FUSE device fd
@@ -105,18 +97,13 @@ impl Drop for FuseFd {
     }
 }
 
-impl<F: FileSystem + Send + Sync + 'static, A: FsAsyncTaskController + Send + Sync + 'static> Drop
-    for Session<F, A>
-{
+impl<F: FileSystem + Send + Sync + 'static> Drop for Session<F> {
     fn drop(&mut self) {
         futures::executor::block_on(async {
             // join fuse request handling tasks.
             for join_handle in &self.tasks {
                 join_handle.abort();
             }
-            // stop and join async sub tasks
-            self.fs_async_task_controller.stop_all_async_tasks();
-            self.fs_controller.join_all_async_tasks().await;
             let mount_path = &self.mount_path;
             let res = mount::umount(mount_path).await;
             match res {
@@ -135,8 +122,7 @@ impl<F: FileSystem + Send + Sync + 'static, A: FsAsyncTaskController + Send + Sy
 pub async fn new_session_of_memfs<M>(
     mount_path: &Path,
     fs: MemFs<M>,
-    fs_controller: FsController,
-) -> anyhow::Result<Session<MemFs<M>, MemFs<M>>>
+) -> anyhow::Result<Session<MemFs<M>>>
 where
     M: MetaData + Send + Sync + 'static,
 {
@@ -158,15 +144,11 @@ where
         proto_version: AtomicCell::new(ProtoVersion::UNSPECIFIED),
         mount_path: mount_path.to_owned(),
         tasks: Vec::new(),
-        filesystem: fsarc.clone(),
-        fs_controller,
-        fs_async_task_controller: fsarc,
+        filesystem: fsarc,
     })
 }
 
-impl<F: FileSystem + Send + Sync + 'static, A: FsAsyncTaskController + Send + Sync + 'static>
-    Session<F, A>
-{
+impl<F: FileSystem + Send + Sync + 'static> Session<F> {
     /// Get FUSE device fd
     #[inline]
     pub fn dev_fd(&self) -> RawFd {
@@ -253,12 +235,6 @@ impl<F: FileSystem + Send + Sync + 'static, A: FsAsyncTaskController + Send + Sy
 
                     true
                 };
-            let handle_fs_async_result = |res: Result<(), DatenLordError>| match res {
-                Ok(..) => {}
-                Err(e) => {
-                    panic!("async task has error occurred, the error is: {e}");
-                }
-            };
 
             // Select read_fuse_task and async Result
             tokio::select! {
@@ -272,9 +248,6 @@ impl<F: FileSystem + Send + Sync + 'static, A: FsAsyncTaskController + Send + Sy
                     }
                     // Task is consumed, reset it to none, and next loop will prepare a new one.
                     read_fuse_task=None;
-                }
-                res = self.fs_controller.recv_async_task_res() => {
-                    handle_fs_async_result(res);
                 }
             }
         }
