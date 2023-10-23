@@ -9,7 +9,7 @@ use nix::ioctl_read;
 use nix::sys::stat::Mode;
 use nix::unistd::close;
 
-use super::file_system::{FileSystem, FsAsyncTaskController};
+use super::file_system::FileSystem;
 use super::session::Session;
 
 /// FUSE channel
@@ -22,11 +22,8 @@ pub struct Channel {
 impl Channel {
     /// Create FUSE channel
     #[allow(dead_code)]
-    pub async fn new<
-        F: FileSystem + Send + Sync + 'static,
-        A: FsAsyncTaskController + Send + Sync + 'static,
-    >(
-        session: &Session<F, A>,
+    pub async fn new<F: FileSystem + Send + Sync + 'static>(
+        session: &Session<F>,
     ) -> anyhow::Result<Self> {
         let devname = "/dev/fuse";
         let clonefd = tokio::task::spawn_blocking(move || {

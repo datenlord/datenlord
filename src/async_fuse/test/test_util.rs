@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use tracing::{debug, info}; // warn, error
 
-use crate::async_fuse::fuse::{file_system, mount, session};
+use crate::async_fuse::fuse::{mount, session};
 use crate::async_fuse::memfs;
 use crate::async_fuse::memfs::kv_engine::{KVEngine, KVEngineType};
 use crate::async_fuse::memfs::s3_wrapper::DoNothingImpl;
@@ -54,10 +54,7 @@ pub async fn setup(mount_dir: &Path, is_s3: bool) -> anyhow::Result<tokio::task:
             let etcd_delegate = EtcdDelegate::new(vec![TEST_ETCD_ENDPOINT.to_owned()]).await?;
             let kv_engine = Arc::new(KVEngineType::new(vec![TEST_ETCD_ENDPOINT.to_owned()]).await?);
             if is_s3 {
-                let (fs, fs_ctrl): (
-                    memfs::MemFs<memfs::S3MetaData<DoNothingImpl>>,
-                    file_system::FsController,
-                ) = memfs::MemFs::new(
+                let fs: memfs::MemFs<memfs::S3MetaData<DoNothingImpl>> = memfs::MemFs::new(
                     TEST_VOLUME_INFO,
                     CACHE_DEFAULT_CAPACITY,
                     TEST_NODE_IP,
@@ -68,13 +65,10 @@ pub async fn setup(mount_dir: &Path, is_s3: bool) -> anyhow::Result<tokio::task:
                     TEST_VOLUME_INFO,
                 )
                 .await?;
-                let ss = session::new_session_of_memfs(mount_point, fs, fs_ctrl).await?;
+                let ss = session::new_session_of_memfs(mount_point, fs).await?;
                 ss.run().await?;
             } else {
-                let (fs, fs_ctrl): (
-                    memfs::MemFs<memfs::S3MetaData<DoNothingImpl>>,
-                    file_system::FsController,
-                ) = memfs::MemFs::new(
+                let fs: memfs::MemFs<memfs::S3MetaData<DoNothingImpl>> = memfs::MemFs::new(
                     mount_point
                         .as_os_str()
                         .to_str()
@@ -88,7 +82,7 @@ pub async fn setup(mount_dir: &Path, is_s3: bool) -> anyhow::Result<tokio::task:
                     TEST_VOLUME_INFO,
                 )
                 .await?;
-                let ss = session::new_session_of_memfs(mount_point, fs, fs_ctrl).await?;
+                let ss = session::new_session_of_memfs(mount_point, fs).await?;
                 ss.run().await?;
             };
 

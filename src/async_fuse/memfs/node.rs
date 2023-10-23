@@ -78,12 +78,6 @@ pub trait Node: Sized {
         child_symlink_name: &str,
         child_attr: Arc<RwLock<FileAttr>>,
     ) -> DatenLordResult<Self>;
-    /// Open sub-directory in a directory
-    async fn open_child_dir(
-        &self,
-        child_dir_name: &str,
-        child_attr: Arc<RwLock<FileAttr>>,
-    ) -> DatenLordResult<Self>;
     /// Create sub-directory in a directory
     async fn create_child_dir(
         &mut self,

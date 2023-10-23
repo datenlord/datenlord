@@ -29,9 +29,9 @@ use super::s3_wrapper::S3BackEnd;
 use super::serial::{
     dir_entry_to_serial, file_attr_to_serial, serial_to_file_attr, SerialNode, SerialNodeData,
 };
-use super::{persist, SetAttrParam};
+use super::SetAttrParam;
 use crate::async_fuse::fuse::fuse_reply::{AsIoVec, StatFsParam};
-use crate::async_fuse::fuse::protocol::INum;
+use crate::async_fuse::fuse::protocol::{INum, FUSE_ROOT_ID};
 use crate::async_fuse::metrics;
 use crate::async_fuse::util::build_error_result_from_errno;
 use crate::common::error::{DatenLordError, DatenLordResult};
@@ -274,11 +274,6 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
         self.full_path.as_str()
     }
 
-    /// Set fullpath of this node
-    fn set_full_path(&mut self, full_path: String) {
-        self.full_path = full_path;
-    }
-
     #[allow(clippy::unused_self)]
     /// Get new fd
     fn new_fd(&self) -> u32 {
@@ -323,30 +318,6 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
                 format!("{}{}", parent_path, self.get_name())
             }
         }
-    }
-
-    /// Flush the data of this node to s3 backend if it is a regular file
-    pub(crate) async fn rename_in_s3_backend(&mut self, new_path: String) {
-        if let S3NodeData::RegFile(_) = self.data {
-            // TODO: Should not flush data, remove this once the "real" cache rename is
-            // available
-            if let Err(e) = self.flush_all_data().await {
-                panic!(
-                    "failed to flush all data of node {:?}, error is {:?}",
-                    self.get_full_path(),
-                    e
-                );
-            }
-        }
-
-        if let Err(e) = self.s3_backend.rename(&self.full_path, &new_path).await {
-            panic!(
-                "failed to rename from {} to {new_path:?} in s3 backend, error is {e:?}",
-                self.full_path,
-            );
-        }
-
-        self.set_full_path(new_path);
     }
 
     /// Update mtime and ctime to now
@@ -427,58 +398,34 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
         s3_backend: Arc<S>,
         meta: Arc<S3MetaData<S>>,
     ) -> DatenLordResult<Self> {
-        match persist::read_persisted_dir(&s3_backend, "/".to_owned()).await {
-            Err(e) => {
-                // todo: handle different type of error, key not exist, net err, etc.
-                debug!("read persit dir error {e}");
-                let now = SystemTime::now();
-                let attr = Arc::new(RwLock::new(FileAttr {
-                    ino: root_ino,
-                    atime: now,
-                    mtime: now,
-                    ctime: now,
-                    crtime: now,
-                    kind: SFlag::S_IFDIR,
-                    uid: unistd::getuid().as_raw(),
-                    gid: unistd::getgid().as_raw(),
-                    ..FileAttr::default()
-                }));
+        if let Some(root_node) = meta.get_node_from_kv_engine(FUSE_ROOT_ID).await {
+            Ok(root_node)
+        } else {
+            let now = SystemTime::now();
+            let attr = Arc::new(RwLock::new(FileAttr {
+                ino: root_ino,
+                atime: now,
+                mtime: now,
+                ctime: now,
+                crtime: now,
+                kind: SFlag::S_IFDIR,
+                uid: unistd::getuid().as_raw(),
+                gid: unistd::getgid().as_raw(),
+                ..FileAttr::default()
+            }));
 
-                let root_node = Self::new(
-                    root_ino,
-                    name,
-                    "/".to_owned(),
-                    attr,
-                    S3NodeData::Directory(BTreeMap::new()),
-                    s3_backend,
-                    &meta.kv_engine,
-                    &meta.node_id,
-                    &meta.volume_info,
-                );
-
-                Ok(root_node)
-            }
-            Ok(data) => match data.try_get_root_attr() {
-                Ok(attr) => {
-                    let root_node = Self::new(
-                        root_ino,
-                        name,
-                        "/".to_owned(),
-                        Arc::new(RwLock::new(attr)),
-                        data.new_s3_node_data_dir(),
-                        s3_backend,
-                        &meta.kv_engine,
-                        &meta.node_id,
-                        &meta.volume_info,
-                    );
-                    debug!("Success to load root dir.");
-                    Ok(root_node)
-                }
-                Err(e) => {
-                    tracing::error!("Root node persist lack of attr info {e}.");
-                    Err(DatenLordError::from(e))
-                }
-            },
+            let root_node = Self::new(
+                root_ino,
+                name,
+                "/".to_owned(),
+                attr,
+                S3NodeData::Directory(BTreeMap::new()),
+                s3_backend,
+                &meta.kv_engine,
+                &meta.node_id,
+                &meta.volume_info,
+            );
+            Ok(root_node)
         }
     }
 
@@ -511,7 +458,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
         let put_result = self
             .s3_backend
             .put_data_vec(
-                &self.full_path,
+                self.get_ino(),
                 data_cache.get_file_cache(self.get_ino(), 0, size.cast()),
             )
             .await;
@@ -746,12 +693,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
             .unwrap_or_else(|| panic!("failed to convert {target_path:?} to utf8 string"));
         if let Err(e) = self
             .s3_backend
-            .put_data(
-                absolute_path.as_str(),
-                target_str.as_bytes(),
-                0,
-                target_str.len(),
-            )
+            .put_data(inum, target_str.as_bytes(), 0, target_str.len())
             .await
         {
             panic!("failed to put data of file {absolute_path:?} to s3 backend, error is {e:?}");
@@ -774,7 +716,6 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
         let target_path = {
             // insert new entry to parent directory
             let entry = DirEntry::new(
-                // child_attr.ino,
                 child_symlink_name.to_owned(),
                 // SFlag::S_IFLNK,
                 Arc::clone(&child_attr),
@@ -806,18 +747,12 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
         child_attr: Arc<RwLock<FileAttr>>,
     ) -> DatenLordResult<Self> {
         let absolute_path = self.absolute_path_with_child(child_symlink_name);
+        let inum = child_attr.read().ino;
 
         let target_path = PathBuf::from(
-            String::from_utf8(
-                self.s3_backend
-                    .get_data(&absolute_path)
-                    .await
-                    .unwrap_or_else(|e| {
-                        panic!(
-                            "failed to get data of {absolute_path:?} from s3 backend, error is {e:?}"
-                        )
-                    }),
-            )
+            String::from_utf8(self.s3_backend.get_data(inum).await.unwrap_or_else(|e| {
+                panic!("failed to get data of {absolute_path:?} from s3 backend, error is {e:?}")
+            }))
             .unwrap_or_else(|e| panic!("failed to convert to utf string, error is {e:?}")),
         );
 
@@ -832,37 +767,6 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
             &self.k8s_node_id,
             &self.k8s_volume_info,
         ))
-    }
-
-    /// Open sub-directory in a directory
-    async fn open_child_dir(
-        &self,
-        child_dir_name: &str,
-        child_attr: Arc<RwLock<FileAttr>>,
-    ) -> DatenLordResult<Self> {
-        // lookup count and open count are increased to 1 by creation
-        let full_path = format!("{}{}/", self.full_path, child_dir_name);
-        let dirdata = match persist::read_persisted_dir(&self.s3_backend, full_path.clone()).await {
-            Ok(dir) => dir.new_s3_node_data_dir(),
-            Err(e) => {
-                debug!("failed to get dir data from s3, path:{full_path}, err:{e}");
-                // dir data not persisted init with empty
-                S3NodeData::Directory(BTreeMap::new())
-            }
-        };
-        let child_node = Self::new(
-            self.get_ino(),
-            child_dir_name,
-            full_path,
-            child_attr,
-            dirdata,
-            Arc::clone(&self.s3_backend),
-            &self.kv_engine,
-            &self.k8s_node_id,
-            &self.k8s_volume_info,
-        );
-
-        Ok(child_node)
     }
 
     /// Create sub-directory in a directory
@@ -891,7 +795,6 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
             nlink: 1,
             ..FileAttr::now()
         }));
-        debug_assert_eq!(SFlag::S_IFDIR, child_attr.read().kind);
 
         // insert new entry to parent directory
         let entry = DirEntry::new(child_dir_name.to_owned(), Arc::clone(&child_attr));
@@ -958,11 +861,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
             "open_child_file_helper() cannot create duplicated file name={child_file_name:?}"
         );
         debug_assert!(oflags.contains(OFlag::O_CREAT));
-        if let Err(e) = self
-            .s3_backend
-            .put_data(absolute_path.as_str(), b"", 0, 0)
-            .await
-        {
+        if let Err(e) = self.s3_backend.put_data(inum, b"", 0, 0).await {
             panic!("failed to put data of file {absolute_path:?} to s3 backend, error is {e:?}");
         }
 
@@ -1047,7 +946,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
                     None => {
                         match self
                             .s3_backend
-                            .get_partial_data(&self.full_path, aligned_offset, new_len)
+                            .get_partial_data(self.get_ino(), aligned_offset, new_len)
                             .await
                         {
                             Ok(a) => a,
@@ -1122,14 +1021,11 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
                 self.get_ino(),
             );
         });
+
         // delete from disk and close the handler
         match removed_entry.entry_type() {
             SFlag::S_IFDIR | SFlag::S_IFREG | SFlag::S_IFLNK => {
-                if let Err(e) = self
-                    .s3_backend
-                    .delete_data(&self.absolute_path_with_child(child_name))
-                    .await
-                {
+                if let Err(e) = self.s3_backend.delete_data(removed_entry.ino()).await {
                     panic!(
                         "failed to delete data of {:?} from s3 backend, error is {:?}",
                         self.absolute_path_with_child(child_name),

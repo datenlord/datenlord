@@ -4,7 +4,6 @@ use std::sync::Arc;
 
 use memfs::s3_wrapper::{DoNothingImpl, S3BackEndImpl};
 
-use self::fuse::file_system::FsController;
 use self::memfs::kv_engine::KVEngineType;
 use crate::async_fuse::fuse::session;
 use crate::common::etcd_delegate::EtcdDelegate;
@@ -37,10 +36,7 @@ pub async fn start_async_fuse(
     let mount_point = std::path::Path::new(&args.mount_dir);
     match args.volume_type {
         VolumeType::S3 => {
-            let (fs, fs_controller): (
-                memfs::MemFs<memfs::S3MetaData<S3BackEndImpl>>,
-                FsController,
-            ) = memfs::MemFs::new(
+            let fs: memfs::MemFs<memfs::S3MetaData<S3BackEndImpl>> = memfs::MemFs::new(
                 &args.volume_info,
                 args.cache_capacity,
                 &args.ip_address.to_string(),
@@ -52,14 +48,11 @@ pub async fn start_async_fuse(
             )
             .await?;
 
-            let ss = session::new_session_of_memfs(mount_point, fs, fs_controller).await?;
+            let ss = session::new_session_of_memfs(mount_point, fs).await?;
             ss.run().await?;
         }
         VolumeType::None => {
-            let (fs, fs_controller): (
-                memfs::MemFs<memfs::S3MetaData<DoNothingImpl>>,
-                FsController,
-            ) = memfs::MemFs::new(
+            let fs: memfs::MemFs<memfs::S3MetaData<DoNothingImpl>> = memfs::MemFs::new(
                 &args.volume_info,
                 args.cache_capacity,
                 &args.ip_address.to_string(),
@@ -71,7 +64,7 @@ pub async fn start_async_fuse(
             )
             .await?;
 
-            let ss = session::new_session_of_memfs(mount_point, fs, fs_controller).await?;
+            let ss = session::new_session_of_memfs(mount_point, fs).await?;
             ss.run().await?;
         }
     }
