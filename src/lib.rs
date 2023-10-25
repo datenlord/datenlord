@@ -36,6 +36,7 @@
     clippy::module_name_repetitions, // repeation of module name in a struct name is not big deal
     clippy::multiple_crate_versions, // multi-version dependency crates is not able to fix
     clippy::panic, // allow debug_assert, panic in production code
+    clippy::unreachable,  // Use `unreachable!` instead of `panic!` when impossible cases occurs
     // clippy::panic_in_result_fn,
     clippy::separated_literal_suffix, // conflict with unseparated_literal_suffix
     clippy::shadow_unrelated, //it’s a common pattern in Rust code

@@ -2,9 +2,26 @@
 use std::path::PathBuf;
 
 use grpcio::RpcStatusCode;
+use nix::sys::stat::SFlag;
 use thiserror::Error;
 
 use super::async_fuse_error::KVEngineError;
+
+/// Get function name inside a function.
+#[macro_export]
+macro_rules! function_name {
+    () => {{
+        use clippy_utilities::OverflowArithmetic;
+        fn f() {}
+        fn type_name_of<T>(_: T) -> &'static str {
+            std::any::type_name::<T>()
+        }
+        let name = type_name_of(f);
+        // skip the suffix `::f`
+        name.get(..name.len().overflow_sub(3))
+            .unwrap_or_else(|| unreachable!("Suffix `::f` must exist."))
+    }};
+}
 
 /// `DatenLord` Result type
 pub type DatenLordResult<T> = Result<T, DatenLordError>;
@@ -227,6 +244,20 @@ pub enum DatenLordError {
         /// Context of the error
         context: Vec<String>,
     },
+    /// FS is inconsistent, as some mentioned nodes are not in the cache.
+    #[error("FS is inconsistent, context is {:#?}.", .context)]
+    InconsistentFS {
+        /// Context of the error
+        context: Vec<String>,
+    },
+    /// An i-node type is not supported by the executing operation.
+    #[error("Unsuported i-node type={:?}, context id {:#?}.", .node_type, .context)]
+    UnsupportedINodeType {
+        /// Type of the node
+        node_type: SFlag,
+        /// Context of the error
+        context: Vec<String>,
+    },
     // /// Error when doing s3 operation.
     // #[error("S3 error: {0}")]
     // S3Error(s3_wrapper::S3Error),
@@ -317,7 +348,9 @@ impl DatenLordError {
                 JoinErr,
                 TransactionRetryLimitExceededErr,
                 InternalErr,
-                Unimplemented
+                Unimplemented,
+                InconsistentFS,
+                UnsupportedINodeType
             ]
         );
         self
@@ -378,7 +411,9 @@ impl From<DatenLordError> for RpcStatusCode {
             | DatenLordError::TransactionRetryLimitExceededErr { .. }
             | DatenLordError::InternalErr { .. }
             | DatenLordError::KVEngineErr { .. }
-            | DatenLordError::JoinErr { .. } => Self::INTERNAL,
+            | DatenLordError::JoinErr { .. }
+            | DatenLordError::InconsistentFS { .. }
+            | DatenLordError::UnsupportedINodeType { .. } => Self::INTERNAL,
             DatenLordError::GrpcioErr { source, .. } => match source {
                 grpcio::Error::RpcFailure(ref s) => s.code(),
                 grpcio::Error::Codec(..)
