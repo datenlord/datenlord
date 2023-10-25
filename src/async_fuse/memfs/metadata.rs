@@ -24,6 +24,44 @@ pub struct ReqContext {
     pub group_id: u32,
 }
 
+
+pub(crate) mod error {
+    //! A module containing helper functions to build errors.
+
+    use super::{INum, SFlag};
+    use crate::common::error::DatenLordError;
+
+    /// A helper function to build [`DatenLordError::InconsistentFS`] with default context.
+    pub(crate) fn build_inconsistent_fs(ino: INum, fn_name: &str) -> DatenLordError {
+        DatenLordError::InconsistentFS {
+            context: vec![format!(
+                "{ino}() found fs is inconsistent, the inode ino={fn_name} is not in cache.",
+            )],
+        }
+    }
+
+    /// A helper function to build [`DatenLordError::InconsistentFS`] with custom context.
+    pub(crate) fn build_inconsistent_fs_with_context(
+        fn_name: &str,
+        context: &str,
+    ) -> DatenLordError {
+        DatenLordError::InconsistentFS {
+            context: vec![format!("{fn_name}() found fs is inconsistent: {context}",)],
+        }
+    }
+
+    /// A helper function to build [`DatenLordError::UnsupportedINodeType`].
+    pub(crate) fn build_unsupported_inode_type(
+        node_type: SFlag,
+        context: String,
+    ) -> DatenLordError {
+        DatenLordError::UnsupportedINodeType {
+            node_type,
+            context: vec![context],
+        }
+    }
+}
+
 /// MetaData of fs
 #[async_trait]
 pub trait MetaData {
