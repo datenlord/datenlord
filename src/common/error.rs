@@ -251,7 +251,7 @@ pub enum DatenLordError {
         context: Vec<String>,
     },
     /// An i-node type is not supported by the executing operation.
-    #[error("Unsuported i-node type={:?}, context id {:#?}.", .node_type, .context)]
+    #[error("Unsupported i-node type={:?}, context id {:#?}.", .node_type, .context)]
     UnsupportedINodeType {
         /// Type of the node
         node_type: SFlag,

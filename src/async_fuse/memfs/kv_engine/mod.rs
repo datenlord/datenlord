@@ -51,7 +51,7 @@ impl ValueType {
     pub async fn into_s3_node<S: S3BackEnd + Send + Sync + 'static>(
         self,
         meta: &S3MetaData<S>,
-    ) -> S3Node<S> {
+    ) -> DatenLordResult<S3Node<S>> {
         match self {
             ValueType::Node(node) => S3Node::from_serial_node(node, meta).await,
             _ => {

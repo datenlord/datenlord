@@ -192,7 +192,7 @@ impl<M: MetaData + Send + Sync + 'static> MemFs<M> {
             node_id,
             volume_info,
         )
-        .await;
+        .await?;
         Ok(Self { metadata, server })
     }
 
@@ -328,7 +328,10 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
     /// inodes will receive a forget message.
     async fn forget(&self, req: &Request<'_>, nlookup: u64) {
         let ino = req.nodeid();
-        self.metadata.forget(ino, nlookup).await;
+        self.metadata
+            .forget(ino, nlookup)
+            .await
+            .unwrap_or_else(|e| panic!("{e}"));
     }
 
     /// Set file attributes.
@@ -691,7 +694,10 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         // called multiple times for an open file, self must not really
         // close the file. This is important if used on a network
         // filesystem like NFS which flush the data/metadata on close()
-        self.metadata.flush(ino, fh).await;
+        self.metadata
+            .flush(ino, fh)
+            .await
+            .unwrap_or_else(|e| panic!("{e}"));
         reply.ok().await
     }
 
@@ -720,7 +726,8 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         );
         self.metadata
             .release(ino, fh, flags, lock_owner, flush)
-            .await;
+            .await
+            .unwrap_or_else(|e| panic!("{e}"));
         reply.ok().await
     }
 
@@ -837,7 +844,10 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
             ino, fh, flags, req,
         );
         // TODO: handle flags
-        self.metadata.releasedir(ino, fh).await;
+        self.metadata
+            .releasedir(ino, fh)
+            .await
+            .unwrap_or_else(|e| panic!("{e}"));
         reply.ok().await
     }
 
@@ -903,7 +913,14 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
     async fn readlink(&self, req: &Request<'_>, reply: ReplyData) -> nix::Result<usize> {
         let ino = req.nodeid();
         debug!("readlink(ino={}, req={:?})", ino, req,);
-        reply.data(self.metadata.readlink(ino).await).await
+        reply
+            .data(
+                self.metadata
+                    .readlink(ino)
+                    .await
+                    .unwrap_or_else(|e| panic!("{e}")),
+            )
+            .await
     }
 
     /// Create a symbolic link.

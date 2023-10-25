@@ -146,7 +146,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
     pub fn from_serial_node(
         serial_node: SerialNode,
         meta: &S3MetaData<S>,
-    ) -> BoxFuture<'_, S3Node<S>> {
+    ) -> BoxFuture<'_, DatenLordResult<S3Node<S>>> {
         async move {
             // check if the node is a directory
             // if it is a directory, we need to fetch it's children's file attributes
@@ -155,7 +155,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
                 for (name, serial_dir_entry) in dir {
                     let child_ino = serial_dir_entry.get_child_ino();
                     // Fetch the child node from kv
-                    let child_node = meta.get_node_from_kv_engine(child_ino).await;
+                    let child_node = meta.get_node_from_kv_engine(child_ino).await?;
                     // If the child_node is None , it means it has been deleted,skip
                     if let Some(child_node) = child_node {
                         let child_attr = *child_node.attr.read();
@@ -171,7 +171,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
                     .data
                     .into_s3_nodedata(Arc::clone(&meta.data_cache))
             };
-            Self {
+            Ok(Self {
                 s3_backend: Arc::clone(&meta.s3_backend),
                 parent: serial_node.parent,
                 name: serial_node.name,
@@ -184,7 +184,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
                 kv_engine: Arc::clone(&meta.kv_engine),
                 k8s_node_id: Arc::clone(&meta.node_id),
                 k8s_volume_info: Arc::clone(&meta.volume_info),
-            }
+            })
         }
         .boxed()
     }
@@ -398,7 +398,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
         s3_backend: Arc<S>,
         meta: Arc<S3MetaData<S>>,
     ) -> DatenLordResult<Self> {
-        if let Some(root_node) = meta.get_node_from_kv_engine(FUSE_ROOT_ID).await {
+        if let Some(root_node) = meta.get_node_from_kv_engine(FUSE_ROOT_ID).await? {
             Ok(root_node)
         } else {
             let now = SystemTime::now();
