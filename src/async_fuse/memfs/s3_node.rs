@@ -1,6 +1,6 @@
 //! The implementation of filesystem node
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::BTreeMap;
 use std::os::unix::io::RawFd;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, Ordering};
@@ -77,8 +77,6 @@ pub struct S3Node<S: S3BackEnd + Sync + Send + 'static> {
     parent: u64,
     /// S3Node name
     name: String,
-    /// Full path
-    full_path: String,
     /// S3Node attribute
     attr: Arc<RwLock<FileAttr>>,
     /// S3Node data
@@ -103,7 +101,6 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
     fn new(
         parent: u64,
         name: &str,
-        full_path: String,
         attr: Arc<RwLock<FileAttr>>,
         data: S3NodeData,
         s3_backend: Arc<S>,
@@ -114,7 +111,6 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
         Self {
             s3_backend,
             parent,
-            full_path,
             name: name.to_owned(),
             attr,
             data,
@@ -175,7 +171,6 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
                 s3_backend: Arc::clone(&meta.s3_backend),
                 parent: serial_node.parent,
                 name: serial_node.name,
-                full_path: serial_node.full_path,
                 attr: Arc::new(RwLock::new(serial_to_file_attr(&serial_node.attr))),
                 data: dir_data,
                 open_count: AtomicI64::new(serial_node.open_count),
@@ -194,7 +189,6 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
         SerialNode {
             parent: self.parent,
             name: self.name,
-            full_path: self.full_path,
             attr: file_attr_to_serial(&self.attr.read().clone()),
             data: self.data.serial(),
             open_count: self.open_count.load(Ordering::SeqCst),
@@ -208,7 +202,6 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
         SerialNode {
             parent: self.parent,
             name: self.name.clone(),
-            full_path: self.full_path.clone(),
             attr: file_attr_to_serial(&self.attr.read().clone()),
             data: self.data.serial(),
             open_count: self.open_count.load(Ordering::SeqCst),
@@ -237,11 +230,9 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
             }
             _ => panic!("unsupported type {:?}", child_attr.read().kind),
         };
-        let full_path = parent.absolute_path_of_child(child_name, child_attr.read().kind);
         Self {
             s3_backend: Arc::clone(&parent.s3_backend),
             parent: parent.get_ino(),
-            full_path,
             name: child_name.to_owned(),
             attr: child_attr,
             data,
@@ -269,55 +260,11 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
         old_attr
     }
 
-    /// Get fullpath of this node
-    pub(crate) fn full_path(&self) -> &str {
-        self.full_path.as_str()
-    }
-
     #[allow(clippy::unused_self)]
     /// Get new fd
     fn new_fd(&self) -> u32 {
         // Add global fd counter
         GLOBAL_S3_FD_CNT.fetch_add(1, Ordering::SeqCst)
-    }
-
-    /// Get absolute path of a child file
-    fn absolute_path_with_child(&self, child: &str) -> String {
-        format!("{}{}", self.full_path, child)
-    }
-
-    /// Get absolute path of a child dir
-    fn absolute_dir_with_child(&self, child: &str) -> String {
-        format!("{}{}/", self.full_path, child)
-    }
-
-    /// Get absolute path of child
-    pub(crate) fn absolute_path_of_child(&self, child: &str, child_type: SFlag) -> String {
-        match child_type {
-            SFlag::S_IFDIR => self.absolute_dir_with_child(child),
-            SFlag::S_IFREG | SFlag::S_IFLNK => self.absolute_path_with_child(child),
-            _ => panic!("absolute_path_of_child() found unsupported file type {child_type:?}"),
-        }
-    }
-
-    /// push (child, parent) to node pool for rename
-    /// then return the new full path of this node
-    pub(crate) fn push_child_for_rename(
-        &self,
-        node_pool: &mut VecDeque<(INum, INum)>,
-        parent_path: &str,
-    ) -> String {
-        match self.data {
-            S3NodeData::Directory(ref dir_data) => {
-                for grandchild_node in dir_data.values() {
-                    node_pool.push_back((grandchild_node.ino(), self.get_ino()));
-                }
-                format!("{}{}/", parent_path, self.get_name())
-            }
-            S3NodeData::SymLink(..) | S3NodeData::RegFile(..) => {
-                format!("{}{}", parent_path, self.get_name())
-            }
-        }
     }
 
     /// Update mtime and ctime to now
@@ -417,7 +364,6 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
             let root_node = Self::new(
                 root_ino,
                 name,
-                "/".to_owned(),
                 attr,
                 S3NodeData::Directory(BTreeMap::new()),
                 s3_backend,
@@ -526,12 +472,6 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
         self.name.as_str()
     }
 
-    /// Get node full path
-    #[inline]
-    fn get_full_path(&self) -> &str {
-        self.full_path.as_str()
-    }
-
     /// Set node name
     #[inline]
     fn set_name(&mut self, name: &str) {
@@ -598,13 +538,9 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
         self.deferred_deletion.load(Ordering::SeqCst)
     }
 
-    async fn flush(&mut self, _ino: INum, _fh: u64) {
+    async fn flush(&mut self, ino: INum, _fh: u64) {
         if let Err(e) = self.flush_all_data().await {
-            panic!(
-                "failed to flash all data of {:?}, error is {:?}",
-                self.get_full_path(),
-                e
-            );
+            panic!("failed to flash all data of {ino:?}, error is {e:?}");
         }
     }
 
@@ -682,7 +618,6 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
         child_symlink_name: &str,
         target_path: PathBuf,
     ) -> DatenLordResult<Self> {
-        let absolute_path = self.absolute_path_with_child(child_symlink_name);
         let dir_data = self.get_dir_data();
         debug_assert!(
             !dir_data.contains_key(child_symlink_name),
@@ -696,7 +631,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
             .put_data(inum, target_str.as_bytes(), 0, target_str.len())
             .await
         {
-            panic!("failed to put data of file {absolute_path:?} to s3 backend, error is {e:?}");
+            panic!("failed to put data of file {inum} to s3 backend, error is {e:?}");
         }
 
         // get symbol file attribute
@@ -730,7 +665,6 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
         Ok(Self::new(
             self.get_ino(),
             child_symlink_name,
-            format!("{}{}", self.full_path, child_symlink_name),
             child_attr,
             S3NodeData::SymLink(target_path),
             Arc::clone(&self.s3_backend),
@@ -746,12 +680,11 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
         child_symlink_name: &str,
         child_attr: Arc<RwLock<FileAttr>>,
     ) -> DatenLordResult<Self> {
-        let absolute_path = self.absolute_path_with_child(child_symlink_name);
         let inum = child_attr.read().ino;
 
         let target_path = PathBuf::from(
             String::from_utf8(self.s3_backend.get_data(inum).await.unwrap_or_else(|e| {
-                panic!("failed to get data of {absolute_path:?} from s3 backend, error is {e:?}")
+                panic!("failed to get data of {inum} from s3 backend, error is {e:?}")
             }))
             .unwrap_or_else(|e| panic!("failed to convert to utf string, error is {e:?}")),
         );
@@ -759,7 +692,6 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
         Ok(Self::new(
             self.get_ino(),
             child_symlink_name,
-            format!("{}{}", self.full_path, child_symlink_name),
             child_attr,
             S3NodeData::SymLink(target_path),
             Arc::clone(&self.s3_backend),
@@ -803,13 +735,9 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
         let previous_value = dir_data_mut.insert(child_dir_name.to_owned(), entry);
         debug_assert!(previous_value.is_none()); // double check creation race
 
-        // lookup count and open count are increased to 1 by creation
-        let full_path = format!("{}{}/", self.full_path, child_dir_name);
-
         let child_node = Self::new(
             self.get_ino(),
             child_dir_name,
-            full_path,
             child_attr,
             S3NodeData::Directory(BTreeMap::new()),
             Arc::clone(&self.s3_backend),
@@ -833,7 +761,6 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
         Ok(Self::new(
             self.get_ino(),
             child_file_name,
-            format!("{}{}", self.full_path, child_file_name),
             child_attr,
             S3NodeData::RegFile(global_cache),
             Arc::clone(&self.s3_backend),
@@ -854,7 +781,6 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
         group_id: u32,
         global_cache: Arc<GlobalCache>,
     ) -> DatenLordResult<Self> {
-        let absolute_path = self.absolute_path_with_child(child_file_name);
         let dir_data = self.get_dir_data();
         debug_assert!(
             !dir_data.contains_key(child_file_name),
@@ -862,7 +788,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
         );
         debug_assert!(oflags.contains(OFlag::O_CREAT));
         if let Err(e) = self.s3_backend.put_data(inum, b"", 0, 0).await {
-            panic!("failed to put data of file {absolute_path:?} to s3 backend, error is {e:?}");
+            panic!("failed to put data of file {inum} to s3 backend, error is {e:?}");
         }
 
         // get new file attribute
@@ -891,7 +817,6 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
         Ok(Self::new(
             self.get_ino(),
             child_file_name,
-            format!("{}{}", self.full_path, child_file_name),
             child_attr,
             S3NodeData::RegFile(global_cache),
             Arc::clone(&self.s3_backend),
@@ -1025,11 +950,10 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
         // delete from disk and close the handler
         match removed_entry.entry_type() {
             SFlag::S_IFDIR | SFlag::S_IFREG | SFlag::S_IFLNK => {
-                if let Err(e) = self.s3_backend.delete_data(removed_entry.ino()).await {
+                let ino = removed_entry.ino();
+                if let Err(e) = self.s3_backend.delete_data(ino).await {
                     panic!(
-                        "failed to delete data of {:?} from s3 backend, error is {:?}",
-                        self.absolute_path_with_child(child_name),
-                        e
+                        "failed to delete data of {ino} from s3 backend, error is {e:?}"
                     );
                 }
             }
@@ -1143,12 +1067,9 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
         Ok(written_size)
     }
 
-    async fn close(&mut self, _ino: INum, _fh: u64, _flush: bool) {
+    async fn close(&mut self, ino: INum, _fh: u64, _flush: bool) {
         if let Err(e) = self.flush_all_data().await {
-            panic!(
-                "failed to flush all data of {:?}, error is {:?}",
-                self.full_path, e
-            );
+            panic!("failed to flush all data of {ino}, error is {e:?}");
         }
         self.dec_open_count();
     }

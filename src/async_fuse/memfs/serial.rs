@@ -119,8 +119,6 @@ pub struct SerialNode {
     pub(crate) parent: u64,
     /// S3Node name
     pub(crate) name: String,
-    /// Full path of S3Node
-    pub(crate) full_path: String,
     /// Node attribute
     pub(crate) attr: SerialFileAttr,
     /// Node data

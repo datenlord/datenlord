@@ -368,7 +368,7 @@ mod test {
             .await
             .unwrap();
         // insert a key , and then get it , and then delete it, and then get it again
-        let key = KeyType::Path2INum("test_key".to_owned());
+        let key = KeyType::String("test_key".to_owned());
         let value = ValueType::INum(123);
         client.set(&key, &value, None).await.unwrap();
         let get_value = client.get(&key).await.unwrap().unwrap();
@@ -390,9 +390,9 @@ mod test {
             .await
             .unwrap();
         let mut first_txn = client.new_meta_txn().await;
-        let key1 = KeyType::Path2INum(String::from("test_commit key1"));
+        let key1 = KeyType::String(String::from("test_commit key1"));
         let value1 = ValueType::INum(12);
-        let key2 = KeyType::Path2INum(String::from("test_commit key2"));
+        let key2 = KeyType::String(String::from("test_commit key2"));
         let value2 = ValueType::INum(13);
         first_txn.set(&key1, &value1);
         first_txn.set(&key2, &value2);
@@ -408,7 +408,7 @@ mod test {
                     .await
                     .unwrap();
                 let mut second_txn = client.new_meta_txn().await;
-                let key1 = KeyType::Path2INum(String::from("test_commit key1"));
+                let key1 = KeyType::String(String::from("test_commit key1"));
                 let value1 = second_txn.get(&key1).await.unwrap();
                 assert!(value1.is_some());
                 if let Some(ValueType::INum(num)) = value1 {
@@ -420,7 +420,7 @@ mod test {
                 first_step_tx.send(()).await.unwrap();
                 // wait for the third txn to set the key
                 second_step_rx.recv().await.unwrap();
-                let key2 = KeyType::Path2INum(String::from("test_commit key2"));
+                let key2 = KeyType::String(String::from("test_commit key2"));
                 let value2 = second_txn.get(&key2).await.unwrap();
                 assert!(value2.is_some());
                 if let Some(ValueType::INum(num)) = value2 {
@@ -444,7 +444,7 @@ mod test {
             let mut third_txn = client.new_meta_txn().await;
             // wait for the second read first key and send the signal
             first_step_rx.recv().await.unwrap();
-            let key1 = KeyType::Path2INum(String::from("test_commit key1"));
+            let key1 = KeyType::String(String::from("test_commit key1"));
             let value1 = ValueType::INum(14);
             third_txn.set(&key1, &value1);
             third_txn.commit().await.unwrap();
@@ -462,7 +462,7 @@ mod test {
                 .await
                 .unwrap();
             let mut txn = client.new_meta_txn().await;
-            let key = KeyType::Path2INum(String::from("/"));
+            let key = KeyType::String(String::from("/"));
             let _ = txn.get(&key).await.unwrap();
             (txn.commit().await, ())
         });

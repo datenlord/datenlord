@@ -25,6 +25,9 @@ pub mod etcd_impl;
 pub mod kv_utils;
 
 /// The `ValueType` is used to provide support for metadata.
+///
+/// The variants `DirEntry`, `INum` and `Attr` are not used currently,
+/// but preserved for the future.
 #[derive(Serialize, Deserialize, Debug, Eq, PartialEq)]
 pub enum ValueType {
     /// SerialNode
@@ -120,8 +123,6 @@ pub enum KeyType {
     INum2Node(INum),
     /// INum -> DirEntry
     INum2DirEntry(INum),
-    /// Path -> Inum
-    Path2INum(String),
     /// INum -> SerialFileAttr
     INum2Attr(INum),
     /// IdAllocator value key
@@ -135,6 +136,9 @@ pub enum KeyType {
     /// Node list
     /// The corresponding value type is ValueType::RawData
     FileNodeList(INum),
+    /// Just a string key for testing the KVEngine.
+    #[cfg(test)]
+    String(String),
 }
 
 // ::<KeyType>::get() -> ValueType
@@ -155,7 +159,8 @@ impl Display for KeyType {
         match *self {
             KeyType::INum2Node(ref i) => write!(f, "INum2Node{{i: {i}}}"),
             KeyType::INum2DirEntry(ref i) => write!(f, "INum2DirEntry{{i: {i}}}"),
-            KeyType::Path2INum(ref p) => write!(f, "Path2INum{{p: {p}}}"),
+            #[cfg(test)]
+            KeyType::String(ref s) => write!(f, "String{{s: {s}}}"),
             KeyType::INum2Attr(ref i) => write!(f, "INum2Attr{{i: {i}}}"),
             KeyType::IdAllocatorValue(ref id_type) => {
                 write!(f, "IdAllocatorValue{{unique_id: {id_type:?}}}")
@@ -205,7 +210,8 @@ impl KeyType {
         match *self {
             KeyType::INum2Node(ref i) => serialize_key(0, i),
             KeyType::INum2DirEntry(ref i) => serialize_key(1, i),
-            KeyType::Path2INum(ref p) => serialize_key(2, p),
+            #[cfg(test)]
+            KeyType::String(ref s) => serialize_key(2, s),
             KeyType::INum2Attr(ref i) => serialize_key(3, i),
             KeyType::IdAllocatorValue(ref id_type) => serialize_key(4, &id_type.to_unique_id()),
             KeyType::NodeIpPort(ref s) => serialize_key(6, s),
