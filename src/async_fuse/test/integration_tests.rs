@@ -297,6 +297,136 @@ fn test_rename_file_replace(mount_dir: &Path) -> anyhow::Result<()> {
 }
 
 #[cfg(test)]
+fn test_rename_exchange(mount_dir: &Path) -> anyhow::Result<()> {
+    use nix::{fcntl::RenameFlags, sys::stat};
+
+    info!("rename file exchange");
+
+    let base_dir = Path::new(mount_dir).join("exchange");
+    if base_dir.exists() {
+        fs::remove_dir_all(&base_dir)?;
+    }
+    fs::create_dir_all(&base_dir)?;
+
+    let oflags_dir = OFlag::O_DIRECTORY;
+    let rename_flag = RenameFlags::RENAME_EXCHANGE;
+
+    // Test exchange under the same parent
+    {
+        let base_fd = fcntl::open(&base_dir, oflags_dir, Mode::from_bits_truncate(0o755))?;
+        let file_left = base_dir.join("a.txt");
+        let file_right = base_dir.join("dir");
+        let file_b_txt = file_right.join("b.txt");
+
+        fs::create_dir_all(&file_right)?;
+        fs::write(&file_left, "a")?;
+        fs::write(file_b_txt, "b")?;
+
+        /* Tree: 
+         * exchange
+         * |- a.txt
+         * |
+         * |- dir
+         *     |- b.txt
+         */
+
+        let stat_old_base = stat::fstat(base_fd);
+        let stat_old_left = stat::stat(&file_left)?;
+        let stat_old_right = stat::stat(&file_right)?;
+
+        fcntl::renameat2(
+            Some(base_fd),
+            &file_left,
+            Some(base_fd),
+            &file_right,
+            rename_flag,
+        )?;
+
+        /* Tree: 
+         * exchange
+         * |- dir (former a.txt)
+         * |
+         * |- a.txt (former dir)
+         *     |- b.txt
+         */
+
+        let stat_new_base = stat::fstat(base_fd);
+        let stat_new_left = stat::stat(&file_left)?;
+        let stat_new_right = stat::stat(&file_right)?;
+
+        assert_eq!(stat_old_left, stat_new_right);
+        assert_eq!(stat_old_right, stat_new_left);
+        assert_ne!(stat_old_base, stat_new_base); // Timestamp of the parent is changed.
+
+        let file_b_txt = file_left.join("b.txt"); // file_left is a dir now
+        let content_a = fs::read_to_string(&file_right)?;
+        let content_b = fs::read_to_string(file_b_txt)?;
+
+        assert_eq!(content_a, "a");
+        assert_eq!(content_b, "b");
+
+        // This call will do nothing.
+        fcntl::renameat2(
+            Some(base_fd),
+            &file_left,
+            Some(base_fd),
+            &file_left,
+            rename_flag,
+        )?;
+        let stat_new_base_2 = stat::fstat(base_fd);
+        assert_eq!(stat_new_base, stat_new_base_2);
+
+        unistd::close(base_fd)?;
+    }
+
+    // Test exchange under different parents
+    {
+        let base_left = base_dir.join("left");
+        let base_right = base_dir.join("right");
+        let file_left = base_left.join("left.txt");
+        let file_right = base_right.join("right.txt");
+
+        fs::create_dir_all(&base_left)?;
+        std::fs::create_dir_all(&base_right)?;
+        fs::write(&file_left, "left")?;
+        fs::write(&file_right, "right")?;
+
+        let base_fd_left = fcntl::open(&base_left, oflags_dir, Mode::from_bits_truncate(0o755))?;
+        let base_fd_right = fcntl::open(&base_right, oflags_dir, Mode::from_bits_truncate(0o755))?;
+
+        let stat_old_left = stat::stat(&file_left)?;
+        let stat_old_right = stat::stat(&file_right)?;
+
+        fcntl::renameat2(
+            Some(base_fd_left),
+            &file_left,
+            Some(base_fd_right),
+            &file_right,
+            rename_flag,
+        )?;
+
+        let stat_new_left = stat::stat(&file_left)?;
+        let stat_new_right = stat::stat(&file_right)?;
+
+        assert_eq!(stat_old_left, stat_new_right);
+        assert_eq!(stat_old_right, stat_new_left);
+
+        let content_a = fs::read_to_string(&file_left)?;
+        let content_b = fs::read_to_string(&file_right)?;
+
+        assert_eq!(content_a, "right");
+        assert_eq!(content_b, "left");
+
+        unistd::close(base_fd_left)?;
+        unistd::close(base_fd_right)?;
+    }
+
+    // Clean up
+    fs::remove_dir_all(&base_dir)?;
+
+    Ok(())
+}
+#[cfg(test)]
 fn test_rename_dir(mount_dir: &Path) -> anyhow::Result<()> {
     info!("rename directory");
     let from_dir = Path::new(mount_dir).join("from_dir");
@@ -543,6 +673,7 @@ async fn _run_test(mount_dir_str: &str, is_s3: bool) -> anyhow::Result<()> {
     test_bind_mount(mount_dir).context("test_bind_mount() failed")?;
     test_deferred_deletion(mount_dir).context("test_deferred_deletion() failed")?;
     test_rename_file_replace(mount_dir).context("test_rename_file_replace() failed")?;
+    test_rename_exchange(mount_dir).context("test_rename_exchange() failed")?;
     test_rename_file(mount_dir).context("test_rename_file() failed")?;
     test_rename_dir(mount_dir).context("test_rename_dir() failed")?;
     test_create_file(mount_dir).context("test_create_file() failed")?;
