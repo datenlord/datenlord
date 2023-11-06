@@ -952,9 +952,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
             SFlag::S_IFDIR | SFlag::S_IFREG | SFlag::S_IFLNK => {
                 let ino = removed_entry.ino();
                 if let Err(e) = self.s3_backend.delete_data(ino).await {
-                    panic!(
-                        "failed to delete data of {ino} from s3 backend, error is {e:?}"
-                    );
+                    panic!("failed to delete data of {ino} from s3 backend, error is {e:?}");
                 }
             }
             _ => panic!(

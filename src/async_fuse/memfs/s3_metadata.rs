@@ -23,7 +23,7 @@ use super::dist::client as dist_client;
 use super::dist::server::CacheServer;
 use super::fs_util::{self, FileAttr};
 use super::id_alloc_used::INumAllocator;
-use super::kv_engine::{KVEngine, KVEngineType, KeyType, ValueType};
+use super::kv_engine::{KVEngine, KVEngineType, KeyType, MetaTxn, ValueType};
 use super::metadata::error;
 use super::metadata::{MetaData, ReqContext};
 use super::node::Node;
@@ -54,6 +54,9 @@ const MY_TTL_SEC: u64 = 3600; // TODO: should be a long value, say 1 hour
 const MY_GENERATION: u64 = 1; // TODO: find a proper way to set generation
 /// S3 information string delimiter
 const S3_INFO_DELIMITER: char = ';';
+#[allow(dead_code)]
+/// The limit of transaction commit retrying times.
+const TXN_RETRY_LIMIT: u32 = 5;
 
 /// File system in-memory meta-data
 #[derive(Debug)]
@@ -671,14 +674,118 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
     }
 
     #[instrument(skip(self), err, ret)]
-    /// Rename helper to exchange on disk
+    /// Rename helper for exchange rename
     async fn rename_exchange_helper(
         &self,
         context: ReqContext,
         param: RenameParam,
     ) -> DatenLordResult<()> {
-        self.rename_exchange_local(context, &param).await?;
-        Ok(())
+        let old_parent = param.old_parent;
+        let old_name = param.old_name.as_str();
+        let new_parent = param.new_parent;
+        let new_name = param.new_name.as_str();
+        let flags = param.flags;
+        let no_replace = flags == 1; // RENAME_NOREPLACE
+
+        if no_replace {
+            return build_error_result_from_errno(
+                Errno::EINVAL,
+                "Both RENAME_NOREPLACE and RENAME_EXCHANGE were specified in flags.".into(),
+            );
+        }
+
+        retry_txn!(TXN_RETRY_LIMIT, {
+            let mut txn = self.kv_engine.new_meta_txn().await;
+            let check_res = self
+                .exchange_pre_check(
+                    txn.as_mut(),
+                    &context,
+                    old_parent,
+                    old_name,
+                    new_parent,
+                    new_name,
+                )
+                .await?;
+            let (mut old_parent_node, old_ino, new_parent_node, new_ino) = check_res;
+
+            // If the old node is the same file as the new node, do nothing
+            if old_ino == new_ino {
+                return Ok(());
+            }
+
+            let mut old_node = txn
+                .get(&KeyType::INum2Node(old_ino))
+                .await?
+                .ok_or_else(|| build_inconsistent_fs!(old_ino))?
+                .into_s3_node(self)
+                .await?;
+            let mut new_node = txn
+                .get(&KeyType::INum2Node(new_ino))
+                .await?
+                .ok_or_else(|| build_inconsistent_fs!(new_ino))?
+                .into_s3_node(self)
+                .await?;
+
+            old_node.set_parent_ino(new_parent);
+            new_node.set_parent_ino(old_parent);
+            old_node.set_name(new_name);
+            new_node.set_name(old_name);
+
+            txn.set(
+                &KeyType::INum2Node(old_ino),
+                &ValueType::Node(old_node.into_serial_node()),
+            );
+            txn.set(
+                &KeyType::INum2Node(new_ino),
+                &ValueType::Node(new_node.into_serial_node()),
+            );
+
+            if let Some(mut new_parent_node) = new_parent_node {
+                // The two parent node is not the same node
+                let old_entry = old_parent_node.get_dir_data_mut().remove(old_name).unwrap_or_else(||unreachable!("Impossible case when exchange,\
+                                                                                                                                    as {old_name} under {old_parent} is checked to be existed."));
+                let new_entry = new_parent_node.get_dir_data_mut().remove(new_name).unwrap_or_else(||unreachable!("Impossible case when exchange,\
+                                                                                                                                    as {new_name} under {new_parent} is checked to be existed."));
+                old_parent_node.insert_entry_for_rename(DirEntry::new(
+                    old_name.into(),
+                    Arc::clone(new_entry.file_attr_arc_ref()),
+                ));
+                new_parent_node.insert_entry_for_rename(DirEntry::new(
+                    new_name.into(),
+                    Arc::clone(old_entry.file_attr_arc_ref()),
+                ));
+
+                txn.set(
+                    &KeyType::INum2Node(old_parent),
+                    &ValueType::Node(old_parent_node.into_serial_node()),
+                );
+                txn.set(
+                    &KeyType::INum2Node(new_parent),
+                    &ValueType::Node(new_parent_node.into_serial_node()),
+                );
+            } else {
+                let old_entry = old_parent_node.get_dir_data_mut().remove(old_name).unwrap_or_else(||unreachable!("Impossible case when exchange,\
+                                                                                                                                    as {old_name} under {old_parent} is checked to be existed."));
+                let new_entry = old_parent_node.get_dir_data_mut().remove(new_name).unwrap_or_else(||unreachable!("Impossible case when exchange,\
+                                                                                                                                    as {new_name} under {new_parent} is checked to be existed."));
+
+                old_parent_node.insert_entry_for_rename(DirEntry::new(
+                    old_name.into(),
+                    Arc::clone(new_entry.file_attr_arc_ref()),
+                ));
+                old_parent_node.insert_entry_for_rename(DirEntry::new(
+                    new_name.into(),
+                    Arc::clone(old_entry.file_attr_arc_ref()),
+                ));
+
+                txn.set(
+                    &KeyType::INum2Node(old_parent),
+                    &ValueType::Node(old_parent_node.into_serial_node()),
+                );
+            }
+
+            (txn.commit().await, ())
+        })
     }
 
     #[instrument(skip(self), err, ret)]
@@ -970,6 +1077,135 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
         }
     }
 
+    /// Helper function to pre-check for exchange rename.
+    ///
+    /// This function ensures:
+    /// 1. The old parent, old entry, the new parent and the new entry exist.
+    /// 2. Both the old parent and the new parent are directories.
+    /// 3. The user renaming the file is permitted to do this operation when the sticky bit of one of the old entry or the new entry is set.
+    ///
+    /// When all checks above passed,
+    /// this function returns a tuple containing:
+    /// - A `S3Node` of old parent
+    /// - The ino of old entry
+    /// - A `S3Node` of new parent, or `None` if the new parent is same as old parent
+    /// - The ino of new entry
+    ///
+    /// Otherwise, it returns an `Err`.
+    async fn exchange_pre_check<T: MetaTxn + ?Sized>(
+        &self,
+        txn: &mut T,
+        context: &ReqContext,
+        old_parent: INum,
+        old_name: &str,
+        new_parent: INum,
+        new_name: &str,
+    ) -> DatenLordResult<(S3Node<S>, INum, Option<S3Node<S>>, INum)> {
+        let check_sticky_bit = |parent_node: &S3Node<S>, entry: &DirEntry| {
+            let parent_attr = parent_node.get_attr();
+            if context.user_id != 0
+                && (parent_attr.perm & 0o1000 != 0)
+                && context.user_id != parent_attr.uid
+                && context.user_id != entry.file_attr_arc_ref().read().uid
+            {
+                build_error_result_from_errno(Errno::EACCES, "Sticky bit set".to_owned())
+            } else {
+                Ok(())
+            }
+        };
+
+        let check_node_is_dir = |node: &S3Node<S>| {
+            if node.get_type() == SFlag::S_IFDIR {
+                Ok(())
+            } else {
+                build_error_result_from_errno(
+                    Errno::ENOTDIR,
+                    format!("{} is not a dir.", node.get_ino()),
+                )
+            }
+        };
+
+        let build_enoent = |name: &str, parent: INum, parent_node: &S3Node<S>| {
+            build_error_result_from_errno(
+                Errno::ENOENT,
+                format!(
+                    "exchange_pre_check() failed to find child entry of name={:?} \
+                        under parent directory ino={} and name={:?}",
+                    name,
+                    parent,
+                    parent_node.get_name(),
+                ),
+            )
+        };
+
+        let old_parent_node = txn
+            .get(&KeyType::INum2Node(old_parent))
+            .await?
+            .ok_or_else(|| {
+                anyhow::Error::new(Errno::ENOENT)
+                    .context(format!("Old parent {old_parent} does not exist."))
+            })?
+            .into_s3_node(self)
+            .await?;
+        check_node_is_dir(&old_parent_node)?;
+
+        let old_entry_ino = match old_parent_node.get_entry(old_name) {
+            None => {
+                debug!(
+                    "exchange() failed to find child entry of name={:?} under parent directory ino={} and name={:?}",
+                    old_name, old_parent, old_parent_node.get_name(),
+                );
+                return build_enoent(old_name, old_parent, &old_parent_node);
+            }
+            Some(old_entry) => {
+                check_sticky_bit(&old_parent_node, old_entry)?;
+                debug_assert_eq!(&old_name, &old_entry.entry_name());
+                old_entry.ino()
+            }
+        };
+
+        let new_parent_node = if old_parent == new_parent {
+            None
+        } else {
+            let new_parent_node = txn
+                .get(&KeyType::INum2Node(new_parent))
+                .await?
+                .ok_or_else(|| {
+                    anyhow::Error::new(Errno::ENOENT)
+                        .context(format!("New parent {new_parent} does not exist."))
+                })?
+                .into_s3_node(self)
+                .await?;
+
+            check_node_is_dir(&new_parent_node)?;
+
+            Some(new_parent_node)
+        };
+
+        let new_parent_ref = new_parent_node.as_ref().unwrap_or(&old_parent_node);
+
+        let new_entry_ino = match new_parent_ref.get_entry(new_name) {
+            None => {
+                debug!(
+                    "exchange() failed to find child entry of name={:?} under parent directory ino={} and name={:?}",
+                    new_name, new_parent, new_parent_ref.get_name(),
+                );
+                return build_enoent(new_name, new_parent, new_parent_ref);
+            }
+            Some(new_entry) => {
+                check_sticky_bit(new_parent_ref, new_entry)?;
+                debug_assert_eq!(&new_name, &new_entry.entry_name());
+                new_entry.ino()
+            }
+        };
+        Ok((
+            old_parent_node,
+            old_entry_ino,
+            new_parent_node,
+            new_entry_ino,
+        ))
+    }
+
     /// Rename helper function to pre-check
     ///
     /// This function ensures:
@@ -1128,90 +1364,6 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
         self.set_node_to_kv_engine(new_parent, new_parent_node)
             .await?;
         Ok(result)
-    }
-
-    /// Rename exchange on local node
-    async fn rename_exchange_local(
-        &self,
-        context: ReqContext,
-        param: &RenameParam,
-    ) -> DatenLordResult<()> {
-        let old_parent = param.old_parent;
-        let old_name = param.old_name.as_str();
-        let new_parent = param.new_parent;
-        let new_name = param.new_name.as_str();
-        let flags = param.flags;
-        debug!(
-            "rename(old parent={}, old name={:?}, new parent={}, new name={:?})",
-            old_parent, old_name, new_parent, new_name,
-        );
-        let no_replace = flags == 1; // RENAME_NOREPLACE
-
-        let pre_check_res = self
-            .rename_pre_check(
-                context, old_parent, old_name, new_parent, new_name, no_replace,
-            )
-            .await;
-        let (_, _, _, new_entry_ino) = match pre_check_res {
-            Ok((old_parent_fd, old_entry_ino, new_parent_fd, new_entry_ino)) => {
-                (old_parent_fd, old_entry_ino, new_parent_fd, new_entry_ino)
-            }
-            Err(e) => {
-                debug!("rename() pre-check failed, the error is: {:?}", e);
-                return Err(e);
-            }
-        };
-        let new_entry_ino = new_entry_ino.ok_or_else(|| {
-            anyhow::anyhow!(
-                "{}(): The new entry inode with name={new_name} must exists.",
-                function_name!()
-            )
-        })?;
-
-        let rename_in_cache_res = self
-            .rename_in_cache_helper(old_parent, old_name, new_parent, new_name)
-            .await?;
-
-        if let Some(replaced_entry) = rename_in_cache_res {
-            debug_assert_eq!(
-                new_entry_ino,
-                replaced_entry.ino(),
-                "rename_exchange_helper() replaced entry i-number not match"
-            );
-            let attr = Arc::clone(replaced_entry.file_attr_arc_ref());
-            attr.write().ino = new_entry_ino;
-            let exchange_entry = DirEntry::new(old_name.to_owned(), attr);
-
-            let mut old_parent_node = self.get_node_from_kv_engine(old_parent).await?.unwrap_or_else(|| {
-                unreachable!(
-                    "impossible case when rename, the from parent i-node of ino={old_parent} should be in cache",
-                )
-            });
-            let insert_res = old_parent_node.insert_entry_for_rename(exchange_entry);
-            debug_assert!(
-                insert_res.is_none(),
-                "impossible case when rename, the from i-node of name={:?} should have been \
-                    moved out of from parent directory ino={} and name={:?}",
-                old_name,
-                old_parent,
-                old_parent_node.get_name(),
-            );
-            // TODO: finish rename exchange when libc::rename2 is available
-            // call rename2 here to exchange two nodes
-            let mut exchanged_node = self.get_node_from_kv_engine(new_entry_ino).await?.unwrap_or_else(|| {
-                unreachable!(
-                    "impossible case when rename, the new entry i-node of ino={new_entry_ino} should be in cache",
-                )
-            });
-            exchanged_node.set_parent_ino(old_parent);
-            exchanged_node.set_name(old_name);
-            panic!("rename2 system call has not been supported in libc to exchange two nodes yet!");
-        } else {
-            unreachable!(
-                "impossible case, the child i-node of name={new_name:?} to be exchanged \
-                    should be under to parent directory ino={new_parent}",
-            );
-        }
     }
 
     /// Rename to move on disk locally, it may replace destination entry
