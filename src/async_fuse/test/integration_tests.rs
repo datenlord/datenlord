@@ -297,6 +297,7 @@ fn test_rename_file_replace(mount_dir: &Path) -> anyhow::Result<()> {
 }
 
 #[cfg(test)]
+#[cfg(feature = "abi-7-23")]
 fn test_rename_exchange(mount_dir: &Path) -> anyhow::Result<()> {
     use nix::{fcntl::RenameFlags, sys::stat};
 
@@ -322,7 +323,7 @@ fn test_rename_exchange(mount_dir: &Path) -> anyhow::Result<()> {
         fs::write(&file_left, "a")?;
         fs::write(file_b_txt, "b")?;
 
-        /* Tree: 
+        /* Tree:
          * exchange
          * |- a.txt
          * |
@@ -342,7 +343,7 @@ fn test_rename_exchange(mount_dir: &Path) -> anyhow::Result<()> {
             rename_flag,
         )?;
 
-        /* Tree: 
+        /* Tree:
          * exchange
          * |- dir (former a.txt)
          * |
@@ -673,6 +674,7 @@ async fn _run_test(mount_dir_str: &str, is_s3: bool) -> anyhow::Result<()> {
     test_bind_mount(mount_dir).context("test_bind_mount() failed")?;
     test_deferred_deletion(mount_dir).context("test_deferred_deletion() failed")?;
     test_rename_file_replace(mount_dir).context("test_rename_file_replace() failed")?;
+    #[cfg(feature = "abi-7-23")]
     test_rename_exchange(mount_dir).context("test_rename_exchange() failed")?;
     test_rename_file(mount_dir).context("test_rename_file() failed")?;
     test_rename_dir(mount_dir).context("test_rename_dir() failed")?;

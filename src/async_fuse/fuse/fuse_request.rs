@@ -9,12 +9,14 @@ use super::context::ProtoVersion;
 use super::de::Deserializer;
 #[cfg(target_os = "macos")]
 use super::protocol::FuseExchangeIn;
+#[cfg(feature = "abi-7-23")]
+use super::protocol::FuseRename2In;
 use super::protocol::{
     FuseAccessIn, FuseBMapIn, FuseBatchForgetIn, FuseCopyFileRangeIn, FuseCreateIn,
     FuseFAllocateIn, FuseFSyncIn, FuseFlushIn, FuseForgetIn, FuseForgetOne, FuseGetXAttrIn,
     FuseInHeader, FuseInitIn, FuseInterruptIn, FuseIoCtlIn, FuseLSeekIn, FuseLinkIn, FuseLockIn,
     FuseMkDirIn, FuseMkNodIn, FuseOpCode, FuseOpenIn, FusePollIn, FuseReadIn, FuseReleaseIn,
-    FuseRename2In, FuseRenameIn, FuseSetAttrIn, FuseSetXAttrIn, FuseWriteIn,
+    FuseRenameIn, FuseSetAttrIn, FuseSetXAttrIn, FuseWriteIn,
 };
 
 /// FUSE operation
@@ -251,7 +253,12 @@ pub enum Operation<'a> {
         arg: &'a FuseReadIn,
     },
     /// FUSE_RENAME2 = 45,
-    // #[cfg(feature = "abi-7-23")]
+    ///
+    /// Available when the protocol version is greater than 7.22.
+    /// This is checked by the kernel so that DatenLord won't receive such a request.
+    ///
+    /// https://github.com/torvalds/linux/blob/8f6f76a6a29f36d2f3e4510d0bde5046672f6924/fs/fuse/dir.c#L1077C2-L1088C3
+    #[cfg(feature = "abi-7-23")]
     Rename2 {
         /// The FUSE rename2 request
         arg: &'a FuseRename2In,
@@ -357,7 +364,8 @@ impl<'a> Operation<'a> {
             43 => FuseOpCode::FUSE_FALLOCATE,
             // #[cfg(feature = "abi-7-21")]
             44 => FuseOpCode::FUSE_READDIRPLUS,
-            // #[cfg(feature = "abi-7-23")]
+            #[cfg(feature = "abi-7-23")]
+            // https://github.com/torvalds/linux/blob/8f6f76a6a29f36d2f3e4510d0bde5046672f6924/fs/fuse/dir.c#L1077C2-L1088C3
             45 => FuseOpCode::FUSE_RENAME2,
             // #[cfg(feature = "abi-7-24")]
             46 => FuseOpCode::FUSE_LSEEK,
@@ -515,7 +523,7 @@ impl<'a> Operation<'a> {
             FuseOpCode::FUSE_READDIRPLUS => Operation::ReadDirPlus {
                 arg: data.fetch_ref()?,
             },
-            // #[cfg(feature = "abi-7-23")]
+            #[cfg(feature = "abi-7-23")]
             FuseOpCode::FUSE_RENAME2 => Operation::Rename2 {
                 arg: data.fetch_ref()?,
                 oldname: data.fetch_str()?,
@@ -685,7 +693,7 @@ impl fmt::Display for Operation<'_> {
                 "READDIRPLUS fh={}, offset={}, size={}",
                 arg.fh, arg.offset, arg.size,
             ),
-            // #[cfg(feature = "abi-7-23")]
+            #[cfg(feature = "abi-7-23")]
             Operation::Rename2 { arg, oldname, newname } => write!(
                 f,
                 "RENAME2 name={:?}, newdir={:#018x}, newname={:?}, flags={:#x}",
@@ -879,7 +887,7 @@ mod test {
         0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // max_readahead, flags
     ]);
 
-    #[cfg(target_endian = "big")]
+    #[cfg(all(target_endian = "big", not(feature = "abi-7-12")))]
     const MKNOD_REQUEST: Align8<[u8; 56]> = Align8([
         0x00, 0x00, 0x00, 0x38, 0x00, 0x00, 0x00, 0x08, // len, opcode
         0xde, 0xad, 0xbe, 0xef, 0xba, 0xad, 0xd0, 0x0d, // unique
@@ -890,7 +898,8 @@ mod test {
         0x66, 0x6f, 0x6f, 0x2e, 0x74, 0x78, 0x74, 0x00, // name
     ]);
 
-    #[cfg(target_endian = "little")]
+    /// `MKNOD_REQUEST` for protocol version less then 7.12
+    #[cfg(all(target_endian = "little", not(feature = "abi-7-12")))]
     const MKNOD_REQUEST: Align8<[u8; 56]> = Align8([
         0x38, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, // len, opcode
         0x0d, 0xf0, 0xad, 0xba, 0xef, 0xbe, 0xad, 0xde, // unique
@@ -898,6 +907,31 @@ mod test {
         0x0d, 0xd0, 0x01, 0xc0, 0xfe, 0xca, 0x01, 0xc0, // uid, gid
         0x5e, 0xba, 0xde, 0xc0, 0x00, 0x00, 0x00, 0x00, // pid, padding
         0xa4, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // mode, rdev
+        0x66, 0x6f, 0x6f, 0x2e, 0x74, 0x78, 0x74, 0x00, // name
+    ]);
+
+    #[cfg(all(target_endian = "big", feature = "abi-7-12"))]
+    const MKNOD_REQUEST: Align8<[u8; 64]> = Align8([
+        0x00, 0x00, 0x00, 0x38, 0x00, 0x00, 0x00, 0x08, // len, opcode
+        0xde, 0xad, 0xbe, 0xef, 0xba, 0xad, 0xd0, 0x0d, // unique
+        0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, // nodeid
+        0xc0, 0x01, 0xd0, 0x0d, 0xc0, 0x01, 0xca, 0xfe, // uid, gid
+        0xc0, 0xde, 0xba, 0x5e, 0x00, 0x00, 0x00, 0x00, // pid, padding
+        0x00, 0x00, 0x01, 0xa4, 0x00, 0x00, 0x00, 0x00, // mode, rdev
+        0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, // umsak, padding
+        0x66, 0x6f, 0x6f, 0x2e, 0x74, 0x78, 0x74, 0x00, // name
+    ]);
+
+    /// `MKNOD_REQUEST` for protocol version greater then 7.11
+    #[cfg(all(target_endian = "little", feature = "abi-7-12"))]
+    const MKNOD_REQUEST: Align8<[u8; 64]> = Align8([
+        0x38, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, // len, opcode
+        0x0d, 0xf0, 0xad, 0xba, 0xef, 0xbe, 0xad, 0xde, // unique
+        0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11, // nodeid
+        0x0d, 0xd0, 0x01, 0xc0, 0xfe, 0xca, 0x01, 0xc0, // uid, gid
+        0x5e, 0xba, 0xde, 0xc0, 0x00, 0x00, 0x00, 0x00, // pid, padding
+        0xa4, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // mode, rdev
+        0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // umsak, padding
         0x66, 0x6f, 0x6f, 0x2e, 0x74, 0x78, 0x74, 0x00, // name
     ]);
 
@@ -980,6 +1014,10 @@ mod test {
         match *req.operation() {
             Operation::MkNod { arg, name } => {
                 assert_eq!(arg.mode, 0o644);
+                #[cfg(feature = "abi-7-12")]
+                {
+                    assert_eq!(arg.umask, 0o002);
+                }
                 assert_eq!(name, "foo.txt");
             }
             _ => panic!("unexpected request operation"),

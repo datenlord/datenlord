@@ -106,6 +106,7 @@ pub trait MetaData {
     ) -> DatenLordResult<(Duration, FuseAttr, u64)>;
 
     /// Rename helper to exchange on disk
+    #[cfg(feature = "abi-7-23")]
     async fn rename_exchange_helper(
         &self,
         context: ReqContext,

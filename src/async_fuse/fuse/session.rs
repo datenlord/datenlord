@@ -817,7 +817,7 @@ async fn dispatch<'a>(
             error!("ReadDirPlus not implemented, arg={:?}", arg);
             not_implement_helper(req, fd).await
         }
-        // #[cfg(feature = "abi-7-23")]
+        #[cfg(feature = "abi-7-23")]
         Operation::Rename2 {
             arg,
             oldname,

@@ -557,7 +557,7 @@ pub enum FuseOpCode {
     // #[cfg(feature = "abi-7-21")]
     FUSE_READDIRPLUS = 44,
     /// Rename2
-    // #[cfg(feature = "abi-7-23")]
+    #[cfg(feature = "abi-7-23")]
     FUSE_RENAME2 = 45,
     /// Find next data or hole after the specified offset
     // #[cfg(feature = "abi-7-24")]
@@ -784,7 +784,13 @@ pub struct FuseRenameIn {
 }
 
 /// FUSE rename2 request input `fuse_rename2_in`
-// #[cfg(feature = "abi-7-23")]
+///
+/// Available when the protocol version is greater than 7.22.
+/// This is checked by the kernel so that the app won't receive such a request.
+///
+/// See [here](https://github.com/torvalds/linux/blob/8f6f76a6a29f36d2f3e4510d0bde5046672f6924/fs/fuse/dir.c#L1077C2-L1088C3)
+/// for the source code of checking.
+#[cfg(feature = "abi-7-23")]
 #[derive(Debug)]
 #[repr(C)]
 pub struct FuseRename2In {

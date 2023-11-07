@@ -171,7 +171,7 @@ mark_sized_types! {@kernel size_check: check_abi_7_21,
     FuseDirEntPlus,
 }
 
-// #[cfg(feature = "abi-7-23")]
+#[cfg(feature = "abi-7-23")]
 mark_sized_types! {@kernel size_check: check_abi_7_23,
     FuseRename2In,
 }

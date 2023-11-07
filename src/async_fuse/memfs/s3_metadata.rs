@@ -23,7 +23,9 @@ use super::dist::client as dist_client;
 use super::dist::server::CacheServer;
 use super::fs_util::{self, FileAttr};
 use super::id_alloc_used::INumAllocator;
-use super::kv_engine::{KVEngine, KVEngineType, KeyType, MetaTxn, ValueType};
+#[cfg(feature = "abi-7-23")]
+use super::kv_engine::MetaTxn;
+use super::kv_engine::{KVEngine, KVEngineType, KeyType, ValueType};
 use super::metadata::error;
 use super::metadata::{MetaData, ReqContext};
 use super::node::Node;
@@ -673,8 +675,9 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         Ok((ttl, fuse_attr, MY_GENERATION))
     }
 
-    #[instrument(skip(self), err, ret)]
     /// Rename helper for exchange rename
+    #[instrument(skip(self), err, ret)]
+    #[cfg(feature = "abi-7-23")]
     async fn rename_exchange_helper(
         &self,
         context: ReqContext,
@@ -1092,6 +1095,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
     /// - The ino of new entry
     ///
     /// Otherwise, it returns an `Err`.
+    #[cfg(feature = "abi-7-23")]
     async fn exchange_pre_check<T: MetaTxn + ?Sized>(
         &self,
         txn: &mut T,
