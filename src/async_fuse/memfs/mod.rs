@@ -542,12 +542,14 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         param: RenameParam,
         reply: ReplyEmpty,
     ) -> nix::Result<usize> {
-        let exchange = param.flags == 2; // RENAME_EXCHANGE
         let context = ReqContext {
             user_id: req.uid(),
             group_id: req.gid(),
         };
-        let rename_res = if exchange {
+
+        #[cfg(feature = "abi-7-23")]
+        let rename_res = if param.flags == 2 {
+            // RENAME_EXCHANGE
             self.metadata.rename_exchange_helper(context, param).await
         } else {
             // Rename replace
@@ -555,6 +557,13 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
                 .rename_may_replace_helper(context, param)
                 .await
         };
+
+        #[cfg(not(feature = "abi-7-23"))]
+        // Ignore the RENAME_EXCHANGE when version is lower than 7.23
+        let rename_res = self
+            .metadata
+            .rename_may_replace_helper(context, param)
+            .await;
 
         match rename_res {
             Ok(()) => reply.ok().await,
