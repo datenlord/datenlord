@@ -1,0 +1,85 @@
+name: CI-7-23
+on:
+    pull_request:
+        branches: [master]
+
+env:
+    CI_RUST_TOOLCHAIN: 1.67.1
+    CONTROLLER_SOCKET_FILE: /tmp/controller.sock
+    BIND_MOUNTER: target/debug/bind_mounter
+    ETCD_CONTAINER_NAME: etcd
+    ETCD_IMAGE: gcr.io/etcd-development/etcd:v3.4.13
+    NODE_SOCKET_FILE: /tmp/node.sock
+    RUST_BACKTRACE: full
+    RUST_LOG: debug
+    DATENLORD_LOCAL_BIND_DIR: /tmp/datenlord_data_dir
+
+jobs:
+    check:
+        name: Check
+        runs-on: ubuntu-latest
+        steps:
+          - name: Install CSI dependencies
+            run: |
+              sudo apt update
+              sudo apt install -y cmake g++ libprotobuf-dev protobuf-compiler
+          - uses: actions/checkout@v2
+          - uses: actions-rs/toolchain@v1
+            with:
+              profile: minimal
+              toolchain: ${{ env.CI_RUST_TOOLCHAIN }}
+              override: true
+          - uses: Swatinem/rust-cache@v2
+          - uses: actions-rs/cargo@v1
+            with:
+              command: check
+              args: -F abi-7-23
+  
+    fstest:
+      needs: ["check"]
+      name: fstest
+      runs-on: ubuntu-latest
+      steps:
+        - name: Install CSI dependencies
+          run: |
+            sudo apt update
+            sudo apt install -y cmake g++ libprotobuf-dev protobuf-compiler
+        - name: Set up Docker
+          id: buildx
+          uses: docker/setup-buildx-action@v1
+          with:
+            version: latest
+        - name: Check out code
+          uses: actions/checkout@v2
+        - name: Prepare Rust environment
+          uses: actions-rs/toolchain@v1
+          with:
+            profile: minimal
+            toolchain: ${{ env.CI_RUST_TOOLCHAIN }}
+            override: true
+        - uses: Swatinem/rust-cache@v2
+        - name: Cargo build
+          uses: actions-rs/cargo@v1
+          with:
+            command: build
+            args: -F abi-7-23
+        - name: Enable bind_mounter permission
+          run: |
+            sudo chown root:root $BIND_MOUNTER
+            sudo chmod u+s $BIND_MOUNTER
+            ls -lsh $BIND_MOUNTER
+            export ETCD_END_POINT=127.0.0.1:2379
+            export BIND_MOUNTER=`realpath $BIND_MOUNTER`
+        - name: Modify fuse.conf
+          run: sudo sed -i 's/#user_allow_other/user_allow_other/g' /etc/fuse.conf
+        - name: Run Datenlord in the background locally.
+          run: |
+            ./scripts/setup/start_local_node.sh "-F abi-7-23" &
+        - name: Build fstest
+          run: |
+            cd /home/runner/work/datenlord/datenlord/tests/fstest_dir/
+            make
+        - name: Run fstest
+          run: |
+            cd $DATENLORD_LOCAL_BIND_DIR
+            sudo prove -rv /home/runner/work/datenlord/datenlord/tests/fstest_dir/tests/
