@@ -1,0 +1,5 @@
+error: expected byte string literal
+  --> tests/ui/generate/fail/expect_bytes.rs:10:14
+   |
+10 |         str: 20,
+   |              ^^

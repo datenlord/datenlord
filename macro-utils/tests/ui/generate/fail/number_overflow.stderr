@@ -1,0 +1,5 @@
+error: number too large to fit in target type
+ --> tests/ui/generate/fail/number_overflow.rs:6:13
+  |
+6 |         u8: 1024,
+  |             ^^^^
