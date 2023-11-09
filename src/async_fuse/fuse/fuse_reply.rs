@@ -8,7 +8,7 @@ use std::fmt::Debug;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::io::RawFd;
 use std::time::Duration;
-use std::{mem, ptr, slice};
+use std::{mem, slice};
 
 use clippy_utilities::{Cast, OverflowArithmetic};
 use nix::errno::Errno;
@@ -642,47 +642,39 @@ impl ReplyDirectory {
     /// The kernel uses these value to request the next entries in further
     /// readdir calls
     pub fn add<T: AsRef<OsStr>>(&mut self, ino: u64, offset: i64, kind: SFlag, name: T) -> bool {
-        /// <https://doc.rust-lang.org/std/alloc/struct.Layout.html#method.padding_needed_for>
-        ///
-        /// <https://doc.rust-lang.org/src/core/alloc/layout.rs.html#226-250>
-        const fn round_up(len: usize, align: usize) -> usize {
-            len.wrapping_add(align).wrapping_sub(1) & !align.wrapping_sub(1)
-        }
-
         let name_bytes = name.as_ref().as_bytes();
-        let entlen = mem::size_of::<FuseDirEnt>().overflow_add(name_bytes.len());
-        let entsize = round_up(entlen, mem::size_of::<u64>()); // 64bit align
+        let dirent = FuseDirEnt {
+            ino,
+            off: offset.cast(),
+            namelen: name_bytes.len().cast(),
+            typ: crate::async_fuse::util::mode_from_kind_and_perm(kind, 0).overflow_shr(12),
+        };
+        let entlen = dirent.size_with_name();
+
+        // This is similar to call `FUSE_REC_ALIGN(entlen)` in `fuse.h`.
+        //
+        // <https://github.com/torvalds/linux/blob/b85ea95d086471afb4ad062012a4d73cd328fa86/include/uapi/linux/fuse.h#L988-L989>
+        let entsize = super::super::util::round_up(entlen, mem::size_of::<u64>()); // 64bit align
 
         let padlen = entsize.overflow_sub(entlen);
         if self.data.len().overflow_add(entsize) > self.data.capacity() {
             return true;
         }
 
-        let mut dirent = FuseDirEnt {
-            ino,
-            off: offset.cast(),
-            namelen: name_bytes.len().cast(),
-            typ: crate::async_fuse::util::mode_from_kind_and_perm(kind, 0).overflow_shr(12),
-        };
+        // # Safety
+        // The `fuse_dir_ent_in_raw` call is safe here, because:
+        // 1. The `dirent` is just built above, as a in-stack allocated object. Therefore, `&dirent` is a valid reference.
+        // 2. `dirent.namelen` is evaluated from `name_bytes`, and `name_bytes` is to be written into `self.data`,
+        //    which is a `Vec<u8>`, after `dirent_bytes` is written.
+        let dirent_bytes = unsafe { fuse_dir_ent_in_raw(&dirent) };
+        // Write dirent
+        self.data.extend_from_slice(dirent_bytes);
 
-        // TODO: refactory this, do not use unsafe code
-        unsafe {
-            // write dirent
-            let base: *mut u8 = <*mut FuseDirEnt>::cast(&mut dirent);
-            let bytes = slice::from_raw_parts(base, mem::size_of::<FuseDirEnt>());
-            self.data.extend_from_slice(bytes);
+        // write name
+        self.data.extend_from_slice(name_bytes);
 
-            // write name
-            self.data.extend_from_slice(name_bytes);
-
-            // write zero padding
-            let end_ptr = self.data.as_mut_ptr().add(self.data.len());
-            ptr::write_bytes(end_ptr, 0, padlen);
-
-            // set len
-            let new_len = self.data.len().wrapping_add(padlen);
-            self.data.set_len(new_len);
-        }
+        // write zero padding
+        self.data.extend(std::iter::repeat(0).take(padlen));
 
         false
     }
@@ -691,6 +683,21 @@ impl ReplyDirectory {
     pub async fn ok(self) -> nix::Result<usize> {
         self.reply.send(self.data).await
     }
+}
+
+/// Get the underlying raw part of a `FuseDirEnt`, represented in `&[u8]`.
+///
+/// # Safety
+/// Behavior is undefined if any of the following conditions are violated:
+/// - `from` must be a valid reference to `FuseDirEnt`.
+/// - The `namelen` field in `from` must represent a valid length of the nearly following data of
+///   the `FuseDirEnt` struct, i.e., the caller of this function takes the responsibility to build
+///   a raw string (`[u8]`) with length of `from.namelen` and place it nearly following the `FuseDirEnt`
+///   in a continuous, single allocated space (for example, a `Vec<u8>`).
+unsafe fn fuse_dir_ent_in_raw(from: &FuseDirEnt) -> &[u8] {
+    let base: *const u8 = <*const FuseDirEnt>::cast(from);
+    let bytes = slice::from_raw_parts(base, mem::size_of::<FuseDirEnt>());
+    bytes
 }
 
 /// FUSE extended attribute response

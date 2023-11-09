@@ -51,6 +51,15 @@ pub enum DeserializeError {
     #[allow(dead_code)]
     #[error("InvalidValue")]
     InvalidValue,
+
+    /// An unknown opcode of FUSE request found
+    #[error("Unknown OpCode={code}")]
+    UnknownOpCode {
+        /// The opcode
+        code: u32,
+        /// The id of request
+        unique: Option<u64>,
+    },
 }
 
 /// checks pointer alignment, returns `AlignMismatch` if failed
@@ -134,33 +143,8 @@ impl<'b> Deserializer<'b> {
         }
     }
 
-    /// Fetch a slice of target instances with the length `n`
-    #[allow(dead_code)]
-    pub fn fetch_slice<T: FuseAbiData + Sized>(
-        &mut self,
-        n: usize,
-    ) -> Result<&'b [T], DeserializeError> {
-        let ty_size: usize = mem::size_of::<T>();
-        let ty_align: usize = mem::align_of::<T>();
-        debug_assert!(ty_size > 0 && ty_size.wrapping_rem(ty_align) == 0);
-
-        let (size, is_overflow) = ty_size.overflowing_mul(n);
-        if is_overflow {
-            trace!("number overflow: ty_size = {}, n = {}", ty_size, n);
-            return Err(DeserializeError::NumOverflow);
-        }
-
-        check_size(self.bytes.len(), size)?;
-        check_align::<T>(self.bytes.as_ptr())?;
-
-        unsafe {
-            let bytes = self.pop_bytes_unchecked(size);
-            let base: *const T = bytes.as_ptr().cast();
-            Ok(slice::from_raw_parts(base, n))
-        }
-    }
-
     /// Fetch remaining bytes and transmute to a slice of target instances
+    #[cfg(feature = "abi-7-16")]
     pub fn fetch_all_as_slice<T: FuseAbiData + Sized>(
         &mut self,
     ) -> Result<&'b [T], DeserializeError> {
@@ -252,7 +236,7 @@ impl<'b> Deserializer<'b> {
 mod tests {
     use aligned_utils::stack::Align8;
 
-    use super::{DeserializeError, Deserializer};
+    use super::Deserializer;
 
     #[test]
     fn fetch_all_bytes() {
@@ -308,6 +292,7 @@ mod tests {
 
     #[test]
     #[allow(clippy::unwrap_used)]
+    #[cfg(feature = "abi-7-16")]
     fn fetch_all_as_slice() {
         // this buffer contains two `u32`
         // so it can be aligned to 4 bytes
@@ -333,7 +318,7 @@ mod tests {
             de.fetch_bytes(3).unwrap();
             assert_eq!(
                 de.fetch_all_as_slice::<u32>().unwrap_err(),
-                DeserializeError::NotEnough
+                super::DeserializeError::NotEnough
             );
             assert_eq!(de.bytes.len(), 5);
         }
