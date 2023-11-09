@@ -1,0 +1,5 @@
+error: expected integer literal
+ --> tests/ui/generate/fail/expect_int.rs:6:14
+  |
+6 |         u64: b"foo",
+  |              ^^^^^^

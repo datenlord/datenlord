@@ -1,0 +1,5 @@
+error: expected one of: `u8`, `i8`, `u16`, `i16`, `u32`, `i32`, `u64`, `i64`, `str`
+ --> tests/ui/generate/fail/unexpected_type.rs:6:9
+  |
+6 |         usize: 1024,
+  |         ^^^^^

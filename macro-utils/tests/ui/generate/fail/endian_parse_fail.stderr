@@ -1,0 +1,5 @@
+error: expected `BE` or `LE`
+ --> tests/ui/generate/fail/endian_parse_fail.rs:5:9
+  |
+5 |         NE;
+  |         ^^
