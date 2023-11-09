@@ -83,18 +83,6 @@ pub struct SetAttrParam {
     /// Meta-data changed time seconds
     #[cfg(feature = "abi-7-23")]
     pub c_time: Option<SystemTime>,
-    /// Creation time, macOS only
-    #[cfg(target_os = "macos")]
-    pub crtime: Option<SystemTime>,
-    /// macOS only
-    #[cfg(target_os = "macos")]
-    pub chgtime: Option<SystemTime>,
-    /// Backup time, macOS only
-    #[cfg(target_os = "macos")]
-    pub bkuptime: Option<SystemTime>,
-    /// See chflags(2)
-    #[cfg(target_os = "macos")]
-    pub flags: Option<u32>,
 }
 
 /// Create parameters

@@ -45,8 +45,6 @@ pub struct SerialFileAttr {
     mtime: SystemTime,
     /// Time of last change
     ctime: SystemTime,
-    /// Time of creation (macOS only)
-    crtime: SystemTime,
     /// Kind of file (directory, file, pipe, etc)
     kind: SerialSFlag,
     /// Permissions
@@ -59,8 +57,6 @@ pub struct SerialFileAttr {
     gid: u32,
     /// Rdev
     rdev: u32,
-    /// Flags (macOS only, see chflags(2))
-    flags: u32,
 }
 
 impl SerialFileAttr {
@@ -180,7 +176,6 @@ pub fn file_attr_to_serial(attr: &FileAttr) -> SerialFileAttr {
         atime: attr.atime,
         mtime: attr.mtime,
         ctime: attr.ctime,
-        crtime: attr.crtime,
         kind: {
             if attr.kind == SFlag::S_IFREG {
                 SerialSFlag::Reg
@@ -195,7 +190,6 @@ pub fn file_attr_to_serial(attr: &FileAttr) -> SerialFileAttr {
         uid: attr.uid,
         gid: attr.gid,
         rdev: attr.rdev,
-        flags: attr.flags,
     }
 }
 
@@ -209,7 +203,6 @@ pub const fn serial_to_file_attr(attr: &SerialFileAttr) -> FileAttr {
         atime: attr.atime,
         mtime: attr.mtime,
         ctime: attr.ctime,
-        crtime: attr.crtime,
         kind: {
             match attr.kind {
                 SerialSFlag::Lnk => SFlag::S_IFLNK,
@@ -222,7 +215,6 @@ pub const fn serial_to_file_attr(attr: &SerialFileAttr) -> FileAttr {
         uid: attr.uid,
         gid: attr.gid,
         rdev: attr.rdev,
-        flags: attr.flags,
     }
 }
 
@@ -265,14 +257,12 @@ mod test {
             atime: SystemTime::now(),
             mtime: SystemTime::now(),
             ctime: SystemTime::now(),
-            crtime: SystemTime::now(),
             kind: SFlag::S_IFREG,
             perm: rng.gen(),
             nlink: rng.gen(),
             uid: rng.gen(),
             gid: rng.gen(),
             rdev: rng.gen(),
-            flags: rng.gen(),
         }
     }
 
@@ -288,7 +278,6 @@ mod test {
         assert_eq!(file_attr.atime, serial_file_attr.atime);
         assert_eq!(file_attr.mtime, serial_file_attr.mtime);
         assert_eq!(file_attr.ctime, serial_file_attr.ctime);
-        assert_eq!(file_attr.crtime, serial_file_attr.crtime);
         // test if the sesrial_file_attr's kind is SerialSFlag::Reg
         if let SerialSFlag::Reg = serial_file_attr.kind {
         } else {
@@ -299,7 +288,6 @@ mod test {
         assert_eq!(file_attr.uid, serial_file_attr.uid);
         assert_eq!(file_attr.gid, serial_file_attr.gid);
         assert_eq!(file_attr.rdev, serial_file_attr.rdev);
-        assert_eq!(file_attr.flags, serial_file_attr.flags);
     }
 
     // Return true for equal
@@ -310,14 +298,12 @@ mod test {
             && left.atime == right.atime
             && left.mtime == right.mtime
             && left.ctime == right.ctime
-            && left.crtime == right.crtime
             && left.kind == right.kind
             && left.perm == right.perm
             && left.nlink == right.nlink
             && left.uid == right.uid
             && left.gid == right.gid
             && left.rdev == right.rdev
-            && left.flags == right.flags
     }
 
     // Test for serial_to_file_attr function

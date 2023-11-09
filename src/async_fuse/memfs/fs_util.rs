@@ -28,8 +28,6 @@ pub struct FileAttr {
     pub mtime: SystemTime,
     /// Time of last change
     pub ctime: SystemTime,
-    /// Time of creation (macOS only)
-    pub crtime: SystemTime,
     /// Kind of file (directory, file, pipe, etc)
     pub kind: SFlag,
     /// Permissions
@@ -42,8 +40,6 @@ pub struct FileAttr {
     pub gid: u32,
     /// Rdev
     pub rdev: u32,
-    /// Flags (macOS only, see chflags(2))
-    pub flags: u32,
 }
 
 impl FileAttr {
@@ -57,14 +53,12 @@ impl FileAttr {
             atime: now,
             mtime: now,
             ctime: now,
-            crtime: now,
             kind: SFlag::S_IFREG,
             perm: 0o775,
             nlink: 0,
             uid: 0,
             gid: 0,
             rdev: 0,
-            flags: 0,
         }
     }
 
@@ -134,14 +128,12 @@ impl Default for FileAttr {
             atime: SystemTime::UNIX_EPOCH,
             mtime: SystemTime::UNIX_EPOCH,
             ctime: SystemTime::UNIX_EPOCH,
-            crtime: SystemTime::UNIX_EPOCH,
             kind: SFlag::S_IFREG,
             perm: 0o775,
             nlink: 0,
             uid: 0,
             gid: 0,
             rdev: 0,
-            flags: 0,
         }
     }
 }
@@ -166,8 +158,6 @@ pub fn parse_mode(mode: u32) -> Mode {
 
     #[cfg(target_os = "linux")]
     let file_mode = Mode::from_bits_truncate(mode);
-    #[cfg(target_os = "macos")]
-    let file_mode = Mode::from_bits_truncate(mode.cast());
     debug!("parse_mode() read mode={:?}", file_mode);
     file_mode
 }
@@ -176,8 +166,6 @@ pub fn parse_mode(mode: u32) -> Mode {
 pub fn parse_mode_bits(mode: u32) -> u16 {
     #[cfg(target_os = "linux")]
     let bits = parse_mode(mode).bits().cast();
-    #[cfg(target_os = "macos")]
-    let bits = parse_mode(mode).bits();
 
     bits
 }
@@ -205,8 +193,6 @@ pub fn convert_to_fuse_attr(attr: FileAttr) -> FuseAttr {
     let (a_time_secs, a_time_nanos) = time_from_system_time(&attr.atime);
     let (m_time_secs, m_time_nanos) = time_from_system_time(&attr.mtime);
     let (c_time_secs, c_time_nanos) = time_from_system_time(&attr.ctime);
-    #[cfg(target_os = "macos")]
-    let (creat_time_secs, creat_time_nanos) = time_from_system_time(&attr.crtime);
 
     FuseAttr {
         ino: attr.ino,
@@ -215,20 +201,14 @@ pub fn convert_to_fuse_attr(attr: FileAttr) -> FuseAttr {
         atime: a_time_secs,
         mtime: m_time_secs,
         ctime: c_time_secs,
-        #[cfg(target_os = "macos")]
-        crtime: creat_time_secs,
         atimensec: a_time_nanos,
         mtimensec: m_time_nanos,
         ctimensec: c_time_nanos,
-        #[cfg(target_os = "macos")]
-        crtimensec: creat_time_nanos,
         mode: crate::async_fuse::util::mode_from_kind_and_perm(attr.kind, attr.perm),
         nlink: attr.nlink,
         uid: attr.uid,
         gid: attr.gid,
         rdev: attr.rdev,
-        #[cfg(target_os = "macos")]
-        flags: attr.flags,
         #[cfg(feature = "abi-7-9")]
         blksize: 0, // TODO: find a proper way to set block size
         #[cfg(feature = "abi-7-9")]
@@ -250,14 +230,12 @@ mod tests {
             atime: SystemTime::now(),
             mtime: SystemTime::now(),
             ctime: SystemTime::now(),
-            crtime: SystemTime::now(),
             kind: SFlag::S_IFREG,
             perm: 0o741,
             nlink: 0,
             uid: 1000,
             gid: 1000,
             rdev: 0,
-            flags: 0,
         };
 
         // Owner permission checks

@@ -58,11 +58,6 @@ pub fn mode_from_kind_and_perm(kind: SFlag, perm: u16) -> u32 {
     {
         file_type | file_perm
     }
-    #[cfg(target_os = "macos")]
-    {
-        let ftype: u32 = file_type.into();
-        file_perm | ftype
-    }
 }
 
 /// Stores short bytes on stack, stores long bytes on heap and provides

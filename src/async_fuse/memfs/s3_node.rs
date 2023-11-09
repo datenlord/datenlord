@@ -354,7 +354,6 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
                 atime: now,
                 mtime: now,
                 ctime: now,
-                crtime: now,
                 kind: SFlag::S_IFDIR,
                 uid: unistd::getuid().as_raw(),
                 gid: unistd::getgid().as_raw(),

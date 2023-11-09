@@ -100,18 +100,12 @@ pub struct FuseAttr {
     pub mtime: u64,
     /// Meta-data changed time seconds
     pub ctime: u64,
-    /// Creation time seconds
-    #[cfg(target_os = "macos")]
-    pub crtime: u64,
     /// Access time nano-seconds
     pub atimensec: u32,
     /// Content modified time nano-seconds
     pub mtimensec: u32,
     /// Meta-data changed time nano-seconds
     pub ctimensec: u32,
-    /// Creation time nano-seconds
-    #[cfg(target_os = "macos")]
-    pub crtimensec: u32,
     /// File mode
     pub mode: u32,
     /// Link numbers
@@ -122,9 +116,6 @@ pub struct FuseAttr {
     pub gid: u32,
     /// The device ID that this file (inode) represents if special file
     pub rdev: u32,
-    /// see chflags(2)
-    #[cfg(target_os = "macos")]
-    pub flags: u32,
     /// Block size
     #[cfg(feature = "abi-7-9")]
     pub blksize: u32,
@@ -202,18 +193,6 @@ pub mod setattr_flags {
     /// To set meta-data change time
     #[cfg(feature = "abi-7-23")]
     pub const FATTR_CTIME: u32 = 1 << 10_i32;
-    /// To set creation time
-    #[cfg(target_os = "macos")]
-    pub const FATTR_CRTIME: u32 = 1 << 28_i32;
-    /// To set change time
-    #[cfg(target_os = "macos")]
-    pub const FATTR_CHGTIME: u32 = 1 << 29_i32;
-    /// To set backup time
-    #[cfg(target_os = "macos")]
-    pub const FATTR_BKUPTIME: u32 = 1 << 30_i32;
-    /// To set flags, see chflags(2)
-    #[cfg(target_os = "macos")]
-    pub const FATTR_FLAGS: u32 = 1 << 31_i32;
 }
 
 pub use setattr_flags::*;
@@ -248,14 +227,6 @@ pub mod fopen_flags {
     /// the file is stream-like (no file position at all)
     #[cfg(feature = "abi-7-31")]
     pub const FOPEN_STREAM: u32 = 1 << 4_i32;
-
-    /// macOS purge attribute
-    #[cfg(target_os = "macos")]
-    pub const FOPEN_PURGE_ATTR: u32 = 1 << 30_i32;
-
-    /// macOS purge UBC
-    #[cfg(target_os = "macos")]
-    pub const FOPEN_PURGE_UBC: u32 = 1 << 31_i32;
 }
 
 pub use fopen_flags::*;
@@ -345,22 +316,6 @@ pub mod init_flags {
     /// request
     #[cfg(feature = "abi-7-30")]
     pub const FUSE_EXPLICIT_INVAL_DATA: u32 = 1 << 25_i32;
-
-    /// macOS allocate
-    #[cfg(target_os = "macos")]
-    pub const FUSE_ALLOCATE: u32 = 1 << 27_i32;
-    /// macOS exchange data
-    #[cfg(target_os = "macos")]
-    pub const FUSE_EXCHANGE_DATA: u32 = 1 << 28_i32;
-    /// macOS case insensitive
-    #[cfg(target_os = "macos")]
-    pub const FUSE_CASE_INSENSITIVE: u32 = 1 << 29_i32;
-    /// macOS volume rename
-    #[cfg(target_os = "macos")]
-    pub const FUSE_VOL_RENAME: u32 = 1 << 30_i32;
-    /// macOS extended times
-    #[cfg(target_os = "macos")]
-    pub const FUSE_XTIMES: u32 = 1 << 31_i32;
 }
 
 pub use init_flags::*;
@@ -565,17 +520,6 @@ pub enum FuseOpCode {
     /// Copy a range of data from an opened file to another
     // #[cfg(feature = "abi-7-28")]
     FUSE_COPY_FILE_RANGE = 47,
-
-    /// Set volume name
-    #[cfg(target_os = "macos")]
-    FUSE_SETVOLNAME = 61,
-    /// Get extended times
-    #[cfg(target_os = "macos")]
-    FUSE_GETXTIMES = 62,
-    /// Rename exchange
-    #[cfg(target_os = "macos")]
-    FUSE_EXCHANGE = 63,
-
     /// CUSE specific operations
     #[cfg(feature = "abi-7-11")]
     CUSE_INIT = 4096,
@@ -621,17 +565,9 @@ pub const FUSE_MIN_READ_BUFFER: usize = 8192;
 pub mod fuse_compat_configs {
     /// FUSE compatible statfs size when minior version lower than 4
     pub const FUSE_COMPAT_STATFS_SIZE: usize = 48;
-    /// FUSE compatible directory entry related response size for macOS and
-    /// version < 7.9
-    #[cfg(all(target_os = "macos", feature = "abi-7-9"))]
-    pub const FUSE_COMPAT_ENTRY_OUT_SIZE: usize = 136;
     /// FUSE compatible directory entry related response size for version < 7.9
     #[cfg(feature = "abi-7-9")]
     pub const FUSE_COMPAT_ENTRY_OUT_SIZE: usize = 120;
-    /// FUSE compatible attribute related response size for macOS and version <
-    /// 7.9
-    #[cfg(all(target_os = "macos", feature = "abi-7-9"))]
-    pub const FUSE_COMPAT_ATTR_OUT_SIZE: usize = 112;
     /// FUSE compatible attribute related response size for version < 7.9
     #[cfg(feature = "abi-7-9")]
     pub const FUSE_COMPAT_ATTR_OUT_SIZE: usize = 96;
@@ -730,21 +666,6 @@ pub struct FuseAttrOut {
     pub attr: FuseAttr,
 }
 
-/// FUSE get extended timestamp response `fuse_getxtimes_out`
-#[cfg(target_os = "macos")]
-#[derive(Debug)]
-#[repr(C)]
-pub struct FuseGetXTimesOut {
-    /// Backup time seconds
-    pub bkuptime: u64,
-    /// Creation time seconds
-    pub crtime: u64,
-    /// Backup time nano-seconds
-    pub bkuptimensec: u32,
-    /// Creation time nano-seconds
-    pub crtimensec: u32,
-}
-
 /// FUSE make node request input `fuse_mknod_in`
 #[derive(Debug)]
 #[repr(C)]
@@ -800,19 +721,6 @@ pub struct FuseRename2In {
     pub flags: u32,
     /// Alignment padding
     pub padding: u32,
-}
-
-/// FUSE exchange request input `fuse_exchange_in`
-#[cfg(target_os = "macos")]
-#[derive(Debug)]
-#[repr(C)]
-pub struct FuseExchangeIn {
-    /// Old directory i-number
-    pub olddir: u64,
-    /// New directory i-number
-    pub newdir: u64,
-    /// Exchange options
-    pub options: u64,
 }
 
 /// FUSE link request input `fuse_link_in`
@@ -871,27 +779,6 @@ pub struct FuseSetAttrIn {
     pub gid: u32,
     /// Alignment padding
     pub unused5: u32,
-    /// Backup time seconds
-    #[cfg(target_os = "macos")]
-    pub bkuptime: u64,
-    /// Change time seconds
-    #[cfg(target_os = "macos")]
-    pub chgtime: u64,
-    /// Creation time seconds
-    #[cfg(target_os = "macos")]
-    pub crtime: u64,
-    /// Backup time nano-seconds
-    #[cfg(target_os = "macos")]
-    pub bkuptimensec: u32,
-    /// Change time nano-seconds
-    #[cfg(target_os = "macos")]
-    pub chgtimensec: u32,
-    /// Creation time nano-seconds
-    #[cfg(target_os = "macos")]
-    pub crtimensec: u32,
-    /// See chflags(2)
-    #[cfg(target_os = "macos")]
-    pub flags: u32,
 }
 
 /// FUSE open request input `fuse_open_in`
@@ -1044,12 +931,6 @@ pub struct FuseSetXAttrIn {
     pub size: u32,
     /// The flags that specifies the meanings of this operation
     pub flags: u32,
-    /// Attribute position
-    #[cfg(target_os = "macos")]
-    pub position: u32,
-    /// Alignment padding
-    #[cfg(target_os = "macos")]
-    pub padding: u32,
 }
 
 /// FUSE get extended attribute request input `fuse_getxattr_in`
@@ -1060,12 +941,6 @@ pub struct FuseGetXAttrIn {
     pub size: u32,
     /// Alignment padding
     pub padding: u32,
-    /// Attribute position
-    #[cfg(target_os = "macos")]
-    pub position: u32,
-    /// Alignment padding
-    #[cfg(target_os = "macos")]
-    pub padding2: u32,
 }
 
 /// FUSE get extended attribute response `fuse_getxattr_out`

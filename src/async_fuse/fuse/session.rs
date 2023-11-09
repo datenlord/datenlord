@@ -41,20 +41,10 @@ use crate::async_fuse::memfs::{
 const INIT_FLAGS: u32 = FUSE_ASYNC_READ;
 // TODO: Add FUSE_EXPORT_SUPPORT and FUSE_BIG_WRITES (requires ABI 7.10)
 
-/// On macOS, we additionally support case insensitiveness, volume renames and
-/// xtimes TODO: we should eventually let the filesystem implementation decide
-/// which flags to set
-#[cfg(target_os = "macos")]
-const INIT_FLAGS: u32 = FUSE_ASYNC_READ | FUSE_CASE_INSENSITIVE | FUSE_VOL_RENAME | FUSE_XTIMES;
-// TODO: Add FUSE_EXPORT_SUPPORT and FUSE_BIG_WRITES (requires ABI 7.10)
-
 /// The max size of write requests from the kernel. The absolute minimum is 4k,
 /// FUSE recommends at least 128k, max 16M. The FUSE default is  128k on Linux.
 #[cfg(target_os = "linux")]
 const MAX_WRITE_SIZE: u32 = 128 * 1024;
-/// The FUSE default max size of write requests is 16M on macOS
-#[cfg(target_os = "macos")]
-const MAX_WRITE_SIZE: u32 = 16 * 1024 * 1024;
 
 /// Size of the buffer for reading a request from the kernel. Since the kernel
 /// may send up to `MAX_WRITE_SIZE` bytes in a write request, we use that value
@@ -523,43 +513,6 @@ async fn dispatch<'a>(
                 0 => None,
                 _ => Some(UNIX_EPOCH + Duration::new(arg.ctime, arg.ctimensec)),
             };
-            // Get extra file attributes especially for macOS
-            #[cfg(target_os = "macos")]
-            let (crtime, chgtime, bkuptime, flags) = {
-                let crtime = match arg.valid & FATTR_CRTIME {
-                    0 => None,
-                    _ => Some(
-                        match UNIX_EPOCH.checked_add(Duration::new(arg.crtime, arg.crtimensec)) {
-                            Some(crt) => crt,
-                            None => SystemTime::now(),
-                        },
-                    ), // _ => Some(UNIX_EPOCH + Duration::new(arg.crtime, arg.crtimensec)),
-                };
-                let chgtime = match arg.valid & FATTR_CHGTIME {
-                    0 => None,
-                    _ => Some(
-                        match UNIX_EPOCH.checked_add(Duration::new(arg.chgtime, arg.chgtimensec)) {
-                            Some(cht) => cht,
-                            None => SystemTime::now(),
-                        },
-                    ), // _ => Some(UNIX_EPOCH + Duration::new(arg.chgtime, arg.chgtimensec)),
-                };
-                let bkuptime = match arg.valid & FATTR_BKUPTIME {
-                    0 => None,
-                    _ => Some(
-                        match UNIX_EPOCH.checked_add(Duration::new(arg.bkuptime, arg.bkuptimensec))
-                        {
-                            Some(bkt) => bkt,
-                            None => SystemTime::now(),
-                        },
-                    ), // _ => Some(UNIX_EPOCH + Duration::new(arg.bkuptime, arg.bkuptimensec)),
-                };
-                let flags = match arg.valid & FATTR_FLAGS {
-                    0 => None,
-                    _ => Some(arg.flags),
-                };
-                (crtime, chgtime, bkuptime, flags)
-            };
 
             let reply = ReplyAttr::new(req.unique(), fd);
             let param = SetAttrParam {
@@ -575,14 +528,6 @@ async fn dispatch<'a>(
                 m_time,
                 #[cfg(feature = "abi-7-23")]
                 c_time,
-                #[cfg(target_os = "macos")]
-                crtime,
-                #[cfg(target_os = "macos")]
-                chgtime,
-                #[cfg(target_os = "macos")]
-                bkuptime,
-                #[cfg(target_os = "macos")]
-                flags,
             };
             fs.setattr(req, param, reply).await
         }
@@ -699,13 +644,6 @@ async fn dispatch<'a>(
             fs.statfs(req, reply).await
         }
         Operation::SetXAttr { arg, name, value } => {
-            /// Set the position of an extended attribute
-            /// macOS only
-            #[cfg(target_os = "macos")]
-            #[inline]
-            const fn get_position(arg: &FuseSetXAttrIn) -> u32 {
-                arg.position
-            }
             /// Set the position of an extended attribute
             /// zero for Linux
             #[cfg(target_os = "linux")]
@@ -843,33 +781,6 @@ async fn dispatch<'a>(
             error!("ReadDirPlusCopyFileRange not implemented, arg={:?}", arg);
             not_implement_helper(req, fd).await
         }
-
-        // #[cfg(target_os = "macos")]
-        // Operation::SetVolName { name } => {
-        //     let reply = ReplyEmpty::new(req.unique(), fd);
-        //     filesystem.setvolname(req, name, reply).await
-        // }
-        // #[cfg(target_os = "macos")]
-        // Operation::Exchange {
-        //     arg,
-        //     oldname,
-        //     newname,
-        // } => {
-        //     let reply = ReplyEmpty::new(req.unique(), fd);
-        //     let param = RenameParam {
-        //         old_parent: req.nodeid(),
-        //         old_name: oldname.to_os_string(),
-        //         new_parent: arg.newdir,
-        //         new_name: newname.to_os_string(),
-        //         flags: arg.options,
-        //     };
-        //     filesystem.exchange(req, param, reply).await
-        // }
-        // #[cfg(target_os = "macos")]
-        // Operation::GetXTimes => {
-        //     let reply = ReplyXTimes::new(req.unique(), fd);
-        //     filesystem.getxtimes(req, reply).await
-        // }
         #[cfg(feature = "abi-7-11")]
         Operation::CuseInit { arg } => {
             panic!("unsupported CuseInit arg={arg:?}");

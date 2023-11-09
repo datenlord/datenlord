@@ -17,8 +17,6 @@ use nix::sys::uio::{self, IoVec};
 use tracing::debug;
 
 use super::abi_marker;
-#[cfg(target_os = "macos")]
-use super::protocol::FuseGetXTimesOut;
 use super::protocol::{
     FuseAttr, FuseAttrOut, FuseBMapOut, FuseDirEnt, FuseEntryOut, FuseFileLock, FuseGetXAttrOut,
     FuseInitOut, FuseKStatFs, FuseLockOut, FuseOpenOut, FuseOutHeader, FuseStatFsOut, FuseWriteOut,
@@ -287,11 +285,6 @@ impl_fuse_reply_new_for! {
     ReplyXAttr,
 }
 
-#[cfg(target_os = "macos")]
-impl_fuse_reply_new_for! {
-    ReplyXTimes,
-}
-
 use crate::common::error::DatenLordError;
 
 /// Impl fuse reply error
@@ -457,36 +450,6 @@ impl ReplyAttr {
                 attr_valid_nsec: ttl.subsec_nanos(),
                 dummy: 0,
                 attr,
-            })
-            .await
-    }
-}
-
-/// FUSE extended timestamp response
-#[cfg(target_os = "macos")]
-#[derive(Debug)]
-pub struct ReplyXTimes {
-    /// The inner raw reply
-    reply: ReplyRaw<FuseGetXTimesOut>,
-}
-
-#[cfg(target_os = "macos")]
-impl ReplyXTimes {
-    /// Reply to a request with the given xtimes
-    #[allow(dead_code)]
-    pub async fn xtimes(
-        self,
-        bkuptime_secs: u64,
-        bkuptime_nanos: u32,
-        crtime_secs: u64,
-        crtime_nanos: u32,
-    ) -> nix::Result<usize> {
-        self.reply
-            .send(FuseGetXTimesOut {
-                bkuptime: bkuptime_secs,
-                crtime: crtime_secs,
-                bkuptimensec: bkuptime_nanos,
-                crtimensec: crtime_nanos,
             })
             .await
     }
@@ -859,20 +822,14 @@ mod test {
         let a_time = 64;
         let m_time = 64;
         let c_time = 64;
-        #[cfg(target_os = "macos")]
-        let creat_time = 64;
         let a_timensec = 32;
         let m_timensec = 32;
         let c_timensec = 32;
-        #[cfg(target_os = "macos")]
-        let creat_timensec = 32;
         let mode = 32;
         let nlink = 32;
         let uid = 32;
         let g_id = 32;
         let rdev = 32;
-        #[cfg(target_os = "macos")]
-        let flags = 32;
         #[cfg(feature = "abi-7-9")]
         let blksize = 32;
         #[cfg(feature = "abi-7-9")]
@@ -884,20 +841,14 @@ mod test {
             atime: a_time,
             mtime: m_time,
             ctime: c_time,
-            #[cfg(target_os = "macos")]
-            crtime: creat_time,
             atimensec: a_timensec,
             mtimensec: m_timensec,
             ctimensec: c_timensec,
-            #[cfg(target_os = "macos")]
-            crtimensec: creat_timensec,
             mode,
             nlink,
             uid,
             gid: g_id,
             rdev,
-            #[cfg(target_os = "macos")]
-            flags,
             #[cfg(feature = "abi-7-9")]
             blksize,
             #[cfg(feature = "abi-7-9")]
