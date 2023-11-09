@@ -7,8 +7,6 @@ use tracing::warn;
 
 use super::context::ProtoVersion;
 use super::de::Deserializer;
-#[cfg(target_os = "macos")]
-use super::protocol::FuseExchangeIn;
 #[cfg(feature = "abi-7-23")]
 use super::protocol::FuseRename2In;
 use super::protocol::{
@@ -279,26 +277,6 @@ pub enum Operation<'a> {
         /// The FUSE copy file range request
         arg: &'a FuseCopyFileRangeIn,
     },
-    /// FUSE_SETVOLNAME = 61
-    #[cfg(target_os = "macos")]
-    SetVolName {
-        /// Volume name to set
-        name: &'a str,
-    },
-    /// FUSE_GETXTIMES = 62
-    #[cfg(target_os = "macos")]
-    GetXTimes,
-    /// FUSE_EXCHANGE = 63
-    #[cfg(target_os = "macos")]
-    Exchange {
-        /// The FUSE exchange request
-        arg: &'a FuseExchangeIn,
-        /// The old file name
-        oldname: &'a str,
-        /// The new file name
-        newname: &'a str,
-    },
-
     /// CUSE_INIT = 4096
     #[cfg(feature = "abi-7-11")]
     CuseInit {
@@ -371,14 +349,6 @@ impl<'a> Operation<'a> {
             46 => FuseOpCode::FUSE_LSEEK,
             // #[cfg(feature = "abi-7-28")]
             47 => FuseOpCode::FUSE_COPY_FILE_RANGE,
-
-            #[cfg(target_os = "macos")]
-            61 => FuseOpCode::FUSE_SETVOLNAME,
-            #[cfg(target_os = "macos")]
-            62 => FuseOpCode::FUSE_GETXTIMES,
-            #[cfg(target_os = "macos")]
-            63 => FuseOpCode::FUSE_EXCHANGE,
-
             #[cfg(feature = "abi-7-11")]
             4096 => FuseOpCode::CUSE_INIT,
 
@@ -537,20 +507,6 @@ impl<'a> Operation<'a> {
             FuseOpCode::FUSE_COPY_FILE_RANGE => Operation::CopyFileRange {
                 arg: data.fetch_ref()?,
             },
-
-            #[cfg(target_os = "macos")]
-            FuseOpCode::FUSE_SETVOLNAME => Operation::SetVolName {
-                name: data.fetch_str()?,
-            },
-            #[cfg(target_os = "macos")]
-            FuseOpCode::FUSE_GETXTIMES => Operation::GetXTimes,
-            #[cfg(target_os = "macos")]
-            FuseOpCode::FUSE_EXCHANGE => Operation::Exchange {
-                arg: data.fetch_ref()?,
-                oldname: data.fetch_str()?,
-                newname: data.fetch_str()?,
-            },
-
             #[cfg(feature = "abi-7-11")]
             FuseOpCode::CUSE_INIT => Operation::CuseInit {
                 arg: data.fetch_ref()?,
@@ -673,7 +629,11 @@ impl fmt::Display for Operation<'_> {
             ),
             // #[cfg(feature = "abi-7-11")]
             Operation::Poll { arg } => {
-                write!(f, "POLL fh={}, kh={}, flags={:#x} ", arg.fh, arg.kh, arg.flags)
+                write!(
+                    f,
+                    "POLL fh={}, kh={}, flags={:#x} ",
+                    arg.fh, arg.kh, arg.flags
+                )
             }
             // #[cfg(feature = "abi-7-15")]
             Operation::NotifyReply { data } => write!(f, "NOTIFY REPLY data={data:?}"),
@@ -694,7 +654,11 @@ impl fmt::Display for Operation<'_> {
                 arg.fh, arg.offset, arg.size,
             ),
             #[cfg(feature = "abi-7-23")]
-            Operation::Rename2 { arg, oldname, newname } => write!(
+            Operation::Rename2 {
+                arg,
+                oldname,
+                newname,
+            } => write!(
                 f,
                 "RENAME2 name={:?}, newdir={:#018x}, newname={:?}, flags={:#x}",
                 oldname, arg.newdir, newname, arg.flags,
@@ -711,18 +675,6 @@ impl fmt::Display for Operation<'_> {
                 "COPYFILERANGE src fh={}, dst fh={}, flags={:#?}",
                 arg.fh_in, arg.fh_out, arg.flags,
             ),
-
-            #[cfg(target_os = "macos")]
-            Operation::SetVolName { name } => write!(f, "SETVOLNAME name={:?}", name),
-            #[cfg(target_os = "macos")]
-            Operation::GetXTimes => write!(f, "GETXTIMES"),
-            #[cfg(target_os = "macos")]
-            Operation::Exchange { arg, oldname, newname } => write!(
-                f,
-                "EXCHANGE olddir={:#018x}, oldname={:?}, newdir={:#018x}, newname={:?}, options={:#x}",
-                arg.olddir, oldname, arg.newdir, newname, arg.options,
-            ),
-
             #[cfg(feature = "abi-7-11")]
             Operation::CuseInit { arg } => write!(
                 f,

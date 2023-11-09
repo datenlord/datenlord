@@ -186,9 +186,3 @@ mark_sized_types! {@kernel size_check: check_abi_7_24,
 mark_sized_types! {@kernel size_check: check_abi_7_28,
     FuseCopyFileRangeIn,
 }
-
-#[cfg(target_os = "macos")]
-mark_sized_types! {@kernel size_check: check_macos,
-    FuseGetXTimesOut,
-    FuseExchangeIn,
-}
