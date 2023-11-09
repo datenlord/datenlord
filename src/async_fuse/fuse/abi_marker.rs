@@ -110,15 +110,15 @@ mark_sized_types!(@kernel size_check: check_common,
     FuseInHeader,
     FuseOutHeader,
     FuseDirEnt,
-
-    // TODO: remove this after implement corresponding FUSE operations
-    // ---
-    FuseIoCtlIn,
-    FusePollIn,
-    FuseBatchForgetIn,
-    FuseForgetOne,
-    // ---
 );
+
+// TODO: remove this after implement corresponding FUSE operations
+// ---
+// FuseIoCtlIn,
+// FusePollIn,
+// FuseBatchForgetIn,
+// FuseForgetOne,
+// ---
 
 #[cfg(feature = "abi-7-9")]
 mark_sized_types! {@kernel size_check: check_abi_7_9,
@@ -129,9 +129,9 @@ mark_sized_types! {@kernel size_check: check_abi_7_9,
 mark_sized_types! {@kernel size_check: check_abi_7_11,
     CuseInitIn,
     CuseInitOut,
-    // FuseIoCtlIn,
+    FuseIoCtlIn,
     FuseIoCtlOut,
-    // FusePollIn,
+    FusePollIn,
     FusePollOut,
     FuseNotifyPollWakeUpOut,
 }
@@ -151,8 +151,8 @@ mark_sized_types! {@kernel size_check: check_abi_7_15,
 
 #[cfg(feature = "abi-7-16")]
 mark_sized_types! {@kernel size_check: check_abi_7_16,
-    // FuseForgetOne,
-    // FuseBatchForgetIn,
+    FuseForgetOne,
+    FuseBatchForgetIn,
     FuseIoCtlIoVec,
 }
 
@@ -161,7 +161,7 @@ mark_sized_types! {@kernel size_check: check_abi_7_18,
     FuseNotifyDeleteOut,
 }
 
-// #[cfg(feature = "abi-7-19")]
+#[cfg(feature = "abi-7-19")]
 mark_sized_types! {@kernel size_check: check_abi_7_19,
     FuseFAllocateIn,
 }

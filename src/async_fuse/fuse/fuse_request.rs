@@ -5,17 +5,23 @@ use std::fmt;
 use clippy_utilities::Cast;
 use tracing::warn;
 
-use super::context::ProtoVersion;
 use super::de::Deserializer;
 #[cfg(feature = "abi-7-23")]
 use super::protocol::FuseRename2In;
 use super::protocol::{
-    FuseAccessIn, FuseBMapIn, FuseBatchForgetIn, FuseCopyFileRangeIn, FuseCreateIn,
-    FuseFAllocateIn, FuseFSyncIn, FuseFlushIn, FuseForgetIn, FuseForgetOne, FuseGetXAttrIn,
-    FuseInHeader, FuseInitIn, FuseInterruptIn, FuseIoCtlIn, FuseLSeekIn, FuseLinkIn, FuseLockIn,
-    FuseMkDirIn, FuseMkNodIn, FuseOpCode, FuseOpenIn, FusePollIn, FuseReadIn, FuseReleaseIn,
-    FuseRenameIn, FuseSetAttrIn, FuseSetXAttrIn, FuseWriteIn,
+    FuseAccessIn, FuseBMapIn, FuseCopyFileRangeIn, FuseCreateIn, FuseFSyncIn, FuseFlushIn,
+    FuseForgetIn, FuseGetXAttrIn, FuseInHeader, FuseInitIn, FuseInterruptIn, FuseLSeekIn,
+    FuseLinkIn, FuseLockIn, FuseMkDirIn, FuseMkNodIn, FuseOpCode, FuseOpenIn, FuseReadIn,
+    FuseReleaseIn, FuseRenameIn, FuseSetAttrIn, FuseSetXAttrIn, FuseWriteIn,
 };
+use super::{context::ProtoVersion, de::DeserializeError};
+
+#[cfg(feature = "abi-7-19")]
+use super::protocol::FuseFAllocateIn;
+#[cfg(feature = "abi-7-16")]
+use super::protocol::{FuseBatchForgetIn, FuseForgetOne};
+#[cfg(feature = "abi-7-11")]
+use super::protocol::{FuseIoCtlIn, FusePollIn};
 
 /// FUSE operation
 #[derive(Debug)]
@@ -211,7 +217,7 @@ pub enum Operation<'a> {
     /// FUSE_DESTROY = 38
     Destroy,
     /// FUSE_IOCTL = 39
-    // #[cfg(feature = "abi-7-11")]
+    #[cfg(feature = "abi-7-11")]
     IoCtl {
         /// The FUSE ioctl request
         arg: &'a FuseIoCtlIn,
@@ -219,19 +225,19 @@ pub enum Operation<'a> {
         data: &'a [u8],
     },
     /// FUSE_POLL = 40
-    // #[cfg(feature = "abi-7-11")]
+    #[cfg(feature = "abi-7-11")]
     Poll {
         /// The FUSE poll request
         arg: &'a FusePollIn,
     },
     /// FUSE_NOTIFY_REPLY = 41
-    // #[cfg(feature = "abi-7-15")]
+    #[cfg(feature = "abi-7-15")]
     NotifyReply {
         /// FUSE notify reply data
         data: &'a [u8],
     },
     /// FUSE_BATCH_FORGET = 42
-    // #[cfg(feature = "abi-7-16")]
+    #[cfg(feature = "abi-7-16")]
     BatchForget {
         /// The FUSE batch forget request
         arg: &'a FuseBatchForgetIn,
@@ -239,13 +245,13 @@ pub enum Operation<'a> {
         nodes: &'a [FuseForgetOne],
     },
     /// FUSE_FALLOCATE = 43
-    // #[cfg(feature = "abi-7-19")]
+    #[cfg(feature = "abi-7-19")]
     FAllocate {
         /// The FUSE fallocate request
         arg: &'a FuseFAllocateIn,
     },
     /// FUSE_READDIRPLUS = 44,
-    // #[cfg(feature = "abi-7-21")]
+    #[cfg(feature = "abi-7-21")]
     ReadDirPlus {
         /// The FUSE read directory plus request
         arg: &'a FuseReadIn,
@@ -292,7 +298,7 @@ impl<'a> Operation<'a> {
         n: u32,
         data: &mut Deserializer<'a>,
         #[allow(unused_variables)] proto_version: ProtoVersion,
-    ) -> anyhow::Result<Self> {
+    ) -> Result<Self, DeserializeError> {
         let opcode = match n {
             1 => FuseOpCode::FUSE_LOOKUP,
             2 => FuseOpCode::FUSE_FORGET,
@@ -330,20 +336,19 @@ impl<'a> Operation<'a> {
             36 => FuseOpCode::FUSE_INTERRUPT,
             37 => FuseOpCode::FUSE_BMAP,
             38 => FuseOpCode::FUSE_DESTROY,
-            // #[cfg(feature = "abi-7-11")]
+            #[cfg(feature = "abi-7-11")]
             39 => FuseOpCode::FUSE_IOCTL,
-            // #[cfg(feature = "abi-7-11")]
+            #[cfg(feature = "abi-7-11")]
             40 => FuseOpCode::FUSE_POLL,
-            // #[cfg(feature = "abi-7-15")]
+            #[cfg(feature = "abi-7-15")]
             41 => FuseOpCode::FUSE_NOTIFY_REPLY,
-            // #[cfg(feature = "abi-7-16")]
+            #[cfg(feature = "abi-7-16")]
             42 => FuseOpCode::FUSE_BATCH_FORGET,
-            // #[cfg(feature = "abi-7-19")]
+            #[cfg(feature = "abi-7-19")]
             43 => FuseOpCode::FUSE_FALLOCATE,
-            // #[cfg(feature = "abi-7-21")]
+            #[cfg(feature = "abi-7-21")]
             44 => FuseOpCode::FUSE_READDIRPLUS,
             #[cfg(feature = "abi-7-23")]
-            // https://github.com/torvalds/linux/blob/8f6f76a6a29f36d2f3e4510d0bde5046672f6924/fs/fuse/dir.c#L1077C2-L1088C3
             45 => FuseOpCode::FUSE_RENAME2,
             // #[cfg(feature = "abi-7-24")]
             46 => FuseOpCode::FUSE_LSEEK,
@@ -352,7 +357,7 @@ impl<'a> Operation<'a> {
             #[cfg(feature = "abi-7-11")]
             4096 => FuseOpCode::CUSE_INIT,
 
-            _ => panic!("unknown FUSE OpCode={n}"),
+            code => return Err(DeserializeError::UnknownOpCode { code, unique: None }),
         };
 
         Ok(match opcode {
@@ -467,29 +472,29 @@ impl<'a> Operation<'a> {
                 arg: data.fetch_ref()?,
             },
             FuseOpCode::FUSE_DESTROY => Operation::Destroy,
-            // #[cfg(feature = "abi-7-11")]
+            #[cfg(feature = "abi-7-11")]
             FuseOpCode::FUSE_IOCTL => Operation::IoCtl {
                 arg: data.fetch_ref()?,
                 data: data.fetch_all_bytes(),
             },
-            // #[cfg(feature = "abi-7-11")]
+            #[cfg(feature = "abi-7-11")]
             FuseOpCode::FUSE_POLL => Operation::Poll {
                 arg: data.fetch_ref()?,
             },
-            // #[cfg(feature = "abi-7-15")]
+            #[cfg(feature = "abi-7-15")]
             FuseOpCode::FUSE_NOTIFY_REPLY => Operation::NotifyReply {
                 data: data.fetch_all_bytes(),
             },
-            // #[cfg(feature = "abi-7-16")]
+            #[cfg(feature = "abi-7-16")]
             FuseOpCode::FUSE_BATCH_FORGET => Operation::BatchForget {
                 arg: data.fetch_ref()?,
                 nodes: data.fetch_all_as_slice()?,
             },
-            // #[cfg(feature = "abi-7-19")]
+            #[cfg(feature = "abi-7-19")]
             FuseOpCode::FUSE_FALLOCATE => Operation::FAllocate {
                 arg: data.fetch_ref()?,
             },
-            // #[cfg(feature = "abi-7-21")]
+            #[cfg(feature = "abi-7-21")]
             FuseOpCode::FUSE_READDIRPLUS => Operation::ReadDirPlus {
                 arg: data.fetch_ref()?,
             },
@@ -621,13 +626,13 @@ impl fmt::Display for Operation<'_> {
             }
             Operation::Destroy => write!(f, "DESTROY"),
 
-            // #[cfg(feature = "abi-7-11")]
+            #[cfg(feature = "abi-7-11")]
             Operation::IoCtl { arg, data } => write!(
                 f,
                 "IOCTL fh={}, flags {:#x}, cmd={}, arg={}, data={:?}",
                 arg.fh, arg.flags, arg.cmd, arg.arg, data,
             ),
-            // #[cfg(feature = "abi-7-11")]
+            #[cfg(feature = "abi-7-11")]
             Operation::Poll { arg } => {
                 write!(
                     f,
@@ -635,19 +640,19 @@ impl fmt::Display for Operation<'_> {
                     arg.fh, arg.kh, arg.flags
                 )
             }
-            // #[cfg(feature = "abi-7-15")]
+            #[cfg(feature = "abi-7-15")]
             Operation::NotifyReply { data } => write!(f, "NOTIFY REPLY data={data:?}"),
-            // #[cfg(feature = "abi-7-16")]
+            #[cfg(feature = "abi-7-16")]
             Operation::BatchForget { arg, nodes } => {
                 write!(f, "BATCH FORGOT count={}, nodes={:?}", arg.count, nodes)
             }
-            // #[cfg(feature = "abi-7-19")]
+            #[cfg(feature = "abi-7-19")]
             Operation::FAllocate { arg } => write!(
                 f,
                 "FALLOCATE fh={}, offset={}, length={}, mode={:#05o}",
                 arg.fh, arg.offset, arg.length, arg.mode,
             ),
-            // #[cfg(feature = "abi-7-21")]
+            #[cfg(feature = "abi-7-21")]
             Operation::ReadDirPlus { arg } => write!(
                 f,
                 "READDIRPLUS fh={}, offset={}, size={}",
@@ -706,7 +711,7 @@ impl fmt::Display for Request<'_> {
 
 impl<'a> Request<'a> {
     /// Build FUSE request
-    pub fn new(bytes: &'a [u8], proto_version: ProtoVersion) -> anyhow::Result<Self> {
+    pub fn new(bytes: &'a [u8], proto_version: ProtoVersion) -> Result<Self, DeserializeError> {
         let data_len = bytes.len();
         let mut de = Deserializer::new(bytes);
         // Parse header
@@ -719,7 +724,16 @@ impl<'a> Request<'a> {
             header.len,
         );
         // Parse/check operation arguments
-        let operation = Operation::parse(header.opcode, &mut de, proto_version)?;
+        let operation = Operation::parse(header.opcode, &mut de, proto_version).map_err(|e| {
+            if let DeserializeError::UnknownOpCode { code, .. } = e {
+                DeserializeError::UnknownOpCode {
+                    code,
+                    unique: Some(header.unique),
+                }
+            } else {
+                e
+            }
+        })?;
         if de.remaining_len() > 0 {
             warn!(
                 "request bytes is not completely consumed: \
@@ -903,16 +917,7 @@ mod test {
         #[allow(clippy::expect_used)]
         let err =
             Request::new(bytes, PROTO_VERSION).expect_err("Unexpected request parsing result");
-        let mut chain = err.chain();
-        assert_eq!(
-            chain
-                .next()
-                .unwrap_or_else(|| panic!("failed to get next error"))
-                .downcast_ref::<DeserializeError>()
-                .unwrap_or_else(|| panic!("error type not match")),
-            &DeserializeError::NotEnough
-        );
-        assert!(chain.next().is_none());
+        assert_eq!(err, DeserializeError::NotEnough);
     }
 
     #[test]

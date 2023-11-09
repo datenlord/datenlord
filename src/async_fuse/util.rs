@@ -181,3 +181,13 @@ pub fn u64_to_ptr(x: u64) -> *const () {
         x.try_into().expect("number cast failed")
     }
 }
+
+/// Round up `len` to a multiple of `align`.
+///
+/// <https://doc.rust-lang.org/std/alloc/struct.Layout.html#method.padding_needed_for>
+///
+/// <https://doc.rust-lang.org/src/core/alloc/layout.rs.html#226-250>
+#[must_use]
+pub const fn round_up(len: usize, align: usize) -> usize {
+    len.wrapping_add(align).wrapping_sub(1) & !align.wrapping_sub(1)
+}

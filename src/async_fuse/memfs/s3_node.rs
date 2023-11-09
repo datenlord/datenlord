@@ -1088,6 +1088,25 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
         let st_now = SystemTime::now();
         let mut attr_changed = false;
 
+        let check_permission = || -> DatenLordResult<()> {
+            //  owner is root check the user_id
+            if cur_attr.uid == 0 && user_id != 0 {
+                return build_error_result_from_errno(
+                    Errno::EPERM,
+                    "setattr() cannot change atime".to_owned(),
+                );
+            }
+            self.attr.read().check_perm(user_id, group_id, 2)?;
+            if user_id != cur_attr.uid {
+                return build_error_result_from_errno(
+                    Errno::EACCES,
+                    "setattr() cannot change atime".to_owned(),
+                );
+            }
+
+            Ok(())
+        };
+
         if let Some(gid) = param.g_id {
             if user_id != 0 && cur_attr.uid != user_id {
                 return build_error_result_from_errno(
@@ -1130,20 +1149,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
         }
 
         if let Some(atime) = param.a_time {
-            //   owner is root check the ctx_uid
-            if cur_attr.uid == 0 && user_id != 0 {
-                return build_error_result_from_errno(
-                    Errno::EPERM,
-                    "setattr() cannot change atime".to_owned(),
-                );
-            }
-            self.attr.read().check_perm(user_id, group_id, 2)?;
-            if user_id != cur_attr.uid {
-                return build_error_result_from_errno(
-                    Errno::EACCES,
-                    "setattr() cannot change atime".to_owned(),
-                );
-            }
+            check_permission()?;
             if atime != cur_attr.atime {
                 dirty_attr.atime = atime;
                 attr_changed = true;
@@ -1151,20 +1157,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
         }
 
         if let Some(mtime) = param.m_time {
-            //  owner is root check the user_id
-            if cur_attr.uid == 0 && user_id != 0 {
-                return build_error_result_from_errno(
-                    Errno::EPERM,
-                    "setattr() cannot change atime".to_owned(),
-                );
-            }
-            self.attr.read().check_perm(user_id, group_id, 2)?;
-            if user_id != cur_attr.uid {
-                return build_error_result_from_errno(
-                    Errno::EACCES,
-                    "setattr() cannot change atime".to_owned(),
-                );
-            }
+            check_permission()?;
             if mtime != cur_attr.mtime {
                 dirty_attr.mtime = mtime;
                 attr_changed = true;
@@ -1172,10 +1165,12 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
         }
 
         #[cfg(feature = "abi-7-23")]
-        if let Some(c_time) = param.c_time {
-            dirty_attr.ctime = c_time;
-            panic!("c_time is not supported in this version of statefs")
-            // TODO: how to change ctime directly on ext4?
+        if let Some(ctime) = param.c_time {
+            check_permission()?;
+            if ctime != cur_attr.ctime {
+                dirty_attr.ctime = ctime;
+                attr_changed = true;
+            }
         }
 
         if let Some(file_size) = param.size {

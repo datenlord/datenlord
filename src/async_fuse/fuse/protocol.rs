@@ -195,6 +195,10 @@ pub mod setattr_flags {
     pub const FATTR_CTIME: u32 = 1 << 10_i32;
 }
 
+use std::mem;
+
+use clippy_utilities::{Cast, OverflowArithmetic};
+use nix::request_code_read;
 pub use setattr_flags::*;
 
 /// Flags returned by the OPEN request
@@ -276,7 +280,6 @@ pub mod init_flags {
     #[cfg(feature = "abi-7-21")]
     pub const FUSE_DO_READDIRPLUS: u32 = 1 << 13_i32;
 
-    // TODO: verify it's added in 7.21
     /// `FUSE_READDIRPLUS_AUTO`: adaptive readdirplus
     #[cfg(feature = "abi-7-21")]
     pub const FUSE_READDIRPLUS_AUTO: u32 = 1 << 14_i32;
@@ -368,16 +371,14 @@ pub const FUSE_READ_LOCKOWNER: u32 = 1 << 1_i32;
 
 /// Ioctl flags
 #[allow(dead_code)]
+#[cfg(feature = "abi-7-11")]
 pub mod ioctl_flags {
     /// `FUSE_IOCTL_COMPAT`: 32bit compat ioctl on 64bit machine
-    #[cfg(feature = "abi-7-11")]
     pub const FUSE_IOCTL_COMPAT: u32 = 1 << 0_i32;
     /// `FUSE_IOCTL_UNRESTRICTED`: not restricted to well-formed ioctls, retry
     /// allowed
-    #[cfg(feature = "abi-7-11")]
     pub const FUSE_IOCTL_UNRESTRICTED: u32 = 1 << 1_i32;
     /// `FUSE_IOCTL_RETRY`: retry with new iovecs
-    #[cfg(feature = "abi-7-11")]
     pub const FUSE_IOCTL_RETRY: u32 = 1 << 2_i32;
     /// `FUSE_IOCTL_32BIT`: 32bit ioctl
     #[cfg(feature = "abi-7-16")]
@@ -389,12 +390,11 @@ pub mod ioctl_flags {
     /// `time_t`)
     #[cfg(feature = "abi-7-30")]
     pub const FUSE_IOCTL_COMPAT_X32: u32 = 1 << 5_i32;
-
     /// `FUSE_IOCTL_MAX_IOV`: maximum of `in_iovecs + out_iovecs`
-    #[cfg(feature = "abi-7-11")]
     pub const FUSE_IOCTL_MAX_IOV: u32 = 256;
 }
 
+#[cfg(feature = "abi-7-11")]
 pub use ioctl_flags::*;
 
 /// Poll flags
@@ -494,22 +494,22 @@ pub enum FuseOpCode {
     /// Clean up filesystem
     FUSE_DESTROY = 38,
     /// Ioctl
-    // #[cfg(feature = "abi-7-11")]
+    #[cfg(feature = "abi-7-11")]
     FUSE_IOCTL = 39,
     /// Poll for IO readiness
-    // #[cfg(feature = "abi-7-11")]
+    #[cfg(feature = "abi-7-11")]
     FUSE_POLL = 40,
     /// A reply to a NOTIFY_RETRIEVE notification
-    // #[cfg(feature = "abi-7-15")]
+    #[cfg(feature = "abi-7-15")]
     FUSE_NOTIFY_REPLY = 41,
     /// Batch forget inodes
-    // #[cfg(feature = "abi-7-16")]
+    #[cfg(feature = "abi-7-16")]
     FUSE_BATCH_FORGET = 42,
     /// Allocate requested space
-    // #[cfg(feature = "abi-7-19")]
+    #[cfg(feature = "abi-7-19")]
     FUSE_FALLOCATE = 43,
     /// Read directory with attributes
-    // #[cfg(feature = "abi-7-21")]
+    #[cfg(feature = "abi-7-21")]
     FUSE_READDIRPLUS = 44,
     /// Rename2
     #[cfg(feature = "abi-7-23")]
@@ -616,7 +616,7 @@ pub struct FuseForgetIn {
 }
 
 /// FUSE forget request input `fuse_forget_one`
-// #[cfg(feature = "abi-7-16")]
+#[cfg(feature = "abi-7-16")]
 #[derive(Debug)]
 #[repr(C)]
 pub struct FuseForgetOne {
@@ -627,7 +627,7 @@ pub struct FuseForgetOne {
 }
 
 /// FUSE batch forget request input `fuse_batch_forget_in`
-// #[cfg(feature = "abi-7-16")]
+#[cfg(feature = "abi-7-16")]
 #[derive(Debug)]
 #[repr(C)]
 pub struct FuseBatchForgetIn {
@@ -787,6 +787,10 @@ pub struct FuseSetAttrIn {
 pub struct FuseOpenIn {
     /// Open flags
     pub flags: u32,
+    #[cfg(not(feature = "abi-7-12"))]
+    /// Access mode of the file
+    pub mode: u32,
+    #[cfg(feature = "abi-7-12")]
     /// Alignment padding
     pub unused: u32,
 }
@@ -1122,7 +1126,7 @@ pub struct FuseBMapOut {
 }
 
 /// FUSE ioctl request input `fuse_ioctl_in`
-// #[cfg(feature = "abi-7-11")]
+#[cfg(feature = "abi-7-11")]
 #[derive(Debug)]
 #[repr(C)]
 pub struct FuseIoCtlIn {
@@ -1167,7 +1171,7 @@ pub struct FuseIoCtlOut {
 }
 
 /// FUSE poll request input `fuse_poll_in`
-// #[cfg(feature = "abi-7-11")]
+#[cfg(feature = "abi-7-11")]
 #[derive(Debug)]
 #[repr(C)]
 pub struct FusePollIn {
@@ -1178,7 +1182,7 @@ pub struct FusePollIn {
     /// Poll flags
     pub flags: u32,
     /// Alignment padding
-    #[cfg(feature = "abi-7-11")]
+    #[cfg(not(feature = "abi-7-21"))]
     pub padding: u32,
     /// Poll events
     #[cfg(feature = "abi-7-21")]
@@ -1206,7 +1210,7 @@ pub struct FuseNotifyPollWakeUpOut {
 }
 
 /// FUSE file allocate request input `fuse_fallocate_in`
-// #[cfg(feature = "abi-7-19")]
+#[cfg(feature = "abi-7-19")]
 #[derive(Debug)]
 #[repr(C)]
 pub struct FuseFAllocateIn {
@@ -1272,12 +1276,18 @@ pub struct FuseDirEnt {
     // char name[],
 }
 
-// TODO: re-define it
-// #define FUSE_NAME_OFFSET offsetof(struct fuse_dirent, name)
-// #define FUSE_DIRENT_ALIGN(x) \
-//     (((x) + sizeof(uint64_t) - 1) & ~(sizeof(uint64_t) - 1))
-// #define FUSE_DIRENT_SIZE(d) \
-//     FUSE_DIRENT_ALIGN(FUSE_NAME_OFFSET + (d)->namelen)
+impl FuseDirEnt {
+    /// Get the exctual size of `FuseDirEnt`,
+    /// equals to the size of entry header and the length of following name.
+    ///
+    /// The behaviour of this method is similar to marco `FUSE_DIRENT_SIZE(d)` in `fuse.h`.
+    ///
+    /// <https://github.com/torvalds/linux/blob/00c570f4ba43ae73b41fa0a2269c3b0ac20386ef/include/uapi/linux/fuse.h#L701-L702>
+    #[must_use]
+    pub fn size_with_name(&self) -> usize {
+        mem::size_of::<Self>().overflow_add(self.namelen.cast())
+    }
+}
 
 /// FUSE directory entry plus `fuse_direntplus`
 /// used in `readdirplus()`
@@ -1291,13 +1301,22 @@ pub struct FuseDirEntPlus {
     pub dirent: FuseDirEnt,
 }
 
-// TODO: re-define it
-// #[cfg(feature = "abi-7-21")]
-// #define FUSE_NAME_OFFSET_DIRENTPLUS \
-//     offsetof(struct fuse_direntplus, dirent.name)
-// #[cfg(feature = "abi-7-21")]
-// #define FUSE_DIRENTPLUS_SIZE(d) \
-//     FUSE_DIRENT_ALIGN(FUSE_NAME_OFFSET_DIRENTPLUS + (d)->dirent.namelen)
+#[cfg(feature = "abi-7-21")]
+impl FuseDirEntPlus {
+    /// Get the exctual size of `FuseDirEntPlus`,
+    /// equals to the size of header and the length of following name.
+    ///
+    /// The behaviour of this method is similar to marco `FUSE_DIRENTPLUS_SIZE(d)` in `fuse.h`.
+    ///
+    /// <https://github.com/torvalds/linux/blob/00c570f4ba43ae73b41fa0a2269c3b0ac20386ef/include/uapi/linux/fuse.h#L711-L712>
+    ///
+    /// This method is not used now, that's because the FUSE operation `ReadDirPlus` has not yet been implemented.
+    #[must_use]
+    #[allow(dead_code)]
+    pub fn size_with_name(&self) -> usize {
+        mem::size_of::<Self>().overflow_add(self.dirent.namelen.cast())
+    }
+}
 
 /// FUSE notify invalid inode response `fuse_notify_inval_inode_out`
 #[cfg(feature = "abi-7-12")]
@@ -1392,10 +1411,19 @@ pub struct FuseNotifyRetrieveIn {
     pub dummy4: u64,
 }
 
-// TODO: re-define it
-// Device ioctls:
-// #define FUSE_DEV_IOC_CLONE    _IOR(229, 0, uint32_t)
-
+/// A device ioctl command.
+///
+/// It's defined as below in `fuse.h`:
+///
+/// ```c
+/// #define FUSE_DEV_IOC_CLONE    _IOR(229, 0, uint32_t)
+/// ```
+///
+/// <https://github.com/torvalds/linux/blob/00c570f4ba43ae73b41fa0a2269c3b0ac20386ef/include/uapi/linux/fuse.h#L759>
+///
+/// This constant is unused now, but reserved for the future.
+#[allow(dead_code)]
+const FUSE_DEV_IOC_CLONE: u64 = request_code_read!(229, 0, mem::size_of::<u32>());
 /// FUSE lseek request input `fuse_lseek_in`
 // #[cfg(feature = "abi-7-24")]
 #[derive(Debug)]
