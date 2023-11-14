@@ -39,6 +39,7 @@ lazy_static = "^1.4"
 libc = "0.2.79"
 lockfree-cuckoohash = "0.1.0"
 memchr = "2.3.4"
+macro-utils = { path = "./macro-utils" }
 nix = "0.23.1"
 once_cell = "1.7.2"
 parking_lot = "0.12.0"

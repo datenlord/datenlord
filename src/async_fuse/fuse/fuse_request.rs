@@ -817,7 +817,6 @@ impl<'a> Request<'a> {
 
 #[cfg(test)]
 mod test {
-    use aligned_utils::stack::Align8;
     use tracing::debug;
 
     use super::super::de::DeserializeError;
@@ -831,75 +830,58 @@ mod test {
     // UB). So we have runtime checks in `ByteSlice::fetch` and
     // `ByteSlice::fetch_all_as_slice`.
 
-    #[cfg(target_endian = "big")]
-    const INIT_REQUEST: Align8<[u8; 56]> = Align8([
-        0x00, 0x00, 0x00, 0x38, 0x00, 0x00, 0x00, 0x1a, // len, opcode
-        0xde, 0xad, 0xbe, 0xef, 0xba, 0xad, 0xd0, 0x0d, // unique
-        0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, // nodeid
-        0xc0, 0x01, 0xd0, 0x0d, 0xc0, 0x01, 0xca, 0xfe, // uid, gid
-        0xc0, 0xde, 0xba, 0x5e, 0x00, 0x00, 0x00, 0x00, // pid, padding
-        0x00, 0x00, 0x00, 0x07, 0x00, 0x00, 0x00, 0x08, // major, minor
-        0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, // max_readahead, flags
-    ]);
+    /// Define test data in big endian and little endian in the meantime.
+    macro_rules! define_data {
+        ($name:ident; $($type:ident: $val:literal),+ $(,)?) => {
+            #[cfg(target_endian = "big")]
+            const $name: aligned_utils::stack::Align8<[
+                u8;
+                macro_utils::calculate_size! {
+                    BE;
+                    $($type: $val),+
+                }
+            ]> = aligned_utils::stack::Align8(
+                macro_utils::generate_bytes! {
+                    BE;
+                    $($type: $val),+
+                }
+            );
 
-    #[cfg(target_endian = "little")]
-    const INIT_REQUEST: Align8<[u8; 56]> = Align8([
-        0x38, 0x00, 0x00, 0x00, 0x1a, 0x00, 0x00, 0x00, // len, opcode
-        0x0d, 0xf0, 0xad, 0xba, 0xef, 0xbe, 0xad, 0xde, // unique
-        0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11, // nodeid
-        0x0d, 0xd0, 0x01, 0xc0, 0xfe, 0xca, 0x01, 0xc0, // uid, gid
-        0x5e, 0xba, 0xde, 0xc0, 0x00, 0x00, 0x00, 0x00, // pid, padding
-        0x07, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, // major, minor
-        0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // max_readahead, flags
-    ]);
+            #[cfg(target_endian = "little")]
+            const $name: aligned_utils::stack::Align8<[
+                u8;
+                macro_utils::calculate_size! {
+                    LE;
+                    $($type: $val),+
+                }
+            ]> = aligned_utils::stack::Align8(
+                macro_utils::generate_bytes! {
+                    LE;
+                    $($type: $val),+
+                }
+            );
+        }
+    }
 
-    #[cfg(all(target_endian = "big", not(feature = "abi-7-12")))]
-    const MKNOD_REQUEST: Align8<[u8; 56]> = Align8([
-        0x00, 0x00, 0x00, 0x38, 0x00, 0x00, 0x00, 0x08, // len, opcode
-        0xde, 0xad, 0xbe, 0xef, 0xba, 0xad, 0xd0, 0x0d, // unique
-        0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, // nodeid
-        0xc0, 0x01, 0xd0, 0x0d, 0xc0, 0x01, 0xca, 0xfe, // uid, gid
-        0xc0, 0xde, 0xba, 0x5e, 0x00, 0x00, 0x00, 0x00, // pid, padding
-        0x00, 0x00, 0x01, 0xa4, 0x00, 0x00, 0x00, 0x00, // mode, rdev
-        0x66, 0x6f, 0x6f, 0x2e, 0x74, 0x78, 0x74, 0x00, // name
-    ]);
-
-    /// `MKNOD_REQUEST` for protocol version less then 7.12
-    #[cfg(all(target_endian = "little", not(feature = "abi-7-12")))]
-    const MKNOD_REQUEST: Align8<[u8; 56]> = Align8([
-        0x38, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, // len, opcode
-        0x0d, 0xf0, 0xad, 0xba, 0xef, 0xbe, 0xad, 0xde, // unique
-        0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11, // nodeid
-        0x0d, 0xd0, 0x01, 0xc0, 0xfe, 0xca, 0x01, 0xc0, // uid, gid
-        0x5e, 0xba, 0xde, 0xc0, 0x00, 0x00, 0x00, 0x00, // pid, padding
-        0xa4, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // mode, rdev
-        0x66, 0x6f, 0x6f, 0x2e, 0x74, 0x78, 0x74, 0x00, // name
-    ]);
-
-    #[cfg(all(target_endian = "big", feature = "abi-7-12"))]
-    const MKNOD_REQUEST: Align8<[u8; 64]> = Align8([
-        0x00, 0x00, 0x00, 0x38, 0x00, 0x00, 0x00, 0x08, // len, opcode
-        0xde, 0xad, 0xbe, 0xef, 0xba, 0xad, 0xd0, 0x0d, // unique
-        0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, // nodeid
-        0xc0, 0x01, 0xd0, 0x0d, 0xc0, 0x01, 0xca, 0xfe, // uid, gid
-        0xc0, 0xde, 0xba, 0x5e, 0x00, 0x00, 0x00, 0x00, // pid, padding
-        0x00, 0x00, 0x01, 0xa4, 0x00, 0x00, 0x00, 0x00, // mode, rdev
-        0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, // umsak, padding
-        0x66, 0x6f, 0x6f, 0x2e, 0x74, 0x78, 0x74, 0x00, // name
-    ]);
-
-    /// `MKNOD_REQUEST` for protocol version greater then 7.11
-    #[cfg(all(target_endian = "little", feature = "abi-7-12"))]
-    const MKNOD_REQUEST: Align8<[u8; 64]> = Align8([
-        0x38, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, // len, opcode
-        0x0d, 0xf0, 0xad, 0xba, 0xef, 0xbe, 0xad, 0xde, // unique
-        0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11, // nodeid
-        0x0d, 0xd0, 0x01, 0xc0, 0xfe, 0xca, 0x01, 0xc0, // uid, gid
-        0x5e, 0xba, 0xde, 0xc0, 0x00, 0x00, 0x00, 0x00, // pid, padding
-        0xa4, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // mode, rdev
-        0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // umsak, padding
-        0x66, 0x6f, 0x6f, 0x2e, 0x74, 0x78, 0x74, 0x00, // name
-    ]);
+    /// Define test data with default FUSE request header fields.
+    ///
+    /// The length of header is 40.
+    macro_rules! define_payload {
+        ($name:ident; len: $len:literal; opcode: $opcode:literal; $($type:ident: $val:literal),* $(,)?) => {
+            define_data! {
+                $name;
+                u32: $len,                   // len
+                u32: $opcode,                // opcode
+                u64: 0xdead_beef_baad_f00d,  // unique
+                u64: 0x1122_3344_5566_7788,  // nodeid
+                u32: 0xc001_d00d,            // uid
+                u32: 0xc001_cafe,            // gid
+                u32: 0xc0de_ba5e,            // pid
+                u32: 0,                      // padding
+                $($type: $val),*             // payload
+            }
+        }
+    }
 
     /// assume that kernel protocol version is 7.12
     const PROTO_VERSION: ProtoVersion = ProtoVersion {
@@ -934,48 +916,1535 @@ mod test {
         debug!("short read request={:?}", req);
     }
 
-    #[test]
-    fn init() {
-        let req = Request::new(&INIT_REQUEST[..], PROTO_VERSION)
-            .unwrap_or_else(|err| panic!("failed to build FUSE request, the error is: {err}"));
-        assert_eq!(req.header.len, 56);
-        assert_eq!(req.header.opcode, 26);
+    fn check_header(req: &Request<'_>) {
         assert_eq!(req.unique(), 0xdead_beef_baad_f00d);
         assert_eq!(req.nodeid(), 0x1122_3344_5566_7788);
         assert_eq!(req.uid(), 0xc001_d00d);
         assert_eq!(req.gid(), 0xc001_cafe);
         assert_eq!(req.pid(), 0xc0de_ba5e);
+    }
+
+    define_payload! {
+        LOOKUP_REQUEST;
+        len: 48;
+        opcode: 1;
+        str: b"foo.txt\0",  // name
+    }
+
+    #[test]
+    fn lookup() {
+        let req = Request::new(&LOOKUP_REQUEST[..], PROTO_VERSION)
+            .unwrap_or_else(|err| panic!("failed to build FUSE request, the error is: {err}"));
+        assert_eq!(LOOKUP_REQUEST.len(), req.len().cast::<usize>());
+        assert_eq!(req.header.opcode, 1);
+        check_header(&req);
         #[allow(clippy::wildcard_enum_match_arm)]
         match *req.operation() {
-            Operation::Init { arg } => {
-                assert_eq!(arg.major, 7);
-                assert_eq!(arg.minor, 8);
-                assert_eq!(arg.max_readahead, 4096);
+            Operation::Lookup { name } => {
+                assert_eq!(name, "foo.txt");
             }
             _ => panic!("unexpected request operation"),
         }
+    }
+
+    define_payload! {
+        FORGET_REQUEST;
+        len: 48;
+        opcode: 2;
+        u64: 5,  // nlookup
+    }
+
+    #[test]
+    fn forget() {
+        let req = Request::new(&FORGET_REQUEST[..], PROTO_VERSION)
+            .unwrap_or_else(|err| panic!("failed to build FUSE request, the error is: {err}"));
+        assert_eq!(FORGET_REQUEST.len(), req.len().cast::<usize>());
+        assert_eq!(req.header.opcode, 2);
+        check_header(&req);
+        #[allow(clippy::wildcard_enum_match_arm)]
+        match *req.operation() {
+            Operation::Forget { arg } => {
+                assert_eq!(arg.nlookup, 5);
+            }
+            _ => panic!("unexpected request operation"),
+        }
+    }
+
+    define_payload! {
+        GETATTR_REQUEST;
+        len: 40;
+        opcode: 3;
+    }
+
+    #[test]
+    fn getattr() {
+        let req = Request::new(&GETATTR_REQUEST[..], PROTO_VERSION)
+            .unwrap_or_else(|err| panic!("failed to build FUSE request, the error is: {err}"));
+        assert_eq!(GETATTR_REQUEST.len(), req.len().cast::<usize>());
+        assert_eq!(req.header.opcode, 3);
+        check_header(&req);
+
+        #[allow(clippy::wildcard_enum_match_arm)]
+        match *req.operation() {
+            Operation::GetAttr => {}
+            _ => panic!("unexpected request operation"),
+        }
+    }
+
+    define_payload! {
+        SETATTR_REQUEST;
+        len: 128;
+        opcode: 4;
+        u32: 5,      // valid
+        u32: 0,      // padding
+        u64: 0x10,   // fh
+        u64: 0x20,   // size
+        u64: 0x10,   // lock_owner, or unused1 before 7.9
+        u64: 0x1234, // atime
+        u64: 0x5678, // mtime
+        u64: 0x9abc, // ctime, or unused2 before 7.23
+        u32: 0x1122, // atimensec
+        u32: 0x3344, // mtimensec
+        u32: 0x5566, // ctimensec, or unused3 before 7.23
+        u32: 0o0755, // mode
+        u32: 0,      // unused4
+        u32: 1001,   // uid
+        u32: 1001,   // gid
+        u32: 0,      // unused5
+    }
+
+    #[test]
+    fn setattr() {
+        use super::super::protocol::{FATTR_GID, FATTR_MODE};
+
+        let req = Request::new(&SETATTR_REQUEST[..], PROTO_VERSION)
+            .unwrap_or_else(|err| panic!("failed to build FUSE request, the error is: {err}"));
+        assert_eq!(SETATTR_REQUEST.len(), req.len().cast::<usize>());
+        assert_eq!(req.header.opcode, 4);
+        check_header(&req);
+
+        #[allow(clippy::wildcard_enum_match_arm)]
+        match *req.operation() {
+            Operation::SetAttr { arg } => {
+                assert_eq!(arg.valid, FATTR_MODE | FATTR_GID);
+                assert_eq!(arg.fh, 0x10);
+                assert_eq!(arg.size, 0x20);
+                #[cfg(feature = "abi-7-9")]
+                assert_eq!(arg.lock_owner, 0x10);
+                assert_eq!(arg.atime, 0x1234);
+                assert_eq!(arg.mtime, 0x5678);
+                #[cfg(feature = "abi-7-23")]
+                assert_eq!(arg.ctime, 0x9abc);
+                assert_eq!(arg.atimensec, 0x1122);
+                assert_eq!(arg.mtimensec, 0x3344);
+                #[cfg(feature = "abi-7-23")]
+                assert_eq!(arg.ctimensec, 0x5566);
+                assert_eq!(arg.mode, 0o0755);
+                assert_eq!(arg.uid, 1001);
+                assert_eq!(arg.gid, 1001);
+            }
+            _ => panic!("unexpected request operation"),
+        }
+    }
+
+    define_payload! {
+        READLINK_REQUEST;
+        len: 40;
+        opcode: 5;
+    }
+
+    #[test]
+    fn readlink() {
+        let req = Request::new(&READLINK_REQUEST[..], PROTO_VERSION)
+            .unwrap_or_else(|err| panic!("failed to build FUSE request, the error is: {err}"));
+        assert_eq!(READLINK_REQUEST.len(), req.len().cast::<usize>());
+        assert_eq!(req.header.opcode, 5);
+        check_header(&req);
+
+        #[allow(clippy::wildcard_enum_match_arm)]
+        match *req.operation() {
+            Operation::ReadLink => {}
+            _ => panic!("unexpected request operation"),
+        }
+    }
+
+    define_payload! {
+        SYMLINK_REQUEST;
+        len: 56;
+        opcode: 6;
+        str: b"foo.txt\0",  // name
+        str: b"bar.txt\0",  // link
+    }
+
+    #[test]
+    fn symlink() {
+        let req = Request::new(&SYMLINK_REQUEST[..], PROTO_VERSION)
+            .unwrap_or_else(|err| panic!("failed to build FUSE request, the error is: {err}"));
+        assert_eq!(SYMLINK_REQUEST.len(), req.len().cast::<usize>());
+        assert_eq!(req.header.opcode, 6);
+        check_header(&req);
+
+        #[allow(clippy::wildcard_enum_match_arm)]
+        match *req.operation() {
+            Operation::SymLink { name, link } => {
+                assert_eq!(name, "foo.txt");
+                assert_eq!(link, "bar.txt");
+            }
+            _ => panic!("unexpected request operation"),
+        }
+    }
+
+    #[cfg(not(feature = "abi-7-12"))]
+    define_payload! {
+        MKNOD_REQUEST;
+        len: 56;
+        opcode: 8;
+        u32: 0o0644,                 // mode
+        u32: 0,                      // rdev
+        str: b"foo.txt\0",           // name
+    }
+
+    #[cfg(feature = "abi-7-12")]
+    define_payload! {
+        MKNOD_REQUEST;
+        len: 64;
+        opcode: 8;
+        u32: 0o0644,                 // mode
+        u32: 0,                      // rdev
+        u32: 2,                      // umask
+        u32: 0,                      // padding
+        str: b"foo.txt\0",           // name
     }
 
     #[test]
     fn mknod() {
         let req = Request::new(&MKNOD_REQUEST[..], PROTO_VERSION)
             .unwrap_or_else(|err| panic!("failed to build FUSE request, the error is: {err}"));
-        assert_eq!(req.header.len, 56);
         assert_eq!(req.header.opcode, 8);
-        assert_eq!(req.unique(), 0xdead_beef_baad_f00d);
-        assert_eq!(req.nodeid(), 0x1122_3344_5566_7788);
-        assert_eq!(req.uid(), 0xc001_d00d);
-        assert_eq!(req.gid(), 0xc001_cafe);
-        assert_eq!(req.pid(), 0xc0de_ba5e);
+        assert_eq!(MKNOD_REQUEST.len(), req.len().cast::<usize>());
+        check_header(&req);
+
         #[allow(clippy::wildcard_enum_match_arm)]
         match *req.operation() {
             Operation::MkNod { arg, name } => {
-                assert_eq!(arg.mode, 0o644);
+                assert_eq!(arg.mode, 0o0644);
+                assert_eq!(arg.rdev, 0);
                 #[cfg(feature = "abi-7-12")]
                 {
                     assert_eq!(arg.umask, 0o002);
                 }
                 assert_eq!(name, "foo.txt");
+            }
+            _ => panic!("unexpected request operation"),
+        }
+    }
+
+    define_payload! {
+        MKDIR_REQUEST;
+        len: 56;
+        opcode: 9;
+        u32: 0o0755,        // mode
+        u32: 0o0022,        // umask, or padding before 7.12
+        str: b"foo.txt\0",  // name
+    }
+
+    #[test]
+    fn mkdir() {
+        let req = Request::new(&MKDIR_REQUEST[..], PROTO_VERSION)
+            .unwrap_or_else(|err| panic!("failed to build FUSE request, the error is: {err}"));
+        assert_eq!(MKDIR_REQUEST.len(), req.len().cast::<usize>());
+        assert_eq!(req.header.opcode, 9);
+        check_header(&req);
+
+        #[allow(clippy::wildcard_enum_match_arm)]
+        match *req.operation() {
+            Operation::MkDir { arg, name } => {
+                assert_eq!(arg.mode, 0o0755);
+                #[cfg(feature = "abi-7-12")]
+                assert_eq!(arg.umask, 0o0022);
+                assert_eq!(name, "foo.txt");
+            }
+            _ => panic!("unexpected request operation"),
+        }
+    }
+
+    define_payload! {
+        UNLINK_REQUEST;
+        len: 48;
+        opcode: 10;
+        str: b"foo.txt\0",  // name
+    }
+
+    #[test]
+    fn unlink() {
+        let req = Request::new(&UNLINK_REQUEST[..], PROTO_VERSION)
+            .unwrap_or_else(|err| panic!("failed to build FUSE request, the error is: {err}"));
+        assert_eq!(UNLINK_REQUEST.len(), req.len().cast::<usize>());
+        assert_eq!(req.header.opcode, 10);
+        check_header(&req);
+
+        #[allow(clippy::wildcard_enum_match_arm)]
+        match *req.operation() {
+            Operation::Unlink { name } => {
+                assert_eq!(name, "foo.txt");
+            }
+            _ => panic!("unexpected request operation"),
+        }
+    }
+
+    define_payload! {
+        RMDIR_REQUEST;
+        len: 48;
+        opcode: 11;
+        str: b"foo.txt\0",  // name
+    }
+
+    #[test]
+    fn rmdir() {
+        let req = Request::new(&RMDIR_REQUEST[..], PROTO_VERSION)
+            .unwrap_or_else(|err| panic!("failed to build FUSE request, the error is: {err}"));
+        assert_eq!(RMDIR_REQUEST.len(), req.len().cast::<usize>());
+        assert_eq!(req.header.opcode, 11);
+        check_header(&req);
+
+        #[allow(clippy::wildcard_enum_match_arm)]
+        match *req.operation() {
+            Operation::RmDir { name } => {
+                assert_eq!(name, "foo.txt");
+            }
+            _ => panic!("unexpected request operation"),
+        }
+    }
+
+    define_payload! {
+        RENAME_REQUEST;
+        len: 64;
+        opcode: 12;
+        u64: 1,             // newdir
+        str: b"foo.txt\0",  // oldname
+        str: b"bar.txt\0",  // newname
+    }
+
+    #[test]
+    fn rename() {
+        let req = Request::new(&RENAME_REQUEST[..], PROTO_VERSION)
+            .unwrap_or_else(|err| panic!("failed to build FUSE request, the error is: {err}"));
+        assert_eq!(RENAME_REQUEST.len(), req.len().cast::<usize>());
+        assert_eq!(req.header.opcode, 12);
+        check_header(&req);
+
+        #[allow(clippy::wildcard_enum_match_arm)]
+        match *req.operation() {
+            Operation::Rename {
+                arg,
+                oldname,
+                newname,
+            } => {
+                assert_eq!(arg.newdir, 1);
+                assert_eq!(oldname, "foo.txt");
+                assert_eq!(newname, "bar.txt");
+            }
+            _ => panic!("unexpected request operation"),
+        }
+    }
+
+    define_payload! {
+        LINK_REQUEST;
+        len: 56;
+        opcode: 13;
+        u64: 1,             // oldnodeid
+        str: b"bar.txt\0",  // name
+    }
+
+    #[test]
+    fn link() {
+        let req = Request::new(&LINK_REQUEST[..], PROTO_VERSION)
+            .unwrap_or_else(|err| panic!("failed to build FUSE request, the error is: {err}"));
+        assert_eq!(LINK_REQUEST.len(), req.len().cast::<usize>());
+        assert_eq!(req.header.opcode, 13);
+        check_header(&req);
+
+        #[allow(clippy::wildcard_enum_match_arm)]
+        match *req.operation() {
+            Operation::Link { arg, name } => {
+                assert_eq!(arg.oldnodeid, 1);
+                assert_eq!(name, "bar.txt");
+            }
+            _ => panic!("unexpected request operation"),
+        }
+    }
+
+    define_payload! {
+        OPEN_REQUEST;
+        len: 48;
+        opcode: 14;
+        u32: 2,          // flags
+        u32: 0o0755,     // mode, or unused from 7.12
+    }
+
+    #[test]
+    fn open() {
+        use super::super::protocol::FOPEN_KEEP_CACHE;
+
+        let req = Request::new(&OPEN_REQUEST[..], PROTO_VERSION)
+            .unwrap_or_else(|err| panic!("failed to build FUSE request, the error is: {err}"));
+        assert_eq!(OPEN_REQUEST.len(), req.len().cast::<usize>());
+        assert_eq!(req.header.opcode, 14);
+        check_header(&req);
+
+        #[allow(clippy::wildcard_enum_match_arm)]
+        match *req.operation() {
+            Operation::Open { arg } => {
+                assert_eq!(arg.flags, FOPEN_KEEP_CACHE);
+                #[cfg(not(feature = "abi-7-12"))]
+                assert_eq!(arg.mode, 0o0755);
+            }
+            _ => panic!("unexpected request operation"),
+        }
+    }
+
+    #[cfg(not(feature = "abi-7-9"))]
+    define_payload! {
+        READ_REQUEST;
+        len: 64;
+        opcode: 15;
+        u64: 0x10,  // fh
+        u64: 0x0a,  // offset
+        u32: 0x10,  // size
+        u32: 0,     // padding
+    }
+
+    #[cfg(feature = "abi-7-9")]
+    define_payload! {
+        READ_REQUEST;
+        len: 80;
+        opcode: 15;
+        u64: 0x10,   // fh
+        u64: 0x0a,   // offset
+        u32: 0x10,   // size
+        u32: 0,      // read_flags
+        u64: 0x1234, // lock_owner
+        u32: 2,      // flags
+        u32: 0,      // padding
+    }
+
+    #[test]
+    fn read() {
+        #[cfg(feature = "abi-7-9")]
+        use super::super::protocol::FOPEN_KEEP_CACHE;
+
+        let req = Request::new(&READ_REQUEST[..], PROTO_VERSION)
+            .unwrap_or_else(|err| panic!("failed to build FUSE request, the error is: {err}"));
+        assert_eq!(READ_REQUEST.len(), req.len().cast::<usize>());
+        assert_eq!(req.header.opcode, 15);
+        check_header(&req);
+
+        #[allow(clippy::wildcard_enum_match_arm)]
+        match *req.operation() {
+            Operation::Read { arg } => {
+                assert_eq!(arg.fh, 0x10);
+                assert_eq!(arg.offset, 0x0a);
+                assert_eq!(arg.size, 0x10);
+                #[cfg(feature = "abi-7-9")]
+                {
+                    assert_eq!(arg.read_flags, 0);
+                    assert_eq!(arg.lock_owner, 0x1234);
+                    assert_eq!(arg.flags, FOPEN_KEEP_CACHE);
+                }
+            }
+            _ => panic!("unexpected request operation"),
+        }
+    }
+
+    #[cfg(not(feature = "abi-7-9"))]
+    define_payload! {
+        WRITE_REQUEST;
+        len: 72;
+        opcode: 16;
+        u64: 0x10,         // fh
+        u64: 0x0a,         // offset
+        u32: 0x10,         // size
+        u32: 0,            // write_flags
+        str: b"foo, bar",  // data
+    }
+
+    #[cfg(feature = "abi-7-9")]
+    define_payload! {
+        WRITE_REQUEST;
+        len: 88;
+        opcode: 16;
+        u64: 0x10,         // fh
+        u64: 0x0a,         // offset
+        u32: 0x10,         // size
+        u32: 0b11,         // write_flags
+        u64: 0x1234,       // lock_owner
+        u32: 2,            // flags
+        u32: 0,            // padding
+        str: b"foo, bar",  // data
+    }
+
+    #[test]
+    fn write() {
+        #[cfg(feature = "abi-7-9")]
+        use super::super::protocol::{FOPEN_KEEP_CACHE, FUSE_WRITE_CACHE, FUSE_WRITE_LOCKOWNER};
+        let req = Request::new(&WRITE_REQUEST[..], PROTO_VERSION)
+            .unwrap_or_else(|err| panic!("failed to build FUSE request, the error is: {err}"));
+        assert_eq!(WRITE_REQUEST.len(), req.len().cast::<usize>());
+        assert_eq!(req.header.opcode, 16);
+        check_header(&req);
+
+        #[allow(clippy::wildcard_enum_match_arm)]
+        match *req.operation() {
+            Operation::Write { arg, data } => {
+                assert_eq!(arg.fh, 0x10);
+                assert_eq!(arg.offset, 0x0a);
+                assert_eq!(arg.size, 0x10);
+                #[cfg(not(feature = "abi-7-9"))]
+                assert_eq!(arg.write_flags, 0);
+                #[cfg(feature = "abi-7-9")]
+                {
+                    assert_eq!(arg.write_flags, FUSE_WRITE_CACHE | FUSE_WRITE_LOCKOWNER);
+                    assert_eq!(arg.lock_owner, 0x1234);
+                    assert_eq!(arg.flags, FOPEN_KEEP_CACHE);
+                }
+                assert_eq!(data, b"foo, bar");
+            }
+            _ => panic!("unexpected request operation"),
+        }
+    }
+
+    define_payload! {
+        STATFS_REQUEST;
+        len: 40;
+        opcode: 17;
+    }
+
+    #[test]
+    fn statfs() {
+        let req = Request::new(&STATFS_REQUEST[..], PROTO_VERSION)
+            .unwrap_or_else(|err| panic!("failed to build FUSE request, the error is: {err}"));
+        assert_eq!(STATFS_REQUEST.len(), req.len().cast::<usize>());
+        assert_eq!(req.header.opcode, 17);
+        check_header(&req);
+
+        #[allow(clippy::wildcard_enum_match_arm)]
+        match *req.operation() {
+            Operation::StatFs => {}
+            _ => panic!("unexpected request operation"),
+        }
+    }
+
+    define_payload! {
+        RELEASE_REQUEST;
+        len: 64;
+        opcode: 18;
+        u64: 0x10,    // fh
+        u32: 2,       // flags
+        u32: 0,       // release_flags
+        u64: 0x1234,  // lock_owner
+    }
+
+    #[test]
+    fn release() {
+        use super::super::protocol::FOPEN_KEEP_CACHE;
+
+        let req = Request::new(&RELEASE_REQUEST[..], PROTO_VERSION)
+            .unwrap_or_else(|err| panic!("failed to build FUSE request, the error is: {err}"));
+        assert_eq!(RELEASE_REQUEST.len(), req.len().cast::<usize>());
+        assert_eq!(req.header.opcode, 18);
+        check_header(&req);
+
+        #[allow(clippy::wildcard_enum_match_arm)]
+        match *req.operation() {
+            Operation::Release { arg } => {
+                assert_eq!(arg.fh, 0x10);
+                assert_eq!(arg.flags, FOPEN_KEEP_CACHE);
+                assert_eq!(arg.release_flags, 0);
+                assert_eq!(arg.lock_owner, 0x1234);
+            }
+            _ => panic!("unexpected request operation"),
+        }
+    }
+
+    define_payload! {
+        FSYNC_REQUEST;
+        len: 56;
+        opcode: 20;
+        u64: 0x10,  // fh
+        u32: 0,     // fsync_flags
+        u32: 0,     // padding
+    }
+
+    #[test]
+    fn fsync() {
+        let req = Request::new(&FSYNC_REQUEST[..], PROTO_VERSION)
+            .unwrap_or_else(|err| panic!("failed to build FUSE request, the error is: {err}"));
+        assert_eq!(FSYNC_REQUEST.len(), req.len().cast::<usize>());
+        assert_eq!(req.header.opcode, 20);
+        check_header(&req);
+
+        #[allow(clippy::wildcard_enum_match_arm)]
+        match *req.operation() {
+            Operation::FSync { arg } => {
+                assert_eq!(arg.fh, 0x10);
+                assert_eq!(arg.fsync_flags, 0);
+            }
+            _ => panic!("unexpected request operation"),
+        }
+    }
+
+    define_payload! {
+        SETXATTR_REQUEST;
+        len: 64;
+        opcode: 21;
+        u32: 8,             // size
+        u32: 0,             // flags
+        str: b"foo.bar\0",  // name
+        str: b"foo, bar",   // value
+    }
+
+    #[test]
+    fn setxattr() {
+        let req = Request::new(&SETXATTR_REQUEST[..], PROTO_VERSION)
+            .unwrap_or_else(|err| panic!("failed to build FUSE request, the error is: {err}"));
+        assert_eq!(SETXATTR_REQUEST.len(), req.len().cast::<usize>());
+        assert_eq!(req.header.opcode, 21);
+        check_header(&req);
+
+        #[allow(clippy::wildcard_enum_match_arm)]
+        match *req.operation() {
+            Operation::SetXAttr { arg, name, value } => {
+                assert_eq!(arg.size, 8);
+                assert_eq!(arg.flags, 0);
+                assert_eq!(name, "foo.bar");
+                assert_eq!(value, b"foo, bar");
+            }
+            _ => panic!("unexpected request operation"),
+        }
+    }
+
+    define_payload! {
+        GETXATTR_REQUEST;
+        len: 56;
+        opcode: 22;
+        u32: 0x80,          // size
+        u32: 0,             // padding
+        str: b"foo.bar\0",  // name
+    }
+
+    #[test]
+    fn getxattr() {
+        let req = Request::new(&GETXATTR_REQUEST[..], PROTO_VERSION)
+            .unwrap_or_else(|err| panic!("failed to build FUSE request, the error is: {err}"));
+        assert_eq!(GETXATTR_REQUEST.len(), req.len().cast::<usize>());
+        assert_eq!(req.header.opcode, 22);
+        check_header(&req);
+
+        #[allow(clippy::wildcard_enum_match_arm)]
+        match *req.operation() {
+            Operation::GetXAttr { arg, name } => {
+                assert_eq!(arg.size, 0x80);
+                assert_eq!(name, "foo.bar");
+            }
+            _ => panic!("unexpected request operation"),
+        }
+    }
+
+    define_payload! {
+        LISTXATTR_REQUEST;
+        len: 48;
+        opcode: 23;
+        u32: 0x80,  // size
+        u32: 0,     // padding
+    }
+
+    #[test]
+    fn listxattr() {
+        let req = Request::new(&LISTXATTR_REQUEST[..], PROTO_VERSION)
+            .unwrap_or_else(|err| panic!("failed to build FUSE request, the error is: {err}"));
+        assert_eq!(LISTXATTR_REQUEST.len(), req.len().cast::<usize>());
+        assert_eq!(req.header.opcode, 23);
+        check_header(&req);
+
+        #[allow(clippy::wildcard_enum_match_arm)]
+        match *req.operation() {
+            Operation::ListXAttr { arg } => {
+                assert_eq!(arg.size, 0x80);
+            }
+            _ => panic!("unexpected request operation"),
+        }
+    }
+
+    define_payload! {
+        REMOVEXATTR_REQUEST;
+        len: 48;
+        opcode: 24;
+        str: b"foo.bar\0",  // name
+    }
+
+    #[test]
+    fn removexattr() {
+        let req = Request::new(&REMOVEXATTR_REQUEST[..], PROTO_VERSION)
+            .unwrap_or_else(|err| panic!("failed to build FUSE request, the error is: {err}"));
+        assert_eq!(REMOVEXATTR_REQUEST.len(), req.len().cast::<usize>());
+        assert_eq!(req.header.opcode, 24);
+        check_header(&req);
+
+        #[allow(clippy::wildcard_enum_match_arm)]
+        match *req.operation() {
+            Operation::RemoveXAttr { name } => {
+                assert_eq!(name, "foo.bar");
+            }
+            _ => panic!("unexpected request operation"),
+        }
+    }
+
+    define_payload! {
+        FLUSH_REQUEST;
+        len: 64;
+        opcode: 25;
+        u64: 0x10,    // fh
+        u32: 0,       // unused
+        u32: 0,       // padding
+        u64: 0x1234,  // lock_owner
+    }
+
+    #[test]
+    fn flush() {
+        let req = Request::new(&FLUSH_REQUEST[..], PROTO_VERSION)
+            .unwrap_or_else(|err| panic!("failed to build FUSE request, the error is: {err}"));
+        assert_eq!(FLUSH_REQUEST.len(), req.len().cast::<usize>());
+        assert_eq!(req.header.opcode, 25);
+        check_header(&req);
+
+        #[allow(clippy::wildcard_enum_match_arm)]
+        match *req.operation() {
+            Operation::Flush { arg } => {
+                assert_eq!(arg.fh, 0x10);
+                assert_eq!(arg.lock_owner, 0x1234);
+            }
+            _ => panic!("unexpected request operation"),
+        }
+    }
+
+    define_payload! {
+        INIT_REQUEST;
+        len: 56;
+        opcode: 26;
+        u32: 7,                      // major
+        u32: 8,                      // minor
+        u32: 0x1000,                 // max_readahead
+        u32: 1,                      // flags
+    }
+
+    #[test]
+    fn init() {
+        use super::super::protocol::FUSE_ASYNC_READ;
+
+        let req = Request::new(&INIT_REQUEST[..], PROTO_VERSION)
+            .unwrap_or_else(|err| panic!("failed to build FUSE request, the error is: {err}"));
+        assert_eq!(INIT_REQUEST.len(), req.header.len.cast::<usize>());
+        assert_eq!(req.header.opcode, 26);
+        check_header(&req);
+
+        #[allow(clippy::wildcard_enum_match_arm)]
+        match *req.operation() {
+            Operation::Init { arg } => {
+                assert_eq!(arg.major, 7);
+                assert_eq!(arg.minor, 8);
+                assert_eq!(arg.max_readahead, 4096);
+                assert_eq!(arg.flags, FUSE_ASYNC_READ);
+            }
+            _ => panic!("unexpected request operation"),
+        }
+    }
+
+    define_payload! {
+        OPENDIR_REQUEST;
+        len: 48;
+        opcode: 27;
+        u32: 2,                      // flags
+        u32: 0o0755,                 // mode, or unused from 7.12
+
+    }
+
+    #[test]
+    fn opendir() {
+        use super::super::protocol::FOPEN_KEEP_CACHE;
+
+        let req = Request::new(&OPENDIR_REQUEST[..], PROTO_VERSION)
+            .unwrap_or_else(|err| panic!("failed to build FUSE request, the error is: {err}"));
+        assert_eq!(OPENDIR_REQUEST.len(), req.header.len.cast::<usize>());
+        assert_eq!(req.header.opcode, 27);
+        check_header(&req);
+
+        #[allow(clippy::wildcard_enum_match_arm)]
+        match *req.operation() {
+            Operation::OpenDir { arg } => {
+                assert_eq!(arg.flags, FOPEN_KEEP_CACHE);
+                #[cfg(not(feature = "abi-7-12"))]
+                assert_eq!(arg.mode, 0o0755);
+            }
+            _ => panic!("unexpected request operation"),
+        }
+    }
+
+    #[cfg(not(feature = "abi-7-9"))]
+    define_payload! {
+        READDIR_REQUEST;
+        len: 64;
+        opcode: 28;
+        u64: 0x10,  // fh
+        u64: 0x0a,  // offset
+        u32: 0x10,  // size
+        u32: 0,     // padding
+    }
+
+    #[cfg(feature = "abi-7-9")]
+    define_payload! {
+        READDIR_REQUEST;
+        len: 80;
+        opcode: 28;
+        u64: 0x10,   // fh
+        u64: 0x0a,   // offset
+        u32: 0x10,   // size
+        u32: 2,      // read_flags
+        u64: 0x1234, // lock_owner
+        u32: 2,      // flags
+        u32: 0,      // padding
+    }
+
+    #[test]
+    fn readdir() {
+        #[cfg(feature = "abi-7-9")]
+        use super::super::protocol::{FOPEN_KEEP_CACHE, FUSE_READ_LOCKOWNER};
+
+        let req = Request::new(&READDIR_REQUEST[..], PROTO_VERSION)
+            .unwrap_or_else(|err| panic!("failed to build FUSE request, the error is: {err}"));
+        assert_eq!(READDIR_REQUEST.len(), req.len().cast::<usize>());
+        assert_eq!(req.header.opcode, 28);
+        check_header(&req);
+
+        #[allow(clippy::wildcard_enum_match_arm)]
+        match *req.operation() {
+            Operation::ReadDir { arg } => {
+                assert_eq!(arg.fh, 0x10);
+                assert_eq!(arg.offset, 0x0a);
+                assert_eq!(arg.size, 0x10);
+                #[cfg(feature = "abi-7-9")]
+                {
+                    assert_eq!(arg.read_flags, FUSE_READ_LOCKOWNER);
+                    assert_eq!(arg.lock_owner, 0x1234);
+                    assert_eq!(arg.flags, FOPEN_KEEP_CACHE);
+                }
+            }
+            _ => panic!("unexpected request operation"),
+        }
+    }
+
+    define_payload! {
+        RELEASEDIR_REQUEST;
+        len: 64;
+        opcode: 29;
+        u64: 0x10,    // fh
+        u32: 2,       // flags
+        u32: 0,       // release_flags
+        u64: 0x1234,  // lock_owner
+    }
+
+    #[test]
+    fn releasedir() {
+        use super::super::protocol::FOPEN_KEEP_CACHE;
+
+        let req = Request::new(&RELEASEDIR_REQUEST[..], PROTO_VERSION)
+            .unwrap_or_else(|err| panic!("failed to build FUSE request, the error is: {err}"));
+        assert_eq!(RELEASEDIR_REQUEST.len(), req.len().cast::<usize>());
+        assert_eq!(req.header.opcode, 29);
+        check_header(&req);
+
+        #[allow(clippy::wildcard_enum_match_arm)]
+        match *req.operation() {
+            Operation::ReleaseDir { arg } => {
+                assert_eq!(arg.fh, 0x10);
+                assert_eq!(arg.flags, FOPEN_KEEP_CACHE);
+                assert_eq!(arg.release_flags, 0);
+                assert_eq!(arg.lock_owner, 0x1234);
+            }
+            _ => panic!("unexpected request operation"),
+        }
+    }
+
+    define_payload! {
+        FSYNCDIR_REQUEST;
+        len: 56;
+        opcode: 30;
+        u64: 0x10,  // fh
+        u32: 0,     // fsync_flags
+        u32: 0,     // padding
+    }
+
+    #[test]
+    fn fsyncdir() {
+        let req = Request::new(&FSYNCDIR_REQUEST[..], PROTO_VERSION)
+            .unwrap_or_else(|err| panic!("failed to build FUSE request, the error is: {err}"));
+        assert_eq!(FSYNCDIR_REQUEST.len(), req.len().cast::<usize>());
+        assert_eq!(req.header.opcode, 30);
+        check_header(&req);
+
+        #[allow(clippy::wildcard_enum_match_arm)]
+        match *req.operation() {
+            Operation::FSyncDir { arg } => {
+                assert_eq!(arg.fh, 0x10);
+                assert_eq!(arg.fsync_flags, 0);
+            }
+            _ => panic!("unexpected request operation"),
+        }
+    }
+
+    #[cfg(not(feature = "abi-7-9"))]
+    define_payload! {
+        GETLK_REQUEST;
+        len: 80;
+        opcode: 31;
+        u64: 0x10,  // fh
+        u64: 0x11,  // owner
+        u64: 0x00,  // lk.start
+        u64: 0x20,  // lk.end
+        u32: 1,     // lk.typ
+        u32: 0xff,  // lk.pid
+    }
+
+    #[cfg(feature = "abi-7-9")]
+    define_payload! {
+        GETLK_REQUEST;
+        len: 88;
+        opcode: 31;
+        u64: 0x10,  // fh
+        u64: 0x11,  // owner
+        u64: 0x00,  // lk.start
+        u64: 0x20,  // lk.end
+        u32: 1,     // lk.typ
+        u32: 0xff,  // lk.pid
+        u32: 1,     // lk_flags
+        u32: 0,     // padding
+    }
+
+    #[test]
+    fn getlk() {
+        #[cfg(feature = "abi-7-9")]
+        use super::super::protocol::FUSE_LK_FLOCK;
+
+        let req = Request::new(&GETLK_REQUEST[..], PROTO_VERSION)
+            .unwrap_or_else(|err| panic!("failed to build FUSE request, the error is: {err}"));
+        assert_eq!(GETLK_REQUEST.len(), req.len().cast::<usize>());
+        assert_eq!(req.header.opcode, 31);
+        check_header(&req);
+
+        #[allow(clippy::wildcard_enum_match_arm)]
+        match *req.operation() {
+            Operation::GetLk { arg } => {
+                assert_eq!(arg.fh, 0x10);
+                assert_eq!(arg.owner, 0x11);
+                assert_eq!(arg.lk.start, 0x00);
+                assert_eq!(arg.lk.end, 0x20);
+                assert_eq!(arg.lk.typ, 1);
+                assert_eq!(arg.lk.pid, 0xff);
+                #[cfg(feature = "abi-7-9")]
+                assert_eq!(arg.lk_flags, FUSE_LK_FLOCK);
+            }
+            _ => panic!("unexpected request operation"),
+        }
+    }
+
+    #[cfg(not(feature = "abi-7-9"))]
+    define_payload! {
+        SETLK_REQUEST;
+        len: 80;
+        opcode: 32;
+        u64: 0x10,  // fh
+        u64: 0x11,  // owner
+        u64: 0x00,  // lk.start
+        u64: 0x20,  // lk.end
+        u32: 1,     // lk.typ
+        u32: 0xff,  // lk.pid
+    }
+
+    #[cfg(feature = "abi-7-9")]
+    define_payload! {
+        SETLK_REQUEST;
+        len: 88;
+        opcode: 32;
+        u64: 0x10,  // fh
+        u64: 0x11,  // owner
+        u64: 0x00,  // lk.start
+        u64: 0x20,  // lk.end
+        u32: 1,     // lk.typ
+        u32: 0xff,  // lk.pid
+        u32: 1,     // lk_flags
+        u32: 0,     // padding
+    }
+
+    #[test]
+    fn setlk() {
+        #[cfg(feature = "abi-7-9")]
+        use super::super::protocol::FUSE_LK_FLOCK;
+
+        let req = Request::new(&SETLK_REQUEST[..], PROTO_VERSION)
+            .unwrap_or_else(|err| panic!("failed to build FUSE request, the error is: {err}"));
+        assert_eq!(SETLK_REQUEST.len(), req.len().cast::<usize>());
+        assert_eq!(req.header.opcode, 32);
+        check_header(&req);
+
+        #[allow(clippy::wildcard_enum_match_arm)]
+        match *req.operation() {
+            Operation::SetLk { arg } => {
+                assert_eq!(arg.fh, 0x10);
+                assert_eq!(arg.owner, 0x11);
+                assert_eq!(arg.lk.start, 0x00);
+                assert_eq!(arg.lk.end, 0x20);
+                assert_eq!(arg.lk.typ, 1);
+                assert_eq!(arg.lk.pid, 0xff);
+                #[cfg(feature = "abi-7-9")]
+                assert_eq!(arg.lk_flags, FUSE_LK_FLOCK);
+            }
+            _ => panic!("unexpected request operation"),
+        }
+    }
+
+    #[cfg(not(feature = "abi-7-9"))]
+    define_payload! {
+        SETLKW_REQUEST;
+        len: 80;
+        opcode: 33;
+        u64: 0x10,  // fh
+        u64: 0x11,  // owner
+        u64: 0x00,  // lk.start
+        u64: 0x20,  // lk.end
+        u32: 1,     // lk.typ
+        u32: 0xff,  // lk.pid
+    }
+
+    #[cfg(feature = "abi-7-9")]
+    define_payload! {
+        SETLKW_REQUEST;
+        len: 88;
+        opcode: 33;
+        u64: 0x10,  // fh
+        u64: 0x11,  // owner
+        u64: 0x00,  // lk.start
+        u64: 0x20,  // lk.end
+        u32: 1,     // lk.typ
+        u32: 0xff,  // lk.pid
+        u32: 1,     // lk_flags
+        u32: 0,     // padding
+    }
+
+    #[test]
+    fn setlkw() {
+        #[cfg(feature = "abi-7-9")]
+        use super::super::protocol::FUSE_LK_FLOCK;
+
+        let req = Request::new(&SETLKW_REQUEST[..], PROTO_VERSION)
+            .unwrap_or_else(|err| panic!("failed to build FUSE request, the error is: {err}"));
+        assert_eq!(SETLKW_REQUEST.len(), req.len().cast::<usize>());
+        assert_eq!(req.header.opcode, 33);
+        check_header(&req);
+
+        #[allow(clippy::wildcard_enum_match_arm)]
+        match *req.operation() {
+            Operation::SetLkW { arg } => {
+                assert_eq!(arg.fh, 0x10);
+                assert_eq!(arg.owner, 0x11);
+                assert_eq!(arg.lk.start, 0x00);
+                assert_eq!(arg.lk.end, 0x20);
+                assert_eq!(arg.lk.typ, 1);
+                assert_eq!(arg.lk.pid, 0xff);
+                #[cfg(feature = "abi-7-9")]
+                assert_eq!(arg.lk_flags, FUSE_LK_FLOCK);
+            }
+            _ => panic!("unexpected request operation"),
+        }
+    }
+
+    define_payload! {
+        ACCESS_REQUEST;
+        len: 48;
+        opcode: 34;
+        u32: 0o0022,  // mask
+        u32: 0,       // padding
+    }
+
+    #[test]
+    fn access() {
+        let req = Request::new(&ACCESS_REQUEST[..], PROTO_VERSION)
+            .unwrap_or_else(|err| panic!("failed to build FUSE request, the error is: {err}"));
+        assert_eq!(ACCESS_REQUEST.len(), req.len().cast::<usize>());
+        assert_eq!(req.header.opcode, 34);
+        check_header(&req);
+
+        #[allow(clippy::wildcard_enum_match_arm)]
+        match *req.operation() {
+            Operation::Access { arg } => {
+                assert_eq!(arg.mask, 0o0022);
+            }
+            _ => panic!("unexpected request operation"),
+        }
+    }
+
+    #[cfg(not(feature = "abi-7-12"))]
+    define_payload! {
+        CREATE_REQUEST;
+        len: 56;
+        opcode: 35;
+        u32: 0,             // flags
+        u32: 0o0755,        // mode
+        str: b"foo.txt\0",   // name
+    }
+
+    #[cfg(feature = "abi-7-12")]
+    define_payload! {
+        CREATE_REQUEST;
+        len: 64;
+        opcode: 35;
+        u32: 0,             // flags
+        u32: 0o0755,        // mode
+        u32: 0o0022,        // umask
+        u32: 0,             // padding
+        str: b"foo.txt\0",   // name
+    }
+
+    #[test]
+    fn create() {
+        let req = Request::new(&CREATE_REQUEST[..], PROTO_VERSION)
+            .unwrap_or_else(|err| panic!("failed to build FUSE request, the error is: {err}"));
+        assert_eq!(CREATE_REQUEST.len(), req.len().cast::<usize>());
+        assert_eq!(req.header.opcode, 35);
+        check_header(&req);
+
+        #[allow(clippy::wildcard_enum_match_arm)]
+        match *req.operation() {
+            Operation::Create { arg, name } => {
+                assert_eq!(arg.flags, 0);
+                assert_eq!(arg.mode, 0o0755);
+                #[cfg(feature = "abi-7-12")]
+                assert_eq!(arg.umask, 0o0022);
+                assert_eq!(name, "foo.txt");
+            }
+            _ => panic!("unexpected request operation"),
+        }
+    }
+
+    define_payload! {
+        INTERRUPT_REQUEST;
+        len: 48;
+        opcode: 36;
+        u64: 0x1234_5678,  // unique
+    }
+
+    #[test]
+    fn interrupt() {
+        let req = Request::new(&INTERRUPT_REQUEST[..], PROTO_VERSION)
+            .unwrap_or_else(|err| panic!("failed to build FUSE request, the error is: {err}"));
+        assert_eq!(INTERRUPT_REQUEST.len(), req.len().cast::<usize>());
+        assert_eq!(req.header.opcode, 36);
+        check_header(&req);
+
+        #[allow(clippy::wildcard_enum_match_arm)]
+        match *req.operation() {
+            Operation::Interrupt { arg } => {
+                assert_eq!(arg.unique, 0x1234_5678);
+            }
+            _ => panic!("unexpected request operation"),
+        }
+    }
+
+    define_payload! {
+        BMAP_REQUEST;
+        len: 56;
+        opcode: 37;
+        u64: 0x1234_5678,  // block
+        u32: 0xff,         // blocksize
+        u32: 0,            // padding
+    }
+
+    #[test]
+    fn bmap() {
+        let req = Request::new(&BMAP_REQUEST[..], PROTO_VERSION)
+            .unwrap_or_else(|err| panic!("failed to build FUSE request, the error is: {err}"));
+        assert_eq!(BMAP_REQUEST.len(), req.len().cast::<usize>());
+        assert_eq!(req.header.opcode, 37);
+        check_header(&req);
+
+        #[allow(clippy::wildcard_enum_match_arm)]
+        match *req.operation() {
+            Operation::BMap { arg } => {
+                assert_eq!(arg.block, 0x1234_5678);
+                assert_eq!(arg.blocksize, 0xff);
+            }
+            _ => panic!("unexpected request operation"),
+        }
+    }
+
+    define_payload! {
+        DESTROY_REQUEST;
+        len: 40;
+        opcode: 38;
+    }
+
+    #[test]
+    fn destroy() {
+        let req = Request::new(&DESTROY_REQUEST[..], PROTO_VERSION)
+            .unwrap_or_else(|err| panic!("failed to build FUSE request, the error is: {err}"));
+        assert_eq!(DESTROY_REQUEST.len(), req.len().cast::<usize>());
+        assert_eq!(req.header.opcode, 38);
+        check_header(&req);
+
+        #[allow(clippy::wildcard_enum_match_arm)]
+        match *req.operation() {
+            Operation::Destroy => {}
+            _ => panic!("unexpected request operation"),
+        }
+    }
+
+    #[cfg(feature = "abi-7-11")]
+    define_payload! {
+        IOCTL_REQUEST;
+        len: 80;
+        opcode: 39;
+        u64: 0x10,                  // fh
+        u32: 4,                     // flags
+        u32: 0,                     // cmd
+        u64: 0x1122_3344_5566_7788, // arg
+        u32: 0xa0,                  // in_size
+        u32: 0xb0,                  // out_size
+        str: b"foobar2k",           // data
+    }
+
+    #[test]
+    #[cfg(feature = "abi-7-11")]
+    fn ioctl() {
+        use super::super::protocol::FUSE_IOCTL_RETRY;
+
+        let req = Request::new(&IOCTL_REQUEST[..], PROTO_VERSION)
+            .unwrap_or_else(|err| panic!("failed to build FUSE request, the error is: {err}"));
+        assert_eq!(IOCTL_REQUEST.len(), req.len().cast::<usize>());
+        assert_eq!(req.header.opcode, 39);
+        check_header(&req);
+
+        #[allow(clippy::wildcard_enum_match_arm)]
+        match *req.operation() {
+            Operation::IoCtl { arg, data } => {
+                assert_eq!(arg.fh, 0x10);
+                assert_eq!(arg.flags, FUSE_IOCTL_RETRY);
+                assert_eq!(arg.cmd, 0);
+                assert_eq!(arg.arg, 0x1122_3344_5566_7788);
+                assert_eq!(arg.in_size, 0xa0);
+                assert_eq!(arg.out_size, 0xb0);
+                assert_eq!(data, b"foobar2k");
+            }
+            _ => panic!("unexpected request operation"),
+        }
+    }
+
+    #[cfg(feature = "abi-7-11")]
+    define_payload! {
+        POLL_REQUEST;
+        len: 64;
+        opcode: 40;
+        u64: 0x10,                  // fh
+        u64: 0x20,                  // kh
+        u32: 1,                     // flags
+        u32: 0xfa,                  // events, or padding before 7.21
+    }
+
+    #[test]
+    #[cfg(feature = "abi-7-11")]
+    fn poll() {
+        use super::super::protocol::FUSE_POLL_SCHEDULE_NOTIFY;
+
+        let req = Request::new(&POLL_REQUEST[..], PROTO_VERSION)
+            .unwrap_or_else(|err| panic!("failed to build FUSE request, the error is: {err}"));
+        assert_eq!(POLL_REQUEST.len(), req.len().cast::<usize>());
+        assert_eq!(req.header.opcode, 40);
+        check_header(&req);
+
+        #[allow(clippy::wildcard_enum_match_arm)]
+        match *req.operation() {
+            Operation::Poll { arg } => {
+                assert_eq!(arg.fh, 0x10);
+                assert_eq!(arg.kh, 0x20);
+                assert_eq!(arg.flags, FUSE_POLL_SCHEDULE_NOTIFY);
+                assert_eq!(arg.events, 0xfa);
+            }
+            _ => panic!("unexpected request operation"),
+        }
+    }
+
+    #[cfg(feature = "abi-7-15")]
+    define_payload! {
+        NOTIFY_REPLY_REQUEST;
+        len: 48;
+        opcode: 41;
+        str: b"foobar2k",  // data
+    }
+
+    #[test]
+    #[cfg(feature = "abi-7-15")]
+    fn notify_reply() {
+        let req = Request::new(&NOTIFY_REPLY_REQUEST[..], PROTO_VERSION)
+            .unwrap_or_else(|err| panic!("failed to build FUSE request, the error is: {err}"));
+        assert_eq!(NOTIFY_REPLY_REQUEST.len(), req.len().cast::<usize>());
+        assert_eq!(req.header.opcode, 41);
+        check_header(&req);
+
+        #[allow(clippy::wildcard_enum_match_arm)]
+        match *req.operation() {
+            Operation::NotifyReply { data } => {
+                assert_eq!(data, b"foobar2k");
+            }
+            _ => panic!("unexpected request operation"),
+        }
+    }
+
+    #[cfg(feature = "abi-7-16")]
+    define_payload! {
+        BATCH_FORGET_REQUEST;
+        len: 80;
+        opcode: 42;
+        u32: 2,       // count
+        u32: 0,       // dummy
+        u64: 1,       // nodes[0].nodeid
+        u64: 5,       // nodes[0].nlookup
+        u64: 2,       // nodes[1].nodeid
+        u64: 10,      // nodes[1].nlookup
+    }
+
+    #[test]
+    #[cfg(feature = "abi-7-16")]
+    fn batch_forget() {
+        let req = Request::new(&BATCH_FORGET_REQUEST[..], PROTO_VERSION)
+            .unwrap_or_else(|err| panic!("failed to build FUSE request, the error is: {err}"));
+        assert_eq!(BATCH_FORGET_REQUEST.len(), req.len().cast::<usize>());
+        assert_eq!(req.header.opcode, 42);
+        check_header(&req);
+
+        #[allow(clippy::wildcard_enum_match_arm, clippy::indexing_slicing)]
+        match *req.operation() {
+            Operation::BatchForget { arg, nodes } => {
+                assert_eq!(arg.count, 2);
+                assert_eq!(nodes[0].nodeid, 1);
+                assert_eq!(nodes[0].nlookup, 5);
+                assert_eq!(nodes[1].nodeid, 2);
+                assert_eq!(nodes[1].nlookup, 10);
+            }
+            _ => panic!("unexpected request operation"),
+        }
+    }
+
+    #[cfg(feature = "abi-7-19")]
+    define_payload! {
+        FALLOCATE_REQUEST;
+        len: 72;
+        opcode: 43;
+        u64: 0x10,      // fh
+        u64: 0xff,      // offset
+        u64: 0xff00,    // length
+        u32: 0o0755,    // mode
+        u32: 0,         // padding
+    }
+
+    #[test]
+    #[cfg(feature = "abi-7-19")]
+    fn fallocate() {
+        let req = Request::new(&FALLOCATE_REQUEST[..], PROTO_VERSION)
+            .unwrap_or_else(|err| panic!("failed to build FUSE request, the error is: {err}"));
+        assert_eq!(FALLOCATE_REQUEST.len(), req.len().cast::<usize>());
+        assert_eq!(req.header.opcode, 43);
+        check_header(&req);
+
+        #[allow(clippy::wildcard_enum_match_arm)]
+        match *req.operation() {
+            Operation::FAllocate { arg } => {
+                assert_eq!(arg.fh, 0x10);
+                assert_eq!(arg.offset, 0xff);
+                assert_eq!(arg.length, 0xff00);
+                assert_eq!(arg.mode, 0o0755);
+            }
+            _ => panic!("unexpected request operation"),
+        }
+    }
+
+    #[cfg(feature = "abi-7-21")]
+    define_payload! {
+        READDIRPLUS_REQUEST;
+        len: 80;
+        opcode: 44;
+        u64: 0x10,   // fh
+        u64: 0x0a,   // offset
+        u32: 0x10,   // size
+        u32: 2,      // read_flags
+        u64: 0x1234, // lock_owner
+        u32: 2,      // flags
+        u32: 0,      // padding
+    }
+
+    #[test]
+    #[cfg(feature = "abi-7-21")]
+    fn readdirplus() {
+        use super::super::protocol::{FOPEN_KEEP_CACHE, FUSE_READ_LOCKOWNER};
+
+        let req = Request::new(&READDIRPLUS_REQUEST[..], PROTO_VERSION)
+            .unwrap_or_else(|err| panic!("failed to build FUSE request, the error is: {err}"));
+        assert_eq!(READDIRPLUS_REQUEST.len(), req.len().cast::<usize>());
+        assert_eq!(req.header.opcode, 44);
+        check_header(&req);
+
+        #[allow(clippy::wildcard_enum_match_arm)]
+        match *req.operation() {
+            Operation::ReadDirPlus { arg } => {
+                assert_eq!(arg.fh, 0x10);
+                assert_eq!(arg.offset, 0x0a);
+                assert_eq!(arg.size, 0x10);
+                assert_eq!(arg.read_flags, FUSE_READ_LOCKOWNER);
+                assert_eq!(arg.lock_owner, 0x1234);
+                assert_eq!(arg.flags, FOPEN_KEEP_CACHE);
+            }
+            _ => panic!("unexpected request operation"),
+        }
+    }
+
+    #[cfg(feature = "abi-7-23")]
+    define_payload! {
+        RENAME2_REQUEST;
+        len: 72;
+        opcode: 45;
+        u64: 0x10,          // newdir
+        u32: 2,             // flags
+        u32: 0,             // padding
+        str: b"foo.txt\0",  // oldname
+        str: b"bar.txt\0",  // newname
+    }
+
+    #[test]
+    #[cfg(feature = "abi-7-23")]
+    fn rename2() {
+        use libc::RENAME_EXCHANGE;
+
+        let req = Request::new(&RENAME2_REQUEST[..], PROTO_VERSION)
+            .unwrap_or_else(|err| panic!("failed to build FUSE request, the error is: {err}"));
+        assert_eq!(RENAME2_REQUEST.len(), req.len().cast::<usize>());
+        assert_eq!(req.header.opcode, 45);
+        check_header(&req);
+
+        #[allow(clippy::wildcard_enum_match_arm)]
+        match *req.operation() {
+            Operation::Rename2 {
+                arg,
+                oldname,
+                newname,
+            } => {
+                assert_eq!(arg.newdir, 0x10);
+                assert_eq!(arg.flags, RENAME_EXCHANGE);
+                assert_eq!(oldname, "foo.txt");
+                assert_eq!(newname, "bar.txt");
+            }
+            _ => panic!("unexpected request operation"),
+        }
+    }
+
+    // TODO: Check ABI above 7.24, and mark them.
+
+    define_payload! {
+        LSEEK_REQUEST;
+        len: 64;
+        opcode: 46;
+        u64: 0x10,          // fh
+        u64: 0xff,          // offset
+        u32: 0x1f,          // whence
+        u32: 0,             // padding
+    }
+
+    #[test]
+    fn lseek() {
+        let req = Request::new(&LSEEK_REQUEST[..], PROTO_VERSION)
+            .unwrap_or_else(|err| panic!("failed to build FUSE request, the error is: {err}"));
+        assert_eq!(LSEEK_REQUEST.len(), req.len().cast::<usize>());
+        assert_eq!(req.header.opcode, 46);
+        check_header(&req);
+
+        #[allow(clippy::wildcard_enum_match_arm)]
+        match *req.operation() {
+            Operation::LSeek { arg } => {
+                assert_eq!(arg.fh, 0x10);
+                assert_eq!(arg.offset, 0xff);
+                assert_eq!(arg.whence, 0x1f);
+            }
+            _ => panic!("unexpected request operation"),
+        }
+    }
+
+    define_payload! {
+        COPY_FILE_RANGE_REQUEST;
+        len: 96;
+        opcode: 47;
+        u64: 0x10,          // fh_in
+        u64: 0xff,          // off_in
+        u64: 0x20,          // nodeid_out
+        u64: 0x11,          // fh_out
+        u64: 0xff,          // off_out
+        u64: 0x10ff,        // len
+        u64: 0,             // flags
+    }
+
+    #[test]
+    fn copy_file_range() {
+        let req = Request::new(&COPY_FILE_RANGE_REQUEST[..], PROTO_VERSION)
+            .unwrap_or_else(|err| panic!("failed to build FUSE request, the error is: {err}"));
+        assert_eq!(COPY_FILE_RANGE_REQUEST.len(), req.len().cast::<usize>());
+        assert_eq!(req.header.opcode, 47);
+        check_header(&req);
+
+        #[allow(clippy::wildcard_enum_match_arm)]
+        match *req.operation() {
+            Operation::CopyFileRange { arg } => {
+                assert_eq!(arg.fh_in, 0x10);
+                assert_eq!(arg.off_in, 0xff);
+                assert_eq!(arg.nodeid_out, 0x20);
+                assert_eq!(arg.fh_out, 0x11);
+                assert_eq!(arg.off_out, 0xff);
+                assert_eq!(arg.len, 0x10ff);
+                assert_eq!(arg.flags, 0);
+            }
+            _ => panic!("unexpected request operation"),
+        }
+    }
+
+    #[cfg(feature = "abi-7-11")]
+    define_payload! {
+        CUSE_INIT_REQUEST;
+        len: 56;
+        opcode: 4096;
+        u32: 7,                      // major
+        u32: 11,                     // minor
+        u32: 0x1000,                 // max_readahead
+        u32: 0,                      // flags
+    }
+
+    #[test]
+    #[cfg(feature = "abi-7-11")]
+    fn cuse_init() {
+        let req = Request::new(&CUSE_INIT_REQUEST[..], PROTO_VERSION)
+            .unwrap_or_else(|err| panic!("failed to build FUSE request, the error is: {err}"));
+        assert_eq!(CUSE_INIT_REQUEST.len(), req.header.len.cast::<usize>());
+        assert_eq!(req.header.opcode, 4096);
+        check_header(&req);
+
+        #[allow(clippy::wildcard_enum_match_arm)]
+        match *req.operation() {
+            Operation::CuseInit { arg } => {
+                assert_eq!(arg.major, 7);
+                assert_eq!(arg.minor, 11);
+                assert_eq!(arg.max_readahead, 4096);
             }
             _ => panic!("unexpected request operation"),
         }
