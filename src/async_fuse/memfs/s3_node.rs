@@ -21,7 +21,7 @@ use tracing::debug;
 use super::cache::{GlobalCache, IoMemBlock};
 use super::dir::DirEntry;
 use super::dist::client as dist_client;
-use super::fs_util::{self, FileAttr};
+use super::fs_util::{self, FileAttr, NEED_CHECK_PERM};
 use super::kv_engine::KVEngineType;
 use super::node::Node;
 use super::s3_metadata::S3MetaData;
@@ -1089,22 +1089,26 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
         let mut attr_changed = false;
 
         let check_permission = || -> DatenLordResult<()> {
-            //  owner is root check the user_id
-            if cur_attr.uid == 0 && user_id != 0 {
-                return build_error_result_from_errno(
-                    Errno::EPERM,
-                    "setattr() cannot change atime".to_owned(),
-                );
+            if NEED_CHECK_PERM {
+                //  owner is root check the user_id
+                if cur_attr.uid == 0 && user_id != 0 {
+                    return build_error_result_from_errno(
+                        Errno::EPERM,
+                        "setattr() cannot change atime".to_owned(),
+                    );
+                }
+                self.attr.read().check_perm(user_id, group_id, 2)?;
+                if user_id != cur_attr.uid {
+                    return build_error_result_from_errno(
+                        Errno::EACCES,
+                        "setattr() cannot change atime".to_owned(),
+                    );
+                }
+                Ok(())
+            } else {
+                // We don't need to check permission
+                Ok(())
             }
-            self.attr.read().check_perm(user_id, group_id, 2)?;
-            if user_id != cur_attr.uid {
-                return build_error_result_from_errno(
-                    Errno::EACCES,
-                    "setattr() cannot change atime".to_owned(),
-                );
-            }
-
-            Ok(())
         };
 
         if let Some(gid) = param.g_id {

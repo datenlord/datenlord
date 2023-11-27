@@ -22,7 +22,7 @@ use super::cache::{GlobalCache, IoMemBlock};
 use super::dir::DirEntry;
 use super::dist::client as dist_client;
 use super::dist::server::CacheServer;
-use super::fs_util::{self, FileAttr};
+use super::fs_util::{self, FileAttr, NEED_CHECK_PERM};
 use super::id_alloc_used::INumAllocator;
 #[cfg(feature = "abi-7-23")]
 use super::kv_engine::MetaTxn;
@@ -1128,19 +1128,6 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
         new_parent: INum,
         new_name: &str,
     ) -> DatenLordResult<(S3Node<S>, INum, Option<S3Node<S>>, INum)> {
-        let check_sticky_bit = |parent_node: &S3Node<S>, entry: &DirEntry| {
-            let parent_attr = parent_node.get_attr();
-            if context.user_id != 0
-                && (parent_attr.perm & 0o1000 != 0)
-                && context.user_id != parent_attr.uid
-                && context.user_id != entry.file_attr_arc_ref().read().uid
-            {
-                build_error_result_from_errno(Errno::EACCES, "Sticky bit set".to_owned())
-            } else {
-                Ok(())
-            }
-        };
-
         let check_node_is_dir = |node: &S3Node<S>| {
             if node.get_type() == SFlag::S_IFDIR {
                 Ok(())
@@ -1185,7 +1172,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
                 return build_enoent(old_name, old_parent, &old_parent_node);
             }
             Some(old_entry) => {
-                check_sticky_bit(&old_parent_node, old_entry)?;
+                Self::check_sticky_bit(context, &old_parent_node, old_entry)?;
                 debug_assert_eq!(&old_name, &old_entry.entry_name());
                 old_entry.ino()
             }
@@ -1220,7 +1207,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
                 return build_enoent(new_name, new_parent, new_parent_ref);
             }
             Some(new_entry) => {
-                check_sticky_bit(new_parent_ref, new_entry)?;
+                Self::check_sticky_bit(context, new_parent_ref, new_entry)?;
                 debug_assert_eq!(&new_name, &new_entry.entry_name());
                 new_entry.ino()
             }
@@ -1283,17 +1270,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
                 );
             }
             Some(old_entry) => {
-                let parent_attr = old_parent_node.get_attr();
-                if context.user_id != 0
-                    && (parent_attr.perm & 0o1000 != 0)
-                    && context.user_id != parent_attr.uid
-                    && context.user_id != old_entry.file_attr_arc_ref().read().uid
-                {
-                    return build_error_result_from_errno(
-                        Errno::EACCES,
-                        "Sticky bit set".to_owned(),
-                    );
-                }
+                Self::check_sticky_bit(&context, &old_parent_node, old_entry)?;
                 debug_assert_eq!(&old_name, &old_entry.entry_name());
                 old_entry.ino()
             }
@@ -1310,14 +1287,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
             })?;
         let new_parent_fd = new_parent_node.get_fd();
         let new_entry_ino = if let Some(new_entry) = new_parent_node.get_entry(new_name) {
-            let parent_attr = new_parent_node.get_attr();
-            if context.user_id != 0
-                && (parent_attr.perm & 0o1000 != 0)
-                && context.user_id != parent_attr.uid
-                && context.user_id != new_entry.file_attr_arc_ref().read().uid
-            {
-                return build_error_result_from_errno(Errno::EACCES, "Sticky bit set".to_owned());
-            }
+            Self::check_sticky_bit(&context, &new_parent_node, new_entry)?;
             debug_assert_eq!(&new_name, &new_entry.entry_name());
             let new_ino = new_entry.ino();
             if no_replace {
@@ -1500,17 +1470,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
                     );
                 }
                 Some(child_entry) => {
-                    let parent_attr = parent_node.get_attr();
-                    if context.user_id != 0
-                        && (parent_attr.perm & 0o1000 != 0)
-                        && context.user_id != parent_attr.uid
-                        && context.user_id != child_entry.file_attr_arc_ref().read().uid
-                    {
-                        return build_error_result_from_errno(
-                            Errno::EACCES,
-                            "Sticky bit set".to_owned(),
-                        );
-                    }
+                    Self::check_sticky_bit(&context, &parent_node, child_entry)?;
                     node_ino = child_entry.ino();
                     if let SFlag::S_IFDIR = node_type {
                         // check the directory to delete is empty
@@ -1611,5 +1571,25 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
         .await
         .map_err(DatenLordError::from)
         .add_context("failed to invlidate others' cache")
+    }
+
+    /// If sticky bit is set, only the owner of the directory, the owner of the file,
+    /// or the superuser can rename or delete files.
+    fn check_sticky_bit(
+        context: &ReqContext,
+        parent_node: &S3Node<S>,
+        child_entry: &DirEntry,
+    ) -> DatenLordResult<()> {
+        let parent_attr = parent_node.get_attr();
+        if NEED_CHECK_PERM
+            && context.user_id != 0
+            && (parent_attr.perm & 0o1000 != 0)
+            && context.user_id != parent_attr.uid
+            && context.user_id != child_entry.file_attr_arc_ref().read().uid
+        {
+            build_error_result_from_errno(Errno::EACCES, "Sticky bit set".to_owned())
+        } else {
+            Ok(())
+        }
     }
 }
