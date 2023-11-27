@@ -46,7 +46,7 @@ pub struct FileAttr {
 /// If fuse mount with `-o default_permissions`, then we should not check permission.
 /// Otherwise, we should check permission.
 /// TODO: add a feature flag to control this
-const CHECK_PERM: bool = false;
+const NEED_CHECK_PERM: bool = false;
 
 impl FileAttr {
     /// New a `FileAttr`
@@ -87,9 +87,21 @@ impl FileAttr {
     /// renamed by root or the directory owner or the file owner.
     /// ```
     pub fn check_perm(&self, user_id: u32, group_id: u32, access_mode: u8) -> DatenLordResult<()> {
-        if !CHECK_PERM {
-            return Ok(());
+        if NEED_CHECK_PERM {
+            self.check_perm_inner(user_id, group_id, access_mode)
+        } else {
+            Ok(())
         }
+    }
+
+    /// If `NEED_CHECK_PERM` is true, then check permission by ourselves not rely on kernel.
+    #[inline]
+    fn check_perm_inner(
+        &self,
+        user_id: u32,
+        group_id: u32,
+        access_mode: u8,
+    ) -> DatenLordResult<()> {
         debug_assert!(
             access_mode <= 0o7 && access_mode != 0,
             "check_perm() found access_mode={access_mode} invalid",
@@ -248,30 +260,30 @@ mod tests {
         };
 
         // Owner permission checks
-        assert!(file.check_perm(1000, 1001, 7).is_ok());
-        assert!(file.check_perm(1000, 1001, 6).is_ok());
-        assert!(file.check_perm(1000, 1001, 5).is_ok());
-        assert!(file.check_perm(1000, 1001, 4).is_ok());
-        assert!(file.check_perm(1000, 1001, 3).is_ok());
-        assert!(file.check_perm(1000, 1001, 2).is_ok());
-        assert!(file.check_perm(1000, 1001, 1).is_ok());
+        assert!(file.check_perm_inner(1000, 1001, 7).is_ok());
+        assert!(file.check_perm_inner(1000, 1001, 6).is_ok());
+        assert!(file.check_perm_inner(1000, 1001, 5).is_ok());
+        assert!(file.check_perm_inner(1000, 1001, 4).is_ok());
+        assert!(file.check_perm_inner(1000, 1001, 3).is_ok());
+        assert!(file.check_perm_inner(1000, 1001, 2).is_ok());
+        assert!(file.check_perm_inner(1000, 1001, 1).is_ok());
 
         // Group permission checks
-        assert!(file.check_perm(1001, 1000, 7).is_err());
-        assert!(file.check_perm(1001, 1000, 6).is_err());
-        assert!(file.check_perm(1001, 1000, 5).is_err());
-        assert!(file.check_perm(1001, 1000, 4).is_ok());
-        assert!(file.check_perm(1001, 1000, 3).is_err());
-        assert!(file.check_perm(1001, 1000, 2).is_err());
-        assert!(file.check_perm(1001, 1000, 1).is_err());
+        assert!(file.check_perm_inner(1001, 1000, 7).is_err());
+        assert!(file.check_perm_inner(1001, 1000, 6).is_err());
+        assert!(file.check_perm_inner(1001, 1000, 5).is_err());
+        assert!(file.check_perm_inner(1001, 1000, 4).is_ok());
+        assert!(file.check_perm_inner(1001, 1000, 3).is_err());
+        assert!(file.check_perm_inner(1001, 1000, 2).is_err());
+        assert!(file.check_perm_inner(1001, 1000, 1).is_err());
 
         // Other permission checks
-        assert!(file.check_perm(1002, 1002, 7).is_err());
-        assert!(file.check_perm(1002, 1002, 6).is_err());
-        assert!(file.check_perm(1002, 1002, 5).is_err());
-        assert!(file.check_perm(1002, 1002, 4).is_err());
-        assert!(file.check_perm(1002, 1002, 3).is_err());
-        assert!(file.check_perm(1002, 1002, 2).is_err());
-        assert!(file.check_perm(1002, 1002, 1).is_ok());
+        assert!(file.check_perm_inner(1002, 1002, 7).is_err());
+        assert!(file.check_perm_inner(1002, 1002, 6).is_err());
+        assert!(file.check_perm_inner(1002, 1002, 5).is_err());
+        assert!(file.check_perm_inner(1002, 1002, 4).is_err());
+        assert!(file.check_perm_inner(1002, 1002, 3).is_err());
+        assert!(file.check_perm_inner(1002, 1002, 2).is_err());
+        assert!(file.check_perm_inner(1002, 1002, 1).is_ok());
     }
 }

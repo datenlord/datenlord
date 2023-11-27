@@ -1,6 +1,6 @@
 use std::fs::File;
 use std::io;
-use std::io::{Read, Write};
+use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 use std::{fs, iter};
@@ -97,7 +97,6 @@ fn test_file_manipulation_rust_way(mount_dir: &Path) -> anyhow::Result<()> {
         !file_path.exists(),
         "the file {file_path:?} should have been removed",
     );
-    fs::remove_file(&file_path)?;
     Ok(())
 }
 
@@ -660,9 +659,7 @@ fn test_open_file_permission(mount_dir: &Path) -> anyhow::Result<()> {
 
     file.write_all(FILE_CONTENT.as_ref())?;
 
-    let mut file = File::open(file_path.clone())?;
-    let mut content = String::new();
-    file.read_to_string(&mut content)?;
+    let content = fs::read_to_string(&file_path)?;
     assert_eq!(content, FILE_CONTENT);
 
     fs::remove_file(&file_path)?;
