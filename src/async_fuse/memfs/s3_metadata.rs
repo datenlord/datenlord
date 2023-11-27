@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::fmt::Debug;
 use std::os::unix::ffi::OsStringExt;
 use std::os::unix::io::RawFd;
 use std::path::Path;
@@ -15,7 +16,7 @@ use nix::fcntl::OFlag;
 use nix::sys::stat::SFlag;
 use parking_lot::RwLock as SyncRwLock; // conflict with tokio RwLock
 use tokio::sync::Mutex;
-use tracing::{debug, instrument, warn};
+use tracing::{debug, info, instrument, warn};
 
 use super::cache::{GlobalCache, IoMemBlock};
 use super::dir::DirEntry;
@@ -403,7 +404,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
             })?;
             let child_entry = parent_node.get_entry(name).ok_or_else(|| error::build_inconsistent_fs_with_context(
                 function_name!(),
-                 format!("the child entry name={name:?} to remove is not under parent of ino={parent}"
+                format!("the child entry name={name:?} to remove is not under parent of ino={parent}"
                 )
             ))?;
             let entry_type = child_entry.entry_type();
@@ -455,11 +456,33 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
 
         let server = CacheServer::new(ip.to_owned(), port.to_owned(), data_cache);
 
-        let root_inode = S3Node::open_root_node(FUSE_ROOT_ID, "/", s3_backend, Arc::clone(&meta))
-            .await
-            .add_context("failed to open FUSE root node")?;
-        // insert (FUSE_ROOT_ID -> root_inode) into KV engine
-        meta.set_node_to_kv_engine(FUSE_ROOT_ID, root_inode).await?;
+        retry_txn!(TXN_RETRY_LIMIT, {
+            let mut txn = meta.kv_engine.new_meta_txn().await;
+            let prev = txn.get(&KeyType::INum2Node(FUSE_ROOT_ID)).await?;
+            if let Some(value) = prev {
+                let prev_root_node: S3Node<S> = value.into_s3_node(&meta).await?;
+                info!(
+                    "[init] root node already exists root_node file_attr {:?}, skip init",
+                    prev_root_node.get_attr()
+                );
+                // We already see a prev root node, we don't have write operation
+                // Txn is not needed for such read-only operation
+                (Ok(true), ())
+            } else {
+                info!("[init] root node not exists, init root node");
+                let root_inode = S3Node::open_root_node(
+                    FUSE_ROOT_ID,
+                    "/",
+                    Arc::<S>::clone(&s3_backend),
+                    Arc::clone(&meta),
+                )
+                .await
+                .add_context("failed to open FUSE root node")?;
+                // insert (FUSE_ROOT_ID -> root_inode) into KV engine
+                meta.set_node_to_kv_engine(FUSE_ROOT_ID, root_inode).await?;
+                (txn.commit().await, ())
+            }
+        })?;
         Ok((meta, Some(server)))
     }
 
@@ -543,12 +566,12 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         let new_node = match node_type {
             SFlag::S_IFDIR => {
                 parent_node
-                .create_child_dir(inum,node_name, m_flags,param.uid,param.gid)
-                .await
-                .add_context(format!(
-                    "{}() failed to create directory with name={node_name:?} and mode={m_flags:?} \
+                    .create_child_dir(inum,node_name, m_flags,param.uid,param.gid)
+                    .await
+                    .add_context(format!(
+                        "{}() failed to create directory with name={node_name:?} and mode={m_flags:?} \
                         under parent directory of ino={parent} and name={parent_name:?}", function_name!()
-                ))?
+                    ))?
             }
             SFlag::S_IFREG => {
                 let o_flags = OFlag::O_CREAT | OFlag::O_EXCL | OFlag::O_RDWR;
@@ -564,25 +587,25 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
                     )
                     .await
                     .add_context(format!(
-                    "{}() failed to create file with name={node_name:?} and mode={m_flags:?} \
+                        "{}() failed to create file with name={node_name:?} and mode={m_flags:?} \
                         under parent directory of ino={parent} and name={parent_name:?}", function_name!()
-                ))?
+                    ))?
             }
             SFlag::S_IFLNK => {
                 parent_node
-                .create_child_symlink(
-                    inum,
-                    node_name,
-                    target_path.ok_or_else(|| anyhow::anyhow!("{}() failed to \
+                    .create_child_symlink(
+                        inum,
+                        node_name,
+                        target_path.ok_or_else(|| anyhow::anyhow!("{}() failed to \
                     get target path when create symlink with name={:?} \
                     under parent directory of ino={} and name={:?}",
                     function_name!(), node_name, parent, parent_node.get_name()))?.to_owned(),
-                )
-                .await
-                .add_context(format!(
-                    "{}() failed to create symlink with name={node_name:?} to target path={target_path:?} \
+                    )
+                    .await
+                    .add_context(format!(
+                        "{}() failed to create symlink with name={node_name:?} to target path={target_path:?} \
                         under parent directory of ino={parent} and name={parent_name:?}", function_name!()
-                ))?
+                    ))?
             }
             _ => {
                 return Err(
@@ -1417,8 +1440,8 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
         {
             let mut moved_node = self.get_node_from_kv_engine(old_entry_ino).await?.unwrap_or_else(|| {
                 unreachable!(
-                "impossible case when rename, the from entry i-node of ino={old_entry_ino} should be in cache",
-            )
+                    "impossible case when rename, the from entry i-node of ino={old_entry_ino} should be in cache",
+                )
             });
             moved_node.set_parent_ino(new_parent);
             moved_node.set_name(new_name);
@@ -1523,11 +1546,11 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
                     }
 
                     let child_node = self.get_node_from_kv_engine(node_ino)
-                            .await?
-                            .ok_or_else(|| error::build_inconsistent_fs_with_context(
-                                function_name!(),
-                                format!("i-node name={node_name:?} of ino={node_ino} found under the parent of ino={parent}, but no i-node found for this node"
-                                )))?;
+                        .await?
+                        .ok_or_else(|| error::build_inconsistent_fs_with_context(
+                            function_name!(),
+                            format!("i-node name={node_name:?} of ino={node_ino} found under the parent of ino={parent}, but no i-node found for this node"
+                            )))?;
 
                     debug_assert_eq!(node_ino, child_node.get_ino());
                     debug_assert_eq!(node_name, child_node.get_name());
