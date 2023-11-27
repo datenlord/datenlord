@@ -46,7 +46,7 @@ pub struct FileAttr {
 /// If fuse mount with `-o default_permissions`, then we should not check permission.
 /// Otherwise, we should check permission.
 /// TODO: add a feature flag to control this
-const NEED_CHECK_PERM: bool = false;
+pub const NEED_CHECK_PERM: bool = false;
 
 impl FileAttr {
     /// New a `FileAttr`
