@@ -1,3 +1,7 @@
+use std::fs::File;
+use std::io;
+use std::io::{Read, Write};
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 use std::{fs, iter};
 
@@ -93,6 +97,7 @@ fn test_file_manipulation_rust_way(mount_dir: &Path) -> anyhow::Result<()> {
         !file_path.exists(),
         "the file {file_path:?} should have been removed",
     );
+    fs::remove_file(&file_path)?;
     Ok(())
 }
 
@@ -388,7 +393,7 @@ fn test_rename_exchange(mount_dir: &Path) -> anyhow::Result<()> {
         let file_right = base_right.join("right.txt");
 
         fs::create_dir_all(&base_left)?;
-        std::fs::create_dir_all(&base_right)?;
+        fs::create_dir_all(&base_right)?;
         fs::write(&file_left, "left")?;
         fs::write(&file_right, "right")?;
 
@@ -634,10 +639,33 @@ fn test_delete_file(mount_dir: &Path) -> anyhow::Result<()> {
     let result = fs::metadata(&file_path);
     match result {
         Ok(_) => panic!("File deletion failed"),
-        Err(ref e) if e.kind() == std::io::ErrorKind::NotFound => {} // expected this error
+        Err(ref e) if e.kind() == io::ErrorKind::NotFound => {} // expected this error
         Err(e) => return Err(e.into()),
     }
 
+    Ok(())
+}
+
+#[cfg(test)]
+fn test_open_file_permission(mount_dir: &Path) -> anyhow::Result<()> {
+    info!("test open file permission");
+    let file_path = Path::new(mount_dir).join("test_open_file_permission.txt");
+
+    let mut file = File::options()
+        .create_new(true)
+        .read(true)
+        .write(true)
+        .mode(0o444)
+        .open(file_path.clone())?;
+
+    file.write_all(FILE_CONTENT.as_ref())?;
+
+    let mut file = File::open(file_path.clone())?;
+    let mut content = String::new();
+    file.read_to_string(&mut content)?;
+    assert_eq!(content, FILE_CONTENT);
+
+    fs::remove_file(&file_path)?;
     Ok(())
 }
 
@@ -679,6 +707,7 @@ async fn _run_test(mount_dir_str: &str, is_s3: bool) -> anyhow::Result<()> {
     test_rename_file(mount_dir).context("test_rename_file() failed")?;
     test_rename_dir(mount_dir).context("test_rename_dir() failed")?;
     test_create_file(mount_dir).context("test_create_file() failed")?;
+    test_open_file_permission(mount_dir).context("test_open_file_permission() failed")?;
 
     test_util::teardown(mount_dir, th).await?;
 
