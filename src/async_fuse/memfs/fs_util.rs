@@ -42,6 +42,12 @@ pub struct FileAttr {
     pub rdev: u32,
 }
 
+/// Whether to check permission.
+/// If fuse mount with `-o default_permissions`, then we should not check permission.
+/// Otherwise, we should check permission.
+/// TODO: add a feature flag to control this
+const CHECK_PERM: bool = false;
+
 impl FileAttr {
     /// New a `FileAttr`
     pub(crate) fn now() -> Self {
@@ -81,6 +87,9 @@ impl FileAttr {
     /// renamed by root or the directory owner or the file owner.
     /// ```
     pub fn check_perm(&self, user_id: u32, group_id: u32, access_mode: u8) -> DatenLordResult<()> {
+        if !CHECK_PERM {
+            return Ok(());
+        }
         debug_assert!(
             access_mode <= 0o7 && access_mode != 0,
             "check_perm() found access_mode={access_mode} invalid",
