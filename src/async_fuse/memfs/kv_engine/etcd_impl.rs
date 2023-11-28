@@ -129,7 +129,7 @@ impl KVEngine for EtcdKVEngine {
         let resp = client
             .get(key.get_key(), None)
             .await
-            .with_context(|| format!("failed to get at `MetaTxn::get`, key={key:?}"))?;
+            .with_context(|| format!("failed to get from etcd engine, key={key:?}"))?;
 
         let kvs = resp.kvs();
         match kvs.get(0) {

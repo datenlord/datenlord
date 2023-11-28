@@ -5,7 +5,10 @@ use std::fmt;
 use clippy_utilities::Cast;
 use tracing::warn;
 
-use super::de::Deserializer;
+use super::context::ProtoVersion;
+use super::de::{DeserializeError, Deserializer};
+#[cfg(feature = "abi-7-19")]
+use super::protocol::FuseFAllocateIn;
 #[cfg(feature = "abi-7-23")]
 use super::protocol::FuseRename2In;
 use super::protocol::{
@@ -14,10 +17,6 @@ use super::protocol::{
     FuseLinkIn, FuseLockIn, FuseMkDirIn, FuseMkNodIn, FuseOpCode, FuseOpenIn, FuseReadIn,
     FuseReleaseIn, FuseRenameIn, FuseSetAttrIn, FuseSetXAttrIn, FuseWriteIn,
 };
-use super::{context::ProtoVersion, de::DeserializeError};
-
-#[cfg(feature = "abi-7-19")]
-use super::protocol::FuseFAllocateIn;
 #[cfg(feature = "abi-7-16")]
 use super::protocol::{FuseBatchForgetIn, FuseForgetOne};
 #[cfg(feature = "abi-7-11")]
@@ -259,7 +258,8 @@ pub enum Operation<'a> {
     /// FUSE_RENAME2 = 45,
     ///
     /// Available when the protocol version is greater than 7.22.
-    /// This is checked by the kernel so that DatenLord won't receive such a request.
+    /// This is checked by the kernel so that DatenLord won't receive such a
+    /// request.
     ///
     /// https://github.com/torvalds/linux/blob/8f6f76a6a29f36d2f3e4510d0bde5046672f6924/fs/fuse/dir.c#L1077C2-L1088C3
     #[cfg(feature = "abi-7-23")]

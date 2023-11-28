@@ -1280,7 +1280,8 @@ impl FuseDirEnt {
     /// Get the exctual size of `FuseDirEnt`,
     /// equals to the size of entry header and the length of following name.
     ///
-    /// The behaviour of this method is similar to marco `FUSE_DIRENT_SIZE(d)` in `fuse.h`.
+    /// The behaviour of this method is similar to marco `FUSE_DIRENT_SIZE(d)`
+    /// in `fuse.h`.
     ///
     /// <https://github.com/torvalds/linux/blob/00c570f4ba43ae73b41fa0a2269c3b0ac20386ef/include/uapi/linux/fuse.h#L701-L702>
     #[must_use]
@@ -1306,11 +1307,13 @@ impl FuseDirEntPlus {
     /// Get the exctual size of `FuseDirEntPlus`,
     /// equals to the size of header and the length of following name.
     ///
-    /// The behaviour of this method is similar to marco `FUSE_DIRENTPLUS_SIZE(d)` in `fuse.h`.
+    /// The behaviour of this method is similar to marco
+    /// `FUSE_DIRENTPLUS_SIZE(d)` in `fuse.h`.
     ///
     /// <https://github.com/torvalds/linux/blob/00c570f4ba43ae73b41fa0a2269c3b0ac20386ef/include/uapi/linux/fuse.h#L711-L712>
     ///
-    /// This method is not used now, that's because the FUSE operation `ReadDirPlus` has not yet been implemented.
+    /// This method is not used now, that's because the FUSE operation
+    /// `ReadDirPlus` has not yet been implemented.
     #[must_use]
     #[allow(dead_code)]
     pub fn size_with_name(&self) -> usize {

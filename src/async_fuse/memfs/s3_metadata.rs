@@ -27,8 +27,7 @@ use super::id_alloc_used::INumAllocator;
 #[cfg(feature = "abi-7-23")]
 use super::kv_engine::MetaTxn;
 use super::kv_engine::{KVEngine, KVEngineType, KeyType, ValueType};
-use super::metadata::error;
-use super::metadata::{MetaData, ReqContext};
+use super::metadata::{error, MetaData, ReqContext};
 use super::node::Node;
 use super::s3_node::S3Node;
 use super::s3_wrapper::S3BackEnd;
@@ -44,9 +43,10 @@ use crate::common::error::{DatenLordError, DatenLordResult};
 use crate::common::etcd_delegate::EtcdDelegate;
 use crate::function_name;
 
-/// A helper function to build [`DatenLordError::InconsistentFS`] with default context and get the function name automatic.
+/// A helper function to build [`DatenLordError::InconsistentFS`] with default
+/// context and get the function name automatic.
 macro_rules! build_inconsistent_fs {
-    ($ino: expr) => {
+    ($ino:expr) => {
         error::build_inconsistent_fs($ino, function_name!())
     };
 }
@@ -1108,13 +1108,15 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
     /// This function ensures:
     /// 1. The old parent, old entry, the new parent and the new entry exist.
     /// 2. Both the old parent and the new parent are directories.
-    /// 3. The user renaming the file is permitted to do this operation when the sticky bit of one of the old entry or the new entry is set.
+    /// 3. The user renaming the file is permitted to do this operation when the
+    ///    sticky bit of one of the old entry or the new entry is set.
     ///
     /// When all checks above passed,
     /// this function returns a tuple containing:
     /// - A `S3Node` of old parent
     /// - The ino of old entry
-    /// - A `S3Node` of new parent, or `None` if the new parent is same as old parent
+    /// - A `S3Node` of new parent, or `None` if the new parent is same as old
+    ///   parent
     /// - The ino of new entry
     ///
     /// Otherwise, it returns an `Err`.
@@ -1224,7 +1226,9 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
     ///
     /// This function ensures:
     /// 1. The old parent, old entry (`old_name`) and the new parent exists.
-    /// 2. The user renaming the file is permitted to do this operation when the sticky bit of one of the old entry or the new entry (if exists) is set.
+    /// 2. The user renaming the file is permitted to do this operation when the
+    ///    sticky bit of one of the old entry or the new entry (if exists) is
+    ///    set.
     /// 3. The new entry does not exists, or the `no_replace` is false.
     ///
     /// When all checks above passed,
@@ -1573,8 +1577,8 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
         .add_context("failed to invlidate others' cache")
     }
 
-    /// If sticky bit is set, only the owner of the directory, the owner of the file,
-    /// or the superuser can rename or delete files.
+    /// If sticky bit is set, only the owner of the directory, the owner of the
+    /// file, or the superuser can rename or delete files.
     fn check_sticky_bit(
         context: &ReqContext,
         parent_node: &S3Node<S>,

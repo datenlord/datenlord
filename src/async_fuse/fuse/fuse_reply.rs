@@ -663,9 +663,11 @@ impl ReplyDirectory {
 
         // # Safety
         // The `fuse_dir_ent_in_raw` call is safe here, because:
-        // 1. The `dirent` is just built above, as a in-stack allocated object. Therefore, `&dirent` is a valid reference.
-        // 2. `dirent.namelen` is evaluated from `name_bytes`, and `name_bytes` is to be written into `self.data`,
-        //    which is a `Vec<u8>`, after `dirent_bytes` is written.
+        // 1. The `dirent` is just built above, as a in-stack allocated object.
+        //    Therefore, `&dirent` is a valid reference.
+        // 2. `dirent.namelen` is evaluated from `name_bytes`, and `name_bytes` is to be
+        //    written into `self.data`, which is a `Vec<u8>`, after `dirent_bytes` is
+        //    written.
         let dirent_bytes = unsafe { fuse_dir_ent_in_raw(&dirent) };
         // Write dirent
         self.data.extend_from_slice(dirent_bytes);
@@ -690,10 +692,11 @@ impl ReplyDirectory {
 /// # Safety
 /// Behavior is undefined if any of the following conditions are violated:
 /// - `from` must be a valid reference to `FuseDirEnt`.
-/// - The `namelen` field in `from` must represent a valid length of the nearly following data of
-///   the `FuseDirEnt` struct, i.e., the caller of this function takes the responsibility to build
-///   a raw string (`[u8]`) with length of `from.namelen` and place it nearly following the `FuseDirEnt`
-///   in a continuous, single allocated space (for example, a `Vec<u8>`).
+/// - The `namelen` field in `from` must represent a valid length of the nearly
+///   following data of the `FuseDirEnt` struct, i.e., the caller of this
+///   function takes the responsibility to build a raw string (`[u8]`) with
+///   length of `from.namelen` and place it nearly following the `FuseDirEnt` in
+///   a continuous, single allocated space (for example, a `Vec<u8>`).
 unsafe fn fuse_dir_ent_in_raw(from: &FuseDirEnt) -> &[u8] {
     let base: *const u8 = <*const FuseDirEnt>::cast(from);
     let bytes = slice::from_raw_parts(base, mem::size_of::<FuseDirEnt>());

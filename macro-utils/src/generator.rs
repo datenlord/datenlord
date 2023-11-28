@@ -4,7 +4,9 @@ use core::mem;
 
 use proc_macro2::TokenStream;
 use quote::{quote, ToTokens};
-use syn::{parse::Parse, parse_macro_input, punctuated::Punctuated, LitByteStr, LitInt, Token};
+use syn::parse::Parse;
+use syn::punctuated::Punctuated;
+use syn::{parse_macro_input, LitByteStr, LitInt, Token};
 
 /// Define custom keywords with [`syn::custom_keyword`].
 macro_rules! custom_keyword {

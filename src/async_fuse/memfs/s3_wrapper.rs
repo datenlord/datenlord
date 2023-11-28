@@ -14,9 +14,8 @@ use s3::surf_request::SurfRequest as RequestImpl;
 use s3::Region;
 use serde_xml_rs as serde_xml;
 
-use crate::async_fuse::fuse::protocol::INum;
-
 use super::cache::IoMemBlock;
+use crate::async_fuse::fuse::protocol::INum;
 
 /// S3 backend error
 #[derive(thiserror::Error, Debug)]
