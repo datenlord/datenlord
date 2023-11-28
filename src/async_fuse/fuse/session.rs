@@ -481,9 +481,10 @@ async fn dispatch<'a>(
         }
         Operation::SetAttr { arg } => {
             #[cfg(feature = "abi-7-9")]
-            use super::protocol::{FATTR_ATIME_NOW, FATTR_MTIME_NOW};
-            #[cfg(feature = "abi-7-9")]
             use std::time::SystemTime;
+
+            #[cfg(feature = "abi-7-9")]
+            use super::protocol::{FATTR_ATIME_NOW, FATTR_MTIME_NOW};
 
             let mode = match arg.valid & FATTR_MODE {
                 0 => None,

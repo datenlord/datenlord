@@ -43,8 +43,8 @@ pub struct FileAttr {
 }
 
 /// Whether to check permission.
-/// If fuse mount with `-o default_permissions`, then we should not check permission.
-/// Otherwise, we should check permission.
+/// If fuse mount with `-o default_permissions`, then we should not check
+/// permission. Otherwise, we should check permission.
 /// TODO: add a feature flag to control this
 pub const NEED_CHECK_PERM: bool = false;
 
@@ -94,7 +94,8 @@ impl FileAttr {
         }
     }
 
-    /// If `NEED_CHECK_PERM` is true, then check permission by ourselves not rely on kernel.
+    /// If `NEED_CHECK_PERM` is true, then check permission by ourselves not
+    /// rely on kernel.
     #[inline]
     fn check_perm_inner(
         &self,

@@ -23,7 +23,8 @@ pub(crate) mod error {
     use super::{INum, SFlag};
     use crate::common::error::DatenLordError;
 
-    /// A helper function to build [`DatenLordError::InconsistentFS`] with default context.
+    /// A helper function to build [`DatenLordError::InconsistentFS`] with
+    /// default context.
     pub(crate) fn build_inconsistent_fs(ino: INum, fn_name: &str) -> DatenLordError {
         DatenLordError::InconsistentFS {
             context: vec![format!(
@@ -32,7 +33,8 @@ pub(crate) mod error {
         }
     }
 
-    /// A helper function to build [`DatenLordError::InconsistentFS`] with custom context.
+    /// A helper function to build [`DatenLordError::InconsistentFS`] with
+    /// custom context.
     pub(crate) fn build_inconsistent_fs_with_context<C: Display>(
         fn_name: &str,
         context: C,
