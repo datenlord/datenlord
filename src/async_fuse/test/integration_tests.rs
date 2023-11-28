@@ -1,9 +1,8 @@
 use std::fs::File;
-use std::io;
 use std::io::Write;
-use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::Path;
-use std::{fs, iter};
+use std::{fs, io, iter};
 
 use anyhow::Context;
 use clippy_utilities::OverflowArithmetic;
@@ -303,7 +302,8 @@ fn test_rename_file_replace(mount_dir: &Path) -> anyhow::Result<()> {
 #[cfg(test)]
 #[cfg(feature = "abi-7-23")]
 fn test_rename_exchange(mount_dir: &Path) -> anyhow::Result<()> {
-    use nix::{fcntl::RenameFlags, sys::stat};
+    use nix::fcntl::RenameFlags;
+    use nix::sys::stat;
 
     info!("rename file exchange");
 
@@ -327,13 +327,12 @@ fn test_rename_exchange(mount_dir: &Path) -> anyhow::Result<()> {
         fs::write(&file_left, "a")?;
         fs::write(file_b_txt, "b")?;
 
-        /* Tree:
-         * exchange
-         * |- a.txt
-         * |
-         * |- dir
-         *     |- b.txt
-         */
+        // Tree:
+        // exchange
+        // |- a.txt
+        // |
+        // |- dir
+        //     |- b.txt
 
         let stat_old_base = stat::fstat(base_fd);
         let stat_old_left = stat::stat(&file_left)?;
@@ -347,13 +346,12 @@ fn test_rename_exchange(mount_dir: &Path) -> anyhow::Result<()> {
             rename_flag,
         )?;
 
-        /* Tree:
-         * exchange
-         * |- dir (former a.txt)
-         * |
-         * |- a.txt (former dir)
-         *     |- b.txt
-         */
+        // Tree:
+        // exchange
+        // |- dir (former a.txt)
+        // |
+        // |- a.txt (former dir)
+        //     |- b.txt
 
         let stat_new_base = stat::fstat(base_fd);
         let stat_new_left = stat::stat(&file_left)?;
@@ -666,6 +664,35 @@ fn test_open_file_permission(mount_dir: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
+#[allow(clippy::assertions_on_result_states)] // assert!(result.is_err()) is more readable for test
+fn test_write_read_only_file(mount_dir: &Path) -> anyhow::Result<()> {
+    info!("test write read only file");
+    let file_path = Path::new(mount_dir).join("test_write_read_only_file.txt");
+
+    // Create a read-only file
+    File::create(&file_path)?;
+    // Set the file permission to read-only
+    fs::set_permissions(&file_path, fs::Permissions::from_mode(0o444))?; // -r--r--r--
+
+    // Check the file permission
+    let file_metadata = fs::metadata(&file_path)?;
+    assert_eq!(file_metadata.permissions().mode() & 0o777, 0o444);
+
+    // Try to open the file with read-only permission
+    File::options().read(true).open(file_path.clone())?;
+    // Try to open the file with write permission
+    assert!(File::options().write(true).open(file_path.clone()).is_err());
+    // Try to open the file with read-write permission
+    assert!(File::options()
+        .read(true)
+        .write(true)
+        .open(file_path.clone())
+        .is_err());
+    fs::remove_file(&file_path)?;
+    Ok(())
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn test_all() -> anyhow::Result<()> {
     run_test().await
@@ -705,6 +732,7 @@ async fn _run_test(mount_dir_str: &str, is_s3: bool) -> anyhow::Result<()> {
     test_rename_dir(mount_dir).context("test_rename_dir() failed")?;
     test_create_file(mount_dir).context("test_create_file() failed")?;
     test_open_file_permission(mount_dir).context("test_open_file_permission() failed")?;
+    test_write_read_only_file(mount_dir).context("test_write_read_only_file() failed")?;
 
     test_util::teardown(mount_dir, th).await?;
 
