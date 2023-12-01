@@ -1,6 +1,6 @@
 #!/bin/sh
 
-export RUST_VERSION=1.67.1
+export RUST_VERSION=1.74.0
 export BUSYBOX_IMAGE=busybox:1.35.0
 export CONFIG_DOCKERHUB=datenlord-deploy.yaml
 export CONFIG_KIND=scripts/setup/datenlord.yaml

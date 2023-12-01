@@ -59,6 +59,18 @@
     clippy::arithmetic_side_effects, // TODO: fix this
     clippy::use_debug, // Allow debug print
     clippy::print_stdout, // Allow println!
+    clippy::question_mark_used, // Allow ? operator
+    clippy::absolute_paths,
+    clippy::ref_patterns,
+    clippy::single_call_fn,
+    clippy::pub_with_shorthand,
+    clippy::min_ident_chars,
+    clippy::multiple_unsafe_ops_per_block,
+    clippy::impl_trait_in_params,
+    clippy::missing_assert_message,
+    clippy::bind_instead_of_map,
+    clippy::map_clone,
+    clippy::let_underscore_untyped,
 )]
 
 pub mod async_fuse;

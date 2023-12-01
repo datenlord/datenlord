@@ -50,6 +50,16 @@
     clippy::mod_module_files, // TODO: fix code structure to pass this lint
     clippy::std_instead_of_core, // Cause false positive in src/common/error.rs
     clippy::std_instead_of_alloc,
+    clippy::question_mark_used,  // it’s a common pattern in Rust code
+    clippy::absolute_paths,
+    clippy::multiple_unsafe_ops_per_block,
+    clippy::ref_patterns,
+    clippy::single_call_fn,
+    clippy::pub_with_shorthand,
+    clippy::min_ident_chars,
+    clippy::missing_assert_message,
+    clippy::impl_trait_in_params,
+    clippy::bind_instead_of_map,
 )]
 
 pub mod common;

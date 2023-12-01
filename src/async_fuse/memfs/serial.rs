@@ -79,7 +79,7 @@ pub enum SerialSFlag {
 }
 
 /// In order to derive Serialize and Deserialize,
-/// Replace the 'BTreeMap<String, `DirEntry`>' with 'HashMap<String,
+/// Replace the `BTreeMap`<String, `DirEntry`>' with `HashMap`<String,
 /// `SerialDirEntry`>'
 #[derive(Serialize, Deserialize, Debug, Eq, PartialEq)]
 pub enum SerialNodeData {
@@ -320,7 +320,7 @@ mod test {
         let test_name = String::from("test_a_really_long_name");
         let test_file_attr = create_file_attr();
         let direntry = DirEntry::new(test_name.clone(), Arc::new(RwLock::new(test_file_attr)));
-        let serial_direntry: SerialDirEntry = dir_entry_to_serial(&direntry);
+        let serial_direntry = dir_entry_to_serial(&direntry);
         assert_eq!(test_name, serial_direntry.name);
         let direntry_after = serial_to_dir_entry(&serial_direntry);
         assert_eq!(test_name, direntry_after.entry_name());

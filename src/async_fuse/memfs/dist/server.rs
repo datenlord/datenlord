@@ -20,6 +20,7 @@ pub struct CacheServer {
     listener_join_handler: JoinHandle<()>,
 }
 
+#[allow(clippy::missing_fields_in_debug)]
 impl Debug for CacheServer {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("CacheServer")

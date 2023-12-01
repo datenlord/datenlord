@@ -127,7 +127,7 @@ impl FileAttr {
 
     /// For given uid and gid, get the access mode of the file
     #[allow(clippy::default_numeric_fallback)]
-    #[allow(clippy::integer_arithmetic)]
+    #[allow(clippy::arithmetic_side_effects)]
     fn get_access_mode(&self, user_id: u32, group_id: u32) -> u8 {
         let perm = self.perm;
         let mode = if user_id == self.uid {

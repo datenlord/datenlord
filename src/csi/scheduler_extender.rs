@@ -119,6 +119,7 @@ impl SchedulerExtender {
     }
 
     /// Filter candidate nodes
+    #[allow(clippy::redundant_closure_for_method_calls)]
     async fn filter(&self, args: ExtenderArgs) -> ExtenderFilterResult {
         let pod = args.Pod.clone();
         info!("Pod name is {:?}", pod.metadata.name);
@@ -168,7 +169,8 @@ impl SchedulerExtender {
                     } else if let Some(ref nodes) = args.NodeNames {
                         let candidate_nodes: Vec<_> = nodes
                             .iter()
-                            .filter_map(|n| accessible_nodes.contains(n).then(|| n.clone()))
+                            .filter(|&n| accessible_nodes.contains(n))
+                            .map(|n| n.clone())
                             .collect();
                         ExtenderFilterResult {
                             Nodes: None,

@@ -816,7 +816,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
             .readdir(context, ino, fh, offset, &mut reply)
             .await
         {
-            Ok(_) => reply.ok().await,
+            Ok(()) => reply.ok().await,
             Err(e) => {
                 debug!("readdir() failed, the error is: {:?}", e);
                 reply.error(e).await

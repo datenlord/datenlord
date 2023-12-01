@@ -148,7 +148,7 @@ impl<F: FileSystem + Send + Sync + 'static> Session<F> {
 
     /// Run the FUSE session
     #[allow(clippy::wildcard_enum_match_arm)] // nix::Errno is marked as non_exhaustive
-    #[allow(clippy::integer_arithmetic)] // The `select` macro will generate code that goes against this rule.
+    #[allow(clippy::arithmetic_side_effects)] // The `select` macro will generate code that goes against this rule.
     pub async fn run(mut self) -> anyhow::Result<()> {
         // For recycling the buffers used by process_fuse_request.
         let (pool_sender, pool_receiver) = self

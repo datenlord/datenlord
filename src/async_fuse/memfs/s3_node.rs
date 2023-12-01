@@ -409,7 +409,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
             .await;
 
         match put_result {
-            Ok(_) => Ok(()),
+            Ok(()) => Ok(()),
             Err(e) => {
                 debug!(
                     "flush_all_data() failed to flush data for file {}, the error is: {}",

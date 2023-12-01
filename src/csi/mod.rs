@@ -1,4 +1,6 @@
 //! K8S CSI `gRPC` service
+
+#[allow(clippy::map_clone)]
 mod controller;
 mod identity;
 pub mod meta_data;

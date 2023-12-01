@@ -66,7 +66,7 @@ fn test_name_too_long(mount_dir: &Path) -> anyhow::Result<()> {
     info!("try to create a dir with name too long");
     let result = fs::create_dir_all(&file_path);
     match result {
-        Ok(_) => panic!("Directory creation should have failed with ENAMETOOLONG"),
+        Ok(()) => panic!("Directory creation should have failed with ENAMETOOLONG"),
         Err(ref e) if e.raw_os_error() == Some(libc::ENAMETOOLONG) => {} // expected this error
         Err(e) => return Err(e.into()),
     }
@@ -74,7 +74,7 @@ fn test_name_too_long(mount_dir: &Path) -> anyhow::Result<()> {
     info!("try to create a symlink with name too long");
     let result = std::os::unix::fs::symlink(mount_dir, &file_path);
     match result {
-        Ok(_) => panic!("Symlink creation should have failed with ENAMETOOLONG"),
+        Ok(()) => panic!("Symlink creation should have failed with ENAMETOOLONG"),
         Err(ref e) if e.raw_os_error() == Some(libc::ENAMETOOLONG) => {} // expected this error
         Err(e) => return Err(e.into()),
     }
@@ -170,7 +170,7 @@ fn test_deferred_deletion(mount_dir: &Path) -> anyhow::Result<()> {
         read_size,
         FILE_CONTENT.len().overflow_mul(repeat_times),
     );
-    let str_content: String = FILE_CONTENT.repeat(repeat_times);
+    let str_content = FILE_CONTENT.repeat(repeat_times);
     assert_eq!(
         content, str_content,
         "the file read result is not the same as the expected content",
@@ -301,6 +301,7 @@ fn test_rename_file_replace(mount_dir: &Path) -> anyhow::Result<()> {
 
 #[cfg(test)]
 #[cfg(feature = "abi-7-23")]
+#[allow(clippy::semicolon_outside_block)]
 fn test_rename_exchange(mount_dir: &Path) -> anyhow::Result<()> {
     use nix::fcntl::RenameFlags;
     use nix::sys::stat;

@@ -24,7 +24,7 @@ use super::protocol::{
 #[cfg(feature = "abi-7-18")]
 use super::protocol::{FuseNotifyCode::FUSE_NOTIFY_DELETE, FuseNotifyDeleteOut};
 
-/// This trait describes a type that can be converted to Vec<IoVec<&[u8]>>
+/// This trait describes a type that can be converted to Vec<`IoVec`<&[u8]>>
 pub trait AsIoVecList {
     /// Convert the type to a Vec of `IoVec`
     fn as_io_vec_list(&self) -> Vec<IoVec<&[u8]>>;
@@ -35,7 +35,7 @@ pub trait AsIoVecList {
 }
 
 /// Any type implement the `AsIoVec` trait, its Vec can be automatically for
-/// Vec<IoVec<&[u8]>>.
+/// Vec<`IoVec`<&[u8]>>.
 impl<T> AsIoVecList for Vec<T>
 where
     T: AsIoVec,

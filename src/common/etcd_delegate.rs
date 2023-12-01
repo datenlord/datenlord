@@ -24,7 +24,7 @@ pub type KvVersion = i64;
 /// Convert u64 seceond to i64
 fn conv_u64_sec_2_i64(sec: u64) -> i64 {
     sec.try_into()
-        .unwrap_or_else(|e| panic!("ttl timeout_sec should < MAX_I64, err:{e}"))
+        .unwrap_or_else(|err| panic!("ttl timeout_sec should < MAX_I64, err:{err}"))
 }
 /// The client to communicate with etcd
 #[allow(missing_debug_implementations)] // etcd_client::Client doesn't impl Debug
@@ -36,10 +36,12 @@ pub struct EtcdDelegate {
     end_point: Vec<String>,
 }
 
+#[allow(clippy::missing_fields_in_debug)]
 impl Debug for EtcdDelegate {
     #[inline]
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("EtcdDelegate")
+    fn fmt(&self, formmatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formmatter
+            .debug_struct("EtcdDelegate")
             .field("endpoint", &self.end_point)
             .finish()
     }
@@ -321,7 +323,7 @@ impl EtcdDelegate {
         let mut result_vec = Vec::with_capacity(
             resp.count()
                 .try_into()
-                .unwrap_or_else(|e| panic!("resp.count() should be > 0, err:{e}")),
+                .unwrap_or_else(|err| panic!("resp.count() should be > 0, err:{err}")),
         );
         for kv in resp.kvs() {
             let decoded_value: T = util::decode_from_bytes(kv.value())?;
@@ -357,7 +359,7 @@ impl EtcdDelegate {
         let value = self.get_one_kv_async(key).await.with_context(|| {
             "failed to `get_one_kv_async` at `get_at_most_one_value`".to_owned()
         })?;
-        Ok(value.map(|(v, _)| v))
+        Ok(value.map(|(value, _)| value))
     }
 
     /// Update a existing key value pair to etcd
@@ -404,7 +406,7 @@ impl EtcdDelegate {
                 "failed to `update_existing_kv_and_return_with_version` at `update_existing_kv`"
                     .to_owned()
             })
-            .map(|(v, _)| v)
+            .map(|(value, _)| value)
     }
 
     /// Write a new key value pair to etcd
@@ -448,7 +450,7 @@ impl EtcdDelegate {
             .with_context(|| {
                 "failed to `write_to_etcd_if_none` at `write_new_kv_no_panic`".to_owned()
             })
-            .map(|v| v.map(|(v, _)| v))
+            .map(|prev_value| prev_value.map(|(value, _)| value))
     }
 
     /// return exist value if key exists
@@ -473,6 +475,7 @@ impl EtcdDelegate {
 
     /// Write key value pair to etcd, if key exists, update it
     #[inline]
+    #[allow(clippy::multiple_unsafe_ops_per_block)]
     pub async fn write_or_update_kv<
         T: DeserializeOwned + Serialize + Clone + Debug + Send + Sync,
         K: Into<Vec<u8>> + Debug + Clone + Send,
@@ -499,6 +502,7 @@ impl EtcdDelegate {
     /// it
     /// - `expire`: auto delete after expire
     #[inline]
+    #[allow(clippy::multiple_unsafe_ops_per_block)]
     pub async fn write_or_update_kv_with_timeout<
         T: DeserializeOwned + Serialize + Clone + Debug + Send + Sync,
         K: Into<Vec<u8>> + Debug + Clone + Send,
@@ -527,6 +531,7 @@ impl EtcdDelegate {
     /// Write or update key only when matching the previous version.
     /// - `expire`: auto delete after expire
     #[inline]
+    #[allow(clippy::multiple_unsafe_ops_per_block)]
     pub async fn write_or_update_kv_with_version<
         T: DeserializeOwned + Serialize + Clone + Debug + Send + Sync,
         K: Into<Vec<u8>> + Debug + Clone + Send,
@@ -550,6 +555,7 @@ impl EtcdDelegate {
     ///
     /// Will panic if it doesn't delete one value from etcd
     #[inline]
+    #[allow(clippy::multiple_unsafe_ops_per_block)]
     pub async fn delete_exact_one_value_return_with_version<
         T: DeserializeOwned + Clone + Debug + Send + Sync,
     >(
@@ -578,6 +584,7 @@ impl EtcdDelegate {
     ///
     /// Will panic if it doesn't delete one value from etcd
     #[inline]
+    #[allow(clippy::multiple_unsafe_ops_per_block)]
     pub async fn delete_exact_one_value<T: DeserializeOwned + Clone + Debug + Send + Sync>(
         &self,
         key: &str,
@@ -588,7 +595,7 @@ impl EtcdDelegate {
                 "failed to `delete_exact_one_value_return_with_version` at `delete_exact_one_value`"
                     .to_owned()
             })
-            .map(|(v, _)| v)
+            .map(|(value, _)| value)
     }
 
     /// Delete an key value pair from etcd
@@ -596,6 +603,7 @@ impl EtcdDelegate {
     ///
     /// Will panic if it deletes more than one value from etcd
     #[inline]
+    #[allow(clippy::multiple_unsafe_ops_per_block)]
     pub async fn delete_one_value_return_with_version<
         T: DeserializeOwned + Clone + Debug + Send + Sync,
     >(
@@ -619,6 +627,7 @@ impl EtcdDelegate {
     ///
     /// Will panic if it deletes more than one value from etcd
     #[inline]
+    #[allow(clippy::multiple_unsafe_ops_per_block)]
     pub async fn delete_one_value<T: DeserializeOwned + Clone + Debug + Send + Sync>(
         &self,
         key: &str,
@@ -628,11 +637,12 @@ impl EtcdDelegate {
             .with_context(|| {
                 "failed to `delete_one_value_return_with_version` at `delete_one_value`".to_owned()
             })
-            .map(|opt| opt.map(|(v, _)| v))
+            .map(|opt| opt.map(|(value, _)| value))
     }
 
     /// Delete all key value pairs from etcd
     #[allow(dead_code)]
+    #[allow(clippy::multiple_unsafe_ops_per_block)]
     #[inline]
     pub async fn delete_all(&self) -> DatenLordResult<()> {
         self.etcd_rs_client
@@ -654,7 +664,9 @@ impl EtcdDelegate {
     /// This function will return when watch closed or there's etcd error.
     /// Timeout
     #[inline]
-    #[allow(clippy::integer_arithmetic, clippy::arithmetic_side_effects)] // for the auto generate code from tokio select!
+    #[allow(clippy::arithmetic_side_effects, clippy::arithmetic_side_effects)] // for the auto generate code from tokio select!
+    #[allow(clippy::multiple_unsafe_ops_per_block)]
+    #[allow(clippy::pattern_type_mismatch)]
     pub async fn wait_key_delete(&self, name: &str) -> DatenLordResult<()> {
         let mut etcd_rs_client = self.etcd_rs_client.clone();
         let res = etcd_rs_client.watch(name, None).await;
@@ -669,7 +681,7 @@ impl EtcdDelegate {
                 let mut sec_cnt: i32 = 0;
                 loop {
                     tokio::select! {
-                        _ = tokio::time::sleep(Duration::from_secs(1)) => {
+                        () = tokio::time::sleep(Duration::from_secs(1)) => {
                             sec_cnt=sec_cnt.overflow_add(1_i32);
                             tracing::debug!("wait for dist lock {name_clone} for {sec_cnt} seconds, if this goes too long, there might be dead lock");
                         }
@@ -695,12 +707,12 @@ impl EtcdDelegate {
                         }
                         for event in response.events() {
                             if let Some(kv) = event.kv() {
-                                let watched_key = kv.key_str().unwrap_or_else(|e| {
-                                    panic!("Key here supposed to be str, err:{e}");
+                                let watched_key = kv.key_str().unwrap_or_else(|err| {
+                                    panic!("Key here supposed to be str, err:{err}");
                                 });
                                 if watched_key == name {
                                     if let EventType::Delete = event.event_type() {
-                                        stop_wait_log_task_chan_tx.send(()).unwrap_or_else(|_| {
+                                        stop_wait_log_task_chan_tx.send(()).unwrap_or_else(|()| {
                                             panic!("send failed, stop_wait_log_task_chan_rx was dropped?")
                                         });
                                         wait_log_task.await.unwrap_or_else(|_| {
@@ -725,7 +737,7 @@ impl EtcdDelegate {
                     debug!("{}", errinfo.to_owned());
                     context.push(errinfo.to_owned());
 
-                    stop_wait_log_task_chan_tx.send(()).unwrap_or_else(|_| {
+                    stop_wait_log_task_chan_tx.send(()).unwrap_or_else(|()| {
                         panic!("send failed, stop_wait_log_task_chan_rx was dropped?")
                     });
                     wait_log_task.await.unwrap_or_else(|_| {
