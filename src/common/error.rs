@@ -290,16 +290,16 @@ where
     where
         C: Into<String>,
     {
-        self.map_err(|e| e.into().add_context(ctx))
+        self.map_err(|err| err.into().add_context(ctx))
     }
 
     #[inline]
-    fn with_context<C, F>(self, f: F) -> DatenLordResult<T>
+    fn with_context<C, F>(self, context_func: F) -> DatenLordResult<T>
     where
         C: Into<String>,
         F: FnOnce() -> C,
     {
-        self.map_err(|e| e.into().add_context(f()))
+        self.map_err(|err| err.into().add_context(context_func()))
     }
 }
 
@@ -359,12 +359,12 @@ impl DatenLordError {
     /// Add context for `DatenLordError` lazily
     #[inline]
     #[must_use]
-    pub fn with_context<C, F>(self, f: F) -> Self
+    pub fn with_context<C, F>(self, context_fn: F) -> Self
     where
         C: Into<String>,
         F: FnOnce() -> C,
     {
-        self.add_context(f())
+        self.add_context(context_fn())
     }
 }
 
@@ -396,6 +396,7 @@ implement_from!(anyhow::Error, InternalErr);
 
 impl From<DatenLordError> for RpcStatusCode {
     #[inline]
+    #[allow(clippy::ref_patterns)]
     fn from(error: DatenLordError) -> Self {
         match error {
             DatenLordError::IoErr { .. }
@@ -415,7 +416,7 @@ impl From<DatenLordError> for RpcStatusCode {
             | DatenLordError::InconsistentFS { .. }
             | DatenLordError::UnsupportedINodeType { .. } => Self::INTERNAL,
             DatenLordError::GrpcioErr { source, .. } => match source {
-                grpcio::Error::RpcFailure(ref s) => s.code(),
+                grpcio::Error::RpcFailure(ref status) => status.code(),
                 grpcio::Error::Codec(..)
                 | grpcio::Error::CallFailure(..)
                 | grpcio::Error::RpcFinished(..)

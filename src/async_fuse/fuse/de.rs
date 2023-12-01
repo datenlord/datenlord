@@ -178,7 +178,7 @@ impl<'b> Deserializer<'b> {
     ///
     /// `slice::len` is always O(1)
     pub fn fetch_c_str(&mut self) -> Result<&'b [u8], DeserializeError> {
-        let strlen: usize = memchr(0, self.bytes)
+        let strlen = memchr(0, self.bytes)
             .ok_or_else(|| {
                 trace!("no trailing zero in bytes, cannot fetch c-string");
                 DeserializeError::NotEnough
@@ -264,6 +264,8 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::semicolon_outside_block)]
+    #[allow(clippy::host_endian_bytes)]
     fn fetch_ref() {
         // this buffer contains two `u32` or one `u64`
         // so it is aligned to 8 bytes
@@ -293,6 +295,8 @@ mod tests {
     #[test]
     #[allow(clippy::unwrap_used)]
     #[cfg(feature = "abi-7-16")]
+    #[allow(clippy::host_endian_bytes)]
+    #[allow(clippy::semicolon_outside_block)]
     fn fetch_all_as_slice() {
         // this buffer contains two `u32`
         // so it can be aligned to 4 bytes

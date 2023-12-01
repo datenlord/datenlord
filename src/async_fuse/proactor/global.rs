@@ -277,6 +277,7 @@ impl Proactor {
     }
 
     /// Starts the submitter task and completer thread.
+    #[allow(clippy::semicolon_inside_block)]
     fn start_driver() -> io::Result<Self> {
         let ring_entries = 32;
         let available = 64;
@@ -288,7 +289,7 @@ impl Proactor {
 
         let (mut sq, mut cq, _) = ring.split();
 
-        let (tx, mut rx): _ = mpsc::channel(u32_to_usize(available));
+        let (tx, mut rx) = mpsc::channel(u32_to_usize(available));
 
         let inner = Arc::new(ProactorInner {
             chan: tx,

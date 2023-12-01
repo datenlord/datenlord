@@ -78,7 +78,7 @@
     clippy::shadow_unrelated, //it’s a common pattern in Rust code
     clippy::shadow_reuse, //it’s a common pattern in Rust code
     clippy::shadow_same, //it’s a common pattern in Rust code
-    clippy::integer_arithmetic,  // An error is raised when calling `quote::quote!`
+    clippy::arithmetic_side_effects,  // An error is raised when calling `quote::quote!`
     clippy::arithmetic_side_effects  // As same as above
 )]
 

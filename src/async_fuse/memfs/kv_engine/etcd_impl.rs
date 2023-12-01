@@ -42,7 +42,6 @@ impl EtcdKVEngine {
 
 #[async_trait]
 impl KVEngine for EtcdKVEngine {
-    #[must_use]
     async fn new(end_points: Vec<String>) -> DatenLordResult<Self> {
         let client = etcd_client::Client::connect(end_points, None).await?;
         Ok(Self { client })
@@ -334,7 +333,7 @@ mod test {
         let client = EtcdKVEngine::new_for_local_test(vec![ETCD_ADDRESS.to_owned()])
             .await
             .unwrap();
-        let key: LockKeyType = LockKeyType::FileNodeListLock(test_key);
+        let key = LockKeyType::FileNodeListLock(test_key);
         let lock_key = client.lock(&key, Duration::from_secs(9999)).await.unwrap();
         // start a new thread to lock the same key
         // to check that lock the same key will be blocked

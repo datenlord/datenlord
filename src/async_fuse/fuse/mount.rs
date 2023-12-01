@@ -119,7 +119,7 @@ async fn fuser_mount(mount_point: &Path) -> anyhow::Result<RawFd> {
         let mut buf = [0_u8; 5];
         let iov = [IoVec::from_mut_slice(&mut buf[..])];
 
-        #[allow(clippy::integer_arithmetic)]
+        #[allow(clippy::arithmetic_side_effects)]
         let mut cmsgspace = cmsg_space!([RawFd; 1]);
         let msg = socket::recvmsg(local, &iov, Some(&mut cmsgspace), MsgFlags::empty())
             .context("failed to receive from fusermount")?;

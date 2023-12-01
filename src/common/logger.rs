@@ -6,6 +6,7 @@ use tracing_subscriber::prelude::*;
 /// Initialize the logger with the default settings.
 /// The log file is located at `./datenlord.log`.
 #[allow(clippy::let_underscore_must_use)]
+#[allow(clippy::let_underscore_untyped)]
 #[inline]
 pub fn init_logger() {
     let filter = filter::Targets::new()
@@ -20,7 +21,7 @@ pub fn init_logger() {
         .write(true)
         .truncate(true)
         .open("./datenlord.log")
-        .unwrap_or_else(|e| panic!("Failed to open log file ,err {e}"));
+        .unwrap_or_else(|err| panic!("Failed to open log file ,err {err}"));
 
     let layer = tracing_subscriber::fmt::layer()
         .with_ansi(false)
@@ -34,6 +35,6 @@ pub fn init_logger() {
         let _ = tracing::subscriber::set_global_default(subscriber);
     } else {
         tracing::subscriber::set_global_default(subscriber)
-            .unwrap_or_else(|e| panic!("Could not set logger ,err {e}"));
+            .unwrap_or_else(|error| panic!("Could not set logger ,err {error}"));
     }
 }

@@ -495,7 +495,7 @@ impl GlobalCache {
 
         let mut have_read: usize = 0;
         let mut grow_memory: usize = 0;
-        let mut is_first_block: bool = true;
+        let mut is_first_block = true;
         let mut copy_fn = |b: &mut Option<MemBlock>| {
             if b.is_some() && !overwrite {
                 return;
@@ -740,6 +740,7 @@ pub struct IoMemBlock {
     end: usize,
 }
 
+#[allow(clippy::missing_fields_in_debug)]
 impl Debug for IoMemBlock {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("IoMemBlock")

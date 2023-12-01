@@ -29,7 +29,7 @@ pub enum S3Error {
 pub type S3Result<T> = Result<T, S3Error>;
 
 /// S3 backend
-#[allow(clippy::integer_arithmetic, clippy::indexing_slicing)]
+#[allow(clippy::arithmetic_side_effects, clippy::indexing_slicing)]
 #[cfg_attr(test, automock)]
 #[async_trait]
 pub trait S3BackEnd {
