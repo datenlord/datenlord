@@ -475,7 +475,6 @@ impl EtcdDelegate {
 
     /// Write key value pair to etcd, if key exists, update it
     #[inline]
-    #[allow(clippy::multiple_unsafe_ops_per_block)]
     pub async fn write_or_update_kv<
         T: DeserializeOwned + Serialize + Clone + Debug + Send + Sync,
         K: Into<Vec<u8>> + Debug + Clone + Send,
@@ -502,7 +501,6 @@ impl EtcdDelegate {
     /// it
     /// - `expire`: auto delete after expire
     #[inline]
-    #[allow(clippy::multiple_unsafe_ops_per_block)]
     pub async fn write_or_update_kv_with_timeout<
         T: DeserializeOwned + Serialize + Clone + Debug + Send + Sync,
         K: Into<Vec<u8>> + Debug + Clone + Send,
@@ -531,7 +529,6 @@ impl EtcdDelegate {
     /// Write or update key only when matching the previous version.
     /// - `expire`: auto delete after expire
     #[inline]
-    #[allow(clippy::multiple_unsafe_ops_per_block)]
     pub async fn write_or_update_kv_with_version<
         T: DeserializeOwned + Serialize + Clone + Debug + Send + Sync,
         K: Into<Vec<u8>> + Debug + Clone + Send,
@@ -555,7 +552,6 @@ impl EtcdDelegate {
     ///
     /// Will panic if it doesn't delete one value from etcd
     #[inline]
-    #[allow(clippy::multiple_unsafe_ops_per_block)]
     pub async fn delete_exact_one_value_return_with_version<
         T: DeserializeOwned + Clone + Debug + Send + Sync,
     >(
@@ -584,7 +580,6 @@ impl EtcdDelegate {
     ///
     /// Will panic if it doesn't delete one value from etcd
     #[inline]
-    #[allow(clippy::multiple_unsafe_ops_per_block)]
     pub async fn delete_exact_one_value<T: DeserializeOwned + Clone + Debug + Send + Sync>(
         &self,
         key: &str,
@@ -603,7 +598,6 @@ impl EtcdDelegate {
     ///
     /// Will panic if it deletes more than one value from etcd
     #[inline]
-    #[allow(clippy::multiple_unsafe_ops_per_block)]
     pub async fn delete_one_value_return_with_version<
         T: DeserializeOwned + Clone + Debug + Send + Sync,
     >(
@@ -627,7 +621,6 @@ impl EtcdDelegate {
     ///
     /// Will panic if it deletes more than one value from etcd
     #[inline]
-    #[allow(clippy::multiple_unsafe_ops_per_block)]
     pub async fn delete_one_value<T: DeserializeOwned + Clone + Debug + Send + Sync>(
         &self,
         key: &str,
@@ -642,7 +635,6 @@ impl EtcdDelegate {
 
     /// Delete all key value pairs from etcd
     #[allow(dead_code)]
-    #[allow(clippy::multiple_unsafe_ops_per_block)]
     #[inline]
     pub async fn delete_all(&self) -> DatenLordResult<()> {
         self.etcd_rs_client
@@ -664,9 +656,8 @@ impl EtcdDelegate {
     /// This function will return when watch closed or there's etcd error.
     /// Timeout
     #[inline]
-    #[allow(clippy::arithmetic_side_effects, clippy::arithmetic_side_effects)] // for the auto generate code from tokio select!
-    #[allow(clippy::multiple_unsafe_ops_per_block)]
-    #[allow(clippy::pattern_type_mismatch)]
+    #[allow(clippy::arithmetic_side_effects)] // for the auto generate code from tokio select!
+    #[allow(clippy::pattern_type_mismatch)] // for tokio::select!
     pub async fn wait_key_delete(&self, name: &str) -> DatenLordResult<()> {
         let mut etcd_rs_client = self.etcd_rs_client.clone();
         let res = etcd_rs_client.watch(name, None).await;

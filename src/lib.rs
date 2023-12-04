@@ -51,15 +51,14 @@
     clippy::std_instead_of_core, // Cause false positive in src/common/error.rs
     clippy::std_instead_of_alloc,
     clippy::question_mark_used,  // it’s a common pattern in Rust code
-    clippy::absolute_paths,
-    clippy::multiple_unsafe_ops_per_block,
-    clippy::ref_patterns,
-    clippy::single_call_fn,
-    clippy::pub_with_shorthand,
-    clippy::min_ident_chars,
-    clippy::missing_assert_message,
-    clippy::impl_trait_in_params,
-    clippy::bind_instead_of_map,
+    clippy::absolute_paths,      // Allow use through absolute paths,like `std::env::current_dir`
+    clippy::multiple_unsafe_ops_per_block,   // Mainly caused by `etcd_delegate`, will remove later
+    clippy::ref_patterns,   // Allow Some(ref x)
+    clippy::single_call_fn, // Allow function is called only once
+    clippy::pub_with_shorthand, // Allow pub(super)
+    clippy::min_ident_chars, // Allow Err(e)
+    clippy::missing_assert_message,  // Allow assert! without message, mainly in test code
+    clippy::impl_trait_in_params, // Allow impl AsRef<Path>, it's common in Rust
 )]
 
 pub mod common;

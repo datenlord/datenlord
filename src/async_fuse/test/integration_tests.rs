@@ -301,7 +301,6 @@ fn test_rename_file_replace(mount_dir: &Path) -> anyhow::Result<()> {
 
 #[cfg(test)]
 #[cfg(feature = "abi-7-23")]
-#[allow(clippy::semicolon_outside_block)]
 fn test_rename_exchange(mount_dir: &Path) -> anyhow::Result<()> {
     use nix::fcntl::RenameFlags;
     use nix::sys::stat;

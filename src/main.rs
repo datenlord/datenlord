@@ -60,17 +60,15 @@
     clippy::use_debug, // Allow debug print
     clippy::print_stdout, // Allow println!
     clippy::question_mark_used, // Allow ? operator
-    clippy::absolute_paths,
-    clippy::ref_patterns,
-    clippy::single_call_fn,
-    clippy::pub_with_shorthand,
-    clippy::min_ident_chars,
-    clippy::multiple_unsafe_ops_per_block,
-    clippy::impl_trait_in_params,
-    clippy::missing_assert_message,
-    clippy::bind_instead_of_map,
-    clippy::map_clone,
-    clippy::let_underscore_untyped,
+    clippy::absolute_paths,   // Allow use through absolute paths,like `std::env::current_dir`
+    clippy::ref_patterns,    // Allow Some(ref x)
+    clippy::single_call_fn,  // Allow function is called only once
+    clippy::pub_with_shorthand,  // Allow pub(super)
+    clippy::min_ident_chars,  // Allow Err(e)
+    clippy::multiple_unsafe_ops_per_block, // Mainly caused by `etcd_delegate`, will remove later
+    clippy::impl_trait_in_params,  // Allow impl AsRef<Path>, it's common in Rust
+    clippy::missing_assert_message, // Allow assert! without message, mainly in test code
+    clippy::semicolon_outside_block, // We need to choose between this and `semicolon_inside_block`, we choose outside
 )]
 
 pub mod async_fuse;

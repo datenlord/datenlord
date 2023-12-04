@@ -12,6 +12,7 @@ use crate::{AsyncFuseArgs, VolumeType};
 pub mod fuse;
 pub mod memfs;
 /// Datenlord metrics
+// Caused by prometheus macros
 #[allow(clippy::ignored_unit_patterns)]
 pub mod metrics;
 pub mod proactor;

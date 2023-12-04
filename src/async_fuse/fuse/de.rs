@@ -233,6 +233,7 @@ impl<'b> Deserializer<'b> {
 }
 
 #[cfg(test)]
+#[allow(clippy::host_endian_bytes)] // For test only
 mod tests {
     use aligned_utils::stack::Align8;
 
@@ -264,8 +265,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::semicolon_outside_block)]
-    #[allow(clippy::host_endian_bytes)]
     fn fetch_ref() {
         // this buffer contains two `u32` or one `u64`
         // so it is aligned to 8 bytes
@@ -295,8 +294,6 @@ mod tests {
     #[test]
     #[allow(clippy::unwrap_used)]
     #[cfg(feature = "abi-7-16")]
-    #[allow(clippy::host_endian_bytes)]
-    #[allow(clippy::semicolon_outside_block)]
     fn fetch_all_as_slice() {
         // this buffer contains two `u32`
         // so it can be aligned to 4 bytes
