@@ -45,7 +45,7 @@ once_cell = "1.7.2"
 parking_lot = "0.12.0"
 pin-project-lite = "0.2.0"
 priority-queue = "1.1.0"
-prometheus = "0.13.0"
+prometheus = "0.13.3"
 protobuf = "2.16.2"
 rand = "0.8.3"
 ring-io = { git = "https://github.com/datenlord/ring-io", rev = "2f0506c" }

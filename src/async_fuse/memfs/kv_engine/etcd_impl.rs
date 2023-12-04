@@ -462,7 +462,7 @@ mod test {
                 .unwrap();
             let mut txn = client.new_meta_txn().await;
             let key = KeyType::String(String::from("/"));
-            let _ = txn.get(&key).await.unwrap();
+            let _: Option<ValueType> = txn.get(&key).await.unwrap();
             (txn.commit().await, ())
         });
         result.unwrap();

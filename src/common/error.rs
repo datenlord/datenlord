@@ -396,7 +396,6 @@ implement_from!(anyhow::Error, InternalErr);
 
 impl From<DatenLordError> for RpcStatusCode {
     #[inline]
-    #[allow(clippy::ref_patterns)]
     fn from(error: DatenLordError) -> Self {
         match error {
             DatenLordError::IoErr { .. }

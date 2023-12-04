@@ -170,7 +170,7 @@ impl SchedulerExtender {
                         let candidate_nodes: Vec<_> = nodes
                             .iter()
                             .filter(|&n| accessible_nodes.contains(n))
-                            .map(|n| n.clone())
+                            .cloned()
                             .collect();
                         ExtenderFilterResult {
                             Nodes: None,

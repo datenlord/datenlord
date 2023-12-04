@@ -1117,7 +1117,6 @@ mod test {
     }
 
     #[test]
-    #[allow(clippy::semicolon_outside_block)]
     fn mknod() {
         let req = Request::new(&MKNOD_REQUEST[..], PROTO_VERSION)
             .unwrap_or_else(|err| panic!("failed to build FUSE request, the error is: {err}"));
@@ -1385,7 +1384,6 @@ mod test {
     }
 
     #[test]
-    #[allow(clippy::semicolon_outside_block)]
     fn write() {
         #[cfg(feature = "abi-7-9")]
         use super::super::protocol::{FOPEN_KEEP_CACHE, FUSE_WRITE_CACHE, FUSE_WRITE_LOCKOWNER};
@@ -2223,7 +2221,6 @@ mod test {
 
     #[test]
     #[cfg(feature = "abi-7-16")]
-    #[allow(clippy::missing_asserts_for_indexing)]
     fn batch_forget() {
         let req = Request::new(&BATCH_FORGET_REQUEST[..], PROTO_VERSION)
             .unwrap_or_else(|err| panic!("failed to build FUSE request, the error is: {err}"));
@@ -2235,6 +2232,7 @@ mod test {
         match *req.operation() {
             Operation::BatchForget { arg, nodes } => {
                 assert_eq!(arg.count, 2);
+                assert!(nodes.len() >= 2);
                 assert_eq!(nodes[0].nodeid, 1);
                 assert_eq!(nodes[0].nlookup, 5);
                 assert_eq!(nodes[1].nodeid, 2);

@@ -3,6 +3,7 @@
 #[cfg(not(all(target_os = "linux", target_pointer_width = "64")))]
 compile_error!("async-fuse does not support this target now");
 
+use std::ffi::c_int;
 use std::io;
 use std::iter::FusedIterator;
 use std::os::unix::ffi::OsStrExt;
@@ -66,7 +67,7 @@ impl Dir {
         let dirp = libc::fdopendir(fd);
         if dirp.is_null() {
             let err = io::Error::last_os_error();
-            let _ = libc::close(fd);
+            let _: c_int = libc::close(fd);
             return Err(err);
         }
         Ok(Self(NonNull::new_unchecked(dirp)))

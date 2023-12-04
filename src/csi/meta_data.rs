@@ -253,7 +253,12 @@ impl MetaData {
             } else {
                 self.get_node_by_id(&node_id)
                     .await
-                    .or_else(|_| panic!("failed to get node ID={node_id} from etcd"))
+                    .map_err(|err| ArgumentInvalid {
+                        context: vec![format!(
+                            "failed to get node ID={} from etcd ,err is {err}",
+                            &node_id
+                        )],
+                    })
             }
         } else if req.has_accessibility_requirements() {
             let preferred_topology = req.get_accessibility_requirements().get_preferred();
@@ -297,7 +302,12 @@ impl MetaData {
             );
             self.get_node_by_id(node_id)
                 .await
-                .or_else(|_| panic!("failed to get node ID={node_id} from etcd"))
+                .map_err(|err| ArgumentInvalid {
+                    context: vec![format!(
+                        "failed to get node ID={} from etcd ,err is {err}",
+                        &node_id
+                    )],
+                })
         } else {
             debug!("request doesn't have volume content source and accessibility requirements, select random node");
             self.select_random_node().await
