@@ -62,3 +62,5 @@
 )]
 
 pub mod common;
+/// Configurations
+pub mod config;
