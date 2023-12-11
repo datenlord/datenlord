@@ -166,16 +166,6 @@ impl TryFrom<SuperS3StorageConfig> for StorageS3Config {
 
     #[inline]
     fn try_from(value: SuperS3StorageConfig) -> Result<Self, Self::Error> {
-        // Check if any of the required fields are missing
-        if value.endpoint_url.is_empty()
-            || value.access_key_id.is_empty()
-            || value.secret_access_key.is_empty()
-            || value.bucket_name.is_empty()
-        {
-            return Err(DatenLordError::ArgumentInvalid {
-                context: vec![format!("S3 storage config is invalid: {:?}", value)],
-            });
-        }
         Ok(StorageS3Config {
             endpoint_url: value.endpoint_url,
             access_key_id: value.access_key_id,
