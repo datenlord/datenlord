@@ -10,7 +10,7 @@ use std::time::Duration;
 use anyhow::Context;
 use async_trait::async_trait;
 use clippy_utilities::{Cast, OverflowArithmetic};
-use itertools::Itertools;
+use datenlord::config::{StorageConfig, StorageParams};
 use nix::errno::Errno;
 use nix::fcntl::OFlag;
 use nix::sys::stat::SFlag;
@@ -20,7 +20,6 @@ use tracing::{debug, info, instrument, warn};
 
 use super::cache::{GlobalCache, IoMemBlock};
 use super::dir::DirEntry;
-use super::dist::client as dist_client;
 use super::dist::server::CacheServer;
 use super::fs_util::{self, FileAttr, NEED_CHECK_PERM};
 use super::id_alloc_used::INumAllocator;
@@ -39,8 +38,7 @@ use crate::async_fuse::fuse::protocol::{FuseAttr, INum, FUSE_ROOT_ID};
 use crate::async_fuse::memfs::check_name_length;
 use crate::async_fuse::util::build_error_result_from_errno;
 use crate::common::error::Context as DatenLordContext; // conflict with anyhow::Context
-use crate::common::error::{DatenLordError, DatenLordResult};
-use crate::common::etcd_delegate::EtcdDelegate;
+use crate::common::error::DatenLordResult;
 use crate::function_name;
 
 /// A helper function to build [`DatenLordError::InconsistentFS`] with default
@@ -55,8 +53,6 @@ macro_rules! build_inconsistent_fs {
 const MY_TTL_SEC: u64 = 3600; // TODO: should be a long value, say 1 hour
 /// The generation ID of FUSE attributes
 const MY_GENERATION: u64 = 1; // TODO: find a proper way to set generation
-/// S3 information string delimiter
-const S3_INFO_DELIMITER: char = ';';
 #[allow(dead_code)]
 /// The limit of transaction commit retrying times.
 const TXN_RETRY_LIMIT: u32 = 5;
@@ -73,21 +69,14 @@ pub struct S3MetaData<S: S3BackEnd + Send + Sync + 'static> {
     pub(crate) cur_fd: AtomicU32,
     /// Current service id
     pub(crate) node_id: Arc<str>,
-    /// Volume Info
-    pub(crate) volume_info: Arc<str>,
+    /// Storage config
+    pub(crate) storage_config: Arc<StorageConfig>,
     /// Fuse fd
     fuse_fd: Mutex<RawFd>,
     /// KV engine
     pub(crate) kv_engine: Arc<KVEngineType>,
     /// Inum allocator
     inum_allocator: INumAllocator<KVEngineType>,
-}
-
-/// Parse S3 info
-fn parse_s3_info(info: &str) -> DatenLordResult<(&str, &str, &str, &str)> {
-    info.split(S3_INFO_DELIMITER)
-        .next_tuple()
-        .ok_or_else(|| anyhow::anyhow!("parse s3 information failed. s3_info: {info}").into())
 }
 
 #[async_trait]
@@ -421,16 +410,22 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
     }
 
     async fn new(
-        s3_info: &str,
         capacity: usize,
         ip: &str,
-        port: &str,
-        _: EtcdDelegate,
+        port: u16,
         kv_engine: Arc<KVEngineType>,
         node_id: &str,
-        volume_info: &str,
+        storage_config: &StorageConfig,
     ) -> DatenLordResult<(Arc<Self>, Option<CacheServer>)> {
-        let (bucket_name, endpoint, access_key, secret_key) = parse_s3_info(s3_info)?;
+        let s3_config = match storage_config.params {
+            StorageParams::S3(ref config) => config,
+            StorageParams::None(ref fake_s3_config) => fake_s3_config,
+        };
+        let bucket_name = &s3_config.bucket_name;
+        let endpoint = &s3_config.endpoint_url;
+        let access_key = &s3_config.access_key_id;
+        let secret_key = &s3_config.secret_access_key;
+
         let s3_backend = Arc::new(
             S::new_backend(bucket_name, endpoint, access_key, secret_key)
                 .await
@@ -448,7 +443,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
             data_cache: Arc::<GlobalCache>::clone(&data_cache),
             cur_fd: AtomicU32::new(4),
             node_id: Arc::<str>::from(node_id.to_owned()),
-            volume_info: Arc::<str>::from(volume_info.to_owned()),
+            storage_config: Arc::<StorageConfig>::from(storage_config.clone()),
             fuse_fd: Mutex::new(-1_i32),
             inum_allocator: INumAllocator::new(Arc::clone(&kv_engine)),
             kv_engine,
@@ -855,7 +850,6 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         data: Vec<u8>,
         flags: u32,
     ) -> DatenLordResult<usize> {
-        let data_len = data.len();
         let (result, _) = {
             let mut inode = self
                 .get_node_from_kv_engine(ino)
@@ -879,7 +873,6 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
             self.set_node_to_kv_engine(ino, inode).await?;
             (res, parent_ino)
         };
-        self.invalidate_remote(ino, offset, data_len).await?;
         result
     }
 }
@@ -1549,32 +1542,6 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
         let result = self.inum_allocator.alloc_inum_for_fnode().await;
         debug!("alloc_inum_for_fnode() result={result:?}");
         result
-    }
-
-    /// Invalidate cache from other nodes
-    async fn invalidate_remote(
-        &self,
-        full_ino: INum,
-        offset: i64,
-        len: usize,
-    ) -> DatenLordResult<()> {
-        dist_client::invalidate(
-            &self.kv_engine,
-            &self.node_id,
-            &self.volume_info,
-            full_ino,
-            offset
-                .overflow_div(self.data_cache.get_align().cast())
-                .cast(),
-            offset
-                .overflow_add(len.cast())
-                .overflow_sub(1)
-                .overflow_div(self.data_cache.get_align().cast())
-                .cast(),
-        )
-        .await
-        .map_err(DatenLordError::from)
-        .add_context("failed to invlidate others' cache")
     }
 
     /// If sticky bit is set, only the owner of the directory, the owner of the

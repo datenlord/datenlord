@@ -14,34 +14,44 @@ pub struct Config {
     /// Node ip
     pub node_ip: String,
     #[clap(long = "mount-path", value_name = "VALUE")]
-    /// Mount path
+    /// Set the mount point of FUSE
     pub mount_path: String,
+    #[clap(long = "kv-addrs", value_name = "VALUE")]
+    /// Set the kv server addresses
+    pub kv_addr: String,
+    #[clap(long = "server-port", value_name = "VALUE")]
+    /// Set service port number
+    pub server_port: u16,
     #[clap(flatten)]
     /// Storage related config
     pub storage: StorageConfig,
+    #[clap(flatten)]
+    /// CSI related config
+    pub csi_config: CSIConfig,
 }
 
 #[derive(Debug, Parser)]
 /// Storage config
 pub struct StorageConfig {
-    #[clap(long = "storage-type", value_name = "VALUE", default_value = "None")]
+    #[clap(long = "storage-type", value_name = "VALUE", default_value = "none")]
     /// Storage type: S3,None
     pub storage_type: String,
-    #[clap(
-        long = "storage-cache-capacity",
-        value_name = "VALUE",
-        default_value = "104857600"
-    )]
-    /// Cache capacity, default 100MB
+    #[clap(long = "storage-cache-capacity", value_name = "VALUE")]
+    /// Set memory cache capacity
     pub cache_capacity: usize,
     #[clap(flatten)]
     /// S3 storage config
     pub s3_storage_config: S3StorageConfig,
 }
 
+/// S3 storage config
 #[derive(Debug, Parser)]
 pub struct S3StorageConfig {
-    #[clap(long = "endpoint-url", value_name = "VALUE", default_value_t)]
+    #[clap(
+        long = "storage-s3-endpoint-url",
+        value_name = "VALUE",
+        default_value_t
+    )]
     /// The endpoint url of s3 storage
     pub endpoint_url: String,
     #[clap(
@@ -63,37 +73,82 @@ pub struct S3StorageConfig {
     pub bucket_name: String,
 }
 
+/// CSI related config
+#[derive(Debug, Clone, Parser)]
+pub struct CSIConfig {
+    #[clap(long = "csi-endpoint", value_name = "VALUE", default_value_t)]
+    /// Set the socket end point of CSI service
+    pub endpoint: String,
+    #[clap(long = "csi-driver-name", value_name = "VALUE", default_value_t)]
+    /// The driver name of csi server
+    pub driver_name: String,
+    #[clap(long = "csi-node-id", value_name = "VALUE", default_value_t)]
+    /// The node id of csi server
+    pub node_id: String,
+    #[clap(long = "csi-worker-port", value_name = "VALUE", default_value_t)]
+    /// The worker port of csi server
+    pub worker_port: u16,
+}
+
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
-    use super::*;
-    use crate::config::inner::StorageParams as InnerStorageParams;
-    use crate::config::inner::{InnerConfig, Role};
     use std::net::IpAddr;
     use std::str::FromStr;
 
+    use super::*;
+    use crate::config::inner::{InnerConfig, Role, StorageParams as InnerStorageParams};
+
     #[test]
-    fn test_default_config() {
+    #[allow(clippy::indexing_slicing)]
+    fn test_basic_config() {
         // Set the args
         let args = vec![
             "datenlord",
             "--role",
-            "Node",
+            "node",
             "--node-name",
             "node1",
             "--node-ip",
             "127.0.0.1",
             "--mount-path",
             "/tmp/datenlord_data_dir",
+            "--storage-cache-capacity",
+            "1024",
+            "--kv-addrs",
+            "127.0.0.1:7890,127.0.0.1:7891",
+            "--csi-endpoint",
+            "unix:///tmp/node.sock ",
+            "--csi-driver-name",
+            "io.datenlord.csi.plugin",
+            "--csi-node-id",
+            "node1",
+            "--storage-s3-endpoint-url",
+            "http://127.0.0.1:9000",
+            "--storage-s3-access-key-id",
+            "test_access_key",
+            "--storage-s3-secret-access-key",
+            "test_secret_key",
+            "--storage-s3-bucket",
+            "test_bucket",
+            "--csi-worker-port",
+            "9001",
+            "--server-port",
+            "8800",
         ];
         let config = Config::parse_from(args);
-        assert_eq!(config.role, "Node");
+        assert_eq!(config.role, "node");
         assert_eq!(config.node_name, "node1");
         assert_eq!(config.node_ip.as_str(), "127.0.0.1");
         assert_eq!(config.mount_path.as_str(), "/tmp/datenlord_data_dir");
+        assert_eq!(config.kv_addr.as_str(), "127.0.0.1:7890,127.0.0.1:7891");
+        assert_eq!(config.server_port, 8800);
 
         // Following are the default values
-        assert_eq!(config.storage.storage_type, "None");
-        assert_eq!(config.storage.cache_capacity, 104857600);
+        assert_eq!(config.storage.storage_type, "none");
+
+        // Cache capacity
+        assert_eq!(config.storage.cache_capacity, 1024);
 
         // Cast to InnerConfig
         let inner_config: InnerConfig = config.try_into().unwrap();
@@ -101,13 +156,25 @@ mod tests {
         assert_eq!(inner_config.node_name, "node1");
         assert_eq!(inner_config.node_ip, IpAddr::from_str("127.0.0.1").unwrap());
         assert_eq!(inner_config.mount_path.as_str(), "/tmp/datenlord_data_dir");
+        assert_eq!(inner_config.server_port, 8800);
+
+        let kv_addrs = inner_config.kv_addrs;
+        assert_eq!(kv_addrs.len(), 2);
+        assert_eq!(kv_addrs[0], "127.0.0.1:7890");
+        assert_eq!(kv_addrs[1], "127.0.0.1:7891");
 
         let storage_config = inner_config.storage;
-        assert_eq!(storage_config.cache_capacity, 104857600);
+        assert_eq!(storage_config.cache_capacity, 1024);
         match storage_config.params {
-            InnerStorageParams::None => {}
-            _ => panic!("storage params should be None"),
+            InnerStorageParams::None(_) => {}
+            InnerStorageParams::S3(_) => panic!("storage params should be None"),
         }
+
+        let csi_config = inner_config.csi_config;
+        assert_eq!(csi_config.endpoint, "unix:///tmp/node.sock ");
+        assert_eq!(csi_config.driver_name, "io.datenlord.csi.plugin");
+        assert_eq!(csi_config.node_id, "node1");
+        assert_eq!(csi_config.worker_port, 9001);
     }
 
     #[test]
@@ -116,18 +183,22 @@ mod tests {
         let args = vec![
             "datenlord",
             "--role",
-            "Node",
+            "node",
             "--node-name",
             "node1",
             "--node-ip",
             "127.0.0.1",
             "--mount-path",
             "/tmp/datenlord_data_dir",
+            "--server-port",
+            "8800",
+            "--csi-endpoint",
+            "http://127.0.0.1:9000",
             "--storage-type",
             "S3",
             "--storage-cache-capacity",
             "1024",
-            "--endpoint-url",
+            "--storage-s3-endpoint-url",
             "http://127.0.0.1:9000",
             "--storage-s3-access-key-id",
             "test_access_key",
@@ -135,6 +206,8 @@ mod tests {
             "test_secret_key",
             "--storage-s3-bucket",
             "test_bucket",
+            "--kv-addrs",
+            "127.0.0.1:7890,127.0.0.1:7891",
         ];
         let config: InnerConfig = Config::parse_from(args).try_into().unwrap();
         let storage_config = config.storage;
@@ -146,7 +219,7 @@ mod tests {
                 assert_eq!(s3_config.secret_access_key, "test_secret_key");
                 assert_eq!(s3_config.bucket_name, "test_bucket");
             }
-            _ => panic!("storage params should be S3"),
+            InnerStorageParams::None(_) => panic!("storage params should be S3"),
         }
     }
 }

@@ -19,7 +19,7 @@ pub async fn register_node_id(
     kv_engine: &Arc<KVEngineType>,
     node_id: &str,
     node_ipaddr: &str,
-    port: &str,
+    port: u16,
 ) -> DatenLordResult<()> {
     kv_engine
         .set(

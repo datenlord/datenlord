@@ -29,7 +29,7 @@ use crate::common::error::DatenLordError::{
 };
 use crate::common::error::{Context, DatenLordResult};
 use crate::common::etcd_delegate::EtcdDelegate;
-use crate::RunAsRole;
+use crate::config::NodeRole;
 
 /// `DatenLord` node
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -72,7 +72,7 @@ pub struct MetaData {
     /// The plugin will save data persistently or not
     ephemeral: bool,
     /// The run as role, either controller or node
-    run_as: RunAsRole,
+    run_as: NodeRole,
     /// The list of etcd address and port
     etcd_delegate: EtcdDelegate,
     /// The meta data about this node
@@ -117,7 +117,7 @@ impl MetaData {
     pub async fn new(
         data_dir: String,
         ephemeral: bool,
-        run_as: RunAsRole,
+        run_as: NodeRole,
         etcd_delegate: EtcdDelegate,
         node: DatenLordNode,
     ) -> DatenLordResult<Self> {
@@ -129,12 +129,12 @@ impl MetaData {
             node,
         };
         match md.run_as {
-            RunAsRole::Controller => md.register_to_etcd(CONTROLLER_PREFIX).await?,
-            RunAsRole::Node => md.register_to_etcd(NODE_PREFIX).await?,
-            RunAsRole::SchedulerExtender => {
+            NodeRole::Controller => md.register_to_etcd(CONTROLLER_PREFIX).await?,
+            NodeRole::Node => md.register_to_etcd(NODE_PREFIX).await?,
+            NodeRole::SchedulerExtender => {
                 md.register_to_etcd(SCHEDULER_EXTENDER_PREFIX).await?;
             }
-            RunAsRole::AsyncFuse => (),
+            NodeRole::AsyncFuse => (),
         }
 
         Ok(md)

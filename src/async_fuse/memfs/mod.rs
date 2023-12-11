@@ -27,6 +27,7 @@ use std::time::SystemTime;
 use async_trait::async_trait;
 use cache::IoMemBlock;
 use clippy_utilities::Cast;
+use datenlord::config::StorageConfig;
 use dist::server::CacheServer;
 pub use metadata::MetaData;
 use nix::errno::Errno;
@@ -46,7 +47,6 @@ use crate::async_fuse::fuse::protocol::{INum, FUSE_ROOT_ID};
 use crate::async_fuse::memfs::metadata::ReqContext;
 use crate::async_fuse::util::build_error_result_from_errno;
 use crate::common::error::{Context, DatenLordResult};
-use crate::common::etcd_delegate::EtcdDelegate;
 
 /// In-memory file system
 #[derive(Debug)]
@@ -159,28 +159,18 @@ impl<M: MetaData + Send + Sync + 'static> MemFs<M> {
         mount_point: &str,
         capacity: usize,
         ip: &str,
-        port: &str,
-        etcd_client: EtcdDelegate,
+        port: u16,
         kv_engine: Arc<KVEngineType>,
         node_id: &str,
-        volume_info: &str,
+        storage_config: &StorageConfig,
     ) -> anyhow::Result<Self> {
         // print the args
         debug!(
-            "mount_point: ${}$, capacity: ${}$, ip: ${}$, port: ${}$, node_id: {}, volume_info: {}",
-            mount_point, capacity, ip, port, node_id, volume_info
+            "mount_point: ${}$, capacity: ${}$, ip: ${}$, port: ${}$, node_id: {}, storage_config: {:?}",
+            mount_point, capacity, ip, port, node_id, storage_config
         );
-        let (metadata, server) = M::new(
-            mount_point,
-            capacity,
-            ip,
-            port,
-            etcd_client,
-            kv_engine,
-            node_id,
-            volume_info,
-        )
-        .await?;
+        let (metadata, server) =
+            M::new(capacity, ip, port, kv_engine, node_id, storage_config).await?;
         Ok(Self { metadata, server })
     }
 

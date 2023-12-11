@@ -32,14 +32,14 @@ spec:
           imagePullPolicy: "IfNotPresent"
           args:
             - "start_async_fuse"
-            - "--capacity=$(CACHE_CAPACITY)"
-            - "--etcd=$(ETCD_ENDPOINT)"
-            - "--mountpoint=$(FUSE_MOUNT_DIR)"
+            - "--storage-cache-capacity=$(CACHE_CAPACITY)"
+            - "--kv-addrs=$(ETCD_ENDPOINT)"
+            - "--mount-path=$(FUSE_MOUNT_DIR)"
             - "--volume_info=$(FUSE_VOLUME_INFO)"
-            - "--volume_type=none"
-            - "--nodeid=$(NODE_ID)"
-            - "--nodeip=$(NODE_IP)"
-            - "--serverport=8800"
+            - "--storage-type=none"
+            - "--node-name=$(NODE_ID)"
+            - "--node-ip=$(NODE_IP)"
+            - "--server-port=8800"
           lifecycle:
             #postStart:
             #  exec:
