@@ -3,7 +3,6 @@
 use std::ffi::OsStr;
 use std::fmt::Debug;
 use std::fs;
-use std::net::{IpAddr, ToSocketAddrs};
 use std::path::Path;
 use std::process::Command;
 
@@ -25,6 +24,7 @@ use crate::common::error::DatenLordError::{IoErr, MountErr, NixErr, UmountErr};
 use crate::common::error::{Context, DatenLordError, DatenLordResult};
 
 /// The CSI plugin name
+#[cfg(test)] // For test only
 pub const CSI_PLUGIN_NAME: &str = "io.datenlord.csi.plugin";
 // TODO: should use DatenLord version instead
 /// The CSI plugin version
@@ -343,17 +343,4 @@ pub fn umount_volume_bind_path(target_dir: &str) -> DatenLordResult<()> {
         .with_context(|| format!("failed to remove mount target path={target_dir}"))?;
 
     Ok(())
-}
-
-/// Get ip address of node
-pub fn get_ip_of_node(node_id: &str) -> IpAddr {
-    let hostname = format!("{}:{}", node_id, 0_i32);
-    let sockets = hostname.to_socket_addrs();
-    let addrs: Vec<_> = sockets
-        .unwrap_or_else(|_| panic!("Failed to resolve node ID={node_id}"))
-        .collect();
-    addrs
-        .get(0) // Return the first ip for now.
-        .unwrap_or_else(|| panic!("Failed to get ip address when resolve node ID={node_id}"))
-        .ip()
 }

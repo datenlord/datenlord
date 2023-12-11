@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use datenlord::config::StorageConfig;
 use nix::sys::stat::SFlag;
 
 use super::cache::IoMemBlock;
@@ -13,7 +14,6 @@ use super::{CreateParam, RenameParam, SetAttrParam};
 use crate::async_fuse::fuse::fuse_reply::{ReplyDirectory, StatFsParam};
 use crate::async_fuse::fuse::protocol::{FuseAttr, INum};
 use crate::common::error::DatenLordResult;
-use crate::common::etcd_delegate::EtcdDelegate;
 
 pub(crate) mod error {
     //! A module containing helper functions to build errors.
@@ -74,14 +74,12 @@ pub trait MetaData {
     /// Create `MetaData`
     #[allow(clippy::too_many_arguments)]
     async fn new(
-        root_path: &str,
         capacity: usize,
         ip: &str,
-        port: &str,
-        etcd_client: EtcdDelegate,
+        port: u16,
         kv_engine: Arc<KVEngineType>,
         node_id: &str,
-        volume_info: &str,
+        storage_config: &StorageConfig,
     ) -> DatenLordResult<(Arc<Self>, Option<CacheServer>)>;
 
     /// Helper function to create node

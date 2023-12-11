@@ -109,8 +109,8 @@ jobs:
           export ETCD_END_POINT=127.0.0.1:2379
           sudo sed -i 's/#user_allow_other/user_allow_other/g' /etc/fuse.conf
           mkdir $DATENLORD_LOCAL_BIND_DIR
-          target/debug/datenlord start_node --endpoint=unix://$NODE_SOCKET_FILE --workerport=0 --nodeid=localhost --nodeip=127.0.0.1 --drivername=io.datenlord.csi.plugin --mountpoint=$DATENLORD_LOCAL_BIND_DIR --etcd=$ETCD_END_POINT --volume_info="fuse-test-bucket;http://127.0.0.1:9000;test;test1234" --capacity=1073741824 --serverport=8800 --volume_type=none &
-          target/debug/datenlord start_csi_controller --endpoint=unix://$CONTROLLER_SOCKET_FILE --workerport=0 --nodeid=localhost --nodeip=127.0.0.1 --drivername=io.datenlord.csi.plugin --mountpoint=$DATENLORD_LOCAL_BIND_DIR --etcd=$ETCD_END_POINT &
+          target/debug/datenlord --role=node --csi-endpoint=unix://$NODE_SOCKET_FILE --csi-worker-port=0 --node-name=localhost --node-ip=127.0.0.1 --csi-driver-name=io.datenlord.csi.plugin --mount-path=$DATENLORD_LOCAL_BIND_DIR --kv-addrs=$ETCD_END_POINT --storage-s3-access-key-id test  --storage-s3-secret-access-key test1234 --storage-s3-bucket  fuse-test-bucket  --storage-s3-endpoint-url http://127.0.0.1:9000 --storage-cache-capacity=1073741824 --server-port=8800 --storage-type=none &
+          target/debug/datenlord --role=controller --csi-endpoint=unix://$CONTROLLER_SOCKET_FILE --csi-worker-port=0 --node-name=localhost --node-ip=127.0.0.1 --csi-driver-name=io.datenlord.csi.plugin --mount-path=$DATENLORD_LOCAL_BIND_DIR --kv-addrs=$ETCD_END_POINT &
           ./csi-test/cmd/csi-sanity/csi-sanity -csi.endpoint=$NODE_SOCKET_FILE -csi.controllerendpoint=$CONTROLLER_SOCKET_FILE --ginkgo.flake-attempts 3
       - name: Setup tmate session
         if: ${{ failure() }}

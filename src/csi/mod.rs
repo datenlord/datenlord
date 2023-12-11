@@ -15,6 +15,7 @@ use std::net::IpAddr;
 use std::sync::Arc;
 
 use controller::ControllerImpl;
+use datenlord::config::NodeRole;
 use grpcio::{Environment, Server};
 use identity::IdentityImpl;
 use meta_data::{DatenLordNode, MetaData};
@@ -24,7 +25,6 @@ use worker::WorkerImpl;
 
 use crate::common::error::{Context, DatenLordResult};
 use crate::common::etcd_delegate::EtcdDelegate;
-use crate::RunAsRole;
 
 /// Build meta data
 pub async fn build_meta_data(
@@ -32,7 +32,7 @@ pub async fn build_meta_data(
     node_id: String,
     ip_address: IpAddr,
     data_dir: String,
-    run_as: RunAsRole,
+    run_as: NodeRole,
     etcd_delegate: EtcdDelegate,
 ) -> DatenLordResult<MetaData> {
     let ephemeral = false; // TODO: read from command line argument
@@ -281,7 +281,7 @@ mod test {
         let _metadata = MetaData::new(
             data_dir.to_owned(),
             ephemeral,
-            RunAsRole::Node,
+            NodeRole::Node,
             etcd_delegate.clone(),
             node.clone(),
         )
@@ -289,7 +289,7 @@ mod test {
         MetaData::new(
             data_dir.to_owned(),
             ephemeral,
-            RunAsRole::Controller,
+            NodeRole::Controller,
             etcd_delegate,
             node,
         )
@@ -430,7 +430,7 @@ mod test {
                     node_id.clone(),
                     ip_address,
                     data_dir.clone(),
-                    RunAsRole::Controller,
+                    NodeRole::Controller,
                     etcd_delegate.clone(),
                 )
                 .await
@@ -452,7 +452,7 @@ mod test {
                     node_id.clone(),
                     ip_address,
                     data_dir.clone(),
-                    RunAsRole::Node,
+                    NodeRole::Node,
                     etcd_delegate.clone(),
                 )
                 .await

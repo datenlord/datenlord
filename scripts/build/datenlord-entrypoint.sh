@@ -12,7 +12,7 @@ while [ $# -gt 0 ]; do
             MOUNTPOINT=$2
             break
             ;;
-        -m=* | --mountpoint=*)
+        -m=* | --mount-path=*)
             MOUNTPOINT=${key#*=}
             break
             ;;
