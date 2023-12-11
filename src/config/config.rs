@@ -19,7 +19,7 @@ pub struct Config {
     #[clap(long = "kv-addrs", value_name = "VALUE")]
     /// Set the kv server addresses
     pub kv_addr: String,
-    #[clap(long = "server-port", value_name = "VALUE")]
+    #[clap(long = "server-port", value_name = "VALUE", default_value_t = 8800)]
     /// Set service port number
     pub server_port: u16,
     #[clap(flatten)]
@@ -36,8 +36,12 @@ pub struct StorageConfig {
     #[clap(long = "storage-type", value_name = "VALUE", default_value = "none")]
     /// Storage type: S3,None
     pub storage_type: String,
-    #[clap(long = "storage-cache-capacity", value_name = "VALUE")]
-    /// Set memory cache capacity
+    #[clap(
+        long = "storage-cache-capacity",
+        value_name = "VALUE",
+        default_value_t = 1073741824
+    )]
+    /// Set memory cache capacity, default is 1GB
     pub cache_capacity: usize,
     #[clap(flatten)]
     /// S3 storage config
@@ -221,5 +225,45 @@ mod tests {
             }
             InnerStorageParams::None(_) => panic!("storage params should be S3"),
         }
+    }
+
+    #[test]
+    #[allow(clippy::indexing_slicing)]
+    fn test_csi_controller_config() {
+        // Set the args
+        let args = vec![
+            "datenlord",
+            "--role",
+            "controller",
+            "--csi-endpoint",
+            "unix:///tmp/controller.sock",
+            "--csi-driver-name",
+            "io.datenlord.csi.plugin",
+            "--csi-worker-port",
+            "9001",
+            "--node-name",
+            "localhost",
+            "--node-ip",
+            "127.0.0.1",
+            "--mount-path",
+            "/tmp/datenlord_data_dir",
+            "--kv-addrs",
+            "127.0.0.1:7890",
+        ];
+        let config: InnerConfig = Config::parse_from(args).try_into().unwrap();
+        assert_eq!(config.role, Role::Controller);
+        assert_eq!(config.node_name, "localhost");
+        assert_eq!(config.node_ip, IpAddr::from_str("127.0.0.1").unwrap());
+        assert_eq!(config.mount_path.as_str(), "/tmp/datenlord_data_dir");
+        assert_eq!(config.server_port, 8800);
+
+        let kv_addrs = config.kv_addrs;
+        assert_eq!(kv_addrs.len(), 1);
+        assert_eq!(kv_addrs[0], "127.0.0.1:7890");
+
+        let csi_config = config.csi_config;
+        assert_eq!(csi_config.endpoint, "unix:///tmp/controller.sock");
+        assert_eq!(csi_config.driver_name, "io.datenlord.csi.plugin");
+        assert_eq!(csi_config.worker_port, 9001);
     }
 }
