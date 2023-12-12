@@ -66,8 +66,6 @@ pub async fn start_async_fuse(
             let fs: memfs::MemFs<memfs::S3MetaData<S3BackEndImpl>> = memfs::MemFs::new(
                 &args.mount_dir,
                 global_cache_capacity,
-                &args.ip_address.to_string(),
-                args.server_port,
                 kv_engine,
                 &args.node_id,
                 storage_config,
@@ -82,8 +80,6 @@ pub async fn start_async_fuse(
             let fs: memfs::MemFs<memfs::S3MetaData<DoNothingImpl>> = memfs::MemFs::new(
                 &args.mount_dir,
                 global_cache_capacity,
-                &args.ip_address.to_string(),
-                args.server_port,
                 kv_engine,
                 &args.node_id,
                 storage_config,

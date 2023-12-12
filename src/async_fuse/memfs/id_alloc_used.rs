@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use super::dist::id_alloc::{DistIdAllocator, IdType};
+use super::id_alloc::{DistIdAllocator, IdType};
 use super::kv_engine::KVEngine;
 use crate::async_fuse::fuse::protocol::INum;
 use crate::common::error::DatenLordResult;

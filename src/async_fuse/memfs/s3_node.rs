@@ -18,7 +18,6 @@ use tracing::{debug, info, warn};
 
 use super::cache::{GlobalCache, IoMemBlock};
 use super::direntry::{DirEntry, FileType};
-use super::dist::client as dist_client;
 use super::fs_util::{self, FileAttr};
 use super::kv_engine::{KVEngineType, KeyType, MetaTxn, ValueType};
 use super::node::Node;
@@ -658,42 +657,19 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
                     offset, len, new_len, aligned_offset
                 );
 
-                let volume_info = serde_json::to_string(self.storage_config.as_ref())?;
-
                 // dist_client::read_data() won't get lock at remote, OK to put here.
-                let file_data_vec = match dist_client::read_data(
-                    &self.kv_engine,
-                    &self.k8s_node_id,
-                    &volume_info,
-                    self.get_ino(),
-                    aligned_offset
-                        .overflow_div(global_cache.get_align().cast())
-                        .cast(),
-                    aligned_offset
-                        .overflow_add(new_len.cast())
-                        .overflow_sub(1)
-                        .overflow_div(global_cache.get_align().cast())
-                        .cast(),
-                )
-                .await?
+                let file_data_vec = match self
+                    .s3_backend
+                    .get_partial_data(self.get_ino(), aligned_offset, new_len)
+                    .await
                 {
-                    None => {
-                        match self
-                            .s3_backend
-                            .get_partial_data(self.get_ino(), aligned_offset, new_len)
-                            .await
-                        {
-                            Ok(a) => a,
-                            Err(e) => {
-                                let anyhow_err: anyhow::Error = e.into();
-                                return Err(DatenLordError::from(
-                                    anyhow_err
-                                        .context("load_data() failed to load file content data"),
-                                ));
-                            }
-                        }
+                    Ok(a) => a,
+                    Err(e) => {
+                        let anyhow_err: anyhow::Error = e.into();
+                        return Err(DatenLordError::from(
+                            anyhow_err.context("load_data() failed to load file content data"),
+                        ));
                     }
-                    Some(data) => data,
                 };
 
                 let read_size = file_data_vec.len();

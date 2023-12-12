@@ -18,7 +18,6 @@ use tracing::{debug, info, instrument, warn};
 
 use super::cache::policy::LruPolicy;
 use super::cache::{Backend, Block, BlockCoordinate, GlobalCache, MemoryCache, StorageManager};
-use super::dist::server::CacheServer;
 use super::fs_util::{self, FileAttr, NEED_CHECK_PERM};
 use super::id_alloc_used::INumAllocator;
 use super::kv_engine::{KVEngine, KVEngineType, MetaTxn, ValueType};
@@ -520,13 +519,11 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
 
     async fn new(
         capacity: usize,
-        ip: &str,
-        port: u16,
         kv_engine: Arc<KVEngineType>,
         node_id: &str,
         storage_config: &StorageConfig,
         storage: StorageManager<Self::St>,
-    ) -> DatenLordResult<(Arc<Self>, Option<CacheServer>)> {
+    ) -> DatenLordResult<Arc<Self>> {
         // TODO: Remove this when the `S3Backend` is removed.
         let s3_config = match storage_config.params {
             datenlord::config::StorageParams::S3(ref s3_config) => s3_config.clone(),
@@ -568,8 +565,6 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
             local_mtime_and_size: HashMap::new(),
         });
 
-        let server = CacheServer::new(ip.to_owned(), port.to_owned(), data_cache);
-
         retry_txn!(TXN_RETRY_LIMIT, {
             let mut txn = meta.kv_engine.new_meta_txn().await;
             let prev = meta
@@ -601,7 +596,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
                 (txn.commit().await, ())
             }
         })?;
-        Ok((meta, Some(server)))
+        Ok(meta)
     }
 
     /// Set fuse fd into `MetaData`
