@@ -5,12 +5,14 @@
 
 mod block;
 mod global_cache;
+mod memory_cache;
 mod storage;
 
 pub mod policy;
 
 pub use block::{Block, BlockCoordinate};
 pub use global_cache::*;
+pub use memory_cache::InMemoryCache;
 pub use storage::Storage;
 
 /// The number of bytes in one KiB.
