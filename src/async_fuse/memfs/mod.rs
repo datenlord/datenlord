@@ -1,8 +1,7 @@
 //! The implementation of user space file system
 pub mod cache;
-/// distributed communication module
-pub mod dist;
 mod fs_util;
+pub mod id_alloc;
 mod id_alloc_used;
 /// The KV engine module
 #[macro_use]
@@ -28,7 +27,6 @@ use std::time::SystemTime;
 use async_trait::async_trait;
 use clippy_utilities::Cast;
 use datenlord::config::StorageConfig;
-use dist::server::CacheServer;
 pub use metadata::MetaData;
 use nix::errno::Errno;
 use nix::sys::stat::SFlag;
@@ -54,9 +52,6 @@ use crate::common::error::{Context, DatenLordResult};
 pub struct MemFs<M: MetaData + Send + Sync + 'static> {
     /// Fs metadata
     metadata: Arc<M>,
-    #[allow(dead_code)]
-    /// Cache server
-    server: Option<CacheServer>,
 }
 
 /// Set attribute parameters
@@ -172,8 +167,6 @@ impl<M: MetaData + Send + Sync + 'static> MemFs<M> {
     pub async fn new(
         mount_point: &str,
         capacity: usize,
-        ip: &str,
-        port: u16,
         kv_engine: Arc<KVEngineType>,
         node_id: &str,
         storage_config: &StorageConfig,
@@ -181,20 +174,11 @@ impl<M: MetaData + Send + Sync + 'static> MemFs<M> {
     ) -> anyhow::Result<Self> {
         // print the args
         debug!(
-            "mount_point: ${}$, capacity: ${}$, ip: ${}$, port: ${}$, node_id: {}, storage_config: {:?}",
-            mount_point, capacity, ip, port, node_id, storage_config
+            "mount_point: ${}$, capacity: ${}$, node_id: {}, storage_config: {:?}",
+            mount_point, capacity, node_id, storage_config
         );
-        let (metadata, server) = M::new(
-            capacity,
-            ip,
-            port,
-            kv_engine,
-            node_id,
-            storage_config,
-            storage,
-        )
-        .await?;
-        Ok(Self { metadata, server })
+        let metadata = M::new(capacity, kv_engine, node_id, storage_config, storage).await?;
+        Ok(Self { metadata })
     }
 
     /// Read content check

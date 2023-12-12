@@ -20,9 +20,7 @@ use crate::async_fuse::memfs::kv_engine::{KVEngine, KVEngineType};
 use crate::async_fuse::memfs::s3_wrapper::{DoNothingImpl, S3BackEndImpl};
 use crate::common::logger::{init_logger, LogRole};
 
-pub const TEST_NODE_IP: &str = "127.0.0.1";
 pub const TEST_NODE_ID: &str = "test_node";
-pub const TEST_PORT: u16 = 8888;
 pub const TEST_ETCD_ENDPOINT: &str = "127.0.0.1:2379";
 
 /// The default capacity in bytes for test, 1GB
@@ -88,8 +86,6 @@ async fn run_fs(mount_point: &Path, is_s3: bool) -> anyhow::Result<()> {
                 .to_str()
                 .unwrap_or_else(|| panic!("failed to convert to utf8 string")),
             CACHE_DEFAULT_CAPACITY,
-            TEST_NODE_IP,
-            TEST_PORT,
             kv_engine,
             TEST_NODE_ID,
             &storage_config,
@@ -105,8 +101,6 @@ async fn run_fs(mount_point: &Path, is_s3: bool) -> anyhow::Result<()> {
                 .to_str()
                 .unwrap_or_else(|| panic!("failed to convert to utf8 string")),
             CACHE_DEFAULT_CAPACITY,
-            TEST_NODE_IP,
-            TEST_PORT,
             Arc::<KVEngineType>::clone(&kv_engine),
             TEST_NODE_ID,
             &storage_config,

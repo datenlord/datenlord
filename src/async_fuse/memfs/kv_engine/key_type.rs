@@ -1,7 +1,7 @@
 use std::fmt::{self, Display, Formatter, Write};
 
 use crate::async_fuse::fuse::protocol::INum;
-use crate::async_fuse::memfs::dist::id_alloc::IdType;
+use crate::async_fuse::memfs::id_alloc::IdType;
 
 /// The `KeyType` is used to locate the value in the distributed K/V storage.
 /// Every key is prefixed with a string to indicate the type of the value.
