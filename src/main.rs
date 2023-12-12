@@ -107,7 +107,7 @@ pub struct AsyncFuseArgs {
 async fn parse_metadata(config: &InnerConfig) -> DatenLordResult<MetaData> {
     let etcd_delegate = EtcdDelegate::new(config.kv_addrs.clone()).await?;
     let worker_port = config.csi_config.worker_port;
-    let node_id = config.csi_config.node_id.clone();
+    let node_id = config.node_name.clone();
     let ip_address = config.node_ip;
     let mount_dir = config.mount_path.clone();
 
@@ -125,8 +125,9 @@ async fn parse_metadata(config: &InnerConfig) -> DatenLordResult<MetaData> {
 #[allow(clippy::too_many_lines)]
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    init_logger();
     let config = InnerConfig::try_from(config::Config::parse())?;
+
+    init_logger(config.role.into());
 
     match config.role {
         NodeRole::Node => {
@@ -135,7 +136,7 @@ async fn main() -> anyhow::Result<()> {
             let md = Arc::new(metadata);
 
             let kv_engine = Arc::new(KVEngineType::new(config.kv_addrs.clone()).await?);
-            let node_id = config.csi_config.node_id.clone();
+            let node_id = config.node_name.clone();
             let ip_address = config.node_ip;
             let mount_dir = config.mount_path.clone();
             let csi_endpoint = config.csi_config.endpoint.clone();
@@ -194,7 +195,7 @@ async fn main() -> anyhow::Result<()> {
         }
         NodeRole::AsyncFuse => {
             let kv_engine = Arc::new(KVEngineType::new(config.kv_addrs.clone()).await?);
-            let node_id = config.csi_config.node_id.clone();
+            let node_id = config.node_name.clone();
             let ip_address = config.node_ip;
             let mount_dir = config.mount_path.clone();
             let async_args = AsyncFuseArgs {

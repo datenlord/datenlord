@@ -10,7 +10,7 @@ use crate::async_fuse::fuse::{mount, session};
 use crate::async_fuse::memfs;
 use crate::async_fuse::memfs::kv_engine::{KVEngine, KVEngineType};
 use crate::async_fuse::memfs::s3_wrapper::DoNothingImpl;
-use crate::common::logger::init_logger;
+use crate::common::logger::{init_logger, LogRole};
 
 pub const TEST_NODE_IP: &str = "127.0.0.1";
 pub const TEST_NODE_ID: &str = "test_node";
@@ -36,7 +36,7 @@ fn test_storage_config() -> StorageConfig {
 #[allow(clippy::let_underscore_must_use)]
 // TODO : Remove `is_s3` arg due too we only support s3 now
 pub async fn setup(mount_dir: &Path, is_s3: bool) -> anyhow::Result<tokio::task::JoinHandle<()>> {
-    init_logger();
+    init_logger(LogRole::Test);
     debug!("setup started with mount_dir: {:?}", mount_dir);
     if mount_dir.exists() {
         debug!("mount_dir {:?} exists ,try umount", mount_dir);

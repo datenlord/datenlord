@@ -188,7 +188,7 @@ mod test {
 
     use super::{util, *};
     use crate::common::error::Context;
-    use crate::common::logger::init_logger;
+    use crate::common::logger::{init_logger, LogRole};
 
     const NODE_PUBLISH_VOLUME_TARGET_PATH: &str = "/tmp/target_volume_path";
     const NODE_PUBLISH_VOLUME_TARGET_PATH_1: &str = "/tmp/target_volume_path_1";
@@ -213,7 +213,7 @@ mod test {
     #[allow(clippy::let_underscore_must_use)]
     #[tokio::test(flavor = "multi_thread")]
     async fn test_all() -> DatenLordResult<()> {
-        init_logger();
+        init_logger(LogRole::Test);
         // TODO: run test case in parallel
         // Because they all depend on etcd, so cannot run in parallel now
         // let mut etcd_server = MockEtcdServer::new();
