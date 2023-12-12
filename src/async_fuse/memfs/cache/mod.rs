@@ -7,6 +7,7 @@ mod block;
 mod global_cache;
 mod memory_cache;
 mod storage;
+mod storage_manager;
 
 pub mod policy;
 
@@ -14,6 +15,7 @@ pub use block::{Block, BlockCoordinate};
 pub use global_cache::*;
 pub use memory_cache::InMemoryCache;
 pub use storage::Storage;
+pub use storage_manager::StorageManager;
 
 /// The number of bytes in one KiB.
 pub const KB_SIZE: usize = 1024;
