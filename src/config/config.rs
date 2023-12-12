@@ -86,9 +86,6 @@ pub struct CSIConfig {
     #[clap(long = "csi-driver-name", value_name = "VALUE", default_value_t)]
     /// The driver name of csi server
     pub driver_name: String,
-    #[clap(long = "csi-node-id", value_name = "VALUE", default_value_t)]
-    /// The node id of csi server
-    pub node_id: String,
     #[clap(long = "csi-worker-port", value_name = "VALUE", default_value_t)]
     /// The worker port of csi server
     pub worker_port: u16,
@@ -125,8 +122,6 @@ mod tests {
             "unix:///tmp/node.sock ",
             "--csi-driver-name",
             "io.datenlord.csi.plugin",
-            "--csi-node-id",
-            "node1",
             "--storage-s3-endpoint-url",
             "http://127.0.0.1:9000",
             "--storage-s3-access-key-id",
@@ -177,7 +172,6 @@ mod tests {
         let csi_config = inner_config.csi_config;
         assert_eq!(csi_config.endpoint, "unix:///tmp/node.sock ");
         assert_eq!(csi_config.driver_name, "io.datenlord.csi.plugin");
-        assert_eq!(csi_config.node_id, "node1");
         assert_eq!(csi_config.worker_port, 9001);
     }
 

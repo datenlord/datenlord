@@ -43,7 +43,7 @@ jobs:
       - name: Generate code coverage
         run: cargo llvm-cov --codecov --output-path codecov.info
       - name: Print Integration Test Logs
-        run: cat datenlord.log
+        run: cat datenlord_test.log
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v3
         with:

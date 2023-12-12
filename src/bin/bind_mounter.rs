@@ -6,7 +6,7 @@ use std::path::Path;
 use clap::Parser;
 use datenlord::common::error::DatenLordError::ArgumentInvalid;
 use datenlord::common::error::{Context, DatenLordResult};
-use datenlord::common::logger::init_logger;
+use datenlord::common::logger::{init_logger, LogRole};
 use nix::mount::{self, MsFlags};
 use tracing::debug;
 
@@ -28,25 +28,28 @@ const UMOUNT_ARG_NAME: &str = "umount";
 #[derive(Debug, Parser)]
 #[clap(author,version,about,long_about=None)]
 pub struct BindMounterConfig {
-    #[clap(long = "umount", value_name = "DIRECTORY")]
+    #[clap(short = 'u', long = "umount", value_name = "DIRECTORY")]
     umount: Option<String>,
-    #[clap(long = "from", value_name = "FROM DIRECTORY")]
+    #[clap(short = 'f', long = "from", value_name = "FROM DIRECTORY")]
     from_dir: Option<String>,
-    #[clap(long = "to", value_name = "TO DIRECTORY")]
+    #[clap(short = 't', long = "to", value_name = "TO DIRECTORY")]
     to_dir: Option<String>,
-    #[clap(long = "fstype", value_name = "FS TYPE")]
+    #[clap(short = 's', long = "fstype", value_name = "FS TYPE")]
     fstype: Option<String>,
-    #[clap(long = "options", value_name = "OPTION,OPTION...")]
+    #[clap(short = '0', long = "options", value_name = "OPTION,OPTION...")]
     options: Option<String>,
-    #[clap(long = "readonly", value_name = "TRUE|FALSE")]
+    #[clap(short = 'r', long = "readonly", value_name = "TRUE|FALSE")]
     readonly: bool,
-    #[clap(long = "remount", value_name = "TRUE|FALSE")]
+    #[clap(short = 'm', long = "remount", value_name = "TRUE|FALSE")]
     remount: bool,
 }
 
 fn main() -> DatenLordResult<()> {
-    init_logger();
-
+    init_logger(LogRole::BindMounter);
+    debug!(
+        "bind_mounter started with args: {:?}",
+        std::env::args().collect::<Vec<_>>()
+    );
     let config = BindMounterConfig::parse();
 
     let (umount_path, do_umount) = match config.umount {
@@ -139,4 +142,65 @@ fn main() -> DatenLordResult<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+#[allow(clippy::bool_assert_comparison)] // For test, it brings more readability.
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_bind_mounter_config() {
+        let args = vec![
+            "bind_mounter",
+            "--from",
+            "/tmp/from",
+            "--to",
+            "/tmp/to",
+            "--fstype",
+            "ext4",
+            "--options",
+            "rw",
+            "--readonly",
+            "--remount",
+        ];
+        let config = BindMounterConfig::parse_from(args);
+        assert_eq!(config.from_dir.unwrap(), "/tmp/from");
+        assert_eq!(config.to_dir.unwrap(), "/tmp/to");
+        assert_eq!(config.fstype.unwrap(), "ext4");
+        assert_eq!(config.options.unwrap(), "rw");
+        assert_eq!(config.readonly, true);
+        assert_eq!(config.remount, true);
+    }
+
+    #[test]
+    fn test_bind_mounter_config_umount() {
+        let args = vec!["bind_mounter", "--umount", "/tmp/umount"];
+        let config = BindMounterConfig::parse_from(args);
+        assert_eq!(config.umount.unwrap(), "/tmp/umount");
+    }
+
+    #[test]
+    fn test_short_config() {
+        let args = vec![
+            "bind_mounter",
+            "-f",
+            "/tmp/from",
+            "-t",
+            "/tmp/to",
+            "-s",
+            "ext4",
+            "-0",
+            "rw",
+            "-r",
+            "-m",
+        ];
+        let config = BindMounterConfig::parse_from(args);
+        assert_eq!(config.from_dir.unwrap(), "/tmp/from");
+        assert_eq!(config.to_dir.unwrap(), "/tmp/to");
+        assert_eq!(config.fstype.unwrap(), "ext4");
+        assert_eq!(config.options.unwrap(), "rw");
+        assert_eq!(config.readonly, true);
+        assert_eq!(config.remount, true);
+    }
 }
