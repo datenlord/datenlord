@@ -1,9 +1,11 @@
 //! The LRU policy implementation.
 
-use super::EvictPolicy;
+use std::hash::Hash;
+
 use hashlink::LruCache;
 use parking_lot::Mutex;
-use std::hash::Hash;
+
+use super::EvictPolicy;
 
 /// The evict policy based on LRU.
 #[derive(Debug)]
