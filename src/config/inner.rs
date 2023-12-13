@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::common::error::DatenLordError;
 use crate::config::config::{
-    CSIConfig, Config as SuperConfig, S3StorageConfig as SuperS3StorageConfig,
+    CSIConfig as SupperCSIConfig, Config as SuperConfig, S3StorageConfig as SuperS3StorageConfig,
     StorageConfig as SuperStorageConfig,
 };
 
@@ -77,25 +77,22 @@ impl TryFrom<SuperConfig> for InnerConfig {
         })?;
         let mount_path = value.mount_path;
         let storage = value.storage.try_into()?;
-        let kv_addrs: Vec<String> = value
-            .kv_addr
-            .split(',')
-            .map(std::string::ToString::to_string)
-            .collect();
+        let kv_addrs: Vec<String> = value.kv_server_list;
         if kv_addrs.is_empty() {
             return Err(DatenLordError::ArgumentInvalid {
                 context: vec!["kv server addresses is empty".to_owned()],
             });
         }
+        let csi_config = value.csi_config.try_into()?;
         Ok(InnerConfig {
             role,
             node_name,
-            server_port,
             node_ip,
             mount_path,
-            storage,
             kv_addrs,
-            csi_config: value.csi_config,
+            server_port,
+            storage,
+            csi_config,
         })
     }
 }
@@ -171,6 +168,33 @@ impl TryFrom<SuperS3StorageConfig> for StorageS3Config {
             access_key_id: value.access_key_id,
             secret_access_key: value.secret_access_key,
             bucket_name: value.bucket_name,
+        })
+    }
+}
+
+/// CSI config struct
+#[derive(Clone, Debug)]
+pub struct CSIConfig {
+    /// CSI endpoint
+    pub endpoint: String,
+    /// CSI driver name
+    pub driver_name: String,
+    /// CSI worker port
+    pub worker_port: u16,
+}
+
+impl TryFrom<SupperCSIConfig> for CSIConfig {
+    type Error = DatenLordError;
+
+    #[inline]
+    fn try_from(value: SupperCSIConfig) -> Result<Self, Self::Error> {
+        let endpoint = value.endpoint;
+        let driver_name = value.driver_name;
+        let worker_port = value.worker_port;
+        Ok(CSIConfig {
+            endpoint,
+            driver_name,
+            worker_port,
         })
     }
 }

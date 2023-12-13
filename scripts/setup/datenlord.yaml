@@ -207,10 +207,13 @@ spec:
           args:
             - "--role=node"
             - "--mount-path=$(FUSE_MOUNT_DIR)"
-            - "--volume_info=$(FUSE_VOLUME_INFO)"
+            - "--storage-s3-access-key-id test"
+            - "--storage-s3-secret-access-key test1234"
+            - "--storage-s3-endpoint http://127.0.0.1:9000"
+            - "--storage-s3-bucket fuse-test-bucket"
             - "--csi-endpoint=$(CSI_NODE_ENDPOINT)"
             - "--csi-driver-name=csi.datenlord.io"
-            - "--kv-addrs=$(ETCD_ENDPOINT)"
+            - "--kv-server-list=$(ETCD_ENDPOINT)"
             - "--node-name=$(NODE_ID)"
             - "--node-ip=$(NODE_IP)"
             - "--storage-cache-capacity=$(CACHE_CAPACITY)"
@@ -229,8 +232,6 @@ spec:
               value: /var/opt/datenlord-data
             - name: ETCD_ENDPOINT
               value: csi-etcd-svc:2379
-            - name: FUSE_VOLUME_INFO
-              value: fuse-test-bucket\;http://127.0.0.1:9000\;test\;test1234
               # The capacity for the cache in memfs, 1GB
             - name: CACHE_CAPACITY
               value: "1073741824"
@@ -487,7 +488,7 @@ spec:
             - "--node-ip=$(NODE_IP)"
             - "--csi-worker-port=50051"
             - "--mount-path=$(DATA_DIR)"
-            - "--kv-addrs=csi-etcd-svc:2379"
+            - "--kv-server-list=csi-etcd-svc:2379"
           env:
             - name: NODE_ID
               valueFrom:
@@ -714,7 +715,7 @@ spec:
             - "--node-name=$(NODE_ID)"
             - "--node-ip=127.0.0.1"
             - "--csi-worker-port=12345"
-            - "--kv-addrs=csi-etcd-svc:2379"
+            - "--kv-server-list=csi-etcd-svc:2379"
             - "--scheduler-extender-port=12345"
             - "--mount-path=$(FUSE_MOUNT_DIR)"
           env:
@@ -734,8 +735,6 @@ spec:
               value: full
             - name: FUSE_MOUNT_DIR
               value: /var/opt/datenlord-data 
-            - name: FUSE_VOLUME_INFO
-              value: fuse-test-bucket\;http://127.0.0.1:9000\;test\;test1234
           ports:
             - containerPort: 12345
               hostPort: 12345
