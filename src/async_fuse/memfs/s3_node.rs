@@ -7,8 +7,7 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use async_trait::async_trait;
-use clippy_utilities::{Cast, OverflowArithmetic};
-use datenlord::config::StorageConfig;
+use clippy_utilities::Cast;
 use nix::errno::Errno;
 use nix::fcntl::OFlag;
 use nix::sys::stat::{Mode, SFlag};
@@ -22,14 +21,13 @@ use super::fs_util::{self, FileAttr};
 use super::kv_engine::{KVEngineType, KeyType, MetaTxn, ValueType};
 use super::node::Node;
 use super::s3_metadata::S3MetaData;
-use super::s3_wrapper::S3BackEnd;
 use super::serial::{file_attr_to_serial, serial_to_file_attr, SerialNode, SerialNodeData};
 use super::CreateParam;
 use crate::async_fuse::fuse::fuse_reply::{AsIoVec, StatFsParam};
 use crate::async_fuse::fuse::protocol::{INum, FUSE_ROOT_ID};
 use crate::async_fuse::metrics;
 use crate::async_fuse::util::build_error_result_from_errno;
-use crate::common::error::{DatenLordError, DatenLordResult};
+use crate::common::error::DatenLordResult;
 
 /// S3's available fd count
 static GLOBAL_S3_FD_CNT: AtomicU32 = AtomicU32::new(4);
@@ -59,9 +57,7 @@ impl S3NodeData {
 
 /// A file node or a directory node
 #[derive(Debug)]
-pub struct S3Node<S: S3BackEnd + Sync + Send + 'static> {
-    /// S3 Backend
-    s3_backend: Arc<S>,
+pub struct S3Node {
     /// Parent node i-number
     parent: u64,
     /// S3Node name
@@ -80,11 +76,9 @@ pub struct S3Node<S: S3BackEnd + Sync + Send + 'static> {
     kv_engine: Arc<KVEngineType>,
     /// K8s node id
     k8s_node_id: Arc<str>,
-    /// The storage config
-    storage_config: Arc<StorageConfig>,
 }
 
-impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
+impl S3Node {
     #[allow(clippy::too_many_arguments)]
     /// Create `S3Node`
     fn new(
@@ -92,13 +86,10 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
         name: &str,
         attr: Arc<RwLock<FileAttr>>,
         data: S3NodeData,
-        s3_backend: Arc<S>,
         kv_engine: &Arc<KVEngineType>,
         k8s_node_id: &Arc<str>,
-        storage_config: &Arc<StorageConfig>,
     ) -> Self {
         Self {
-            s3_backend,
             parent,
             name: name.to_owned(),
             attr,
@@ -110,12 +101,11 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
             deferred_deletion: AtomicBool::new(false),
             kv_engine: Arc::clone(kv_engine),
             k8s_node_id: Arc::clone(k8s_node_id),
-            storage_config: Arc::clone(storage_config),
         }
     }
 
     /// Deserialize `S3Node` from `SerialNode`
-    pub fn from_serial_node(serial_node: SerialNode, meta: &S3MetaData<S>) -> S3Node<S> {
+    pub fn from_serial_node(serial_node: SerialNode, meta: &S3MetaData) -> S3Node {
         let dir_data = serial_node
             .data
             .into_s3_nodedata(Arc::clone(&meta.data_cache));
@@ -127,7 +117,6 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
             serial_node.attr
         );
         Self {
-            s3_backend: Arc::clone(&meta.s3_backend),
             parent: serial_node.parent,
             name: serial_node.name,
             attr: Arc::new(RwLock::new(serial_to_file_attr(&serial_node.attr))),
@@ -137,7 +126,6 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
             deferred_deletion: AtomicBool::new(serial_node.deferred_deletion),
             kv_engine: Arc::clone(&meta.kv_engine),
             k8s_node_id: Arc::clone(&meta.node_id),
-            storage_config: Arc::clone(&meta.storage_config),
         }
     }
 
@@ -175,7 +163,6 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
             _ => panic!("unsupported type {:?}", child_attr.read().kind),
         };
         Self {
-            s3_backend: Arc::clone(&parent.s3_backend),
             parent: parent.get_ino(),
             name: child_name.to_owned(),
             attr: child_attr,
@@ -187,7 +174,6 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
             deferred_deletion: AtomicBool::new(false),
             kv_engine: Arc::clone(&parent.kv_engine),
             k8s_node_id: Arc::clone(&parent.k8s_node_id),
-            storage_config: Arc::clone(&parent.storage_config),
         }
     }
 
@@ -223,8 +209,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
     pub(crate) async fn open_root_node(
         root_ino: INum,
         name: &str,
-        s3_backend: Arc<S>,
-        meta: Arc<S3MetaData<S>>,
+        meta: Arc<S3MetaData>,
     ) -> DatenLordResult<Self> {
         if let Some(root_node) = meta.get_node_from_kv_engine(FUSE_ROOT_ID).await? {
             Ok(root_node)
@@ -246,10 +231,8 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
                 name,
                 attr,
                 S3NodeData::Directory,
-                s3_backend,
                 &meta.kv_engine,
                 &meta.node_id,
-                &meta.storage_config,
             );
             Ok(root_node)
         }
@@ -285,7 +268,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
 }
 
 #[async_trait]
-impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
+impl Node for S3Node {
     /// Get node i-number
     #[inline]
     fn get_ino(&self) -> INum {
@@ -477,23 +460,11 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
             .to_str()
             .unwrap_or_else(|| panic!("failed to convert {target_path:?} to utf8 string"));
 
-        if let Err(e) = self
-            .s3_backend
-            .put_data(inum, target_str.as_bytes(), 0, target_str.len())
-            .await
-        {
-            panic!("failed to put data of file {inum} to s3 backend, error is {e:?}");
-        }
-
         // get symbol file attribute
         let child_attr = Arc::new(RwLock::new(FileAttr {
             ino: inum,
             kind: SFlag::S_IFLNK,
-            size: target_path
-                .to_str()
-                .unwrap_or_else(|| panic!("failed to convert to utf8 string"))
-                .len()
-                .cast(),
+            size: target_str.len().cast(),
             blocks: 0,
             perm: 0o777,
             ..FileAttr::now()
@@ -512,10 +483,8 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
             child_symlink_name,
             child_attr,
             S3NodeData::SymLink(target_path),
-            Arc::clone(&self.s3_backend),
             &self.kv_engine,
             &self.k8s_node_id,
-            &self.storage_config,
         ))
     }
 
@@ -552,10 +521,8 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
             child_dir_name,
             child_attr,
             S3NodeData::Directory,
-            Arc::clone(&self.s3_backend),
             &self.kv_engine,
             &self.k8s_node_id,
-            &self.storage_config,
         );
 
         self.update_mtime_ctime_to_now();
@@ -575,10 +542,8 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
             child_file_name,
             child_attr,
             S3NodeData::RegFile(global_cache),
-            Arc::clone(&self.s3_backend),
             &self.kv_engine,
             &self.k8s_node_id,
-            &self.storage_config,
         ))
     }
 
@@ -595,9 +560,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
         txn: &mut T,
     ) -> DatenLordResult<Self> {
         debug_assert!(oflags.contains(OFlag::O_CREAT));
-        if let Err(e) = self.s3_backend.put_data(inum, b"", 0, 0).await {
-            panic!("failed to put data of file {inum} to s3 backend, error is {e:?}");
-        }
+
         // get new file attribute
         let child_attr = Arc::new(RwLock::new(FileAttr {
             ino: inum,
@@ -625,84 +588,9 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
             child_file_name,
             child_attr,
             S3NodeData::RegFile(global_cache),
-            Arc::clone(&self.s3_backend),
             &self.kv_engine,
             &self.k8s_node_id,
-            &self.storage_config,
         ))
-    }
-
-    /// Load data from directory, file or symlink target.
-    /// The `offset` and `len` is used for regular file
-    async fn load_data(&self, offset: usize, len: usize) -> DatenLordResult<usize> {
-        match self.data {
-            S3NodeData::Directory => Ok(0),
-            S3NodeData::RegFile(ref global_cache) => {
-                let aligned_offset = global_cache.round_down(offset);
-                let new_len_tmp =
-                    global_cache.round_up(offset.overflow_sub(aligned_offset).overflow_add(len));
-
-                let new_len =
-                    if new_len_tmp.overflow_add(aligned_offset) > self.attr.read().size.cast() {
-                        self.attr
-                            .read()
-                            .size
-                            .cast::<usize>()
-                            .overflow_sub(aligned_offset)
-                    } else {
-                        new_len_tmp
-                    };
-                debug!(
-                    "load_data() offset={}, len={}, new_len={} , aligned_offset={}",
-                    offset, len, new_len, aligned_offset
-                );
-
-                // dist_client::read_data() won't get lock at remote, OK to put here.
-                let file_data_vec = match self
-                    .s3_backend
-                    .get_partial_data(self.get_ino(), aligned_offset, new_len)
-                    .await
-                {
-                    Ok(a) => a,
-                    Err(e) => {
-                        let anyhow_err: anyhow::Error = e.into();
-                        return Err(DatenLordError::from(
-                            anyhow_err.context("load_data() failed to load file content data"),
-                        ));
-                    }
-                };
-
-                let read_size = file_data_vec.len();
-                debug!(
-                    "load_data() successfully load {} byte file content data",
-                    read_size
-                );
-                global_cache
-                    .write_or_update(
-                        self.get_ino(),
-                        aligned_offset,
-                        read_size,
-                        &file_data_vec,
-                        false,
-                    )
-                    .await;
-                Ok(read_size)
-            }
-            S3NodeData::SymLink(..) => {
-                panic!("forbidden to load symlink target data");
-            }
-        }
-    }
-
-    /// Unlink directory entry from both cache and disk
-    async fn unlink_entry(&mut self, removed_entry: &DirEntry) -> DatenLordResult<()> {
-        // delete from disk and close the handler
-        let ino = removed_entry.ino();
-        if let Err(e) = self.s3_backend.delete_data(ino).await {
-            panic!("failed to delete data of {ino} from s3 backend, error is {e:?}");
-        }
-        self.update_mtime_ctime_to_now();
-        Ok(())
     }
 
     /// Get symlink target path
@@ -738,66 +626,6 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
             }
             S3NodeData::RegFile(ref cache) => cache.get_file_cache(self.get_ino(), offset, len),
         }
-    }
-
-    /// Write to file
-    async fn write_file(
-        &mut self,
-        _fh: u64,
-        offset: i64,
-        data: Vec<u8>,
-        _oflags: OFlag,
-        _write_to_disk: bool,
-    ) -> DatenLordResult<usize> {
-        let this: &Self = self;
-
-        let ino = this.get_ino();
-        if this.need_load_file_data(offset.cast(), data.len()).await {
-            let load_res = self.load_data(offset.cast(), data.len()).await;
-            if let Err(e) = load_res {
-                debug!(
-                    "read() failed to load file data of ino={} and name={:?}, the error is: {:?}",
-                    ino,
-                    self.get_name(),
-                    e,
-                );
-                return Err(e);
-            }
-        }
-
-        let cache = match self.data {
-            S3NodeData::Directory | S3NodeData::SymLink(..) => {
-                panic!("forbidden to load FileData from non-file node")
-            }
-            S3NodeData::RegFile(ref file_data) => file_data,
-        };
-
-        cache
-            .write_or_update(
-                self.get_ino(),
-                offset.cast(),
-                data.len(),
-                data.as_slice(),
-                true,
-            )
-            .await;
-
-        let written_size = data.len();
-
-        {
-            let mut attr_write = self.attr.write();
-            // update the attribute of the written file
-            attr_write.size = std::cmp::max(
-                attr_write.size,
-                offset.cast::<u64>().overflow_add(written_size.cast()),
-            );
-        };
-
-        debug!("file {:?} size = {:?}", self.name, self.attr.read().size);
-        self.update_mtime_ctime_to_now();
-        // FileAttr changed, remember to persist the directory after calling this fn
-
-        Ok(written_size)
     }
 
     async fn close(&mut self) {

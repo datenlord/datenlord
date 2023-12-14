@@ -3,7 +3,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use datenlord::config::StorageConfig;
 
 use super::cache::{Block, Storage, StorageManager};
 use super::kv_engine::KVEngineType;
@@ -52,7 +51,7 @@ pub trait MetaData {
     type N: Node + Send + Sync + 'static;
 
     /// Storage type
-    type St: Storage + Send + Sync + 'static;
+    type S: Storage + Send + Sync + 'static;
 
     /// Create `MetaData`
     #[allow(clippy::too_many_arguments)]
@@ -60,8 +59,7 @@ pub trait MetaData {
         capacity: usize,
         kv_engine: Arc<KVEngineType>,
         node_id: &str,
-        storage_config: &StorageConfig,
-        storage: StorageManager<Self::St>,
+        storage: StorageManager<Self::S>,
     ) -> DatenLordResult<Arc<Self>>;
 
     /// Helper function to create node

@@ -17,7 +17,6 @@ use crate::async_fuse::memfs::cache::{
     BackendBuilder, BlockCoordinate, MemoryCacheBuilder, StorageManager, BLOCK_SIZE_IN_BYTES,
 };
 use crate::async_fuse::memfs::kv_engine::{KVEngine, KVEngineType};
-use crate::async_fuse::memfs::s3_wrapper::{DoNothingImpl, S3BackEndImpl};
 use crate::common::logger::{init_logger, LogRole};
 
 pub const TEST_NODE_ID: &str = "test_node";
@@ -78,38 +77,20 @@ async fn run_fs(mount_point: &Path, is_s3: bool) -> anyhow::Result<()> {
         StorageManager::new(memory_cache, block_size)
     };
 
-    // TODO: remove the `if` statement when `S3Backend` is removed.
-    if is_s3 {
-        let fs: memfs::MemFs<memfs::S3MetaData<S3BackEndImpl>> = memfs::MemFs::new(
-            mount_point
-                .as_os_str()
-                .to_str()
-                .unwrap_or_else(|| panic!("failed to convert to utf8 string")),
-            CACHE_DEFAULT_CAPACITY,
-            kv_engine,
-            TEST_NODE_ID,
-            &storage_config,
-            storage,
-        )
-        .await?;
-        let ss = session::new_session_of_memfs(mount_point, fs).await?;
-        ss.run().await?;
-    } else {
-        let fs: memfs::MemFs<memfs::S3MetaData<DoNothingImpl>> = memfs::MemFs::new(
-            mount_point
-                .as_os_str()
-                .to_str()
-                .unwrap_or_else(|| panic!("failed to convert to utf8 string")),
-            CACHE_DEFAULT_CAPACITY,
-            Arc::<KVEngineType>::clone(&kv_engine),
-            TEST_NODE_ID,
-            &storage_config,
-            storage,
-        )
-        .await?;
-        let ss = session::new_session_of_memfs(mount_point, fs).await?;
-        ss.run().await?;
-    };
+    let fs: memfs::MemFs<memfs::S3MetaData> = memfs::MemFs::new(
+        mount_point
+            .as_os_str()
+            .to_str()
+            .unwrap_or_else(|| panic!("failed to convert to utf8 string")),
+        CACHE_DEFAULT_CAPACITY,
+        kv_engine,
+        TEST_NODE_ID,
+        &storage_config,
+        storage,
+    )
+    .await?;
+    let ss = session::new_session_of_memfs(mount_point, fs).await?;
+    ss.run().await?;
 
     Ok(())
 }

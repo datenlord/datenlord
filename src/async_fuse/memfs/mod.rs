@@ -14,8 +14,7 @@ mod node;
 /// fs metadata with S3 backend module
 mod s3_metadata;
 mod s3_node;
-/// S3 backend wrapper module
-pub mod s3_wrapper;
+
 /// Serializable types module
 pub mod serial;
 
@@ -170,14 +169,14 @@ impl<M: MetaData + Send + Sync + 'static> MemFs<M> {
         kv_engine: Arc<KVEngineType>,
         node_id: &str,
         storage_config: &StorageConfig,
-        storage: StorageManager<<M as MetaData>::St>,
+        storage: StorageManager<<M as MetaData>::S>,
     ) -> anyhow::Result<Self> {
         // print the args
         debug!(
             "mount_point: ${}$, capacity: ${}$, node_id: {}, storage_config: {:?}",
             mount_point, capacity, node_id, storage_config
         );
-        let metadata = M::new(capacity, kv_engine, node_id, storage_config, storage).await?;
+        let metadata = M::new(capacity, kv_engine, node_id, storage).await?;
         Ok(Self { metadata })
     }
 
