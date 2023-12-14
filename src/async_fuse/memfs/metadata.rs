@@ -56,7 +56,6 @@ pub trait MetaData {
     /// Create `MetaData`
     #[allow(clippy::too_many_arguments)]
     async fn new(
-        capacity: usize,
         kv_engine: Arc<KVEngineType>,
         node_id: &str,
         storage: StorageManager<Self::S>,

@@ -13,9 +13,8 @@ use nix::fcntl::OFlag;
 use nix::sys::stat::{Mode, SFlag};
 use nix::unistd;
 use parking_lot::RwLock;
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
-use super::cache::{GlobalCache, IoMemBlock};
 use super::direntry::{DirEntry, FileType};
 use super::fs_util::{self, FileAttr};
 use super::kv_engine::{KVEngineType, KeyType, MetaTxn, ValueType};
@@ -23,9 +22,8 @@ use super::node::Node;
 use super::s3_metadata::S3MetaData;
 use super::serial::{file_attr_to_serial, serial_to_file_attr, SerialNode, SerialNodeData};
 use super::CreateParam;
-use crate::async_fuse::fuse::fuse_reply::{AsIoVec, StatFsParam};
+use crate::async_fuse::fuse::fuse_reply::StatFsParam;
 use crate::async_fuse::fuse::protocol::{INum, FUSE_ROOT_ID};
-use crate::async_fuse::metrics;
 use crate::async_fuse::util::build_error_result_from_errno;
 use crate::common::error::DatenLordResult;
 
@@ -38,7 +36,7 @@ pub enum S3NodeData {
     /// Directory entry data
     Directory,
     /// File content data
-    RegFile(Arc<GlobalCache>),
+    RegFile,
     /// Symlink target data
     // SymLink(Box<SymLinkData>),
     SymLink(PathBuf),
@@ -49,7 +47,7 @@ impl S3NodeData {
     pub fn serial(&self) -> SerialNodeData {
         match *self {
             Self::Directory => SerialNodeData::Directory,
-            Self::RegFile(_) => SerialNodeData::File,
+            Self::RegFile => SerialNodeData::File,
             Self::SymLink(ref target) => SerialNodeData::SymLink(target.clone()),
         }
     }
@@ -106,9 +104,7 @@ impl S3Node {
 
     /// Deserialize `S3Node` from `SerialNode`
     pub fn from_serial_node(serial_node: SerialNode, meta: &S3MetaData) -> S3Node {
-        let dir_data = serial_node
-            .data
-            .into_s3_nodedata(Arc::clone(&meta.data_cache));
+        let dir_data = serial_node.data.into_s3_nodedata();
         info!(
             "ino={}, open_count={}, lookup_count={},attr={:?}",
             serial_node.attr.get_ino(),
@@ -148,11 +144,10 @@ impl S3Node {
         child_name: &str,
         child_attr: Arc<RwLock<FileAttr>>,
         target_path: Option<PathBuf>,
-        data_cache: &Arc<GlobalCache>,
     ) -> Self {
         let data = match child_attr.read().kind {
             SFlag::S_IFDIR => S3NodeData::Directory,
-            SFlag::S_IFREG => S3NodeData::RegFile(Arc::<GlobalCache>::clone(data_cache)),
+            SFlag::S_IFREG => S3NodeData::RegFile,
             SFlag::S_IFLNK => {
                 if let Some(path) = target_path {
                     S3NodeData::SymLink(path)
@@ -315,7 +310,7 @@ impl Node for S3Node {
     fn get_type(&self) -> SFlag {
         match self.data {
             S3NodeData::Directory => SFlag::S_IFDIR,
-            S3NodeData::RegFile(..) => SFlag::S_IFREG,
+            S3NodeData::RegFile => SFlag::S_IFREG,
             S3NodeData::SymLink(..) => SFlag::S_IFLNK,
         }
     }
@@ -331,7 +326,7 @@ impl Node for S3Node {
         let old_attr = self.get_attr();
         match self.data {
             S3NodeData::Directory => debug_assert_eq!(new_attr.kind, SFlag::S_IFDIR),
-            S3NodeData::RegFile(..) => debug_assert_eq!(new_attr.kind, SFlag::S_IFREG),
+            S3NodeData::RegFile => debug_assert_eq!(new_attr.kind, SFlag::S_IFREG),
             S3NodeData::SymLink(..) => debug_assert_eq!(new_attr.kind, SFlag::S_IFLNK),
         }
 
@@ -399,53 +394,6 @@ impl Node for S3Node {
     async fn dup_fd(&self, _oflags: OFlag) -> DatenLordResult<RawFd> {
         self.inc_open_count();
         Ok(self.new_fd().cast())
-    }
-
-    /// check whether to load directory entry data or not
-    fn need_load_dir_data(&self) -> bool {
-        debug_assert_eq!(
-            self.attr.read().kind,
-            SFlag::S_IFDIR,
-            "fobidden to check non-directory node need load data or not",
-        );
-        // Dir data is synced. Don't need to load
-        false
-        // self.need_load_node_data_helper()
-    }
-
-    /// Check whether to load file content data or not
-    async fn need_load_file_data(&self, offset: usize, len: usize) -> bool {
-        debug_assert_eq!(
-            self.attr.read().kind,
-            SFlag::S_IFREG,
-            "fobidden to check non-file node need load data or not",
-        );
-
-        if offset >= self.attr.read().size.cast() {
-            debug!(
-                "offset {} is larger than file size {}",
-                offset,
-                self.attr.read().size
-            );
-            return false;
-        }
-
-        match self.data {
-            S3NodeData::RegFile(ref cache) => {
-                let file_cache = cache.get_file_cache(self.get_ino(), offset, len);
-                let cache_miss = file_cache.is_empty()
-                    || file_cache.iter().filter(|b| !(*b).can_convert()).count() != 0;
-                if cache_miss {
-                    metrics::CACHE_MISSES.inc();
-                } else {
-                    metrics::CACHE_HITS.inc();
-                }
-                cache_miss
-            }
-            S3NodeData::Directory | S3NodeData::SymLink(..) => {
-                panic!("need_load_file_data should handle regular file")
-            }
-        }
     }
 
     /// Create symlink in a directory
@@ -535,13 +483,12 @@ impl Node for S3Node {
         child_file_name: &str,
         child_attr: Arc<RwLock<FileAttr>>,
         _oflags: OFlag,
-        global_cache: Arc<GlobalCache>,
     ) -> DatenLordResult<Self> {
         Ok(Self::new(
             self.get_ino(),
             child_file_name,
             child_attr,
-            S3NodeData::RegFile(global_cache),
+            S3NodeData::RegFile,
             &self.kv_engine,
             &self.k8s_node_id,
         ))
@@ -556,7 +503,6 @@ impl Node for S3Node {
         mode: Mode,
         user_id: u32,
         group_id: u32,
-        global_cache: Arc<GlobalCache>,
         txn: &mut T,
     ) -> DatenLordResult<Self> {
         debug_assert!(oflags.contains(OFlag::O_CREAT));
@@ -587,7 +533,7 @@ impl Node for S3Node {
             self.get_ino(),
             child_file_name,
             child_attr,
-            S3NodeData::RegFile(global_cache),
+            S3NodeData::RegFile,
             &self.kv_engine,
             &self.k8s_node_id,
         ))
@@ -596,7 +542,7 @@ impl Node for S3Node {
     /// Get symlink target path
     fn get_symlink_target(&self) -> &Path {
         match self.data {
-            S3NodeData::Directory | S3NodeData::RegFile(..) => {
+            S3NodeData::Directory | S3NodeData::RegFile => {
                 panic!("forbidden to read target path from non-symlink node")
             }
             S3NodeData::SymLink(ref target_path) => target_path,
@@ -618,16 +564,6 @@ impl Node for S3Node {
         })
     }
 
-    /// Get file data
-    async fn get_file_data(&self, offset: usize, len: usize) -> Vec<IoMemBlock> {
-        match self.data {
-            S3NodeData::Directory | S3NodeData::SymLink(..) => {
-                panic!("forbidden to load FileData from non-file node")
-            }
-            S3NodeData::RegFile(ref cache) => cache.get_file_cache(self.get_ino(), offset, len),
-        }
-    }
-
     async fn close(&mut self) {
         self.dec_open_count();
     }
@@ -643,7 +579,6 @@ impl Node for S3Node {
         &mut self,
         param: &CreateParam,
         new_inum: INum,
-        global_cache: Arc<GlobalCache>,
         txn: &mut T,
     ) -> DatenLordResult<Self> {
         let child_name = param.name.as_str();
@@ -659,14 +594,7 @@ impl Node for S3Node {
                 let o_flags = OFlag::O_CREAT | OFlag::O_EXCL | OFlag::O_RDWR;
                 let child_node = self
                     .create_child_file(
-                        new_inum,
-                        child_name,
-                        o_flags,
-                        m_flags,
-                        param.uid,
-                        param.gid,
-                        global_cache,
-                        txn,
+                        new_inum, child_name, o_flags, m_flags, param.uid, param.gid, txn,
                     )
                     .await?;
                 Ok(child_node)

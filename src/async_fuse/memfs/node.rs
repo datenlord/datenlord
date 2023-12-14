@@ -9,7 +9,6 @@ use nix::fcntl::OFlag;
 use nix::sys::stat::{Mode, SFlag};
 use parking_lot::RwLock;
 
-use super::cache::{GlobalCache, IoMemBlock};
 use super::fs_util::FileAttr;
 use super::kv_engine::MetaTxn;
 use super::CreateParam;
@@ -52,10 +51,6 @@ pub trait Node: Sized {
     fn dec_lookup_count_by(&self, nlookup: u64) -> i64;
     /// Duplicate fd
     async fn dup_fd(&self, oflags: OFlag) -> DatenLordResult<RawFd>;
-    /// check whether to load directory entry data or not
-    fn need_load_dir_data(&self) -> bool;
-    /// Check whether to load file content data or not
-    async fn need_load_file_data(&self, offset: usize, len: usize) -> bool;
     /// Create symlink in a directory
     async fn create_child_symlink<T: MetaTxn + ?Sized>(
         &mut self,
@@ -80,7 +75,6 @@ pub trait Node: Sized {
         child_file_name: &str,
         child_attr: Arc<RwLock<FileAttr>>,
         oflags: OFlag,
-        global_cache: Arc<GlobalCache>,
     ) -> DatenLordResult<Self>;
     #[allow(clippy::too_many_arguments)]
     /// Create file in a directory
@@ -92,15 +86,12 @@ pub trait Node: Sized {
         mode: Mode,
         uid: u32,
         gid: u32,
-        global_cache: Arc<GlobalCache>,
         txn: &mut T,
     ) -> DatenLordResult<Self>;
     /// Get symlink target path
     fn get_symlink_target(&self) -> &Path;
     /// Get fs stat
     async fn statefs(&self) -> DatenLordResult<StatFsParam>;
-    /// Get file data
-    async fn get_file_data(&self, offset: usize, len: usize) -> Vec<IoMemBlock>;
     /// Close file
     async fn close(&mut self);
     /// Close dir
@@ -115,7 +106,6 @@ pub trait Node: Sized {
         &mut self,
         create_param: &CreateParam,
         new_inum: INum,
-        global_cache: Arc<GlobalCache>,
         txn: &mut T,
     ) -> DatenLordResult<Self>;
 }

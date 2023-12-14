@@ -1,11 +1,9 @@
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::time::SystemTime;
 
 use nix::sys::stat::SFlag;
 use serde::{Deserialize, Serialize};
 
-use super::cache::GlobalCache;
 use super::fs_util::FileAttr;
 use super::s3_node::S3NodeData;
 use crate::async_fuse::fuse::protocol::INum;
@@ -73,10 +71,11 @@ pub enum SerialNodeData {
 
 impl SerialNodeData {
     /// Deserializes the node data
-    pub fn into_s3_nodedata(self, data_cache: Arc<GlobalCache>) -> S3NodeData {
+    #[must_use]
+    pub fn into_s3_nodedata(self) -> S3NodeData {
         match self {
             SerialNodeData::Directory => S3NodeData::Directory,
-            SerialNodeData::File => S3NodeData::RegFile(data_cache),
+            SerialNodeData::File => S3NodeData::RegFile,
             SerialNodeData::SymLink(path) => S3NodeData::SymLink(path),
         }
     }
