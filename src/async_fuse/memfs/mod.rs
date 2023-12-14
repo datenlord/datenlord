@@ -176,7 +176,7 @@ impl<M: MetaData + Send + Sync + 'static> MemFs<M> {
             "mount_point: ${}$, capacity: ${}$, node_id: {}, storage_config: {:?}",
             mount_point, capacity, node_id, storage_config
         );
-        let metadata = M::new(capacity, kv_engine, node_id, storage).await?;
+        let metadata = M::new(kv_engine, node_id, storage).await?;
         Ok(Self { metadata })
     }
 

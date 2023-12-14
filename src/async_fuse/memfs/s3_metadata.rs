@@ -15,7 +15,7 @@ use tokio::sync::Mutex;
 use tracing::{debug, info, instrument, warn};
 
 use super::cache::policy::LruPolicy;
-use super::cache::{Backend, Block, BlockCoordinate, GlobalCache, MemoryCache, StorageManager};
+use super::cache::{Backend, Block, BlockCoordinate, MemoryCache, StorageManager};
 use super::fs_util::{self, FileAttr, NEED_CHECK_PERM};
 use super::id_alloc_used::INumAllocator;
 use super::kv_engine::{KVEngine, KVEngineType, MetaTxn, ValueType};
@@ -54,8 +54,6 @@ const TXN_RETRY_LIMIT: u32 = 10;
 #[derive(Debug)]
 #[allow(dead_code)]
 pub struct S3MetaData {
-    /// Global data cache
-    pub(crate) data_cache: Arc<GlobalCache>,
     /// Storage manager
     pub(crate) storage: Arc<StorageManager<<Self as MetaData>::S>>,
     /// Current available fd, it'll increase after using
@@ -510,20 +508,11 @@ impl MetaData for S3MetaData {
     }
 
     async fn new(
-        capacity: usize,
         kv_engine: Arc<KVEngineType>,
         node_id: &str,
         storage: StorageManager<Self::S>,
     ) -> DatenLordResult<Arc<Self>> {
-        let data_cache = Arc::new(GlobalCache::new_dist_with_bz_and_capacity(
-            10_485_760, // 10 * 1024 * 1024
-            capacity,
-            Arc::clone(&kv_engine),
-            node_id,
-        ));
-
         let meta = Arc::new(Self {
-            data_cache: Arc::<GlobalCache>::clone(&data_cache),
             cur_fd: AtomicU32::new(4),
             node_id: Arc::<str>::from(node_id.to_owned()),
             fuse_fd: Mutex::new(-1_i32),
@@ -624,12 +613,7 @@ impl MetaData for S3MetaData {
             let new_num = self.alloc_inum().await?;
 
             let new_node = parent_node
-                .create_child_node(
-                    &param,
-                    new_num,
-                    Arc::<GlobalCache>::clone(&self.data_cache),
-                    txn.as_mut(),
-                )
+                .create_child_node(&param, new_num, txn.as_mut())
                 .await?;
             let fuse_attr = fs_util::convert_to_fuse_attr(new_node.get_attr());
             let ttl = Duration::new(MY_TTL_SEC, 0);
