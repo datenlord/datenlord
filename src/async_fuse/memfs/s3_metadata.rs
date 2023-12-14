@@ -5,10 +5,8 @@ use std::sync::atomic::AtomicU32;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
-use anyhow::Context;
 use async_trait::async_trait;
 use clippy_utilities::{Cast, OverflowArithmetic};
-use datenlord::config::{StorageConfig, StorageS3Config};
 use libc::{RENAME_EXCHANGE, RENAME_NOREPLACE};
 use lockfree_cuckoohash::{pin, LockFreeCuckooHash as HashMap};
 use nix::errno::Errno;
@@ -24,7 +22,6 @@ use super::kv_engine::{KVEngine, KVEngineType, MetaTxn, ValueType};
 use super::metadata::{error, MetaData, ReqContext};
 use super::node::Node;
 use super::s3_node::S3Node;
-use super::s3_wrapper::S3BackEnd;
 use super::{check_type_supported, CreateParam, RenameParam, SetAttrParam};
 use crate::async_fuse::fuse::fuse_reply::{ReplyDirectory, StatFsParam};
 use crate::async_fuse::fuse::protocol::{FuseAttr, INum, FUSE_ROOT_ID};
@@ -50,26 +47,21 @@ macro_rules! build_inconsistent_fs {
 const MY_TTL_SEC: u64 = 3600; // TODO: should be a long value, say 1 hour
 /// The generation ID of FUSE attributes
 const MY_GENERATION: u64 = 1; // TODO: find a proper way to set generation
-#[allow(dead_code)]
 /// The limit of transaction commit retrying times.
 const TXN_RETRY_LIMIT: u32 = 10;
 
 /// File system in-memory meta-data
 #[derive(Debug)]
 #[allow(dead_code)]
-pub struct S3MetaData<S: S3BackEnd + Send + Sync + 'static> {
-    /// S3 backend
-    pub(crate) s3_backend: Arc<S>,
+pub struct S3MetaData {
     /// Global data cache
     pub(crate) data_cache: Arc<GlobalCache>,
     /// Storage manager
-    pub(crate) storage: Arc<StorageManager<<Self as MetaData>::St>>,
+    pub(crate) storage: Arc<StorageManager<<Self as MetaData>::S>>,
     /// Current available fd, it'll increase after using
     pub(crate) cur_fd: AtomicU32,
     /// Current service id
     pub(crate) node_id: Arc<str>,
-    /// Storage config
-    pub(crate) storage_config: Arc<StorageConfig>,
     /// Fuse fd
     fuse_fd: Mutex<RawFd>,
     /// KV engine
@@ -81,9 +73,9 @@ pub struct S3MetaData<S: S3BackEnd + Send + Sync + 'static> {
 }
 
 #[async_trait]
-impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
-    type N = S3Node<S>;
-    type St = Arc<MemoryCache<LruPolicy<BlockCoordinate>, Backend>>;
+impl MetaData for S3MetaData {
+    type N = S3Node;
+    type S = Arc<MemoryCache<LruPolicy<BlockCoordinate>, Backend>>;
 
     #[instrument(skip(self))]
     async fn release(
@@ -521,30 +513,8 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         capacity: usize,
         kv_engine: Arc<KVEngineType>,
         node_id: &str,
-        storage_config: &StorageConfig,
-        storage: StorageManager<Self::St>,
+        storage: StorageManager<Self::S>,
     ) -> DatenLordResult<Arc<Self>> {
-        // TODO: Remove this when the `S3Backend` is removed.
-        let s3_config = match storage_config.params {
-            datenlord::config::StorageParams::S3(ref s3_config) => s3_config.clone(),
-            datenlord::config::StorageParams::Fs(_) => StorageS3Config {
-                endpoint_url: "http://127.0.0.1:9000".to_owned(),
-                access_key_id: "test".to_owned(),
-                secret_access_key: "test1234".to_owned(),
-                bucket_name: "fuse-test-bucket".to_owned(),
-            },
-        };
-
-        let bucket_name = &s3_config.bucket_name;
-        let endpoint = &s3_config.endpoint_url;
-        let access_key = &s3_config.access_key_id;
-        let secret_key = &s3_config.secret_access_key;
-
-        let s3_backend = Arc::new(
-            S::new_backend(bucket_name, endpoint, access_key, secret_key)
-                .await
-                .context("Failed to create s3 backend.")?,
-        );
         let data_cache = Arc::new(GlobalCache::new_dist_with_bz_and_capacity(
             10_485_760, // 10 * 1024 * 1024
             capacity,
@@ -553,11 +523,9 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         ));
 
         let meta = Arc::new(Self {
-            s3_backend: Arc::clone(&s3_backend),
             data_cache: Arc::<GlobalCache>::clone(&data_cache),
             cur_fd: AtomicU32::new(4),
             node_id: Arc::<str>::from(node_id.to_owned()),
-            storage_config: Arc::<StorageConfig>::from(storage_config.clone()),
             fuse_fd: Mutex::new(-1_i32),
             inum_allocator: INumAllocator::new(Arc::clone(&kv_engine)),
             kv_engine,
@@ -580,14 +548,9 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
                 (Ok(true), ())
             } else {
                 info!("[init] root node not exists, init root node");
-                let root_inode = S3Node::open_root_node(
-                    FUSE_ROOT_ID,
-                    "/",
-                    Arc::<S>::clone(&s3_backend),
-                    Arc::clone(&meta),
-                )
-                .await
-                .add_context("failed to open FUSE root node")?;
+                let root_inode = S3Node::open_root_node(FUSE_ROOT_ID, "/", Arc::clone(&meta))
+                    .await
+                    .add_context("failed to open FUSE root node")?;
                 // insert (FUSE_ROOT_ID -> root_inode) into KV engine
                 txn.set(
                     &KeyType::INum2Node(FUSE_ROOT_ID),
@@ -607,7 +570,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
 
     #[instrument(skip(self, node), ret)]
     /// Try to delete, if the deletion succeed, returns `true`.
-    async fn delete_check(&self, node: &S3Node<S>) -> DatenLordResult<bool> {
+    async fn delete_check(&self, node: &S3Node) -> DatenLordResult<bool> {
         let is_deleted = if node.get_open_count() == 0 && node.get_lookup_count() == 0 {
             if let SFlag::S_IFREG = node.get_type() {
                 let ino = node.get_ino();
@@ -942,10 +905,10 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
     }
 }
 
-impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
+impl S3MetaData {
     #[allow(clippy::unwrap_used)]
     /// Get a node from kv engine by inum
-    pub async fn get_node_from_kv_engine(&self, inum: INum) -> DatenLordResult<Option<S3Node<S>>> {
+    pub async fn get_node_from_kv_engine(&self, inum: INum) -> DatenLordResult<Option<S3Node>> {
         let inum_key = KeyType::INum2Node(inum);
         let raw_data = self.kv_engine.get(&inum_key).await.add_context(format!(
             "{}() failed to get node of ino={inum} from kv engine",
@@ -990,7 +953,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
     async fn check_sticky_bit<T: MetaTxn + ?Sized>(
         &self,
         context: &ReqContext,
-        parent_node: &S3Node<S>,
+        parent_node: &S3Node,
         child_entry: &DirEntry,
         txn: &mut T,
     ) -> DatenLordResult<()> {
@@ -1019,7 +982,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
         &self,
         txn: &mut T,
         ino: INum,
-    ) -> DatenLordResult<Option<S3Node<S>>> {
+    ) -> DatenLordResult<Option<S3Node>> {
         let inode = txn
             .get(&KeyType::INum2Node(ino))
             .await
@@ -1038,7 +1001,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
         &self,
         txn: &mut T,
         ino: INum,
-    ) -> DatenLordResult<S3Node<S>> {
+    ) -> DatenLordResult<S3Node> {
         Ok(txn
             .get(&KeyType::INum2Node(ino))
             .await

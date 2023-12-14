@@ -10,7 +10,6 @@ use nix::sys::stat::{Mode, SFlag};
 use parking_lot::RwLock;
 
 use super::cache::{GlobalCache, IoMemBlock};
-use super::direntry::DirEntry;
 use super::fs_util::FileAttr;
 use super::kv_engine::MetaTxn;
 use super::CreateParam;
@@ -96,25 +95,12 @@ pub trait Node: Sized {
         global_cache: Arc<GlobalCache>,
         txn: &mut T,
     ) -> DatenLordResult<Self>;
-    /// Load data from directory, file or symlink target.
-    async fn load_data(&self, offset: usize, len: usize) -> DatenLordResult<usize>;
-    /// Unlink directory entry from both cache and disk
-    async fn unlink_entry(&mut self, removed_entry: &DirEntry) -> DatenLordResult<()>;
     /// Get symlink target path
     fn get_symlink_target(&self) -> &Path;
     /// Get fs stat
     async fn statefs(&self) -> DatenLordResult<StatFsParam>;
     /// Get file data
     async fn get_file_data(&self, offset: usize, len: usize) -> Vec<IoMemBlock>;
-    /// Write to file
-    async fn write_file(
-        &mut self,
-        fh: u64,
-        offset: i64,
-        data: Vec<u8>,
-        oflags: OFlag,
-        write_to_disk: bool,
-    ) -> DatenLordResult<usize>;
     /// Close file
     async fn close(&mut self);
     /// Close dir

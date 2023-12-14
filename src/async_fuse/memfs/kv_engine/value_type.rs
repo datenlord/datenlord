@@ -2,7 +2,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::async_fuse::memfs::direntry::DirEntry;
 use crate::async_fuse::memfs::s3_node::S3Node;
-use crate::async_fuse::memfs::s3_wrapper::S3BackEnd;
 use crate::async_fuse::memfs::serial::SerialNode;
 use crate::async_fuse::memfs::S3MetaData;
 
@@ -29,10 +28,7 @@ impl ValueType {
     /// Turn the `ValueType` into `SerialNode` then into `S3Node`.
     /// # Panics
     /// Panics if `ValueType` is not `ValueType::Node`.
-    pub fn into_s3_node<S>(self, meta: &S3MetaData<S>) -> S3Node<S>
-    where
-        S: S3BackEnd + Send + Sync + 'static,
-    {
+    pub fn into_s3_node(self, meta: &S3MetaData) -> S3Node {
         match self {
             ValueType::Node(node) => S3Node::from_serial_node(node, meta),
             _ => {

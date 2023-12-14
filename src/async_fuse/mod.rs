@@ -3,8 +3,6 @@
 use std::sync::Arc;
 
 use clippy_utilities::OverflowArithmetic;
-use datenlord::config::StorageParams;
-use memfs::s3_wrapper::{DoNothingImpl, S3BackEndImpl};
 
 use self::memfs::cache::policy::LruPolicy;
 use self::memfs::cache::{BackendBuilder, BlockCoordinate, MemoryCacheBuilder, StorageManager};
@@ -60,37 +58,18 @@ pub async fn start_async_fuse(
         StorageManager::new(memory_cache, block_size)
     };
 
-    // TODO: Remove this matching when `S3Baackend` is removed.
-    match args.storage_config.params {
-        StorageParams::S3(_) => {
-            let fs: memfs::MemFs<memfs::S3MetaData<S3BackEndImpl>> = memfs::MemFs::new(
-                &args.mount_dir,
-                global_cache_capacity,
-                kv_engine,
-                &args.node_id,
-                storage_config,
-                storage,
-            )
-            .await?;
+    let fs: memfs::MemFs<memfs::S3MetaData> = memfs::MemFs::new(
+        &args.mount_dir,
+        global_cache_capacity,
+        kv_engine,
+        &args.node_id,
+        storage_config,
+        storage,
+    )
+    .await?;
 
-            let ss = session::new_session_of_memfs(mount_point, fs).await?;
-            ss.run().await?;
-        }
-        StorageParams::Fs(_) => {
-            let fs: memfs::MemFs<memfs::S3MetaData<DoNothingImpl>> = memfs::MemFs::new(
-                &args.mount_dir,
-                global_cache_capacity,
-                kv_engine,
-                &args.node_id,
-                storage_config,
-                storage,
-            )
-            .await?;
-
-            let ss = session::new_session_of_memfs(mount_point, fs).await?;
-            ss.run().await?;
-        }
-    }
+    let ss = session::new_session_of_memfs(mount_point, fs).await?;
+    ss.run().await?;
 
     Ok(())
 }
