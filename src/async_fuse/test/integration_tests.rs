@@ -796,13 +796,13 @@ async fn test_all() -> anyhow::Result<()> {
 }
 
 async fn run_test() -> anyhow::Result<()> {
-    _run_test(DEFAULT_MOUNT_DIR, true).await
+    _run_test(DEFAULT_MOUNT_DIR, false).await
 }
 
 #[ignore]
 #[tokio::test(flavor = "multi_thread")]
 async fn run_s3_test() -> anyhow::Result<()> {
-    _run_test(S3_DEFAULT_MOUNT_DIR, false).await
+    _run_test(S3_DEFAULT_MOUNT_DIR, true).await
 }
 
 async fn _run_test(mount_dir_str: &str, is_s3: bool) -> anyhow::Result<()> {
