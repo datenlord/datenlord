@@ -4,19 +4,23 @@ use std::os::unix::ffi::OsStringExt;
 use std::os::unix::io::RawFd;
 use std::sync::atomic::AtomicU32;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use anyhow::Context;
 use async_trait::async_trait;
 use clippy_utilities::{Cast, OverflowArithmetic};
 use datenlord::config::{StorageConfig, StorageS3Config};
 use libc::{RENAME_EXCHANGE, RENAME_NOREPLACE};
+use lockfree_cuckoohash::LockFreeCuckooHash as HashMap;
 use nix::errno::Errno;
 use nix::sys::stat::SFlag;
 use tokio::sync::Mutex;
 use tracing::{debug, info, instrument, warn};
 
-use super::cache::{GlobalCache, IoMemBlock};
+use super::cache::policy::LruPolicy;
+use super::cache::{
+    Backend, BlockCoordinate, GlobalCache, IoMemBlock, MemoryCache, StorageManager,
+};
 use super::dir::DirEntry;
 use super::dist::client as dist_client;
 use super::dist::server::CacheServer;
@@ -33,8 +37,11 @@ use crate::async_fuse::fuse::protocol::{FuseAttr, INum, FUSE_ROOT_ID};
 use crate::async_fuse::memfs::check_name_length;
 use crate::async_fuse::memfs::kv_engine::KeyType;
 use crate::async_fuse::util::build_error_result_from_errno;
-use crate::common::error::DatenLordResult;
-use crate::common::error::{Context as DatenLordContext, DatenLordError}; /* conflict with anyhow::Context */
+use crate::common::error::{
+    Context as DatenLordContext, // conflict with anyhow::Context
+    DatenLordError,
+    DatenLordResult,
+};
 use crate::function_name;
 
 /// A helper function to build [`DatenLordError::InconsistentFS`] with default
@@ -61,6 +68,8 @@ pub struct S3MetaData<S: S3BackEnd + Send + Sync + 'static> {
     pub(crate) s3_backend: Arc<S>,
     /// Global data cache
     pub(crate) data_cache: Arc<GlobalCache>,
+    /// Storage manager
+    pub(crate) storage: Arc<StorageManager<<Self as MetaData>::St>>,
     /// Current available fd, it'll increase after using
     pub(crate) cur_fd: AtomicU32,
     /// Current service id
@@ -73,11 +82,14 @@ pub struct S3MetaData<S: S3BackEnd + Send + Sync + 'static> {
     pub(crate) kv_engine: Arc<KVEngineType>,
     /// Inum allocator
     inum_allocator: INumAllocator<KVEngineType>,
+    /// Mtime and size cache in local
+    local_mtime_and_size: HashMap<INum, (SystemTime, u64)>,
 }
 
 #[async_trait]
 impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
     type N = S3Node<S>;
+    type St = Arc<MemoryCache<LruPolicy<BlockCoordinate>, Backend>>;
 
     #[instrument(skip(self))]
     async fn release(
@@ -410,6 +422,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         kv_engine: Arc<KVEngineType>,
         node_id: &str,
         storage_config: &StorageConfig,
+        storage: StorageManager<Self::St>,
     ) -> DatenLordResult<(Arc<Self>, Option<CacheServer>)> {
         // TODO: Remove this when the `S3Backend` is removed.
         let s3_config = match storage_config.params {
@@ -448,6 +461,8 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
             fuse_fd: Mutex::new(-1_i32),
             inum_allocator: INumAllocator::new(Arc::clone(&kv_engine)),
             kv_engine,
+            storage: Arc::new(storage),
+            local_mtime_and_size: HashMap::new(),
         });
 
         let server = CacheServer::new(ip.to_owned(), port.to_owned(), data_cache);

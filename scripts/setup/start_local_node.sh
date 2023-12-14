@@ -71,4 +71,5 @@ echo "Starting datenlord.. ... ... ..."
 --kv-server-list=127.0.0.1:2379 \
 --storage-fs-root=/tmp/datenlord_backend \
 --server-port=8800 \
---storage-type=fs 
+--storage-type=fs \
+--storage-mem-cache-write-back

@@ -13,10 +13,20 @@ nodes:
 # the three workers
 - role: worker
   image: $KIND_NODE_VERSION
+  # The volume is mounted for FS backend for DatenLord. 
+  extraMounts:
+  - hostPath: /tmp/kind-volume
+    containerPath: /tmp/kind-volume
 - role: worker
   image: $KIND_NODE_VERSION
+  extraMounts:
+  - hostPath: /tmp/kind-volume
+    containerPath: /tmp/kind-volume
 - role: worker
   image: $KIND_NODE_VERSION
+  extraMounts:
+  - hostPath: /tmp/kind-volume
+    containerPath: /tmp/kind-volume
 END
 
 kind create cluster --config /tmp/kind-config.yaml

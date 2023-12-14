@@ -268,6 +268,10 @@ spec:
               # since DatenLord use bind mount to publish volume here
               mountPath: /var/lib/kubelet/pods
               mountPropagation: Bidirectional
+            - name: datenlord-fs-backend
+              # This is the FS backend of `DatenLord`
+              mountPath: /tmp/datenlord_backend
+              mountPropagation: Bidirectional
         - name: csi-node-driver-registrar
           securityContext:
             privileged: true
@@ -329,6 +333,10 @@ spec:
         - name: mountpoint-dir
           hostPath:
             path: /var/lib/kubelet/pods
+            type: Directory
+        - name: datenlord-fs-backend
+          hostPath:
+            path: /tmp/kind-volume
             type: Directory
         #- name: plugins-dir
         #  hostPath:

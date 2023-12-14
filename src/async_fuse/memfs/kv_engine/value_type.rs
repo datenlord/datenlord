@@ -30,10 +30,10 @@ impl ValueType {
     /// Turn the `ValueType` into `SerialNode` then into `S3Node`.
     /// # Panics
     /// Panics if `ValueType` is not `ValueType::Node`.
-    pub async fn into_s3_node<S: S3BackEnd + Send + Sync + 'static>(
-        self,
-        meta: &S3MetaData<S>,
-    ) -> DatenLordResult<S3Node<S>> {
+    pub async fn into_s3_node<S>(self, meta: &S3MetaData<S>) -> DatenLordResult<S3Node<S>>
+    where
+        S: S3BackEnd + Send + Sync + 'static,
+    {
         match self {
             ValueType::Node(node) => S3Node::from_serial_node(node, meta).await,
             _ => {

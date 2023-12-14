@@ -5,7 +5,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use datenlord::config::StorageConfig;
 
-use super::cache::IoMemBlock;
+use super::cache::{IoMemBlock, Storage, StorageManager};
 use super::dist::server::CacheServer;
 use super::kv_engine::KVEngineType;
 use super::node::Node;
@@ -46,6 +46,9 @@ pub trait MetaData {
     /// Node type
     type N: Node + Send + Sync + 'static;
 
+    /// Storage type
+    type St: Storage + Send + Sync + 'static;
+
     /// Create `MetaData`
     #[allow(clippy::too_many_arguments)]
     async fn new(
@@ -55,6 +58,7 @@ pub trait MetaData {
         kv_engine: Arc<KVEngineType>,
         node_id: &str,
         storage_config: &StorageConfig,
+        storage: StorageManager<Self::St>,
     ) -> DatenLordResult<(Arc<Self>, Option<CacheServer>)>;
 
     /// Helper function to create node
