@@ -14,7 +14,7 @@ use nix::errno::Errno;
 use nix::sys::stat::SFlag;
 use parking_lot::RwLock as SyncRwLock; // conflict with tokio RwLock
 use tokio::sync::Mutex;
-use tracing::{debug, info, instrument, warn};
+use tracing::{debug, info, instrument};
 
 use super::cache::{GlobalCache, IoMemBlock};
 use super::dir::DirEntry;
@@ -22,9 +22,7 @@ use super::dist::client as dist_client;
 use super::dist::server::CacheServer;
 use super::fs_util::{self, FileAttr, NEED_CHECK_PERM};
 use super::id_alloc_used::INumAllocator;
-#[cfg(feature = "abi-7-23")]
-use super::kv_engine::MetaTxn;
-use super::kv_engine::{KVEngine, KVEngineType, KeyType, ValueType};
+use super::kv_engine::{KVEngine, KVEngineType, KeyType, MetaTxn, ValueType};
 use super::metadata::{error, MetaData, ReqContext};
 use super::node::Node;
 use super::s3_node::S3Node;
@@ -91,20 +89,16 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         _lock_owner: u64,
         flush: bool,
     ) -> DatenLordResult<()> {
-        let mut inode = self
-            .get_node_from_kv_engine(ino)
-            .await?
-            .ok_or_else(|| build_inconsistent_fs!(ino))?;
-        inode.close(ino, fh, flush).await;
-        debug!(
-                "release() successfully closed the file handler={} of ino={} and name={:?} open_count={}",
-                fh,
-                ino,
-                inode.get_name(),
-                inode.get_open_count()
+        retry_txn!(TXN_RETRY_LIMIT, {
+            let mut txn = self.kv_engine.new_meta_txn().await;
+            let mut inode = self.get_inode_from_txn(txn.as_mut(), ino).await?;
+            inode.close(ino, fh, flush).await;
+            txn.set(
+                &KeyType::INum2Node(ino),
+                &ValueType::Node(inode.into_serial_node()),
             );
-        self.set_node_to_kv_engine(ino, inode).await?;
-        self.try_delete_node(ino).await?;
+            (txn.commit().await, ())
+        })?;
         Ok(())
     }
 
@@ -142,7 +136,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
             num_child_entries
         };
 
-        let mut inode = self
+        let inode = self
             .get_node_from_kv_engine(ino)
             .await?
             .ok_or_else(|| build_inconsistent_fs!(ino))?;
@@ -165,17 +159,20 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
 
     #[instrument(skip(self), err, ret)]
     async fn opendir(&self, context: ReqContext, ino: u64, flags: u32) -> DatenLordResult<RawFd> {
-        let node = self
-            .get_node_from_kv_engine(ino)
-            .await?
-            .ok_or_else(|| build_inconsistent_fs!(ino))?;
-        let o_flags = fs_util::parse_oflag(flags);
-        //   Open directory  need both read and execute permission
-        node.get_attr()
-            .check_perm(context.user_id, context.group_id, 5)?;
-        let result = node.dup_fd(o_flags).await;
-        self.set_node_to_kv_engine(ino, node).await?;
-        result
+        let result = retry_txn!(TXN_RETRY_LIMIT, {
+            let mut txn = self.kv_engine.new_meta_txn().await;
+            let node = self.get_inode_from_txn(txn.as_mut(), ino).await?;
+            let o_flags = fs_util::parse_oflag(flags);
+            node.open_pre_check(o_flags, context.user_id, context.group_id)?;
+
+            let result = node.dup_fd(o_flags).await?;
+            txn.set(
+                &KeyType::INum2Node(ino),
+                &ValueType::Node(node.into_serial_node()),
+            );
+            (txn.commit().await, result)
+        })?;
+        Ok(result)
     }
 
     #[instrument(skip(self))]
@@ -200,25 +197,36 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
 
     #[instrument(skip(self))]
     async fn flush(&self, ino: u64, fh: u64) -> DatenLordResult<()> {
-        let mut node = self
-            .get_node_from_kv_engine(ino)
-            .await?
-            .ok_or_else(|| build_inconsistent_fs!(ino))?;
-        node.flush(ino, fh).await;
+        retry_txn!(TXN_RETRY_LIMIT, {
+            let mut txn = self.kv_engine.new_meta_txn().await;
+            let mut inode = self.get_inode_from_txn(txn.as_mut(), ino).await?;
+            inode.flush(ino, fh).await;
+            txn.set(
+                &KeyType::INum2Node(ino),
+                &ValueType::Node(inode.into_serial_node()),
+            );
+            (txn.commit().await, ())
+        })?;
         Ok(())
     }
 
     #[instrument(skip(self))]
     async fn releasedir(&self, ino: u64, fh: u64) -> DatenLordResult<()> {
-        {
-            let node = self
-                .get_node_from_kv_engine(ino)
-                .await?
-                .ok_or_else(|| build_inconsistent_fs!(ino))?;
+        retry_txn!(TXN_RETRY_LIMIT, {
+            let mut txn = self.kv_engine.new_meta_txn().await;
+            let node = self.get_inode_from_txn(txn.as_mut(), ino).await?;
             node.closedir(ino, fh).await;
-            self.set_node_to_kv_engine(ino, node).await?;
-        };
-        self.try_delete_node(ino).await?;
+            let is_deleted = self.delete_check(&node).await?;
+            if is_deleted {
+                txn.delete(&KeyType::INum2Node(ino));
+            } else {
+                txn.set(
+                    &KeyType::INum2Node(ino),
+                    &ValueType::Node(node.into_serial_node()),
+                );
+            }
+            (txn.commit().await, ())
+        })?;
         Ok(())
     }
 
@@ -230,11 +238,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         offset: i64,
         size: u32,
     ) -> DatenLordResult<Vec<IoMemBlock>> {
-        debug!(
-            "read_helper() called, ino={}, offset={}, size={}",
-            ino, offset, size
-        );
-        let mut inode = self
+        let inode = self
             .get_node_from_kv_engine(ino)
             .await?
             .ok_or_else(|| build_inconsistent_fs!(ino))?;
@@ -246,32 +250,14 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
                 size.cast()
             };
 
-        // let node_type = node.get_type();
-        // let file_data = if SFlag::S_IFREG == node_type {
         if inode.need_load_file_data(offset.cast(), size.cast()).await {
-            debug!("read() need to load file data of ino={}", ino,);
-            let load_res = inode.load_data(offset.cast(), size.cast()).await;
-            if let Err(e) = load_res {
-                debug!(
-                    "read() failed to load file data of ino={} and name={:?}, the error is: {:?}",
-                    ino,
-                    inode.get_name(),
-                    e,
-                );
-                return Err(e);
-            }
+            inode.load_data(offset.cast(), size.cast()).await?;
         }
         return Ok(inode.get_file_data(offset.cast(), size.cast()).await);
     }
 
     #[instrument(skip(self), err, ret)]
     async fn open(&self, context: ReqContext, ino: u64, flags: u32) -> DatenLordResult<RawFd> {
-        let node = self
-            .get_node_from_kv_engine(ino)
-            .await?
-            .ok_or_else(|| build_inconsistent_fs!(ino))?;
-        let o_flags = fs_util::parse_oflag(flags);
-        node.open_pre_check(o_flags, context.user_id, context.group_id)?;
         // TODO: handle open flags
         // <https://pubs.opengroup.org/onlinepubs/9699919799/functions/open.html>
         // let open_res = if let SFlag::S_IFLNK = node.get_type() {
@@ -281,25 +267,28 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         //         flags,
         //     ))
         // } else {
-        let result = node.dup_fd(o_flags).await;
-        self.set_node_to_kv_engine(ino, node).await?;
-        result
+        retry_txn!(TXN_RETRY_LIMIT, {
+            let mut txn = self.kv_engine.new_meta_txn().await;
+            let node = self.get_inode_from_txn(txn.as_mut(), ino).await?;
+            let o_flags = fs_util::parse_oflag(flags);
+            node.open_pre_check(o_flags, context.user_id, context.group_id)?;
+
+            let result = node.dup_fd(o_flags).await;
+            txn.set(
+                &KeyType::INum2Node(ino),
+                &ValueType::Node(node.into_serial_node()),
+            );
+            (txn.commit().await, result)
+        })?
     }
 
     #[instrument(skip(self), err, ret)]
     async fn getattr(&self, ino: u64) -> DatenLordResult<(Duration, FuseAttr)> {
-        let inode_wrap = self
+        let inode = self
             .get_node_from_kv_engine(ino)
             .await?
             .ok_or_else(|| build_inconsistent_fs!(ino))?;
-
-        let inode = inode_wrap;
         let attr = inode.get_attr();
-        debug!(
-            "getattr() cache hit when searching the attribute of ino={} and name={:?}",
-            ino,
-            inode.get_name(),
-        );
         let ttl = Duration::new(MY_TTL_SEC, 0);
         let fuse_attr = fs_util::convert_to_fuse_attr(attr);
         Ok((ttl, fuse_attr))
@@ -307,31 +296,21 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
 
     #[instrument(skip(self))]
     async fn forget(&self, ino: u64, nlookup: u64) -> DatenLordResult<()> {
-        let current_count: i64;
-        {
-            let inode = self
-                .get_node_from_kv_engine(ino)
-                .await?
-                .ok_or_else(|| build_inconsistent_fs!(ino))?;
-
-            let previous_count = inode.dec_lookup_count_by(nlookup);
-            current_count = inode.get_lookup_count();
-            debug_assert!(current_count >= 0);
-            debug_assert_eq!(
-                previous_count.overflow_sub(current_count),
-                nlookup.cast::<i64>()
-            ); // assert no race forget
-            debug!(
-                "forget() successfully reduced lookup count of ino={} and name={:?} from {} to {}",
-                ino,
-                inode.get_name(),
-                previous_count,
-                current_count,
-            );
-            self.set_node_to_kv_engine(ino, inode).await?;
-        };
-        self.try_delete_node(ino).await?;
-
+        retry_txn!(TXN_RETRY_LIMIT, {
+            let mut txn = self.kv_engine.new_meta_txn().await;
+            let inode = self.get_inode_from_txn(txn.as_mut(), ino).await?;
+            inode.dec_lookup_count_by(nlookup);
+            let is_deleted = self.delete_check(&inode).await?;
+            if is_deleted {
+                txn.delete(&KeyType::INum2Node(ino));
+            } else {
+                txn.set(
+                    &KeyType::INum2Node(ino),
+                    &ValueType::Node(inode.into_serial_node()),
+                );
+            }
+            (txn.commit().await, ())
+        })?;
         Ok(())
     }
 
@@ -340,45 +319,26 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         &self,
         context: ReqContext,
         ino: u64,
-        param: SetAttrParam,
+        param: &SetAttrParam,
     ) -> DatenLordResult<(Duration, FuseAttr)> {
         let ttl = Duration::new(MY_TTL_SEC, 0);
-        let mut inode = self
-            .get_node_from_kv_engine(ino)
-            .await?
-            .ok_or_else(|| build_inconsistent_fs!(ino))?;
-
-        match inode
-            .setattr_precheck(param, context.user_id, context.group_id)
-            .await
-        {
-            Ok((attr_changed, file_attr)) => {
-                if attr_changed {
-                    inode.set_attr(file_attr);
-                    debug!(
-                        "setattr() successfully set the attribute of ino={} and name={:?}, the set attr={:?}",
-                        ino, inode.get_name(), file_attr,
-                    );
-                } else {
-                    warn!(
-                        "setattr() did not change any attribute of ino={} and name={:?}",
-                        ino,
-                        inode.get_name(),
-                    );
-                }
-                self.set_node_to_kv_engine(ino, inode).await?;
-                Ok((ttl, fs_util::convert_to_fuse_attr(file_attr)))
+        let file_attr = retry_txn!(TXN_RETRY_LIMIT, {
+            let mut txn = self.kv_engine.new_meta_txn().await;
+            let mut inode = self.get_inode_from_txn(txn.as_mut(), ino).await?;
+            let (attr_changed, file_attr) = inode
+                .setattr_precheck(param, context.user_id, context.group_id)
+                .await?;
+            debug!("setattr_helper() attr_changed={}", attr_changed);
+            if attr_changed {
+                inode.set_attr(file_attr);
             }
-            Err(e) => {
-                debug!(
-                    "setattr() failed to set the attribute of ino={} and name={:?}, the error is: {:?}",
-                    ino,
-                    inode.get_name(),
-                    e,
-                );
-                Err(e)
-            }
-        }
+            txn.set(
+                &KeyType::INum2Node(ino),
+                &ValueType::Node(inode.into_serial_node()),
+            );
+            (txn.commit().await, file_attr)
+        })?;
+        Ok((ttl, fs_util::convert_to_fuse_attr(file_attr)))
     }
 
     #[instrument(skip(self), err, ret)]
@@ -452,9 +412,10 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
 
         retry_txn!(TXN_RETRY_LIMIT, {
             let mut txn = meta.kv_engine.new_meta_txn().await;
-            let prev = txn.get(&KeyType::INum2Node(FUSE_ROOT_ID)).await?;
-            if let Some(value) = prev {
-                let prev_root_node: S3Node<S> = value.into_s3_node(&meta).await?;
+            let prev = meta
+                .try_get_inode_from_txn(txn.as_mut(), FUSE_ROOT_ID)
+                .await?;
+            if let Some(prev_root_node) = prev {
                 info!(
                     "[init] root node already exists root_node file_attr {:?}, skip init",
                     prev_root_node.get_attr()
@@ -473,7 +434,10 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
                 .await
                 .add_context("failed to open FUSE root node")?;
                 // insert (FUSE_ROOT_ID -> root_inode) into KV engine
-                meta.set_node_to_kv_engine(FUSE_ROOT_ID, root_inode).await?;
+                txn.set(
+                    &KeyType::INum2Node(FUSE_ROOT_ID),
+                    &ValueType::Node(root_inode.into_serial_node()),
+                );
                 (txn.commit().await, ())
             }
         })?;
@@ -486,44 +450,26 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         *self.fuse_fd.lock().await = fuse_fd;
     }
 
-    #[instrument(skip(self), ret)]
+    #[instrument(skip(self, node), ret)]
     /// Try to delete node that is marked as deferred deletion
-    async fn try_delete_node(&self, ino: INum) -> DatenLordResult<bool> {
-        let node = self.get_node_from_kv_engine(ino).await?.ok_or_else(|| {
-            error::build_inconsistent_fs_with_context(
-                function_name!(),
-                format!("the i-node of ino={ino} is not in K/V"),
-            )
-        })?;
+    async fn delete_check(&self, node: &S3Node<S>) -> DatenLordResult<bool> {
+        let is_deleted = if node.get_open_count() == 0 && node.get_lookup_count() == 0 {
+            if let SFlag::S_IFREG = node.get_type() {
+                self.data_cache.remove_file_cache(node.get_ino()).await;
+            }
+            true
+        } else {
+            false
+        };
         debug!(
-            "try_delete_node() try to delete i-node of ino={} and name={:?} open_count={} lookup_count={}",
-            ino,
+            "try_delete_node()  is_deleted={} i-node of ino={} and name={:?} open_count={} lookup_count={}",
+            is_deleted,
+            node.get_ino(),
             node.get_name(),
             node.get_open_count(),
             node.get_lookup_count(),
         );
-        if node.get_open_count() == 0 && node.get_lookup_count() == 0 {
-            debug!(
-                "try_delete_node() deleted i-node of ino={} and name={:?}",
-                ino,
-                node.get_name(),
-            );
-            self.remove_node_from_kv_engine(ino).await?;
-            if let SFlag::S_IFREG = node.get_type() {
-                self.data_cache.remove_file_cache(node.get_ino()).await;
-            }
-            Ok(true)
-        } else {
-            debug!(
-                "try_delete_node() cannot deleted i-node of ino={} and name={:?},\
-                     open_count={}, lookup_count={}",
-                ino,
-                node.get_name(),
-                node.get_open_count(),
-                node.get_lookup_count()
-            );
-            Ok(false)
-        }
+        Ok(is_deleted)
     }
 
     #[instrument(skip(self), err, ret)]
@@ -666,18 +612,8 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
                 return Ok(());
             }
 
-            let mut old_node = txn
-                .get(&KeyType::INum2Node(old_ino))
-                .await?
-                .ok_or_else(|| build_inconsistent_fs!(old_ino))?
-                .into_s3_node(self)
-                .await?;
-            let mut new_node = txn
-                .get(&KeyType::INum2Node(new_ino))
-                .await?
-                .ok_or_else(|| build_inconsistent_fs!(new_ino))?
-                .into_s3_node(self)
-                .await?;
+            let mut old_node = self.get_inode_from_txn(txn.as_mut(), old_ino).await?;
+            let mut new_node = self.get_inode_from_txn(txn.as_mut(), new_ino).await?;
 
             old_node.set_parent_ino(new_parent);
             new_node.set_parent_ino(old_parent);
@@ -1483,5 +1419,41 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
         } else {
             Ok(())
         }
+    }
+
+    /// Helper function to get inode from `MetaTxn`
+    async fn try_get_inode_from_txn<T: MetaTxn + ?Sized>(
+        &self,
+        txn: &mut T,
+        ino: INum,
+    ) -> DatenLordResult<Option<S3Node<S>>> {
+        let inode = txn
+            .get(&KeyType::INum2Node(ino))
+            .await
+            .add_context(format!(
+                "{}() failed to get i-node of ino={ino} from kv engine",
+                function_name!()
+            ))?;
+        match inode {
+            Some(inode) => Ok(Some(inode.into_s3_node(self).await?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Helper function to get inode that must exist from `MetaTxn`
+    async fn get_inode_from_txn<T: MetaTxn + ?Sized>(
+        &self,
+        txn: &mut T,
+        ino: INum,
+    ) -> DatenLordResult<S3Node<S>> {
+        txn.get(&KeyType::INum2Node(ino))
+            .await
+            .add_context(format!(
+                "{}() failed to get i-node of ino={ino} from kv engine",
+                function_name!()
+            ))?
+            .ok_or_else(|| build_inconsistent_fs!(ino))? // inode must exist
+            .into_s3_node(self)
+            .await
     }
 }

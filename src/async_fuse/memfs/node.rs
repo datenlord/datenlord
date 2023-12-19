@@ -106,7 +106,7 @@ pub trait Node: Sized {
         global_cache: Arc<GlobalCache>,
     ) -> DatenLordResult<Self>;
     /// Load data from directory, file or symlink target.
-    async fn load_data(&mut self, offset: usize, len: usize) -> DatenLordResult<usize>;
+    async fn load_data(&self, offset: usize, len: usize) -> DatenLordResult<usize>;
     /// Insert directory entry for rename()
     fn insert_entry_for_rename(&mut self, child_entry: DirEntry) -> Option<DirEntry>;
     /// Remove directory entry from cache only for rename()
@@ -137,7 +137,7 @@ pub trait Node: Sized {
     /// Precheck before set attr
     async fn setattr_precheck(
         &self,
-        param: SetAttrParam,
+        param: &SetAttrParam,
         uid: u32,
         gid: u32,
     ) -> DatenLordResult<(bool, FileAttr)>;
