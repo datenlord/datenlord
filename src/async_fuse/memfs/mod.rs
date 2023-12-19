@@ -367,7 +367,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
             user_id: req.uid(),
             group_id: req.gid(),
         };
-        let set_res = self.metadata.setattr_helper(context, ino, param).await;
+        let set_res = self.metadata.setattr_helper(context, ino, &param).await;
         match set_res {
             Ok((ttl, fuse_attr)) => reply.attr(ttl, fuse_attr).await,
             Err(e) => reply.error(e).await,

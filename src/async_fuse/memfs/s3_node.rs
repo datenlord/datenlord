@@ -538,7 +538,16 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
 
     /// Decrease node lookup count
     fn dec_lookup_count_by(&self, nlookup: u64) -> i64 {
-        debug_assert!(nlookup < std::i64::MAX.cast());
+        #[cfg(debug)]
+        {
+            let current_cnt = self.lookup_count.load(Ordering::Acquire);
+            debug_assert!(
+                current_cnt >= nlookup.cast(),
+                "current_cnt={} is less than nlookup={}",
+                current_cnt,
+                nlookup
+            );
+        }
         self.lookup_count
             .fetch_sub(nlookup.cast(), Ordering::AcqRel)
     }
@@ -843,7 +852,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
 
     /// Load data from directory, file or symlink target.
     /// The `offset` and `len` is used for regular file
-    async fn load_data(&mut self, offset: usize, len: usize) -> DatenLordResult<usize> {
+    async fn load_data(&self, offset: usize, len: usize) -> DatenLordResult<usize> {
         match self.data {
             S3NodeData::Directory(..) => Ok(0),
             S3NodeData::RegFile(ref global_cache) => {
@@ -1096,7 +1105,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
 
     async fn setattr_precheck(
         &self,
-        param: SetAttrParam,
+        param: &SetAttrParam,
         user_id: u32,
         group_id: u32,
     ) -> DatenLordResult<(bool, FileAttr)> {

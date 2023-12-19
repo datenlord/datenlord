@@ -110,7 +110,7 @@ pub trait MetaData {
     async fn fsync_helper(&self, ino: u64, fh: u64, datasync: bool) -> DatenLordResult<()>;
 
     /// Try to delete node that is marked as deferred deletion
-    async fn try_delete_node(&self, ino: INum) -> DatenLordResult<bool>;
+    async fn delete_check(&self, node: &Self::N) -> DatenLordResult<bool>;
 
     /// Helper function to write data
     async fn write_helper(
@@ -130,7 +130,7 @@ pub trait MetaData {
         &self,
         context: ReqContext,
         ino: u64,
-        param: SetAttrParam,
+        param: &SetAttrParam,
     ) -> DatenLordResult<(Duration, FuseAttr)>;
 
     /// Helper function to unlink
