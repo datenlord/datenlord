@@ -41,7 +41,7 @@ spec:
             - "--server-port=8800"
             - "--storage-s3-access-key-id test"
             - "--storage-s3-secret-access-key test1234"
-            - "--storage-s3-endpoint http://127.0.0.1:9000"
+            - "--storage-s3-endpoint-url http://127.0.0.1:9000"
             - "--storage-s3-bucket fuse-test-bucket"
           lifecycle:
             #postStart:
