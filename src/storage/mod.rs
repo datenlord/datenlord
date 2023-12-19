@@ -6,10 +6,12 @@ mod memory_cache;
 mod storage_manager;
 mod storage_trait;
 
+pub mod error;
 pub mod policy;
 
 pub use backend::{Backend, BackendBuilder};
 pub use block::{Block, BlockCoordinate};
+pub use error::{StorageError, StorageErrorInner};
 pub use memory_cache::{MemoryCache, MemoryCacheBuilder};
 pub use storage_manager::StorageManager;
 pub use storage_trait::Storage;
