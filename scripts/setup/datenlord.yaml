@@ -209,7 +209,7 @@ spec:
             - "--mount-path=$(FUSE_MOUNT_DIR)"
             - "--storage-s3-access-key-id test"
             - "--storage-s3-secret-access-key test1234"
-            - "--storage-s3-endpoint http://127.0.0.1:9000"
+            - "--storage-s3-endpoint-url http://127.0.0.1:9000"
             - "--storage-s3-bucket fuse-test-bucket"
             - "--csi-endpoint=$(CSI_NODE_ENDPOINT)"
             - "--csi-driver-name=csi.datenlord.io"

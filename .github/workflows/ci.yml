@@ -197,5 +197,12 @@ jobs:
           make
       - name: Run fstest
         run: |
-          cd $DATENLORD_LOCAL_BIND_DIR
+          # wait $DATENLORD_LOCAL_BIND_DIR to be ready
+          for i in {1..100}; do
+            if [ -d $DATENLORD_LOCAL_BIND_DIR ]; then
+              echo "Try $i times, $DATENLORD_LOCAL_BIND_DIR is ready"
+              break
+            fi
+            sleep 5
+          done
           sudo prove -rv /home/runner/work/datenlord/datenlord/tests/fstest_dir/tests/
