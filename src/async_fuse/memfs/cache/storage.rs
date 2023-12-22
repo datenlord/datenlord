@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use super::{Block, BlockCoordinate, IoBlock};
+use super::Block;
 use crate::async_fuse::fuse::protocol::INum;
 
 /// The `Storage` trait. It handles blocks with storage such as in-memory cache,
@@ -21,19 +21,10 @@ pub trait Storage {
 
     /// Caches a block that is just loaded from the backend.
     ///
-    /// An evicted block may be returned.
-    async fn cache_block_from_backend(
-        &self,
-        ino: INum,
-        block_id: usize,
-        block: Block,
-    ) -> Option<(BlockCoordinate, Block)>;
-
-    /// A callback to handle the eviction.
-    async fn on_evict(&self, ino: INum, block_id: usize, evicted: Block);
-
+    /// This may evict a block to the backend.
+    async fn cache_block_from_backend(&self, ino: INum, block_id: usize, block: Block);
     /// Store a block to the storage.
-    async fn store(&self, ino: INum, block_id: usize, block: IoBlock);
+    async fn store(&self, ino: INum, block_id: usize, block: Block);
 
     /// Remove a file from storage.
     async fn remove(&self, ino: INum);
@@ -64,12 +55,8 @@ pub trait Storage {
         } else {
             let res = self.load_from_backend(ino, block_id).await;
             if let Some(block) = res {
-                let evicted = self
-                    .cache_block_from_backend(ino, block_id, block.clone())
+                self.cache_block_from_backend(ino, block_id, block.clone())
                     .await;
-                if let Some((BlockCoordinate(ino, block_id), evicted)) = evicted {
-                    self.on_evict(ino, block_id, evicted).await;
-                }
                 Some(block)
             } else {
                 None
@@ -91,26 +78,17 @@ where
         self.as_ref().load_from_backend(ino, block_id).await
     }
 
-    async fn cache_block_from_backend(
-        &self,
-        ino: INum,
-        block_id: usize,
-        block: Block,
-    ) -> Option<(BlockCoordinate, Block)> {
+    async fn cache_block_from_backend(&self, ino: INum, block_id: usize, block: Block) {
         self.as_ref()
             .cache_block_from_backend(ino, block_id, block)
-            .await
-    }
-
-    async fn on_evict(&self, ino: INum, block_id: usize, evicted: Block) {
-        self.as_ref().on_evict(ino, block_id, evicted).await;
+            .await;
     }
 
     async fn load(&self, ino: INum, block_id: usize) -> Option<Block> {
         self.as_ref().load(ino, block_id).await
     }
 
-    async fn store(&self, ino: INum, block_id: usize, block: IoBlock) {
+    async fn store(&self, ino: INum, block_id: usize, block: Block) {
         self.as_ref().store(ino, block_id, block).await;
     }
 

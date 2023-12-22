@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use clippy_utilities::OverflowArithmetic;
 use parking_lot::Mutex;
 
-use super::{Block, BlockCoordinate, IoBlock, Storage};
+use super::{Block, Storage};
 use crate::async_fuse::fuse::protocol::INum;
 
 /// A "persistent" storage layer in memory.
@@ -59,33 +59,18 @@ impl Storage for MemoryStorage {
         None
     }
 
-    async fn cache_block_from_backend(
-        &self,
-        _: INum,
-        _: usize,
-        _: Block,
-    ) -> Option<(BlockCoordinate, Block)> {
+    async fn cache_block_from_backend(&self, _: INum, _: usize, _: Block) {
         unreachable!("`MemoryStorage` does not have a backend.");
     }
 
-    async fn on_evict(&self, _: INum, _: usize, _: Block) {
-        unreachable!("No block will be evicted from `MemoryStorage`.");
-    }
-
-    async fn store(&self, ino: INum, block_id: usize, block: IoBlock) {
-        let start = block.offset();
-        let end = block.end();
-
+    async fn store(&self, ino: INum, block_id: usize, block: Block) {
         self.inner
             .lock()
             .entry(ino)
             .or_default()
             .entry(block_id)
-            .or_insert_with(|| Block::new(self.block_size))
-            .make_mut()
-            .get_mut(start..end)
-            .unwrap_or_else(|| panic!("Out of range"))
-            .copy_from_slice(block.as_slice());
+            .or_insert_with(|| Block::new_zeroed(self.block_size))
+            .update(&block);
     }
 
     async fn remove(&self, ino: INum) {
@@ -114,11 +99,19 @@ impl Storage for MemoryStorage {
             if to_block > 0 && fill_start < self.block_size {
                 let fill_block_id = to_block.overflow_sub(1);
                 if let Some(block) = file_cache.get_mut(&fill_block_id) {
-                    let fill_len = self.block_size.overflow_sub(fill_start);
+                    if fill_start >= block.end() {
+                        return;
+                    }
+
+                    block.set_start(block.start().min(fill_start));
+
+                    let fill_len = block.end().overflow_sub(fill_start);
                     let fill_content = vec![0; fill_len];
+                    let write_start = fill_start.overflow_sub(block.start());
+
                     block
-                        .make_mut()
-                        .get_mut(fill_start..)
+                        .make_mut_slice()
+                        .get_mut(write_start..)
                         .unwrap_or_else(|| {
                             unreachable!("`fill_start` is checked to be less than block size.")
                         })
@@ -133,10 +126,8 @@ impl Storage for MemoryStorage {
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
-    use clippy_utilities::OverflowArithmetic;
-
     use super::{MemoryStorage, Storage};
-    use crate::async_fuse::memfs::cache::{Block, IoBlock};
+    use crate::async_fuse::memfs::cache::Block;
 
     const BLOCK_SIZE_IN_BYTES: usize = 8;
     const BLOCK_CONTENT: &[u8; BLOCK_SIZE_IN_BYTES] = b"foo bar ";
@@ -145,18 +136,13 @@ mod tests {
     async fn test_read_write() {
         let ino = 0;
         let block_id = 0;
-        let mut block = Block::new(BLOCK_SIZE_IN_BYTES);
-        block.make_mut().copy_from_slice(BLOCK_CONTENT.as_slice());
-        let io_block = IoBlock::new(block, 0, BLOCK_SIZE_IN_BYTES);
-        let storage = MemoryStorage::new(BLOCK_SIZE_IN_BYTES);
-        storage.store(ino, block_id, io_block).await;
+        let block = Block::from_slice(BLOCK_SIZE_IN_BYTES, BLOCK_CONTENT);
 
+        let storage = MemoryStorage::new(BLOCK_SIZE_IN_BYTES);
+        storage.store(ino, block_id, block).await;
         assert!(storage.contains(ino, block_id));
-        let block = storage
-            .load(ino, block_id)
-            .await
-            .map(IoBlock::from)
-            .unwrap();
+
+        let block = storage.load(ino, block_id).await.unwrap();
         assert_eq!(block.as_slice(), BLOCK_CONTENT);
 
         assert!(!storage.contains(ino, 1));
@@ -174,16 +160,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[should_panic(expected = "Out of range")]
-    async fn test_ioblock_out_of_range() {
-        let storage = MemoryStorage::new(BLOCK_SIZE_IN_BYTES);
-        let block = Block::new(BLOCK_SIZE_IN_BYTES.overflow_mul(2));
-        let io_block = IoBlock::new(block, 0, BLOCK_SIZE_IN_BYTES.overflow_mul(2));
-
-        storage.store(0, 0, io_block).await;
-    }
-
-    #[tokio::test]
     async fn test_flush() {
         let storage = MemoryStorage::new(BLOCK_SIZE_IN_BYTES);
         storage.flush(0).await;
@@ -191,7 +167,7 @@ mod tests {
         assert!(!storage.flushed(0));
 
         storage
-            .store(0, 0, Block::new(BLOCK_SIZE_IN_BYTES).into())
+            .store(0, 0, Block::new_zeroed(BLOCK_SIZE_IN_BYTES))
             .await;
         storage.flush_all().await;
         assert!(storage.flushed(0));
@@ -209,7 +185,7 @@ mod tests {
         let storage = MemoryStorage::new(BLOCK_SIZE_IN_BYTES);
         for block_id in 0..8 {
             storage
-                .store(0, block_id, Block::new(BLOCK_SIZE_IN_BYTES).into())
+                .store(0, block_id, Block::new_zeroed(BLOCK_SIZE_IN_BYTES))
                 .await;
             assert!(storage.contains(0, block_id));
         }
@@ -228,19 +204,17 @@ mod tests {
         let storage = MemoryStorage::new(BLOCK_SIZE_IN_BYTES);
         for block_id in 0..8 {
             storage
-                .store(0, block_id, Block::new(BLOCK_SIZE_IN_BYTES).into())
+                .store(0, block_id, Block::new_zeroed(BLOCK_SIZE_IN_BYTES))
                 .await;
             assert!(storage.contains(0, block_id));
         }
 
-        let mut block = Block::new(BLOCK_SIZE_IN_BYTES);
-        block.make_mut().copy_from_slice(b"foo bar ");
-        let io_block = IoBlock::new(block, 0, BLOCK_SIZE_IN_BYTES);
+        let block = Block::from_slice(BLOCK_SIZE_IN_BYTES, BLOCK_CONTENT);
 
-        storage.store(0, 3, io_block).await;
+        storage.store(0, 3, block).await;
         storage.truncate(0, 8, 4, 4).await;
 
-        let loaded = storage.load(0, 3).await.map(IoBlock::from).unwrap();
+        let loaded = storage.load(0, 3).await.unwrap();
         assert_eq!(loaded.as_slice(), b"foo \0\0\0\0");
     }
 
@@ -248,14 +222,12 @@ mod tests {
     async fn test_truncate_in_the_same_block() {
         let storage = MemoryStorage::new(BLOCK_SIZE_IN_BYTES);
 
-        let mut block = Block::new(BLOCK_SIZE_IN_BYTES);
-        block.make_mut().copy_from_slice(b"foo bar ");
-        let io_block = IoBlock::new(block, 0, BLOCK_SIZE_IN_BYTES);
+        let block = Block::from_slice(BLOCK_SIZE_IN_BYTES, BLOCK_CONTENT);
 
-        storage.store(0, 0, io_block).await;
+        storage.store(0, 0, block).await;
         storage.truncate(0, 1, 1, 4).await;
 
-        let loaded = storage.load(0, 0).await.map(IoBlock::from).unwrap();
+        let loaded = storage.load(0, 0).await.unwrap();
         assert_eq!(loaded.as_slice(), b"foo \0\0\0\0");
     }
 }
