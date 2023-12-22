@@ -2,7 +2,7 @@
 
 use std::hash::Hash;
 
-use hashlink::LruCache;
+use hashlink::LinkedHashSet;
 use parking_lot::Mutex;
 
 use super::EvictPolicy;
@@ -11,7 +11,7 @@ use super::EvictPolicy;
 #[derive(Debug)]
 pub struct LruPolicy<K> {
     /// The inner hashlink
-    inner: Mutex<LruCache<K, ()>>,
+    inner: Mutex<LinkedHashSet<K>>,
     /// The capacity of this policy
     capacity: usize,
 }
@@ -21,33 +21,37 @@ impl<K: Hash + Eq> LruPolicy<K> {
     #[must_use]
     pub fn new(capacity: usize) -> Self {
         LruPolicy {
-            inner: Mutex::new(LruCache::new(capacity)),
+            inner: Mutex::new(LinkedHashSet::with_capacity(capacity)),
             capacity,
         }
     }
 }
 
-impl<K: Hash + Eq> EvictPolicy<K> for LruPolicy<K> {
-    fn put(&self, key: K) -> Option<K> {
+impl<K: Clone + Hash + Eq> EvictPolicy<K> for LruPolicy<K> {
+    fn touch(&self, key: &K) {
+        self.inner.lock().to_back(key);
+    }
+
+    fn evict(&self) -> Option<K> {
+        let mut lru = self.inner.lock();
+
+        if lru.len() == self.capacity {
+            lru.pop_front()
+        } else {
+            None
+        }
+    }
+
+    fn try_put(&self, key: K) -> bool {
         let mut lru = self.inner.lock();
         let len = lru.len();
 
-        let evicted = if !lru.contains_key(&key) && len == self.capacity {
-            lru.remove_lru()
+        if !lru.contains(&key) && len == self.capacity {
+            false
         } else {
-            None
-        };
-
-        lru.insert(key, ());
-        evicted.map(|(k, ())| k)
-    }
-
-    fn touch(&self, key: &K) {
-        let _: Option<&()> = self.inner.lock().get(key);
-    }
-
-    fn remove(&self, key: &K) {
-        let _: Option<()> = self.inner.lock().remove(key);
+            lru.insert(key);
+            true
+        }
     }
 }
 
@@ -61,12 +65,12 @@ mod tests {
         let cache = LruPolicy::<i32>::new(3);
 
         let mut res;
-        res = cache.put(1);
-        assert_eq!(res, None);
-        res = cache.put(2);
-        assert_eq!(res, None);
-        res = cache.put(3);
-        assert_eq!(res, None);
+        res = cache.try_put(1);
+        assert!(res);
+        res = cache.try_put(2);
+        assert!(res);
+        res = cache.try_put(3);
+        assert!(res);
 
         cache
     }
@@ -76,8 +80,19 @@ mod tests {
         let cache = create_lru();
 
         // 1 -> 2 -> 3
-        let res = cache.put(4);
-        assert_eq!(res, Some(1));
+        let res = cache.try_put(4);
+        assert!(!res);
+
+        let evicted = cache.evict();
+        assert_eq!(evicted, Some(1));
+
+        // Policy is not full now.
+        let evicted = cache.evict();
+        assert_eq!(evicted, None);
+
+        // 2 -> 3 -> 4
+        let res = cache.try_put(4);
+        assert!(res);
     }
 
     #[test]
@@ -87,33 +102,19 @@ mod tests {
         cache.touch(&1);
 
         // 2 -> 3 -> 1
-        let res = cache.put(4);
-        assert_eq!(res, Some(2));
+        let evicted = cache.evict();
+        assert_eq!(evicted, Some(2));
     }
 
     #[test]
     fn test_touch_by_put() {
         let cache = create_lru();
 
-        let res = cache.put(1);
-        assert_eq!(res, None);
+        let res = cache.try_put(1);
+        assert!(res);
 
         // 2 -> 3 -> 1
-        let res = cache.put(4);
-        assert_eq!(res, Some(2));
-    }
-
-    #[test]
-    fn test_remove() {
-        let cache = create_lru();
-
-        cache.remove(&1);
-
-        // 2 -> 3
-        assert_eq!(cache.inner.lock().len(), 2);
-        let res = cache.put(4);
-        assert_eq!(res, None);
-        let res = cache.put(5);
-        assert_eq!(res, Some(2));
+        let evicted = cache.evict();
+        assert_eq!(evicted, Some(2));
     }
 }

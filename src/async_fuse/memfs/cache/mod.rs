@@ -9,7 +9,7 @@ mod storage;
 
 pub mod policy;
 
-pub use block::{Block, BlockCoordinate, IoBlock};
+pub use block::{Block, BlockCoordinate};
 pub use global_cache::*;
 pub use storage::Storage;
 
@@ -31,6 +31,9 @@ pub const MEMORY_CACHE_CAPACITY_IN_BYTES: usize = 8 * GB_SIZE;
 /// The capacity of `InMemoryCache` in blocks.
 pub const MEMORY_CACHE_CAPACITY_IN_BLOCKS: usize =
     MEMORY_CACHE_CAPACITY_IN_BYTES.wrapping_div(BLOCK_SIZE_IN_BYTES);
+
+/// The type of block id.
+pub type BlockId = usize;
 
 #[cfg(test)]
 mod mock;
