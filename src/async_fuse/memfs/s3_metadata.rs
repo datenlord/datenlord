@@ -2,7 +2,6 @@ use std::collections::BTreeMap;
 use std::fmt::Debug;
 use std::os::unix::ffi::OsStringExt;
 use std::os::unix::io::RawFd;
-use std::path::Path;
 use std::sync::atomic::AtomicU32;
 use std::sync::Arc;
 use std::time::Duration;
@@ -12,7 +11,6 @@ use async_trait::async_trait;
 use clippy_utilities::{Cast, OverflowArithmetic};
 use itertools::Itertools;
 use nix::errno::Errno;
-use nix::fcntl::OFlag;
 use nix::sys::stat::SFlag;
 use parking_lot::RwLock as SyncRwLock; // conflict with tokio RwLock
 use tokio::sync::Mutex;
@@ -31,7 +29,7 @@ use super::metadata::{error, MetaData, ReqContext};
 use super::node::Node;
 use super::s3_node::S3Node;
 use super::s3_wrapper::S3BackEnd;
-use super::{CreateParam, RenameParam, SetAttrParam};
+use super::{check_type_supported, CreateParam, RenameParam, SetAttrParam};
 #[cfg(feature = "abi-7-18")]
 use crate::async_fuse::fuse::fuse_reply::FuseDeleteNotification;
 use crate::async_fuse::fuse::fuse_reply::{ReplyDirectory, StatFsParam};
@@ -537,106 +535,39 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
     // If the file does not exist, first create it with
     // the specified mode, and then open it.
     #[allow(clippy::too_many_lines)]
-    async fn create_node_helper(
-        &self,
-        param: CreateParam,
-    ) -> DatenLordResult<(Duration, FuseAttr, u64)> {
+    async fn mknod(&self, param: CreateParam) -> DatenLordResult<(Duration, FuseAttr, u64)> {
         check_name_length(&param.name)?;
-        let parent = param.parent;
-        let node_name = &param.name;
-        let mode = param.mode;
-        let node_type = param.node_type;
-        let target_path: Option<&Path> = match param.link {
-            Some(ref path) => Some(path.as_ref()),
-            None => None,
-        };
-        let uid = param.uid;
-        let gid = param.gid;
+        check_type_supported(&param.node_type)?;
+        let parent_ino = param.parent;
         // pre-check : check whether the child name is valid
         let mut parent_node = self
-            .create_node_pre_check(parent, node_name, uid, gid)
-            .await
-            .add_context(format!("{}() failed to pre check", function_name!()))?;
+            .get_node_from_kv_engine(parent_ino)
+            .await?
+            .ok_or_else(|| {
+                error::build_inconsistent_fs_with_context(
+                    function_name!(),
+                    format!(
+                        "parent of ino={parent_ino} should be in cache before create its child"
+                    ),
+                )
+            })?;
+        parent_node.check_name_availability(&param.name)?;
         // allocate a new i-node number
-        let inum = self.alloc_inum().await?;
+        let new_inum = self.alloc_inum().await?;
 
-        let parent_name = parent_node.get_name().to_owned();
-        // all checks are passed, ready to create new node
-        let m_flags = fs_util::parse_mode(mode);
-        let new_node = match node_type {
-            SFlag::S_IFDIR => {
-                parent_node
-                    .create_child_dir(inum,node_name, m_flags,param.uid,param.gid)
-                    .await
-                    .add_context(format!(
-                        "{}() failed to create directory with name={node_name:?} and mode={m_flags:?} \
-                        under parent directory of ino={parent} and name={parent_name:?}", function_name!()
-                    ))?
-            }
-            SFlag::S_IFREG => {
-                let o_flags = OFlag::O_CREAT | OFlag::O_EXCL | OFlag::O_RDWR;
-                parent_node
-                    .create_child_file(
-                        inum,
-                        node_name,
-                        o_flags,
-                        m_flags,
-                        uid,
-                        gid,
-                        Arc::<GlobalCache>::clone(&self.data_cache),
-                    )
-                    .await
-                    .add_context(format!(
-                        "{}() failed to create file with name={node_name:?} and mode={m_flags:?} \
-                        under parent directory of ino={parent} and name={parent_name:?}", function_name!()
-                    ))?
-            }
-            SFlag::S_IFLNK => {
-                parent_node
-                    .create_child_symlink(
-                        inum,
-                        node_name,
-                        target_path.ok_or_else(|| anyhow::anyhow!("{}() failed to \
-                    get target path when create symlink with name={:?} \
-                    under parent directory of ino={} and name={:?}",
-                    function_name!(), node_name, parent, parent_node.get_name()))?.to_owned(),
-                    )
-                    .await
-                    .add_context(format!(
-                        "{}() failed to create symlink with name={node_name:?} to target path={target_path:?} \
-                        under parent directory of ino={parent} and name={parent_name:?}", function_name!()
-                    ))?
-            }
-            _ => {
-                return Err(
-                    error::build_unsupported_inode_type(
-                        node_type,
-                        format!(
-                            "{}() does not support i-node to be created under parent directory of ino={} and name={:?}",
-                            function_name!(),
-                            parent,
-                            parent_name
-                        )
-                    )
-                );
-            }
-        };
+        let new_node = parent_node
+            .create_child_node(
+                &param,
+                new_inum,
+                Arc::<GlobalCache>::clone(&self.data_cache),
+            )
+            .await?;
+
         let new_ino = new_node.get_ino();
         let new_node_attr = new_node.get_attr();
         let fuse_attr = fs_util::convert_to_fuse_attr(new_node_attr);
-        debug!(
-            "create_node_helper() successfully created the new child name={:?} \
-                of ino={} and type={:?} under parent ino={} and name={:?} lookup_count={}",
-            node_name,
-            new_ino,
-            node_type,
-            parent,
-            parent_name,
-            new_node.get_lookup_count(),
-        );
-
         self.set_node_to_kv_engine(new_ino, new_node).await?;
-        self.set_node_to_kv_engine(parent, parent_node).await?;
+        self.set_node_to_kv_engine(parent_ino, parent_node).await?;
 
         let ttl = Duration::new(MY_TTL_SEC, 0);
         Ok((ttl, fuse_attr, MY_GENERATION))
@@ -927,47 +858,6 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
             ))?;
 
         Ok(())
-    }
-
-    /// The pre-check before create node
-    /// # Return
-    /// If successful, returns the parent node
-    async fn create_node_pre_check(
-        &self,
-        parent: INum,
-        node_name: &str,
-        user_id: u32,
-        group_id: u32,
-    ) -> DatenLordResult<S3Node<S>> {
-        let parent_node = self.get_node_from_kv_engine(parent).await?.ok_or_else(|| {
-            error::build_inconsistent_fs_with_context(
-                function_name!(),
-                format!("parent of ino={parent} should be in cache before create it new child"),
-            )
-        })?;
-        parent_node.get_attr().check_perm(user_id, group_id, 2)?;
-        if let Some(occupied) = parent_node.get_entry(node_name) {
-            debug!(
-                "create_node_pre_check() found the directory of ino={} and name={:?} \
-                    already exists a child with name={:?} and ino={}",
-                parent,
-                parent_node.get_name(),
-                node_name,
-                occupied.ino(),
-            );
-            return build_error_result_from_errno(
-                Errno::EEXIST,
-                format!(
-                    "create_node_pre_check() found the directory of ino={} and name={:?} \
-                        already exists a child with name={:?} and ino={}",
-                    parent,
-                    parent_node.get_name(),
-                    node_name,
-                    occupied.ino(),
-                ),
-            );
-        }
-        Ok(parent_node)
     }
 
     /// Helper function to pre-check if node can be deferred deleted.

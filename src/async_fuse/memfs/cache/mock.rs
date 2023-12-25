@@ -6,9 +6,8 @@ use async_trait::async_trait;
 use clippy_utilities::OverflowArithmetic;
 use parking_lot::Mutex;
 
-use crate::async_fuse::fuse::protocol::INum;
-
 use super::{Block, BlockCoordinate, IoBlock, Storage};
+use crate::async_fuse::fuse::protocol::INum;
 
 /// A "persistent" storage layer in memory.
 #[derive(Debug, Default)]
@@ -40,7 +39,8 @@ impl MemoryStorage {
     }
 
     /// Tests if the file is flushed,
-    /// and after being tested, the flushed status of the file will be set to `false` again.
+    /// and after being tested, the flushed status of the file will be set to
+    /// `false` again.
     pub fn flushed(&self, ino: INum) -> bool {
         self.flushed.lock().remove(&ino)
     }
@@ -135,9 +135,8 @@ impl Storage for MemoryStorage {
 mod tests {
     use clippy_utilities::OverflowArithmetic;
 
-    use crate::async_fuse::memfs::cache::{Block, IoBlock};
-
     use super::{MemoryStorage, Storage};
+    use crate::async_fuse::memfs::cache::{Block, IoBlock};
 
     const BLOCK_SIZE_IN_BYTES: usize = 8;
     const BLOCK_CONTENT: &[u8; BLOCK_SIZE_IN_BYTES] = b"foo bar ";

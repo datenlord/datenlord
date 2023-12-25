@@ -2,12 +2,13 @@
 
 use std::sync::Arc;
 
-use crate::async_fuse::fuse::protocol::INum;
 use async_trait::async_trait;
 
 use super::{Block, BlockCoordinate, IoBlock};
+use crate::async_fuse::fuse::protocol::INum;
 
-/// The `Storage` trait. It handles blocks with storage such as in-memory cache, in-disk cache and `S3Backend`.
+/// The `Storage` trait. It handles blocks with storage such as in-memory cache,
+/// in-disk cache and `S3Backend`.
 #[async_trait]
 pub trait Storage {
     // Required methods
@@ -46,10 +47,11 @@ pub trait Storage {
     /// Flush all files
     async fn flush_all(&self);
 
-    /// Truncate a file from the block id of `from` to a lower one, and fill zeros in the end of the last block.
-    /// Both `from` and `to` are in blocks, and are the next id to the last valid block of a file.
-    /// If `fill_start` is set to block size, this method should not fill any zero.
-    /// After the truncating, the block range of the file is
+    /// Truncate a file from the block id of `from` to a lower one, and fill
+    /// zeros in the end of the last block. Both `from` and `to` are in
+    /// blocks, and are the next id to the last valid block of a file.
+    /// If `fill_start` is set to block size, this method should not fill any
+    /// zero. After the truncating, the block range of the file is
     /// `[0, to_block)`.
     async fn truncate(&self, ino: INum, from_block: usize, to_block: usize, fill_start: usize);
 

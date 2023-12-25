@@ -152,6 +152,21 @@ pub fn check_name_length(name: &str) -> DatenLordResult<()> {
     }
 }
 
+/// Check if `type_` is supported. We only support
+/// 1. Regular file
+/// 2. Directory
+/// 3. Symbolic link
+/// Named 'type_' to avoid conflict with `type` keyword
+pub fn check_type_supported(type_: &SFlag) -> DatenLordResult<()> {
+    match *type_ {
+        SFlag::S_IFREG | SFlag::S_IFDIR | SFlag::S_IFLNK => Ok(()),
+        _ => {
+            error!("type = {:?} is not supported", type_);
+            build_error_result_from_errno(Errno::ENOTSUP, "type not supported".to_owned())
+        }
+    }
+}
+
 impl<M: MetaData + Send + Sync + 'static> MemFs<M> {
     /// Create `FileSystem`
     #[allow(clippy::too_many_arguments)]
@@ -380,7 +395,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         reply: ReplyEntry,
     ) -> nix::Result<usize> {
         debug!("mknod param = {:?}, req = {:?}", param, req);
-        let mknod_res = self.metadata.create_node_helper(param).await;
+        let mknod_res = self.metadata.mknod(param).await;
         match mknod_res {
             Ok((ttl, fuse_attr, generation)) => reply.entry(ttl, fuse_attr, generation).await,
             Err(e) => {
@@ -415,7 +430,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         };
         let mkdir_res = self
             .metadata
-            .create_node_helper(param)
+            .mknod(param)
             .await
             .add_context(format!(
                 "mkdir() failed to create a directory name={name:?} and mode={mode:?} under parent ino={parent}",
@@ -943,7 +958,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
             node_type: SFlag::S_IFLNK,
             link: Some(target_path.to_owned()),
         };
-        let symlink_res = self.metadata.create_node_helper(
+        let symlink_res = self.metadata.mknod(
             param
         )
         .await
@@ -1127,7 +1142,10 @@ mod test {
 
     use std::fs::File;
 
+    use nix::sys::stat::SFlag;
     use nix::sys::statvfs;
+
+    use crate::async_fuse::memfs::check_type_supported;
     #[test]
     fn test_statfs() -> anyhow::Result<()> {
         let file = File::open(".")?;
@@ -1145,5 +1163,19 @@ mod test {
             statvfs.fragment_size(),
         );
         Ok(())
+    }
+
+    #[test]
+    #[allow(clippy::assertions_on_result_states)]
+    fn test_support_file_type() {
+        // Currently, we only support regular file, directory,and symlink
+        assert!(check_type_supported(&SFlag::S_IFREG).is_ok());
+        assert!(check_type_supported(&SFlag::S_IFDIR).is_ok());
+        assert!(check_type_supported(&SFlag::S_IFLNK).is_ok());
+
+        assert!(check_type_supported(&SFlag::S_IFBLK).is_err());
+        assert!(check_type_supported(&SFlag::S_IFCHR).is_err());
+        assert!(check_type_supported(&SFlag::S_IFIFO).is_err());
+        assert!(check_type_supported(&SFlag::S_IFSOCK).is_err());
     }
 }

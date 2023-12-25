@@ -20,7 +20,7 @@ pub(crate) mod error {
 
     use std::fmt::Display;
 
-    use super::{INum, SFlag};
+    use super::INum;
     use crate::common::error::DatenLordError;
 
     /// A helper function to build [`DatenLordError::InconsistentFS`] with
@@ -41,17 +41,6 @@ pub(crate) mod error {
     ) -> DatenLordError {
         DatenLordError::InconsistentFS {
             context: vec![format!("{fn_name}() found fs is inconsistent: {context}",)],
-        }
-    }
-
-    /// A helper function to build [`DatenLordError::UnsupportedINodeType`].
-    pub(crate) fn build_unsupported_inode_type(
-        node_type: SFlag,
-        context: String,
-    ) -> DatenLordError {
-        DatenLordError::UnsupportedINodeType {
-            node_type,
-            context: vec![context],
         }
     }
 }
@@ -85,10 +74,7 @@ pub trait MetaData {
     ) -> DatenLordResult<(Arc<Self>, Option<CacheServer>)>;
 
     /// Helper function to create node
-    async fn create_node_helper(
-        &self,
-        param: CreateParam,
-    ) -> DatenLordResult<(Duration, FuseAttr, u64)>;
+    async fn mknod(&self, param: CreateParam) -> DatenLordResult<(Duration, FuseAttr, u64)>;
 
     /// Helper function to remove node
     async fn remove_node_helper(

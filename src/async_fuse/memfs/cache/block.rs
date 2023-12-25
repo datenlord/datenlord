@@ -1,6 +1,7 @@
 //! Utilities for blocks.
 
-use std::{fmt::Formatter, sync::Arc};
+use std::fmt::Formatter;
+use std::sync::Arc;
 
 use aligned_utils::bytes::AlignedBytes;
 use clippy_utilities::OverflowArithmetic;
@@ -60,7 +61,8 @@ impl std::fmt::Debug for Block {
 }
 
 impl Block {
-    /// Create a block with `capacity`, which usually equals the `block_size` of storage manager.
+    /// Create a block with `capacity`, which usually equals the `block_size` of
+    /// storage manager.
     #[must_use]
     pub fn new(capacity: usize) -> Self {
         Block {
@@ -69,7 +71,8 @@ impl Block {
         }
     }
 
-    /// Returns the length of the block, which usually equals the `block_size` of storage manager.
+    /// Returns the length of the block, which usually equals the `block_size`
+    /// of storage manager.
     #[must_use]
     pub fn len(&self) -> usize {
         self.inner.len()
@@ -81,8 +84,9 @@ impl Block {
         self.inner.is_empty()
     }
 
-    /// Get a mutable slice of the underlying data, copy them if there are other blocks hold the same data with `Arc`.
-    /// See also [`Arc::make_mut`](fn@std::sync::Arc::make_mut).
+    /// Get a mutable slice of the underlying data, copy them if there are other
+    /// blocks hold the same data with `Arc`. See also [`Arc::make_mut`](fn@
+    /// `std::sync::Arc::make_mut`).
     pub fn make_mut(&mut self) -> &mut [u8] {
         Arc::make_mut(&mut self.inner).as_mut()
     }
@@ -212,9 +216,8 @@ impl AsIoVec for IoBlock {
 mod tests {
     use clippy_utilities::OverflowArithmetic;
 
-    use crate::async_fuse::fuse::fuse_reply::AsIoVec;
-
     use super::{Arc, Block, IoBlock};
+    use crate::async_fuse::fuse::fuse_reply::AsIoVec;
 
     const BLOCK_SIZE_IN_BYTES: usize = 8;
     const BLOCK_CONTENT: &[u8; BLOCK_SIZE_IN_BYTES] = b"foo bar ";

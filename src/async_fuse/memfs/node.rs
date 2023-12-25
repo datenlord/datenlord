@@ -13,7 +13,7 @@ use parking_lot::RwLock;
 use super::cache::{GlobalCache, IoMemBlock};
 use super::dir::DirEntry;
 use super::fs_util::FileAttr;
-use super::SetAttrParam;
+use super::{CreateParam, SetAttrParam};
 use crate::async_fuse::fuse::fuse_reply::StatFsParam;
 use crate::async_fuse::fuse::protocol::INum;
 use crate::common::error::DatenLordResult;
@@ -145,4 +145,12 @@ pub trait Node: Sized {
     fn mark_deferred_deletion(&self);
     /// If node is marked as deferred deletion
     fn is_deferred_deletion(&self) -> bool;
+
+    /// Create child node
+    async fn create_child_node(
+        &mut self,
+        create_param: &CreateParam,
+        new_inum: INum,
+        global_cache: Arc<GlobalCache>,
+    ) -> DatenLordResult<Self>;
 }
