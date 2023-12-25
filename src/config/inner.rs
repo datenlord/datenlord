@@ -56,6 +56,8 @@ pub struct InnerConfig {
     pub kv_addrs: Vec<String>,
     /// Service port number
     pub server_port: u16,
+    /// Set the port of the scheduler extender
+    pub scheduler_extender_port: u16,
     /// Storage related config
     pub storage: StorageConfig,
     /// CSI related config
@@ -70,6 +72,7 @@ impl TryFrom<SuperConfig> for InnerConfig {
         let role = Role::from_str(value.role.as_str())?;
         let node_name = value.node_name;
         let server_port = value.server_port;
+        let scheduler_extender_port = value.scheduler_extender_port;
         let node_ip = IpAddr::from_str(value.node_ip.as_str()).map_err(|e| {
             DatenLordError::ArgumentInvalid {
                 context: vec![format!("node ip {} is invalid: {}", value.node_ip, e)],
@@ -91,6 +94,7 @@ impl TryFrom<SuperConfig> for InnerConfig {
             mount_path,
             kv_addrs,
             server_port,
+            scheduler_extender_port,
             storage,
             csi_config,
         })

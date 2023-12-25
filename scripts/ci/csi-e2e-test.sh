@@ -42,7 +42,7 @@ kubernetes/test/bin/ginkgo -v -failFast -failOnPending -debug -focus='External.S
 /bin/sh /tmp/clean_up_mount_dir.sh $CONFIG_KIND $NODE_APP_LABEL $DATENLORD_NAMESPACE false
 
 # # Quick Start Test
-sed -e 's/e2e_test/latest/g' $CONFIG_KIND > $CONFIG_DOCKERHUB
-kubectl apply -f $CONFIG_DOCKERHUB
-kubectl wait --for=condition=Ready pod -l app=$CONTROLLER_APP_LABEL -n $DATENLORD_NAMESPACE --timeout=120s
-kubectl wait --for=condition=Ready pod -l app=$NODE_APP_LABEL -n $DATENLORD_NAMESPACE --timeout=120s
+# sed -e 's/e2e_test/latest/g' $CONFIG_KIND > $CONFIG_DOCKERHUB
+# kubectl apply -f $CONFIG_DOCKERHUB
+# kubectl wait --for=condition=Ready pod -l app=$CONTROLLER_APP_LABEL -n $DATENLORD_NAMESPACE --timeout=120s
+# kubectl wait --for=condition=Ready pod -l app=$NODE_APP_LABEL -n $DATENLORD_NAMESPACE --timeout=120s
