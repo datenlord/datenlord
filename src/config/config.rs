@@ -22,6 +22,13 @@ pub struct Config {
     #[clap(long = "server-port", value_name = "VALUE", default_value_t = 8800)]
     /// Set service port number
     pub server_port: u16,
+    #[clap(
+        long = "scheduler-extender-port",
+        value_name = "VALUE",
+        default_value_t = 12345
+    )]
+    /// Set the port of the scheduler extender
+    pub scheduler_extender_port: u16,
     #[clap(flatten)]
     /// Storage related config
     pub storage: StorageConfig,

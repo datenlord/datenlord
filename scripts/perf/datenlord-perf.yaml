@@ -31,7 +31,7 @@ spec:
           image: datenlord/datenlord:e2e_test
           imagePullPolicy: "IfNotPresent"
           args:
-            - "start_async_fuse"
+            - "--role=asyncFuse"
             - "--storage-cache-capacity=$(CACHE_CAPACITY)"
             - "--kv-server-list=$(ETCD_ENDPOINT)"
             - "--mount-path=$(FUSE_MOUNT_DIR)"

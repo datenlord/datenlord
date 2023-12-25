@@ -184,7 +184,7 @@ async fn main() -> anyhow::Result<()> {
         NodeRole::SchedulerExtender => {
             let metadata = parse_metadata(&config).await?;
             let md = Arc::new(metadata);
-            let port = config.server_port;
+            let port = config.scheduler_extender_port;
             let ip_address = config.node_ip;
 
             let scheduler_extender = SchedulerExtender::new(
