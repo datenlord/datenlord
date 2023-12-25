@@ -30,7 +30,7 @@ use super::s3_wrapper::S3BackEnd;
 use super::serial::{
     dir_entry_to_serial, file_attr_to_serial, serial_to_file_attr, SerialNode, SerialNodeData,
 };
-use super::SetAttrParam;
+use super::{CreateParam, SetAttrParam};
 use crate::async_fuse::fuse::fuse_reply::{AsIoVec, StatFsParam};
 use crate::async_fuse::fuse::protocol::{INum, FUSE_ROOT_ID};
 use crate::async_fuse::metrics;
@@ -431,6 +431,21 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
             _ => 6,
         };
         attr.check_perm(user_id, group_id, access_mode)
+    }
+
+    /// Check if `name` is available for use
+    /// # Return
+    /// - `Ok(())` if `name` is valid
+    /// - `Err` if `name` is invalid or already exists
+    pub fn check_name_availability(&self, name: &str) -> DatenLordResult<()> {
+        if self.get_dir_data().contains_key(name) {
+            return build_error_result_from_errno(
+                Errno::EEXIST,
+                "check_name_availability() failed as the child name already exists".to_owned(),
+            );
+        }
+
+        Ok(())
     }
 }
 
@@ -1191,5 +1206,52 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
         }
 
         Ok((attr_changed, dirty_attr))
+    }
+
+    /// Create child node
+    async fn create_child_node(
+        &mut self,
+        param: &CreateParam,
+        new_inum: INum,
+        global_cache: Arc<GlobalCache>,
+    ) -> DatenLordResult<Self> {
+        self.check_name_availability(param.name.as_str())?;
+        let child_name = param.name.as_str();
+        let m_flags = fs_util::parse_mode(param.mode);
+        match param.node_type {
+            SFlag::S_IFDIR => {
+                let child_node = self
+                    .create_child_dir(new_inum, child_name, m_flags, param.uid, param.gid)
+                    .await?;
+                Ok(child_node)
+            }
+            SFlag::S_IFREG => {
+                let o_flags = OFlag::O_CREAT | OFlag::O_EXCL | OFlag::O_RDWR;
+                let child_node = self
+                    .create_child_file(
+                        new_inum,
+                        child_name,
+                        o_flags,
+                        m_flags,
+                        param.uid,
+                        param.gid,
+                        global_cache,
+                    )
+                    .await?;
+                Ok(child_node)
+            }
+            SFlag::S_IFLNK => {
+                let target_path = match param.link {
+                    Some(ref link) => link.to_owned(),
+                    None => panic!("create_child_node() found link is None"),
+                };
+                let child_node = self
+                    .create_child_symlink(new_inum, child_name, target_path)
+                    .await?;
+                Ok(child_node)
+            }
+            // Impossible to reach here we will check node type before calling this fn
+            _ => panic!("create_child_node() found unsupported node type"),
+        }
     }
 }
