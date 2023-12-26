@@ -2,7 +2,6 @@
 use std::path::PathBuf;
 
 use grpcio::RpcStatusCode;
-use nix::sys::stat::SFlag;
 use thiserror::Error;
 
 use super::async_fuse_error::KVEngineError;
@@ -250,14 +249,6 @@ pub enum DatenLordError {
         /// Context of the error
         context: Vec<String>,
     },
-    /// An i-node type is not supported by the executing operation.
-    #[error("Unsupported i-node type={:?}, context id {:#?}.", .node_type, .context)]
-    UnsupportedINodeType {
-        /// Type of the node
-        node_type: SFlag,
-        /// Context of the error
-        context: Vec<String>,
-    },
     // /// Error when doing s3 operation.
     // #[error("S3 error: {0}")]
     // S3Error(s3_wrapper::S3Error),
@@ -349,8 +340,7 @@ impl DatenLordError {
                 TransactionRetryLimitExceededErr,
                 InternalErr,
                 Unimplemented,
-                InconsistentFS,
-                UnsupportedINodeType
+                InconsistentFS
             ]
         );
         self
@@ -412,8 +402,7 @@ impl From<DatenLordError> for RpcStatusCode {
             | DatenLordError::InternalErr { .. }
             | DatenLordError::KVEngineErr { .. }
             | DatenLordError::JoinErr { .. }
-            | DatenLordError::InconsistentFS { .. }
-            | DatenLordError::UnsupportedINodeType { .. } => Self::INTERNAL,
+            | DatenLordError::InconsistentFS { .. } => Self::INTERNAL,
             DatenLordError::GrpcioErr { source, .. } => match source {
                 grpcio::Error::RpcFailure(ref status) => status.code(),
                 grpcio::Error::Codec(..)
