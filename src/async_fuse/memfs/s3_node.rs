@@ -1247,8 +1247,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
                     .await?;
                 Ok(child_node)
             }
-            // Impossible to reach here we will check node type before calling this fn
-            _ => panic!("create_child_node() found unsupported node type"),
+            _ => unreachable!("create_child_node() found unsupported node type"),
         }
     }
 }

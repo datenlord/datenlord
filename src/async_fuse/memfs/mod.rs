@@ -152,16 +152,15 @@ pub fn check_name_length(name: &str) -> DatenLordResult<()> {
     }
 }
 
-/// Check if `type_` is supported. We only support
+/// Check if `file_type` is supported. We only support
 /// 1. Regular file
 /// 2. Directory
 /// 3. Symbolic link
-/// Named 'type_' to avoid conflict with `type` keyword
-pub fn check_type_supported(type_: &SFlag) -> DatenLordResult<()> {
-    match *type_ {
+pub fn check_type_supported(file_type: &SFlag) -> DatenLordResult<()> {
+    match *file_type {
         SFlag::S_IFREG | SFlag::S_IFDIR | SFlag::S_IFLNK => Ok(()),
         _ => {
-            error!("type = {:?} is not supported", type_);
+            error!("type = {:?} is not supported", file_type);
             build_error_result_from_errno(Errno::ENOTSUP, "type not supported".to_owned())
         }
     }
