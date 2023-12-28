@@ -202,7 +202,7 @@ spec:
           securityContext:
             privileged: true
             allowPrivilegeEscalation: true
-          image: datenlord/datenlord:e2e_test
+          image: ghcr.io/datenlord/datenlord:e2e_test
           imagePullPolicy: "IfNotPresent"
           args:
             - "--role=node"
@@ -478,7 +478,7 @@ spec:
             # non-privileged sidecar containers cannot access unix domain socket
             # created by privileged CSI driver container.
             privileged: true
-          image: datenlord/datenlord:e2e_test
+          image: ghcr.io/datenlord/datenlord:e2e_test
           imagePullPolicy: "IfNotPresent"
           args :
             - "--role=controller"
@@ -708,7 +708,7 @@ spec:
           - name: datenlord-scheduler-config
             mountPath: /datenlord-scheduler
         - name: datenlord-scheduler-extender
-          image: datenlord/datenlord:e2e_test
+          image: ghcr.io/datenlord/datenlord:e2e_test
           imagePullPolicy: "IfNotPresent"
           args:
             - "--role=scheduler"

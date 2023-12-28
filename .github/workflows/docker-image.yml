@@ -12,19 +12,22 @@ jobs:
 
     runs-on: ubuntu-latest
 
+    permissions:
+      packages: write
+
     steps:
     - uses: actions/checkout@v2
     - name: docker login
       env:
-        DOCKER_USER: ${{secrets.DOCKER_USER}}
-        DOCKER_PASSWORD: ${{secrets.DOCKER_PASSWORD}}
+        DOCKER_USER: ${{ github.actor }}
+        DOCKER_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
       run: |
-        docker login -u $DOCKER_USER -p $DOCKER_PASSWORD
+        docker login ghcr.io -u $DOCKER_USER -p $DOCKER_PASSWORD
     - name: Build the Docker image
       run: |
-        docker build . --build-arg RUST_IMAGE_VERSION=$RUST_VERSION --file Dockerfile --target datenlord --tag datenlord/datenlord:$(date '+%Y-%m-%d')
-        docker tag datenlord/datenlord:$(date '+%Y-%m-%d') datenlord/datenlord:latest
+        docker build . --build-arg RUST_IMAGE_VERSION=$RUST_VERSION --file Dockerfile --target datenlord --tag ghcr.io/datenlord/datenlord:$(date '+%Y-%m-%d')
+        docker tag ghcr.io/datenlord/datenlord:$(date '+%Y-%m-%d') ghcr.io/datenlord/datenlord:latest
     - name: Docker Push
       run: |
-        docker push datenlord/datenlord:$(date '+%Y-%m-%d')
-        docker push datenlord/datenlord:latest
+        docker push ghcr.io/datenlord/datenlord:$(date '+%Y-%m-%d')
+        docker push ghcr.io/datenlord/datenlord:latest
