@@ -28,7 +28,7 @@ spec:
           securityContext:
             privileged: true
             allowPrivilegeEscalation: true
-          image: datenlord/datenlord:e2e_test
+          image: ghcr.io/datenlord/datenlord:e2e_test
           imagePullPolicy: "IfNotPresent"
           args:
             - "--role=asyncFuse"
