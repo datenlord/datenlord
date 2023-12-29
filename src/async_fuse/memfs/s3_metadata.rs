@@ -84,7 +84,7 @@ pub struct S3MetaData<S: S3BackEnd + Send + Sync + 'static> {
 impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
     type N = S3Node<S>;
 
-    #[instrument(skip(self))]
+    #[instrument(skip(self), err, ret)]
     async fn release(
         &self,
         ino: u64,
@@ -200,7 +200,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         node.statefs().await
     }
 
-    #[instrument(skip(self))]
+    #[instrument(skip(self), err, ret)]
     async fn flush(&self, ino: u64, fh: u64) -> DatenLordResult<()> {
         let mut node = self
             .get_node_from_kv_engine(ino)
@@ -210,7 +210,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         Ok(())
     }
 
-    #[instrument(skip(self))]
+    #[instrument(skip(self), err, ret)]
     async fn releasedir(&self, ino: u64, fh: u64) -> DatenLordResult<()> {
         {
             let node = self

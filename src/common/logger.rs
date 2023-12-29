@@ -75,7 +75,9 @@ pub fn init_logger(role: LogRole) {
 
     let layer = tracing_subscriber::fmt::layer()
         .with_ansi(false)
-        .event_format(tracing_subscriber::fmt::format().pretty())
+        .compact()
+        .with_thread_ids(true)
+        .with_target(false)
         .with_writer(std::sync::Mutex::new(file))
         .with_filter(filter);
 
