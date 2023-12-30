@@ -59,6 +59,10 @@
     clippy::min_ident_chars, // Allow Err(e)
     clippy::missing_assert_message,  // Allow assert! without message, mainly in test code
     clippy::impl_trait_in_params, // Allow impl AsRef<Path>, it's common in Rust
+    clippy::module_inception, // We consider mod.rs as a declaration file.
+    clippy::pub_use, // pub use mod::item as new_name is common in Rust,
 )]
 
 pub mod common;
+/// Configurations
+pub mod config;

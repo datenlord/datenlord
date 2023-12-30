@@ -10,6 +10,7 @@ use std::time::SystemTime;
 use anyhow::anyhow;
 use async_trait::async_trait;
 use clippy_utilities::{Cast, OverflowArithmetic};
+use datenlord::config::StorageConfig;
 use futures::future::{BoxFuture, FutureExt};
 use nix::errno::Errno;
 use nix::fcntl::OFlag;
@@ -91,8 +92,8 @@ pub struct S3Node<S: S3BackEnd + Sync + Send + 'static> {
     kv_engine: Arc<KVEngineType>,
     /// K8s node id
     k8s_node_id: Arc<str>,
-    /// K8S volume_info
-    k8s_volume_info: Arc<str>,
+    /// The storage config
+    storage_config: Arc<StorageConfig>,
 }
 
 impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
@@ -106,7 +107,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
         s3_backend: Arc<S>,
         kv_engine: &Arc<KVEngineType>,
         k8s_node_id: &Arc<str>,
-        k8s_volume_info: &Arc<str>,
+        storage_config: &Arc<StorageConfig>,
     ) -> Self {
         Self {
             s3_backend,
@@ -121,7 +122,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
             deferred_deletion: AtomicBool::new(false),
             kv_engine: Arc::clone(kv_engine),
             k8s_node_id: Arc::clone(k8s_node_id),
-            k8s_volume_info: Arc::clone(k8s_volume_info),
+            storage_config: Arc::clone(storage_config),
         }
     }
 
@@ -178,7 +179,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
                 deferred_deletion: AtomicBool::new(serial_node.deferred_deletion),
                 kv_engine: Arc::clone(&meta.kv_engine),
                 k8s_node_id: Arc::clone(&meta.node_id),
-                k8s_volume_info: Arc::clone(&meta.volume_info),
+                storage_config: Arc::clone(&meta.storage_config),
             })
         }
         .boxed()
@@ -243,7 +244,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
             deferred_deletion: AtomicBool::new(false),
             kv_engine: Arc::clone(&parent.kv_engine),
             k8s_node_id: Arc::clone(&parent.k8s_node_id),
-            k8s_volume_info: Arc::clone(&parent.k8s_volume_info),
+            storage_config: Arc::clone(&parent.storage_config),
         }
     }
 
@@ -368,7 +369,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
                 s3_backend,
                 &meta.kv_engine,
                 &meta.node_id,
-                &meta.volume_info,
+                &meta.storage_config,
             );
             Ok(root_node)
         }
@@ -684,7 +685,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
             Arc::clone(&self.s3_backend),
             &self.kv_engine,
             &self.k8s_node_id,
-            &self.k8s_volume_info,
+            &self.storage_config,
         ))
     }
 
@@ -711,7 +712,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
             Arc::clone(&self.s3_backend),
             &self.kv_engine,
             &self.k8s_node_id,
-            &self.k8s_volume_info,
+            &self.storage_config,
         ))
     }
 
@@ -757,7 +758,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
             Arc::clone(&self.s3_backend),
             &self.kv_engine,
             &self.k8s_node_id,
-            &self.k8s_volume_info,
+            &self.storage_config,
         );
 
         self.update_mtime_ctime_to_now();
@@ -780,7 +781,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
             Arc::clone(&self.s3_backend),
             &self.kv_engine,
             &self.k8s_node_id,
-            &self.k8s_volume_info,
+            &self.storage_config,
         ))
     }
 
@@ -836,7 +837,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
             Arc::clone(&self.s3_backend),
             &self.kv_engine,
             &self.k8s_node_id,
-            &self.k8s_volume_info,
+            &self.storage_config,
         ))
     }
 
@@ -865,11 +866,13 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
                     offset, len, new_len, aligned_offset
                 );
 
+                let volume_info = serde_json::to_string(self.storage_config.as_ref())?;
+
                 // dist_client::read_data() won't get lock at remote, OK to put here.
                 let file_data_vec = match dist_client::read_data(
                     &self.kv_engine,
                     &self.k8s_node_id,
-                    &self.k8s_volume_info,
+                    &volume_info,
                     self.get_ino(),
                     aligned_offset
                         .overflow_div(global_cache.get_align().cast())

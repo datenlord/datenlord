@@ -2,12 +2,12 @@
 
 use std::sync::Arc;
 
+use datenlord::config::StorageParams;
 use memfs::s3_wrapper::{DoNothingImpl, S3BackEndImpl};
 
 use self::memfs::kv_engine::KVEngineType;
 use crate::async_fuse::fuse::session;
-use crate::common::etcd_delegate::EtcdDelegate;
-use crate::{AsyncFuseArgs, VolumeType};
+use crate::AsyncFuseArgs;
 
 pub mod fuse;
 pub mod memfs;
@@ -20,7 +20,6 @@ pub mod util;
 
 /// Start async-fuse
 pub async fn start_async_fuse(
-    etcd_delegate: EtcdDelegate,
     kv_engine: Arc<KVEngineType>,
     args: &AsyncFuseArgs,
 ) -> anyhow::Result<()> {
@@ -30,39 +29,40 @@ pub async fn start_async_fuse(
         &kv_engine,
         &args.node_id,
         &args.ip_address.to_string(),
-        &args.server_port,
+        args.server_port,
     )
     .await?;
-    memfs::kv_engine::kv_utils::register_volume(&kv_engine, &args.node_id, &args.volume_info)
-        .await?;
+
+    let volume_info = serde_json::to_string(&args.storage_config)?;
+    memfs::kv_engine::kv_utils::register_volume(&kv_engine, &args.node_id, &volume_info).await?;
+
     let mount_point = std::path::Path::new(&args.mount_dir);
-    match args.volume_type {
-        VolumeType::S3 => {
+
+    match args.storage_config.params {
+        StorageParams::S3(_) => {
             let fs: memfs::MemFs<memfs::S3MetaData<S3BackEndImpl>> = memfs::MemFs::new(
-                &args.volume_info,
-                args.cache_capacity,
+                &args.mount_dir,
+                args.storage_config.cache_capacity,
                 &args.ip_address.to_string(),
-                &args.server_port,
-                etcd_delegate,
+                args.server_port,
                 kv_engine,
                 &args.node_id,
-                &args.volume_info,
+                &args.storage_config,
             )
             .await?;
 
             let ss = session::new_session_of_memfs(mount_point, fs).await?;
             ss.run().await?;
         }
-        VolumeType::None => {
+        StorageParams::None(_) => {
             let fs: memfs::MemFs<memfs::S3MetaData<DoNothingImpl>> = memfs::MemFs::new(
-                &args.volume_info,
-                args.cache_capacity,
+                &args.mount_dir,
+                args.storage_config.cache_capacity,
                 &args.ip_address.to_string(),
-                &args.server_port,
-                etcd_delegate,
+                args.server_port,
                 kv_engine,
                 &args.node_id,
-                &args.volume_info,
+                &args.storage_config,
             )
             .await?;
 
@@ -70,6 +70,7 @@ pub async fn start_async_fuse(
             ss.run().await?;
         }
     }
+
     Ok(())
 }
 

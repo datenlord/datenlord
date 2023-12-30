@@ -3,10 +3,10 @@
 use std::ffi::OsStr;
 use std::path::Path;
 
-use clap::{Arg, Command};
+use clap::Parser;
 use datenlord::common::error::DatenLordError::ArgumentInvalid;
 use datenlord::common::error::{Context, DatenLordResult};
-use datenlord::common::logger::init_logger;
+use datenlord::common::logger::{init_logger, LogRole};
 use nix::mount::{self, MsFlags};
 use tracing::debug;
 
@@ -25,78 +25,40 @@ const MOUNT_OPTIONS_ARG_NAME: &str = "options";
 /// Argument name of un-mount
 const UMOUNT_ARG_NAME: &str = "umount";
 
+#[derive(Debug, Parser)]
+#[clap(author,version,about,long_about=None)]
+pub struct BindMounterConfig {
+    #[clap(short = 'u', long = "umount", value_name = "DIRECTORY")]
+    umount: Option<String>,
+    #[clap(short = 'f', long = "from", value_name = "FROM DIRECTORY")]
+    from_dir: Option<String>,
+    #[clap(short = 't', long = "to", value_name = "TO DIRECTORY")]
+    to_dir: Option<String>,
+    #[clap(short = 's', long = "fstype", value_name = "FS TYPE")]
+    fstype: Option<String>,
+    #[clap(short = '0', long = "options", value_name = "OPTION,OPTION...")]
+    options: Option<String>,
+    #[clap(short = 'r', long = "readonly", value_name = "TRUE|FALSE")]
+    readonly: bool,
+    #[clap(short = 'm', long = "remount", value_name = "TRUE|FALSE")]
+    remount: bool,
+}
+
 fn main() -> DatenLordResult<()> {
-    init_logger();
+    init_logger(LogRole::BindMounter);
+    debug!(
+        "bind_mounter started with args: {:?}",
+        std::env::args().collect::<Vec<_>>()
+    );
+    let config = BindMounterConfig::parse();
 
-    let matches = Command::new("BindMounter")
-        .about("Helper command to bind mount for non-root user")
-        .arg(
-            Arg::new(UMOUNT_ARG_NAME)
-                .short('u')
-                .long(UMOUNT_ARG_NAME)
-                .value_name("DIRECTORY")
-                .takes_value(true)
-                .help("Set umount directory, default empty"),
-        )
-        .arg(
-            Arg::new(FROM_DIR_ARG_NAME)
-                .short('f')
-                .long(FROM_DIR_ARG_NAME)
-                .value_name("FROM DIRECTORY")
-                .takes_value(true)
-                .help("Set read only true or false, default false"),
-        )
-        .arg(
-            Arg::new(TO_DIR_ARG_NAME)
-                .short('t')
-                .long(TO_DIR_ARG_NAME)
-                .value_name("TO DIRECTORY")
-                .takes_value(true)
-                .help("Set read only true or false, default false"),
-        )
-        .arg(
-            Arg::new(FS_TYPE_ARG_NAME)
-                .short('s')
-                .long(FS_TYPE_ARG_NAME)
-                .value_name("FS TYPE")
-                .takes_value(true)
-                .help("Set mount filesystem, default empty"),
-        )
-        .arg(
-            Arg::new(MOUNT_OPTIONS_ARG_NAME)
-                .short('o')
-                .long(MOUNT_OPTIONS_ARG_NAME)
-                .value_name("OPTION,OPTION...")
-                .takes_value(true)
-                .help("Set mount flags, default empty"),
-        )
-        .arg(
-            Arg::new(READ_ONLY_ARG_NAME)
-                .short('r')
-                .long(READ_ONLY_ARG_NAME)
-                .value_name("TRUE|FALSE")
-                .takes_value(false)
-                .help("Set read only true or false, default false"),
-        )
-        .arg(
-            Arg::new(REMOUNT_ARG_NAME)
-                .short('m')
-                .long(REMOUNT_ARG_NAME)
-                .value_name("TRUE|FALSE")
-                .takes_value(false)
-                .help(
-                    "Set re-mount true or false, \
-                        default false",
-                ),
-        )
-        .get_matches();
-
-    let (umount_path, do_umount) = match matches.get_one::<String>(UMOUNT_ARG_NAME) {
-        Some(s) => (Path::new(s), true),
+    let (umount_path, do_umount) = match config.umount {
+        Some(ref s) => (Path::new(s), true),
         None => (Path::new(""), false),
     };
-    let from_path = match matches.get_one::<String>(FROM_DIR_ARG_NAME) {
-        Some(s) => Path::new(s),
+
+    let from_path = match config.from_dir {
+        Some(ref s) => Path::new(s),
         None => {
             if do_umount {
                 Path::new("")
@@ -107,8 +69,9 @@ fn main() -> DatenLordResult<()> {
             }
         }
     };
-    let to_path = match matches.get_one::<String>(TO_DIR_ARG_NAME) {
-        Some(s) => Path::new(s),
+
+    let to_path = match config.to_dir {
+        Some(ref s) => Path::new(s),
         None => {
             if do_umount {
                 Path::new("")
@@ -119,16 +82,16 @@ fn main() -> DatenLordResult<()> {
             }
         }
     };
-    let fs_type = match matches.get_one::<String>(FS_TYPE_ARG_NAME) {
-        Some(s) => s.to_owned(),
+    let fs_type = match config.fstype {
+        Some(ref s) => s.to_owned(),
         None => "".to_owned(),
     };
-    let mount_options = match matches.get_one::<String>(MOUNT_OPTIONS_ARG_NAME) {
-        Some(s) => s.to_owned(),
+    let mount_options = match config.options {
+        Some(ref s) => s.to_owned(),
         None => "".to_owned(),
     };
-    let read_only = matches.contains_id(READ_ONLY_ARG_NAME);
-    let remount = matches.contains_id(REMOUNT_ARG_NAME);
+    let read_only = config.readonly;
+    let remount = config.remount;
 
     debug!(
         "{}={:?}, {}={:?}, {}={:?}, {}={}, {}={}, {}={}, {}={}",
@@ -179,4 +142,65 @@ fn main() -> DatenLordResult<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+#[allow(clippy::bool_assert_comparison)] // For test, it brings more readability.
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_bind_mounter_config() {
+        let args = vec![
+            "bind_mounter",
+            "--from",
+            "/tmp/from",
+            "--to",
+            "/tmp/to",
+            "--fstype",
+            "ext4",
+            "--options",
+            "rw",
+            "--readonly",
+            "--remount",
+        ];
+        let config = BindMounterConfig::parse_from(args);
+        assert_eq!(config.from_dir.unwrap(), "/tmp/from");
+        assert_eq!(config.to_dir.unwrap(), "/tmp/to");
+        assert_eq!(config.fstype.unwrap(), "ext4");
+        assert_eq!(config.options.unwrap(), "rw");
+        assert_eq!(config.readonly, true);
+        assert_eq!(config.remount, true);
+    }
+
+    #[test]
+    fn test_bind_mounter_config_umount() {
+        let args = vec!["bind_mounter", "--umount", "/tmp/umount"];
+        let config = BindMounterConfig::parse_from(args);
+        assert_eq!(config.umount.unwrap(), "/tmp/umount");
+    }
+
+    #[test]
+    fn test_short_config() {
+        let args = vec![
+            "bind_mounter",
+            "-f",
+            "/tmp/from",
+            "-t",
+            "/tmp/to",
+            "-s",
+            "ext4",
+            "-0",
+            "rw",
+            "-r",
+            "-m",
+        ];
+        let config = BindMounterConfig::parse_from(args);
+        assert_eq!(config.from_dir.unwrap(), "/tmp/from");
+        assert_eq!(config.to_dir.unwrap(), "/tmp/to");
+        assert_eq!(config.fstype.unwrap(), "ext4");
+        assert_eq!(config.options.unwrap(), "rw");
+        assert_eq!(config.readonly, true);
+        assert_eq!(config.remount, true);
+    }
 }

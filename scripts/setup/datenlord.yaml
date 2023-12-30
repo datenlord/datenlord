@@ -202,21 +202,24 @@ spec:
           securityContext:
             privileged: true
             allowPrivilegeEscalation: true
-          image: datenlord/datenlord:e2e_test
+          image: ghcr.io/datenlord/datenlord:e2e_test
           imagePullPolicy: "IfNotPresent"
           args:
-            - "start_node"
-            - "--mountpoint=$(FUSE_MOUNT_DIR)"
-            - "--volume_info=$(FUSE_VOLUME_INFO)"
-            - "--endpoint=$(CSI_NODE_ENDPOINT)"
-            - "--drivername=csi.datenlord.io"
-            - "--etcd=$(ETCD_ENDPOINT)"
-            - "--nodeid=$(NODE_ID)"
-            - "--nodeip=$(NODE_IP)"
-            - "--capacity=$(CACHE_CAPACITY)"
-            - "--serverport=8800"
-            - "--volume_type=none"
-            - "--workerport=50051"
+            - "--role=node"
+            - "--mount-path=$(FUSE_MOUNT_DIR)"
+            - "--storage-s3-access-key-id test"
+            - "--storage-s3-secret-access-key test1234"
+            - "--storage-s3-endpoint-url http://127.0.0.1:9000"
+            - "--storage-s3-bucket fuse-test-bucket"
+            - "--csi-endpoint=$(CSI_NODE_ENDPOINT)"
+            - "--csi-driver-name=csi.datenlord.io"
+            - "--kv-server-list=$(ETCD_ENDPOINT)"
+            - "--node-name=$(NODE_ID)"
+            - "--node-ip=$(NODE_IP)"
+            - "--storage-cache-capacity=$(CACHE_CAPACITY)"
+            - "--server-port=8800"
+            - "--storage-type=none"
+            - "--csi-worker-port=50051"
           lifecycle:
             #postStart:
             #  exec:
@@ -229,8 +232,6 @@ spec:
               value: /var/opt/datenlord-data
             - name: ETCD_ENDPOINT
               value: csi-etcd-svc:2379
-            - name: FUSE_VOLUME_INFO
-              value: fuse-test-bucket\;http://127.0.0.1:9000\;test\;test1234
               # The capacity for the cache in memfs, 1GB
             - name: CACHE_CAPACITY
               value: "1073741824"
@@ -477,17 +478,17 @@ spec:
             # non-privileged sidecar containers cannot access unix domain socket
             # created by privileged CSI driver container.
             privileged: true
-          image: datenlord/datenlord:e2e_test
+          image: ghcr.io/datenlord/datenlord:e2e_test
           imagePullPolicy: "IfNotPresent"
           args :
-            - "start_csi_controller"
-            - "--endpoint=$(CSI_CONTROLLER_ENDPOINT)"
-            - "--drivername=csi.datenlord.io"
-            - "--nodeid=$(NODE_ID)"
-            - "--nodeip=$(NODE_IP)"
-            - "--workerport=50051"
-            - "--mountpoint=$(DATA_DIR)"
-            - "--etcd=csi-etcd-svc:2379"
+            - "--role=controller"
+            - "--csi-endpoint=$(CSI_CONTROLLER_ENDPOINT)"
+            - "--csi-driver-name=csi.datenlord.io"
+            - "--node-name=$(NODE_ID)"
+            - "--node-ip=$(NODE_IP)"
+            - "--csi-worker-port=50051"
+            - "--mount-path=$(DATA_DIR)"
+            - "--kv-server-list=csi-etcd-svc:2379"
           env:
             - name: NODE_ID
               valueFrom:
@@ -707,16 +708,16 @@ spec:
           - name: datenlord-scheduler-config
             mountPath: /datenlord-scheduler
         - name: datenlord-scheduler-extender
-          image: datenlord/datenlord:e2e_test
+          image: ghcr.io/datenlord/datenlord:e2e_test
           imagePullPolicy: "IfNotPresent"
           args:
-            - "start_scheduler_extender"
-            - "--nodeid=$(NODE_ID)"
-            - "--nodeip=127.0.0.1"
-            - "--workerport=12345"
-            - "--etcd=csi-etcd-svc:2379"
+            - "--role=scheduler"
+            - "--node-name=$(NODE_ID)"
+            - "--node-ip=127.0.0.1"
+            - "--csi-worker-port=12345"
+            - "--kv-server-list=csi-etcd-svc:2379"
             - "--scheduler-extender-port=12345"
-            - "--mountpoint=$(FUSE_MOUNT_DIR)"
+            - "--mount-path=$(FUSE_MOUNT_DIR)"
           env:
             - name: NODE_ID
               valueFrom:
@@ -734,8 +735,6 @@ spec:
               value: full
             - name: FUSE_MOUNT_DIR
               value: /var/opt/datenlord-data 
-            - name: FUSE_VOLUME_INFO
-              value: fuse-test-bucket\;http://127.0.0.1:9000\;test\;test1234
           ports:
             - containerPort: 12345
               hostPort: 12345

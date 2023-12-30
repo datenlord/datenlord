@@ -3,28 +3,40 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
+use datenlord::config::{StorageConfig, StorageParams, StorageS3Config};
 use tracing::{debug, info}; // warn, error
 
 use crate::async_fuse::fuse::{mount, session};
 use crate::async_fuse::memfs;
 use crate::async_fuse::memfs::kv_engine::{KVEngine, KVEngineType};
 use crate::async_fuse::memfs::s3_wrapper::DoNothingImpl;
-use crate::common::etcd_delegate::EtcdDelegate;
-use crate::common::logger::init_logger;
+use crate::common::logger::{init_logger, LogRole};
 
-pub const TEST_VOLUME_INFO: &str = "fuse-test-bucket;http://127.0.0.1:9000;test;test1234";
 pub const TEST_NODE_IP: &str = "127.0.0.1";
 pub const TEST_NODE_ID: &str = "test_node";
-pub const TEST_PORT: &str = "8888";
+pub const TEST_PORT: u16 = 8888;
 pub const TEST_ETCD_ENDPOINT: &str = "127.0.0.1:2379";
 
 /// The default capacity in bytes for test, 1GB
 const CACHE_DEFAULT_CAPACITY: usize = 1024 * 1024 * 1024;
 
+fn test_storage_config() -> StorageConfig {
+    let s3_config = StorageS3Config {
+        endpoint_url: "http://127.0.0.1:9000".to_owned(),
+        access_key_id: "test".to_owned(),
+        secret_access_key: "test1234".to_owned(),
+        bucket_name: "fuse-test-bucket".to_owned(),
+    };
+    StorageConfig {
+        cache_capacity: CACHE_DEFAULT_CAPACITY,
+        params: StorageParams::S3(s3_config),
+    }
+}
+
 #[allow(clippy::let_underscore_must_use)]
 // TODO : Remove `is_s3` arg due too we only support s3 now
 pub async fn setup(mount_dir: &Path, is_s3: bool) -> anyhow::Result<tokio::task::JoinHandle<()>> {
-    init_logger();
+    init_logger(LogRole::Test);
     debug!("setup started with mount_dir: {:?}", mount_dir);
     if mount_dir.exists() {
         debug!("mount_dir {:?} exists ,try umount", mount_dir);
@@ -51,18 +63,20 @@ pub async fn setup(mount_dir: &Path, is_s3: bool) -> anyhow::Result<tokio::task:
 
     let fs_task = tokio::task::spawn(async move {
         async fn run_fs(mount_point: &Path, is_s3: bool) -> anyhow::Result<()> {
-            let etcd_delegate = EtcdDelegate::new(vec![TEST_ETCD_ENDPOINT.to_owned()]).await?;
+            let storage_config = test_storage_config();
             let kv_engine = Arc::new(KVEngineType::new(vec![TEST_ETCD_ENDPOINT.to_owned()]).await?);
             if is_s3 {
                 let fs: memfs::MemFs<memfs::S3MetaData<DoNothingImpl>> = memfs::MemFs::new(
-                    TEST_VOLUME_INFO,
+                    mount_point
+                        .as_os_str()
+                        .to_str()
+                        .unwrap_or_else(|| panic!("failed to convert to utf8 string")),
                     CACHE_DEFAULT_CAPACITY,
                     TEST_NODE_IP,
                     TEST_PORT,
-                    etcd_delegate,
                     kv_engine,
                     TEST_NODE_ID,
-                    TEST_VOLUME_INFO,
+                    &storage_config,
                 )
                 .await?;
                 let ss = session::new_session_of_memfs(mount_point, fs).await?;
@@ -76,10 +90,9 @@ pub async fn setup(mount_dir: &Path, is_s3: bool) -> anyhow::Result<tokio::task:
                     CACHE_DEFAULT_CAPACITY,
                     TEST_NODE_IP,
                     TEST_PORT,
-                    etcd_delegate.clone(),
                     Arc::<KVEngineType>::clone(&kv_engine),
                     TEST_NODE_ID,
-                    TEST_VOLUME_INFO,
+                    &storage_config,
                 )
                 .await?;
                 let ss = session::new_session_of_memfs(mount_point, fs).await?;

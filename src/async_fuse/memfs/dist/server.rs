@@ -38,8 +38,9 @@ impl Drop for CacheServer {
 
 impl CacheServer {
     /// New a `CacheServer `
-    pub(crate) fn new(ip: String, port: String, cache: Arc<GlobalCache>) -> Self {
+    pub(crate) fn new(ip: String, port: u16, cache: Arc<GlobalCache>) -> Self {
         let ip_copy = ip.clone();
+        let port = port.to_string();
         let port_copy = port.clone();
 
         let listener_join_handler = tokio::spawn(listen(ip_copy, port_copy, cache));

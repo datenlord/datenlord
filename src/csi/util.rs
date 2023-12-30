@@ -3,7 +3,6 @@
 use std::ffi::OsStr;
 use std::fmt::Debug;
 use std::fs;
-use std::net::{IpAddr, ToSocketAddrs};
 use std::path::Path;
 use std::process::Command;
 
@@ -14,7 +13,7 @@ use lazy_static::lazy_static;
 use nix::mount::{self, MntFlags, MsFlags};
 use nix::unistd;
 use protobuf::RepeatedField;
-use tracing::{debug, info};
+use tracing::{error, info};
 use walkdir::WalkDir;
 
 use super::proto::csi::{
@@ -25,6 +24,7 @@ use crate::common::error::DatenLordError::{IoErr, MountErr, NixErr, UmountErr};
 use crate::common::error::{Context, DatenLordError, DatenLordResult};
 
 /// The CSI plugin name
+#[cfg(test)] // For test only
 pub const CSI_PLUGIN_NAME: &str = "io.datenlord.csi.plugin";
 // TODO: should use DatenLord version instead
 /// The CSI plugin version
@@ -206,7 +206,7 @@ fn get_bind_mount_helper_cmd() -> String {
     match std::env::var(BIND_MOUNT_HELPER_CMD_ENV_KEY) {
         Ok(val) => val,
         Err(e) => {
-            debug!(
+            error!(
                 "failed to get the bind mount helper command path, \
                     use default path={}, the error is: {}",
                 DEFAULT_BIND_MOUNT_HELPER_CMD_PATH, e,
@@ -273,6 +273,10 @@ pub fn mount_volume_bind_path(
         let mount_handle = match mount_cmd.output() {
             Ok(h) => h,
             Err(e) => {
+                error!(
+                    "bind mount helper command failed to start, the error is: {}",
+                    e
+                );
                 return Err(IoErr {
                     source: e,
                     context: vec!["bind mount helper command failed to start".to_owned()],
@@ -283,7 +287,7 @@ pub fn mount_volume_bind_path(
             Ok(())
         } else {
             let stderr = String::from_utf8_lossy(&mount_handle.stderr);
-            debug!(
+            error!(
                 "bind mount helper command failed to mount, the error is: {}",
                 &stderr
             );
@@ -303,6 +307,13 @@ pub fn umount_volume_bind_path(target_dir: &str) -> DatenLordResult<()> {
         if let Err(umount_e) = umount_res {
             let umount_force_res = mount::umount2(Path::new(target_dir), MntFlags::MNT_FORCE);
             if let Err(umount_force_e) = umount_force_res {
+                error!(
+                    "failed to un-mount the target path={:?}, \
+                    the un-mount error is: {:?} and the force un-mount error is: {}",
+                    Path::new(target_dir),
+                    umount_e,
+                    umount_force_e,
+                );
                 return Err(NixErr {
                     source: umount_force_e,
                     context: vec![format!(
@@ -323,7 +334,7 @@ pub fn umount_volume_bind_path(target_dir: &str) -> DatenLordResult<()> {
             .add_context("bind mount helper command failed to start")?;
         if !umount_handle.status.success() {
             let stderr = String::from_utf8_lossy(&umount_handle.stderr);
-            debug!(
+            error!(
                 "bind mount helper command failed to umount, the error is: {}",
                 &stderr
             );
@@ -343,17 +354,4 @@ pub fn umount_volume_bind_path(target_dir: &str) -> DatenLordResult<()> {
         .with_context(|| format!("failed to remove mount target path={target_dir}"))?;
 
     Ok(())
-}
-
-/// Get ip address of node
-pub fn get_ip_of_node(node_id: &str) -> IpAddr {
-    let hostname = format!("{}:{}", node_id, 0_i32);
-    let sockets = hostname.to_socket_addrs();
-    let addrs: Vec<_> = sockets
-        .unwrap_or_else(|_| panic!("Failed to resolve node ID={node_id}"))
-        .collect();
-    addrs
-        .get(0) // Return the first ip for now.
-        .unwrap_or_else(|| panic!("Failed to get ip address when resolve node ID={node_id}"))
-        .ip()
 }
