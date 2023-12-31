@@ -35,7 +35,7 @@ use crate::async_fuse::fuse::protocol::{FuseAttr, INum, FUSE_ROOT_ID};
 use crate::async_fuse::memfs::check_name_length;
 use crate::async_fuse::util::build_error_result_from_errno;
 use crate::common::error::DatenLordResult;
-use crate::common::error::{Context as DatenLordContext, DatenLordError}; // conflict with anyhow::Context
+use crate::common::error::{Context as DatenLordContext, DatenLordError}; /* conflict with anyhow::Context */
 use crate::function_name;
 
 /// A helper function to build [`DatenLordError::InconsistentFS`] with default
@@ -476,7 +476,6 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
     // Create and open a file
     // If the file does not exist, first create it with
     // the specified mode, and then open it.
-    #[allow(clippy::too_many_lines)]
     async fn mknod(&self, param: CreateParam) -> DatenLordResult<(Duration, FuseAttr, u64)> {
         check_name_length(&param.name)?;
         check_type_supported(&param.node_type)?;
@@ -536,7 +535,6 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
 
     #[instrument(skip(self), err, ret)]
     /// Helper function to lookup
-    #[allow(clippy::too_many_lines)]
     async fn lookup_helper(
         &self,
         context: ReqContext,
