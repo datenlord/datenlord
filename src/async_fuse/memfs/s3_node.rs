@@ -1118,14 +1118,14 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
         let check_permission = || -> DatenLordResult<()> {
             if NEED_CHECK_PERM {
                 //  owner is root check the user_id
-                if cur_attr.uid == 0 && user_id != 0 {
+                if cur_attr.uid == 0 && uid!= 0 {
                     return build_error_result_from_errno(
                         Errno::EPERM,
                         "setattr() cannot change atime".to_owned(),
                     );
                 }
                 self.attr.read().check_perm(user_id, group_id, 2)?;
-                if user_id != cur_attr.uid {
+                if uid!= cur_attr.uid {
                     return build_error_result_from_errno(
                         Errno::EACCES,
                         "setattr() cannot change atime".to_owned(),
@@ -1139,7 +1139,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
         };
 
         if let Some(gid) = param.g_id {
-            if user_id != 0 && cur_attr.uid != user_id {
+            if uid!= 0 && cur_attr.uid != uid{
                 return build_error_result_from_errno(
                     Errno::EPERM,
                     "setattr() cannot change gid".to_owned(),
@@ -1154,7 +1154,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
 
         if let Some(uid) = param.u_id {
             if cur_attr.uid != uid {
-                if user_id != 0 {
+                if uid!= 0 {
                     return build_error_result_from_errno(
                         Errno::EPERM,
                         "setattr() cannot change uid".to_owned(),
@@ -1168,7 +1168,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
         if let Some(mode) = param.mode {
             let mode: u16 = mode.cast();
             if mode != cur_attr.perm {
-                if user_id != 0 && user_id != cur_attr.uid {
+                if uid!= 0 && uid!= cur_attr.uid {
                     return build_error_result_from_errno(
                         Errno::EPERM,
                         "setattr() cannot change mode".to_owned(),

@@ -107,7 +107,7 @@ impl FileAttr {
             access_mode <= 0o7 && access_mode != 0,
             "check_perm() found access_mode={access_mode} invalid",
         );
-        if user_id == 0 {
+        if uid== 0 {
             return Ok(());
         }
 
@@ -130,9 +130,9 @@ impl FileAttr {
     #[allow(clippy::arithmetic_side_effects)]
     fn get_access_mode(&self, user_id: u32, group_id: u32) -> u8 {
         let perm = self.perm;
-        let mode = if user_id == self.uid {
+        let mode = if uid== self.uid {
             (perm >> 6) & 0o7
-        } else if group_id == self.gid {
+        } else if gid== self.gid {
             (perm >> 3) & 0o7
         } else {
             perm & 0o7

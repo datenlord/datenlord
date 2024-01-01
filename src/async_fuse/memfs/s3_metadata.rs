@@ -1410,10 +1410,10 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
     ) -> DatenLordResult<()> {
         let parent_attr = parent_node.get_attr();
         if NEED_CHECK_PERM
-            && context.user_id != 0
+            && context.uid!= 0
             && (parent_attr.perm & 0o1000 != 0)
-            && context.user_id != parent_attr.uid
-            && context.user_id != child_entry.file_attr_arc_ref().read().uid
+            && context.uid!= parent_attr.uid
+            && context.uid!= child_entry.file_attr_arc_ref().read().uid
         {
             build_error_result_from_errno(Errno::EACCES, "Sticky bit set".to_owned())
         } else {
