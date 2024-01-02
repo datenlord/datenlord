@@ -23,7 +23,7 @@ fn merge_two_blocks(src: &Block, dst: &mut Block) {
 
 /// The in-memory cache, implemented with lockfree hashmaps.
 #[derive(Debug)]
-pub struct InMemoryCache<P, S> {
+pub struct MemoryCache<P, S> {
     /// The inner map where the cached blocks stored
     map: HashMap<INum, FileCache>,
     /// The evict policy
@@ -34,14 +34,14 @@ pub struct InMemoryCache<P, S> {
     block_size: usize,
 }
 
-impl<P, S> InMemoryCache<P, S> {
+impl<P, S> MemoryCache<P, S> {
     /// The limit of retrying to insert a block into the cache.
     const INSERT_RETRY_LIMMIT: usize = 10;
 
     /// Create a new `InMemoryCache` with specified `policy`, `backend` and
     /// `block_size`.
     pub fn new(policy: P, backend: S, block_size: usize) -> Self {
-        InMemoryCache {
+        MemoryCache {
             map: HashMap::new(),
             policy,
             backend,
@@ -157,7 +157,7 @@ impl<P, S> InMemoryCache<P, S> {
 }
 
 #[async_trait]
-impl<P, S> Storage for InMemoryCache<P, S>
+impl<P, S> Storage for MemoryCache<P, S>
 where
     P: EvictPolicy<BlockCoordinate> + Send + Sync,
     S: Storage + Send + Sync,
@@ -301,7 +301,7 @@ where
 mod tests {
     use std::sync::Arc;
 
-    use super::{Block, BlockCoordinate, InMemoryCache, Storage};
+    use super::{Block, BlockCoordinate, MemoryCache, Storage};
     use crate::async_fuse::memfs::cache::mock::MemoryStorage;
     use crate::async_fuse::memfs::cache::policy::LruPolicy;
 
@@ -311,11 +311,11 @@ mod tests {
 
     fn prepare_empty_storage() -> (
         Arc<MemoryStorage>,
-        InMemoryCache<LruPolicy<BlockCoordinate>, Arc<MemoryStorage>>,
+        MemoryCache<LruPolicy<BlockCoordinate>, Arc<MemoryStorage>>,
     ) {
         let policy = LruPolicy::<BlockCoordinate>::new(CACHE_CAPACITY_IN_BLOCKS);
         let backend = Arc::new(MemoryStorage::new(BLOCK_SIZE_IN_BYTES));
-        let cache = InMemoryCache::new(policy, Arc::clone(&backend), BLOCK_SIZE_IN_BYTES);
+        let cache = MemoryCache::new(policy, Arc::clone(&backend), BLOCK_SIZE_IN_BYTES);
 
         (backend, cache)
     }
@@ -415,11 +415,11 @@ mod tests {
     /// not dirty.
     async fn prepare_data_for_evict() -> (
         Arc<MemoryStorage>,
-        InMemoryCache<LruPolicy<BlockCoordinate>, Arc<MemoryStorage>>,
+        MemoryCache<LruPolicy<BlockCoordinate>, Arc<MemoryStorage>>,
     ) {
         let policy = LruPolicy::<BlockCoordinate>::new(CACHE_CAPACITY_IN_BLOCKS);
         let backend = Arc::new(MemoryStorage::new(BLOCK_SIZE_IN_BYTES));
-        let cache = InMemoryCache::new(policy, Arc::clone(&backend), BLOCK_SIZE_IN_BYTES);
+        let cache = MemoryCache::new(policy, Arc::clone(&backend), BLOCK_SIZE_IN_BYTES);
 
         // Fill the backend
         for block_id in 0..CACHE_CAPACITY_IN_BLOCKS {
@@ -490,7 +490,7 @@ mod tests {
     async fn test_evict_dirty_block() {
         let policy = LruPolicy::<BlockCoordinate>::new(CACHE_CAPACITY_IN_BLOCKS);
         let backend = Arc::new(MemoryStorage::new(BLOCK_SIZE_IN_BYTES));
-        let cache = InMemoryCache::new(policy, Arc::clone(&backend), BLOCK_SIZE_IN_BYTES);
+        let cache = MemoryCache::new(policy, Arc::clone(&backend), BLOCK_SIZE_IN_BYTES);
 
         // Fill the cache
         for block_id in 0..CACHE_CAPACITY_IN_BLOCKS {
@@ -518,7 +518,7 @@ mod tests {
 
         let policy = LruPolicy::<BlockCoordinate>::new(CACHE_CAPACITY_IN_BLOCKS);
         let backend = Arc::new(MemoryStorage::new(BLOCK_SIZE_IN_BYTES));
-        let cache = InMemoryCache::new(policy, Arc::clone(&backend), BLOCK_SIZE_IN_BYTES);
+        let cache = MemoryCache::new(policy, Arc::clone(&backend), BLOCK_SIZE_IN_BYTES);
 
         let block = Block::from_slice(BLOCK_SIZE_IN_BYTES, BLOCK_CONTENT);
         cache.store(ino, block_id, block).await;
@@ -537,7 +537,7 @@ mod tests {
 
         let policy = LruPolicy::<BlockCoordinate>::new(CACHE_CAPACITY_IN_BLOCKS);
         let backend = Arc::new(MemoryStorage::new(BLOCK_SIZE_IN_BYTES));
-        let cache = InMemoryCache::new(policy, Arc::clone(&backend), BLOCK_SIZE_IN_BYTES);
+        let cache = MemoryCache::new(policy, Arc::clone(&backend), BLOCK_SIZE_IN_BYTES);
 
         let block = Block::from_slice(BLOCK_SIZE_IN_BYTES, BLOCK_CONTENT);
         cache.store(ino, block_id, block).await;
@@ -554,7 +554,7 @@ mod tests {
     async fn test_write_missing_block_in_middle() {
         let policy = LruPolicy::<BlockCoordinate>::new(CACHE_CAPACITY_IN_BLOCKS);
         let backend = Arc::new(MemoryStorage::new(BLOCK_SIZE_IN_BYTES));
-        let cache = InMemoryCache::new(policy, backend, BLOCK_SIZE_IN_BYTES);
+        let cache = MemoryCache::new(policy, backend, BLOCK_SIZE_IN_BYTES);
 
         let block = Block::from_slice_with_range(BLOCK_SIZE_IN_BYTES, 4, 7, &BLOCK_CONTENT[4..7]);
         cache.store(0, 0, block).await;
@@ -628,7 +628,7 @@ mod tests {
     async fn test_write_out_of_range() {
         let policy = LruPolicy::<BlockCoordinate>::new(CACHE_CAPACITY_IN_BLOCKS);
         let backend = Arc::new(MemoryStorage::new(BLOCK_SIZE_IN_BYTES));
-        let cache = InMemoryCache::new(policy, backend, BLOCK_SIZE_IN_BYTES);
+        let cache = MemoryCache::new(policy, backend, BLOCK_SIZE_IN_BYTES);
 
         let block = Block::new_zeroed(16);
         cache.store(0, 0, block).await;

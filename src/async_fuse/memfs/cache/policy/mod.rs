@@ -21,4 +21,10 @@ pub trait EvictPolicy<K> {
     ///
     /// Returns if the putting is successful.
     fn try_put(&self, key: K) -> bool;
+
+    /// Returns the capacity of this policy.
+    fn capacity(&self) -> usize;
+
+    /// Returns the current size of this policy.
+    fn size(&self) -> usize;
 }
