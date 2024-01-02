@@ -2,6 +2,7 @@
 
 use std::collections::HashMap as StdHashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use clippy_utilities::OverflowArithmetic;
@@ -21,6 +22,82 @@ fn merge_two_blocks(src: &Block, dst: &mut Block) {
     dst.update(src);
 }
 
+/// A builder to configure and build a `MemoryCache`.
+pub struct MemoryCacheBuilder<P, S> {
+    /// The `policy` used by the built `MemoryCache`
+    policy: P,
+    /// The `backend` of the built `MemoryCache`
+    backend: S,
+    /// The size of blocks
+    block_size: usize,
+    /// A flag that if the built `MemoryCache` runs in writing-through policy
+    write_through: bool,
+    /// The soft limit for the write back task. The value of `(3, 5)` meaning that
+    /// the soft limit is `3/5` of the capacity of policy.
+    limit: (usize, usize),
+    /// The interval of the write back task
+    interval: Duration,
+}
+
+impl<P, S> MemoryCacheBuilder<P, S>
+where
+    P: EvictPolicy<BlockCoordinate> + Send + Sync + 'static,
+    S: Storage + Send + Sync + 'static,
+{
+    /// Create a builder.
+    pub fn new(policy: P, backend: S, block_size: usize) -> Self {
+        Self {
+            policy,
+            backend,
+            block_size,
+            write_through: true,
+            limit: (3, 5),
+            interval: Duration::from_millis(100),
+        }
+    }
+
+    /// Set write policy. Write through is enabled by default.
+    pub fn write_through(mut self, write_through: bool) -> Self {
+        self.write_through = write_through;
+        self
+    }
+
+    /// Set the soft limit for the write back task.
+    ///
+    /// Both `(0, x)` and `(x, 0)` patterns are illegal and will be ignored.
+    pub fn limit(mut self, limit: (usize, usize)) -> Self {
+        if limit.0 == 0 || limit.1 == 0 {
+            return self;
+        }
+
+        self.limit = limit;
+        self
+    }
+
+    /// Set the interval for the write back task
+    pub fn interval(mut self, interval: Duration) -> Self {
+        self.interval = interval;
+        self
+    }
+
+    /// Builds a `MemoryCache`. Make sure that this method is called in `tokio` runtime.
+    pub fn build(self) -> Arc<MemoryCache<P, S>> {
+        let MemoryCacheBuilder {
+            policy,
+            backend,
+            block_size,
+            ..
+        } = self;
+
+        Arc::new(MemoryCache {
+            map: HashMap::new(),
+            policy,
+            backend,
+            block_size,
+        })
+    }
+}
+
 /// The in-memory cache, implemented with lockfree hashmaps.
 #[derive(Debug)]
 pub struct MemoryCache<P, S> {
@@ -37,17 +114,6 @@ pub struct MemoryCache<P, S> {
 impl<P, S> MemoryCache<P, S> {
     /// The limit of retrying to insert a block into the cache.
     const INSERT_RETRY_LIMMIT: usize = 10;
-
-    /// Create a new `InMemoryCache` with specified `policy`, `backend` and
-    /// `block_size`.
-    pub fn new(policy: P, backend: S, block_size: usize) -> Self {
-        MemoryCache {
-            map: HashMap::new(),
-            policy,
-            backend,
-            block_size,
-        }
-    }
 
     /// Get the file-level cache `HashMap`.
     fn get_file_cache(&self, ino: INum) -> Option<FileCache> {
@@ -282,7 +348,7 @@ where
 mod tests {
     use std::sync::Arc;
 
-    use super::{Block, BlockCoordinate, MemoryCache, Storage};
+    use super::{Block, BlockCoordinate, MemoryCache, MemoryCacheBuilder, Storage};
     use crate::async_fuse::memfs::cache::mock::MemoryStorage;
     use crate::async_fuse::memfs::cache::policy::LruPolicy;
 
@@ -290,13 +356,13 @@ mod tests {
     const BLOCK_CONTENT: &[u8; BLOCK_SIZE_IN_BYTES] = b"foo bar ";
     const CACHE_CAPACITY_IN_BLOCKS: usize = 4;
 
-    fn prepare_empty_storage() -> (
-        Arc<MemoryStorage>,
-        MemoryCache<LruPolicy<BlockCoordinate>, Arc<MemoryStorage>>,
-    ) {
+    type MemoryCacheType = MemoryCache<LruPolicy<BlockCoordinate>, Arc<MemoryStorage>>;
+
+    fn prepare_empty_storage() -> (Arc<MemoryStorage>, Arc<MemoryCacheType>) {
         let policy = LruPolicy::<BlockCoordinate>::new(CACHE_CAPACITY_IN_BLOCKS);
         let backend = Arc::new(MemoryStorage::new(BLOCK_SIZE_IN_BYTES));
-        let cache = MemoryCache::new(policy, Arc::clone(&backend), BLOCK_SIZE_IN_BYTES);
+        let cache =
+            MemoryCacheBuilder::new(policy, Arc::clone(&backend), BLOCK_SIZE_IN_BYTES).build();
 
         (backend, cache)
     }
@@ -392,13 +458,11 @@ mod tests {
     /// The backend does not contain any block.
     /// The cache contains block `[0, 4)` for file `ino=0`. All the blocks are
     /// not dirty.
-    async fn prepare_data_for_evict() -> (
-        Arc<MemoryStorage>,
-        MemoryCache<LruPolicy<BlockCoordinate>, Arc<MemoryStorage>>,
-    ) {
+    async fn prepare_data_for_evict() -> (Arc<MemoryStorage>, Arc<MemoryCacheType>) {
         let policy = LruPolicy::<BlockCoordinate>::new(CACHE_CAPACITY_IN_BLOCKS);
         let backend = Arc::new(MemoryStorage::new(BLOCK_SIZE_IN_BYTES));
-        let cache = MemoryCache::new(policy, Arc::clone(&backend), BLOCK_SIZE_IN_BYTES);
+        let cache =
+            MemoryCacheBuilder::new(policy, Arc::clone(&backend), BLOCK_SIZE_IN_BYTES).build();
 
         // Fill the backend
         for block_id in 0..CACHE_CAPACITY_IN_BLOCKS {
@@ -467,9 +531,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_evict_dirty_block() {
-        let policy = LruPolicy::<BlockCoordinate>::new(CACHE_CAPACITY_IN_BLOCKS);
-        let backend = Arc::new(MemoryStorage::new(BLOCK_SIZE_IN_BYTES));
-        let cache = MemoryCache::new(policy, Arc::clone(&backend), BLOCK_SIZE_IN_BYTES);
+        let (backend, cache) = prepare_empty_storage();
 
         // Fill the cache
         for block_id in 0..CACHE_CAPACITY_IN_BLOCKS {
@@ -495,9 +557,7 @@ mod tests {
         let ino = 0;
         let block_id = 0;
 
-        let policy = LruPolicy::<BlockCoordinate>::new(CACHE_CAPACITY_IN_BLOCKS);
-        let backend = Arc::new(MemoryStorage::new(BLOCK_SIZE_IN_BYTES));
-        let cache = MemoryCache::new(policy, Arc::clone(&backend), BLOCK_SIZE_IN_BYTES);
+        let (backend, cache) = prepare_empty_storage();
 
         let block = Block::from_slice(BLOCK_SIZE_IN_BYTES, BLOCK_CONTENT);
         cache.store(ino, block_id, block).await;
@@ -514,9 +574,7 @@ mod tests {
         let ino = 0;
         let block_id = 0;
 
-        let policy = LruPolicy::<BlockCoordinate>::new(CACHE_CAPACITY_IN_BLOCKS);
-        let backend = Arc::new(MemoryStorage::new(BLOCK_SIZE_IN_BYTES));
-        let cache = MemoryCache::new(policy, Arc::clone(&backend), BLOCK_SIZE_IN_BYTES);
+        let (_, cache) = prepare_empty_storage();
 
         let block = Block::from_slice(BLOCK_SIZE_IN_BYTES, BLOCK_CONTENT);
         cache.store(ino, block_id, block).await;
@@ -531,9 +589,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_write_missing_block_in_middle() {
-        let policy = LruPolicy::<BlockCoordinate>::new(CACHE_CAPACITY_IN_BLOCKS);
-        let backend = Arc::new(MemoryStorage::new(BLOCK_SIZE_IN_BYTES));
-        let cache = MemoryCache::new(policy, backend, BLOCK_SIZE_IN_BYTES);
+        let (_, cache) = prepare_empty_storage();
 
         let block = Block::from_slice_with_range(BLOCK_SIZE_IN_BYTES, 4, 7, &BLOCK_CONTENT[4..7]);
         cache.store(0, 0, block).await;
@@ -605,9 +661,7 @@ mod tests {
     #[tokio::test]
     #[should_panic(expected = "out of range")]
     async fn test_write_out_of_range() {
-        let policy = LruPolicy::<BlockCoordinate>::new(CACHE_CAPACITY_IN_BLOCKS);
-        let backend = Arc::new(MemoryStorage::new(BLOCK_SIZE_IN_BYTES));
-        let cache = MemoryCache::new(policy, backend, BLOCK_SIZE_IN_BYTES);
+        let (_, cache) = prepare_empty_storage();
 
         let block = Block::new_zeroed(16);
         cache.store(0, 0, block).await;
