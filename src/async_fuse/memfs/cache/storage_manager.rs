@@ -96,7 +96,7 @@ where
         }
     }
 
-    /// Convert `IoBlock`s from slice.
+    /// Convert slice to `Block`s.
     fn make_blocks_from_slice(&self, offset: usize, data: &[u8]) -> Vec<Block> {
         let data_len = data.len();
         let block_num = {
@@ -331,19 +331,19 @@ mod tests {
     use crate::async_fuse::memfs::cache::mock::MemoryStorage;
     use crate::async_fuse::memfs::cache::policy::LruPolicy;
     use crate::async_fuse::memfs::cache::{
-        Block, BlockCoordinate, InMemoryCache, Storage, StorageManager,
+        Block, BlockCoordinate, MemoryCache, Storage, StorageManager,
     };
 
     const BLOCK_SIZE_IN_BYTES: usize = 8;
     const BLOCK_CONTENT: &[u8; BLOCK_SIZE_IN_BYTES] = b"foo bar ";
     const CACHE_CAPACITY_IN_BLOCKS: usize = 4;
 
-    type MemoryCacheType = InMemoryCache<LruPolicy<BlockCoordinate>, Arc<MemoryStorage>>;
+    type MemoryCacheType = MemoryCache<LruPolicy<BlockCoordinate>, Arc<MemoryStorage>>;
 
     fn create_storage() -> (Arc<MemoryStorage>, StorageManager<MemoryCacheType>) {
         let backend = Arc::new(MemoryStorage::new(BLOCK_SIZE_IN_BYTES));
         let lru = LruPolicy::<BlockCoordinate>::new(CACHE_CAPACITY_IN_BLOCKS);
-        let cache = InMemoryCache::new(lru, Arc::clone(&backend), BLOCK_SIZE_IN_BYTES);
+        let cache = MemoryCache::new(lru, Arc::clone(&backend), BLOCK_SIZE_IN_BYTES);
         let storage = StorageManager::new(cache, BLOCK_SIZE_IN_BYTES);
 
         (backend, storage)
@@ -600,11 +600,10 @@ mod tests {
         use clippy_utilities::OverflowArithmetic;
         use crossbeam_utils::atomic::AtomicCell;
 
-        use super::{
-            Block, BlockCoordinate, InMemoryCache, LruPolicy, MemoryStorage, Storage,
-            StorageManager,
-        };
         use crate::async_fuse::fuse::fuse_reply::AsIoVec;
+        use super::{
+            Block, BlockCoordinate, LruPolicy, MemoryCache, MemoryStorage, Storage, StorageManager,
+        };
 
         const BLOCK_SIZE: usize = 16;
         const REQUEST_SIZE: usize = 8;
@@ -666,7 +665,7 @@ mod tests {
 
             let backend = Arc::new(MemoryStorage::new(BLOCK_SIZE));
             let lru = LruPolicy::<BlockCoordinate>::new(TOTAL_SIZE.overflow_div(BLOCK_SIZE));
-            let cache = InMemoryCache::new(lru, Arc::clone(&backend), BLOCK_SIZE);
+            let cache = MemoryCache::new(lru, Arc::clone(&backend), BLOCK_SIZE);
             let storage = Arc::new(StorageManager::new(cache, BLOCK_SIZE));
 
             let write_pointer = Arc::new(AtomicUsize::new(0));
@@ -721,7 +720,7 @@ mod tests {
 
             let backend = Arc::new(MemoryStorage::new(BLOCK_SIZE));
             let lru = LruPolicy::<BlockCoordinate>::new(TOTAL_SIZE.overflow_div(BLOCK_SIZE));
-            let cache = InMemoryCache::new(lru, Arc::clone(&backend), BLOCK_SIZE);
+            let cache = MemoryCache::new(lru, Arc::clone(&backend), BLOCK_SIZE);
             let storage = Arc::new(StorageManager::new(cache, BLOCK_SIZE));
 
             let write_pointer = Arc::new(AtomicUsize::new(0));
