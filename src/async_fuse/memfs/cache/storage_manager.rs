@@ -62,7 +62,7 @@ where
                 blocks.push(block);
             } else {
                 let mut zero_filled = Block::new_zeroed(self.block_size);
-                zero_filled.set_dirty();
+                zero_filled.set_dirty(true);
                 self.storage.store(ino, block_id, zero_filled.clone()).await;
                 blocks.push(zero_filled);
             }
@@ -81,7 +81,7 @@ where
         let mut handles = vec![];
 
         for (mut io_block, block_id) in io_blocks.zip(start_block..) {
-            io_block.set_dirty();
+            io_block.set_dirty(true);
             let storage = Arc::clone(&self.storage);
             let handle = task::spawn(async move { storage.store(ino, block_id, io_block).await });
             handles.push(handle);
