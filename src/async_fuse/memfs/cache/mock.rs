@@ -116,7 +116,7 @@ impl Storage for MemoryStorage {
                             unreachable!("`fill_start` is checked to be less than block size.")
                         })
                         .copy_from_slice(&fill_content);
-                    block.set_dirty();
+                    block.set_dirty(true);
                 }
             }
         }

@@ -223,8 +223,8 @@ impl Block {
     }
 
     /// Sets the block to be dirty.
-    pub fn set_dirty(&mut self) {
-        self.dirty = true;
+    pub fn set_dirty(&mut self, dirty: bool) {
+        self.dirty = dirty;
     }
 }
 
@@ -366,7 +366,7 @@ mod tests {
     fn test_dirty_block() {
         let mut block = Block::new_zeroed(8);
         assert!(!block.dirty());
-        block.set_dirty();
+        block.set_dirty(true);
         assert!(block.dirty());
     }
 
