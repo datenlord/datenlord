@@ -329,7 +329,8 @@ mod tests {
     use crate::async_fuse::memfs::cache::mock::MemoryStorage;
     use crate::async_fuse::memfs::cache::policy::LruPolicy;
     use crate::async_fuse::memfs::cache::{
-        Block, BlockCoordinate, MemoryCache, Storage, StorageManager,
+        Block, BlockCoordinate, MemoryCache,
+        MemoryCacheBuilder, Storage, StorageManager,
     };
 
     const BLOCK_SIZE_IN_BYTES: usize = 8;
@@ -338,10 +339,10 @@ mod tests {
 
     type MemoryCacheType = MemoryCache<LruPolicy<BlockCoordinate>, Arc<MemoryStorage>>;
 
-    fn create_storage() -> (Arc<MemoryStorage>, StorageManager<MemoryCacheType>) {
+    fn create_storage() -> (Arc<MemoryStorage>, StorageManager<Arc<MemoryCacheType>>) {
         let backend = Arc::new(MemoryStorage::new(BLOCK_SIZE_IN_BYTES));
         let lru = LruPolicy::<BlockCoordinate>::new(CACHE_CAPACITY_IN_BLOCKS);
-        let cache = MemoryCache::new(lru, Arc::clone(&backend), BLOCK_SIZE_IN_BYTES);
+        let cache = MemoryCacheBuilder::new(lru, Arc::clone(&backend), BLOCK_SIZE_IN_BYTES).build();
         let storage = StorageManager::new(cache, BLOCK_SIZE_IN_BYTES);
 
         (backend, storage)
@@ -623,12 +624,14 @@ mod tests {
         use std::sync::Arc;
         use std::time::SystemTime;
 
+        
         use clippy_utilities::OverflowArithmetic;
         use crossbeam_utils::atomic::AtomicCell;
 
         use crate::async_fuse::fuse::fuse_reply::AsIoVec;
         use super::{
-            Block, BlockCoordinate, LruPolicy, MemoryCache, MemoryStorage, Storage, StorageManager,
+            Block, BlockCoordinate, LruPolicy, MemoryCacheBuilder, MemoryStorage, Storage,
+            StorageManager,
         };
 
         const BLOCK_SIZE: usize = 16;
@@ -691,7 +694,7 @@ mod tests {
 
             let backend = Arc::new(MemoryStorage::new(BLOCK_SIZE));
             let lru = LruPolicy::<BlockCoordinate>::new(TOTAL_SIZE.overflow_div(BLOCK_SIZE));
-            let cache = MemoryCache::new(lru, Arc::clone(&backend), BLOCK_SIZE);
+            let cache = MemoryCacheBuilder::new(lru, Arc::clone(&backend), BLOCK_SIZE).build();
             let storage = Arc::new(StorageManager::new(cache, BLOCK_SIZE));
 
             let write_pointer = Arc::new(AtomicUsize::new(0));
@@ -746,7 +749,7 @@ mod tests {
 
             let backend = Arc::new(MemoryStorage::new(BLOCK_SIZE));
             let lru = LruPolicy::<BlockCoordinate>::new(TOTAL_SIZE.overflow_div(BLOCK_SIZE));
-            let cache = MemoryCache::new(lru, Arc::clone(&backend), BLOCK_SIZE);
+            let cache = MemoryCacheBuilder::new(lru, Arc::clone(&backend), BLOCK_SIZE).build();
             let storage = Arc::new(StorageManager::new(cache, BLOCK_SIZE));
 
             let write_pointer = Arc::new(AtomicUsize::new(0));

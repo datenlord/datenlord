@@ -13,7 +13,7 @@ pub mod policy;
 
 pub use block::{Block, BlockCoordinate};
 pub use global_cache::*;
-pub use memory_cache::MemoryCache;
+pub use memory_cache::{MemoryCache, MemoryCacheBuilder};
 pub use storage::Storage;
 pub use storage_manager::StorageManager;
 
