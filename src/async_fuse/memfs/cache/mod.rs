@@ -8,6 +8,7 @@ mod global_cache;
 mod memory_cache;
 mod storage;
 mod storage_manager;
+mod write_back_task;
 
 pub mod policy;
 
@@ -16,6 +17,7 @@ pub use global_cache::*;
 pub use memory_cache::{MemoryCache, MemoryCacheBuilder};
 pub use storage::Storage;
 pub use storage_manager::StorageManager;
+pub use write_back_task::{Command, SoftLimit};
 
 /// The number of bytes in one KiB.
 pub const KB_SIZE: usize = 1024;

@@ -688,14 +688,21 @@ mod tests {
             }
         }
 
+        fn create_storage_for_concurrent_test() -> Arc<StorageManager<impl Storage>> {
+            let backend = Arc::new(MemoryStorage::new(BLOCK_SIZE));
+            let lru = LruPolicy::<BlockCoordinate>::new(TOTAL_SIZE.overflow_div(BLOCK_SIZE));
+            let cache = MemoryCacheBuilder::new(lru, Arc::clone(&backend), BLOCK_SIZE)
+                .write_through(false)
+                .command_queue_limit(500)
+                .build();
+            Arc::new(StorageManager::new(cache, BLOCK_SIZE))
+        }
+
         #[tokio::test]
         async fn test_concurrency_aligned() {
             let byte_offset = 0;
 
-            let backend = Arc::new(MemoryStorage::new(BLOCK_SIZE));
-            let lru = LruPolicy::<BlockCoordinate>::new(TOTAL_SIZE.overflow_div(BLOCK_SIZE));
-            let cache = MemoryCacheBuilder::new(lru, Arc::clone(&backend), BLOCK_SIZE).build();
-            let storage = Arc::new(StorageManager::new(cache, BLOCK_SIZE));
+            let storage = create_storage_for_concurrent_test();
 
             let write_pointer = Arc::new(AtomicUsize::new(0));
             let mtime = Arc::new(AtomicCell::new(SystemTime::now()));
@@ -747,10 +754,7 @@ mod tests {
         async fn test_concurrency_unaligned() {
             let byte_offset = 4;
 
-            let backend = Arc::new(MemoryStorage::new(BLOCK_SIZE));
-            let lru = LruPolicy::<BlockCoordinate>::new(TOTAL_SIZE.overflow_div(BLOCK_SIZE));
-            let cache = MemoryCacheBuilder::new(lru, Arc::clone(&backend), BLOCK_SIZE).build();
-            let storage = Arc::new(StorageManager::new(cache, BLOCK_SIZE));
+            let storage = create_storage_for_concurrent_test();
 
             let write_pointer = Arc::new(AtomicUsize::new(0));
             let mtime = Arc::new(AtomicCell::new(SystemTime::now()));
