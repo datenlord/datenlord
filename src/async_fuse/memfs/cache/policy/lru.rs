@@ -37,11 +37,7 @@ impl<K: Clone + Hash + Eq> EvictPolicy<K> for LruPolicy<K> {
     fn evict(&self) -> Option<K> {
         let mut lru = self.inner.lock();
 
-        if lru.len() == self.capacity {
-            lru.pop_front()
-        } else {
-            None
-        }
+        lru.pop_front()
     }
 
     /// Attempt to insert `key` into the policy.
@@ -103,11 +99,7 @@ mod tests {
         let evicted = cache.evict();
         assert_eq!(evicted, Some(1));
 
-        // Policy is not full now.
-        let evicted = cache.evict();
-        assert_eq!(evicted, None);
-
-        // 2 -> 3 -> 4
+        // 2 -> 3
         let res = cache.try_put(4);
         assert!(res);
     }
@@ -141,5 +133,11 @@ mod tests {
 
         assert_eq!(cache.capacity(), 3);
         assert_eq!(cache.size(), 3);
+
+        let evicted = cache.evict();
+        assert_eq!(evicted, Some(1));
+
+        assert_eq!(cache.capacity(), 3);
+        assert_eq!(cache.size(), 2);
     }
 }

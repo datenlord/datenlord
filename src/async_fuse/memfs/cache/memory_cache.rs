@@ -1,16 +1,18 @@
 //! The in-memory cache.
 
 use std::collections::{BTreeSet, HashMap as StdHashMap};
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
 use clippy_utilities::OverflowArithmetic;
 use lockfree_cuckoohash::{pin, LockFreeCuckooHash as HashMap};
-use tokio::sync::RwLock;
+use tokio::sync::{mpsc, oneshot, RwLock};
+use tracing::warn;
 
 use super::policy::EvictPolicy;
-use super::{Block, BlockCoordinate, BlockId, Storage};
+use super::{write_back_task, Block, BlockCoordinate, BlockId, Command, SoftLimit, Storage};
 use crate::async_fuse::fuse::protocol::INum;
 
 /// Merge the content from `src` to `dst`. This will set `dst` to be dirty.
@@ -29,11 +31,12 @@ pub struct MemoryCacheBuilder<P, S> {
     block_size: usize,
     /// A flag that if the built `MemoryCache` runs in writing-through policy
     write_through: bool,
-    /// The soft limit for the write back task. The value of `(3, 5)` meaning that
-    /// the soft limit is `3/5` of the capacity of policy.
-    limit: (usize, usize),
+    /// The soft limit for the write back task. See [`SoftLimit`] for details.
+    limit: SoftLimit,
     /// The interval of the write back task
     interval: Duration,
+    /// The limitation of the message queue of the write back task
+    command_queue_limit: usize,
 }
 
 impl<P, S> MemoryCacheBuilder<P, S>
@@ -43,13 +46,18 @@ where
 {
     /// Create a builder.
     pub fn new(policy: P, backend: S, block_size: usize) -> Self {
+        let limit = SoftLimit(
+            3,
+            NonZeroUsize::new(5).unwrap_or_else(|| unreachable!("5 is not zero.")),
+        );
         Self {
             policy,
             backend,
             block_size,
             write_through: true,
-            limit: (3, 5),
+            limit,
             interval: Duration::from_millis(100),
+            command_queue_limit: 1000,
         }
     }
 
@@ -61,12 +69,8 @@ where
 
     /// Set the soft limit for the write back task.
     ///
-    /// Both `(0, x)` and `(x, 0)` patterns are illegal and will be ignored.
-    pub fn limit(mut self, limit: (usize, usize)) -> Self {
-        if limit.0 == 0 || limit.1 == 0 {
-            return self;
-        }
-
+    /// See [`SoftLimit`] for details.
+    pub fn limit(mut self, limit: SoftLimit) -> Self {
         self.limit = limit;
         self
     }
@@ -77,24 +81,50 @@ where
         self
     }
 
+    /// Set the limitation of the message queue of the write back task.
+    pub fn command_queue_limit(mut self, limit: usize) -> Self {
+        self.command_queue_limit = limit;
+        self
+    }
+
     /// Builds a `MemoryCache`. Make sure that this method is called in `tokio` runtime.
+    ///
+    /// # Panic
+    /// This method will panic if it's not called in a context of `tokio` runtime.
     pub fn build(self) -> Arc<MemoryCache<P, S>> {
         let MemoryCacheBuilder {
             policy,
             backend,
             block_size,
             write_through,
-            ..
+            limit,
+            interval,
+            command_queue_limit,
         } = self;
 
-        Arc::new(MemoryCache {
+        let (sender, receiver) = mpsc::channel(command_queue_limit);
+
+        let cache = Arc::new(MemoryCache {
             map: HashMap::new(),
             policy,
             backend,
             block_size,
             write_through,
+            pending_write_back: RwLock::default(),
+            command_sender: sender,
             truncate_records: HashMap::new(),
-        })
+        });
+
+        let weak = Arc::downgrade(&cache);
+        tokio::spawn(write_back_task::run_write_back_task(
+            limit,
+            interval,
+            weak,
+            receiver,
+            command_queue_limit,
+        ));
+
+        cache
     }
 }
 
@@ -117,6 +147,11 @@ pub struct MemoryCache<P, S> {
     block_size: usize,
     /// A flag that if the `MemoryCache` runs in writing-through policy
     write_through: bool,
+    /// The pending written-back blocks.
+    /// TODO: receive a `Result` to handle the error
+    pending_write_back: RwLock<StdHashMap<INum, Vec<oneshot::Receiver<()>>>>,
+    /// A command sender for write back task
+    command_sender: mpsc::Sender<Command>,
     /// A set of blocks to be removed, when a file is truncated.
     truncate_records: HashMap<INum, TruncateRecord>,
 }
@@ -124,6 +159,16 @@ pub struct MemoryCache<P, S> {
 impl<P, S> MemoryCache<P, S> {
     /// The limit of retrying to insert a block into the cache.
     const INSERT_RETRY_LIMMIT: usize = 10;
+
+    /// Get the `backend`.
+    pub(super) fn backend(&self) -> &S {
+        &self.backend
+    }
+
+    /// Get the `policy`.
+    pub(super) fn policy(&self) -> &P {
+        &self.policy
+    }
 
     /// Get the file-level cache `HashMap`.
     fn get_file_cache(&self, ino: INum) -> Option<FileCache> {
@@ -143,6 +188,28 @@ impl<P, S> MemoryCache<P, S> {
         };
 
         block
+    }
+
+    /// Send a block to the write back task, and it will be stored to the backend later.
+    async fn send_block_to_write_back_task(&self, ino: INum, block_id: BlockId, block: Block) {
+        let (sender, receiver) = oneshot::channel();
+
+        self.command_sender
+            .send(Command::Store {
+                coord: BlockCoordinate(ino, block_id),
+                block,
+                sender,
+            })
+            .await
+            .unwrap_or_else(|_| {
+                panic!("Command receiver in write back task is closed unexpectedly.")
+            });
+        self.pending_write_back
+            .write()
+            .await
+            .entry(ino)
+            .or_default()
+            .push(receiver);
     }
 
     /// Update a block into cache in place.
@@ -173,7 +240,7 @@ impl<P, S> MemoryCache<P, S> {
     }
 
     /// Try to evict a block from the cache to backend, if needed.
-    async fn evict(&self)
+    pub(super) async fn evict(&self)
     where
         P: EvictPolicy<BlockCoordinate> + Send + Sync,
         S: Storage + Send + Sync,
@@ -293,6 +360,9 @@ where
 
             if self.write_through {
                 self.backend.store(ino, block_id, input).await;
+            } else {
+                self.send_block_to_write_back_task(ino, block_id, input)
+                    .await;
             }
 
             return;
@@ -315,6 +385,9 @@ where
 
         if self.write_through {
             self.backend.store(ino, block_id, dirty_block).await;
+        } else {
+            self.send_block_to_write_back_task(ino, block_id, dirty_block)
+                .await;
         }
     }
 
@@ -330,13 +403,20 @@ where
 
     async fn flush(&self, ino: INum) {
         if !self.write_through {
-            if let Some(file_cache) = self.get_file_cache(ino) {
-                let mut file_cache = file_cache.write().await;
-                for (&block_id, block) in file_cache.iter_mut() {
-                    if block.dirty() {
-                        self.backend.store(ino, block_id, block.clone()).await;
-                        block.set_dirty(false);
+            {
+                let mut pending_write_back = self.pending_write_back.write().await;
+                if let Ok(()) = self.command_sender.send(Command::Flush(ino)).await {
+                    if let Some(file_level_pending) = pending_write_back.remove(&ino) {
+                        drop(pending_write_back);
+
+                        #[allow(clippy::let_underscore_must_use)]
+                        for receiver in file_level_pending {
+                            // It's not a big deal that the oneshot sender is closed.
+                            let _: Result<(), oneshot::error::RecvError> = receiver.await;
+                        }
                     }
+                } else {
+                    warn!("Write back task is closed unexpectedly.");
                 }
             }
 
@@ -382,10 +462,20 @@ where
     }
 
     async fn flush_all(&self) {
-        // The `InMemoryCache` cannot iterate its `HashMap`, thus it cannot `flush_all`
-        // on all the file cache. As it runs with a "write through" policy, the
-        // backend takes the responsibility to do the actual `flush_all`.
-        // TODO: handle write back policy, or remove this interface.
+        if !self.write_through {
+            let mut pending_write_back = self.pending_write_back.write().await;
+            let (sender, receiver) = oneshot::channel();
+
+            if let Ok(()) = self.command_sender.send(Command::FlushAll(sender)).await {
+                if receiver.await.is_err() {
+                    warn!("Receiver is closed unexpectedly.");
+                }
+                pending_write_back.clear();
+            } else {
+                warn!("Write back task is closed unexpectedly.");
+            }
+        }
+
         self.backend.flush_all().await;
     }
 
@@ -432,7 +522,10 @@ where
                             .await
                             .unwrap_or_else(|| Block::new_zeroed(self.block_size));
                         fill_block_with_zeros(&mut block);
-                        self.write_block_into_cache(ino, fill_block_id, block).await;
+                        self.write_block_into_cache(ino, fill_block_id, block.clone())
+                            .await;
+                        self.send_block_to_write_back_task(ino, fill_block_id, block)
+                            .await;
                     } else {
                         // This branch is not needed, but exists for clippy lint.
                     }
@@ -464,9 +557,9 @@ where
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
-    use std::sync::Arc;
+    use std::{num::NonZeroUsize, sync::Arc, time::Duration};
 
-    use super::{Block, BlockCoordinate, MemoryCache, MemoryCacheBuilder, Storage};
+    use super::{Block, BlockCoordinate, MemoryCache, MemoryCacheBuilder, SoftLimit, Storage};
     use crate::async_fuse::memfs::cache::mock::MemoryStorage;
     use crate::async_fuse::memfs::cache::policy::LruPolicy;
 
@@ -577,10 +670,14 @@ mod tests {
     /// The cache contains block `[0, 4)` for file `ino=0`. All the blocks are
     /// not dirty.
     async fn prepare_data_for_evict() -> (Arc<MemoryStorage>, Arc<MemoryCacheType>) {
+        let limit = SoftLimit(1, NonZeroUsize::new(1).unwrap());
+
         let policy = LruPolicy::<BlockCoordinate>::new(CACHE_CAPACITY_IN_BLOCKS);
         let backend = Arc::new(MemoryStorage::new(BLOCK_SIZE_IN_BYTES));
-        let cache =
-            MemoryCacheBuilder::new(policy, Arc::clone(&backend), BLOCK_SIZE_IN_BYTES).build();
+        let cache = MemoryCacheBuilder::new(policy, Arc::clone(&backend), BLOCK_SIZE_IN_BYTES)
+            .limit(limit) // Manually disable the write back task
+            .interval(Duration::from_secs(1))
+            .build();
 
         // Fill the backend
         for block_id in 0..CACHE_CAPACITY_IN_BLOCKS {
@@ -804,12 +901,15 @@ mod tests {
         cache.store(0, 0, block).await;
         let loaded = cache.load(0, 0).await;
         assert!(loaded.is_some());
-        assert!(!backend.contains(0, 0));
 
         cache.flush(0).await;
         assert!(backend.contains(0, 0));
-        let loaded = cache.load(0, 0).await.unwrap();
-        assert!(!loaded.dirty());
+
+        let mut block = Block::new_zeroed(BLOCK_SIZE_IN_BYTES);
+        block.set_dirty(true);
+        cache.store(0, 1, block).await;
+        cache.flush_all().await;
+        assert!(backend.contains(0, 1));
     }
 
     #[tokio::test]
@@ -913,5 +1013,26 @@ mod tests {
 
         let loaded = backend.load(0, 1).await.unwrap();
         assert_eq!(loaded.as_slice(), b"foo \0\0\0\0");
+    }
+
+    #[tokio::test]
+    async fn test_write_back_task() {
+        // TODO: Should we test it in a UT?
+
+        let (_, cache) = prepare_empty_storage();
+
+        for block_id in 0..CACHE_CAPACITY_IN_BLOCKS {
+            cache
+                .store(0, block_id, Block::new_zeroed(BLOCK_SIZE_IN_BYTES))
+                .await;
+        }
+
+        tokio::time::sleep(Duration::from_millis(250)).await;
+
+        {
+            let file_cache = cache.get_file_cache(0).unwrap().read_owned().await;
+            assert!(!file_cache.contains_key(&0));
+            assert!(!file_cache.contains_key(&1));
+        }
     }
 }

@@ -14,7 +14,7 @@ pub trait EvictPolicy<K> {
 
     /// Evict a key from the policy manually.
     ///
-    /// If the policy is not full, returns None.
+    /// If the policy is empty, returns None.
     fn evict(&self) -> Option<K>;
 
     /// Try to put a key into the policy.
