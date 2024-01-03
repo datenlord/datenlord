@@ -170,27 +170,8 @@ where
         res
     }
 
-    /// Loads a block from the backend.
-    ///
-    /// If `backend` returns a `None`, this will create a new block with zeros
-    /// filled, inserts it into the `backend`, and returns it to caller.
-    /// That means, this method will never return `None`.
     async fn load_from_backend(&self, ino: INum, block_id: usize) -> Option<Block> {
-        if let Some(from_backend) = self.backend.load(ino, block_id).await {
-            Some(from_backend)
-        } else {
-            // If a fetching from backend still fails, create a new block filled with zeros,
-            // then write it to cache and backend as stored.
-            let mut zeroed_block = Block::new_zeroed(self.block_size);
-
-            // This block is to be written
-            zeroed_block.set_dirty();
-
-            self.backend
-                .store(ino, block_id, zeroed_block.clone())
-                .await;
-            Some(zeroed_block)
-        }
+        self.backend.load(ino, block_id).await
     }
 
     async fn cache_block_from_backend(&self, ino: INum, block_id: usize, block: Block) {
@@ -363,15 +344,14 @@ mod tests {
     async fn test_load_inexist_block() {
         let ino = 0;
         let block_id = 0;
-        let zeroed_block = Block::new_zeroed(BLOCK_SIZE_IN_BYTES);
 
         let (_, cache) = prepare_empty_storage();
 
-        let block = cache.load(ino, 1).await.unwrap();
-        assert_eq!(block.as_slice(), zeroed_block.as_slice());
+        let block = cache.load(ino, 1).await;
+        assert!(block.is_none());
 
-        let block = cache.load(1, block_id).await.unwrap();
-        assert_eq!(block.as_slice(), zeroed_block.as_slice());
+        let block = cache.load(1, block_id).await;
+        assert!(block.is_none());
     }
 
     #[tokio::test]
@@ -394,7 +374,6 @@ mod tests {
     async fn test_remove() {
         let ino = 0;
         let block_id = 0;
-        let zeroed_block = Block::new_zeroed(BLOCK_SIZE_IN_BYTES);
 
         let (backend, cache) = prepare_empty_storage();
 
@@ -404,8 +383,8 @@ mod tests {
         cache.remove(ino).await;
         assert!(!backend.contains(ino, block_id));
 
-        let loaded = cache.load(ino, block_id).await.unwrap();
-        assert_eq!(loaded.as_slice(), zeroed_block.as_slice());
+        let loaded = cache.load(ino, block_id).await;
+        assert!(loaded.is_none());
     }
 
     /// Prepare a backend and cache for test eviction.

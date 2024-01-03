@@ -6,7 +6,6 @@ use std::time::SystemTime;
 use clippy_utilities::OverflowArithmetic;
 use lockfree_cuckoohash::{pin, LockFreeCuckooHash as HashMap};
 use tokio::task;
-use tracing::warn;
 
 use super::{Block, Storage};
 use crate::async_fuse::fuse::protocol::INum;
@@ -62,11 +61,10 @@ where
             if let Some(block) = block {
                 blocks.push(block);
             } else {
-                // A "gap" exists in the range of the being-loaded blocks,
-                // the file is considered to be truncated, and all the rest (if exist) are
-                // ignored.
-                warn!("Cannot fetch block {block_id} from storage, consider to be truncated.");
-                break;
+                let mut zero_filled = Block::new_zeroed(self.block_size);
+                zero_filled.set_dirty();
+                self.storage.store(ino, block_id, zero_filled.clone()).await;
+                blocks.push(zero_filled);
             }
         }
 
@@ -438,6 +436,34 @@ mod tests {
         assert_eq!(loaded.len(), 2);
         assert_eq!(loaded[0].as_slice(), b"foo bar ");
         assert_eq!(loaded[1].as_slice(), b"2000");
+    }
+
+    #[tokio::test]
+    async fn test_read_write_inexist_block() {
+        const ZEROED_BLOCK: &[u8; BLOCK_SIZE_IN_BYTES] = &[0_u8; BLOCK_SIZE_IN_BYTES];
+
+        let ino = 0;
+        let offset = 0;
+        let mtime = SystemTime::now();
+
+        let (_, storage) = create_storage();
+
+        let loaded = storage.load(ino, offset, BLOCK_SIZE_IN_BYTES, mtime).await;
+
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].as_slice(), ZEROED_BLOCK);
+
+        let loaded = storage
+            .load(
+                ino,
+                BLOCK_SIZE_IN_BYTES,
+                BLOCK_SIZE_IN_BYTES.overflow_mul(2),
+                mtime,
+            )
+            .await;
+        assert_eq!(loaded.len(), 2);
+        assert_eq!(loaded[0].as_slice(), ZEROED_BLOCK);
+        assert_eq!(loaded[0].as_slice(), ZEROED_BLOCK);
     }
 
     #[tokio::test]
