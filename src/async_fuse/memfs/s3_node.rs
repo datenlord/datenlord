@@ -17,7 +17,7 @@ use nix::fcntl::OFlag;
 use nix::sys::stat::{Mode, SFlag};
 use nix::unistd;
 use parking_lot::RwLock;
-use tracing::debug;
+use tracing::{debug, info, warn};
 
 use super::cache::{GlobalCache, IoMemBlock};
 use super::dir::DirEntry;
@@ -168,6 +168,13 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
                     .data
                     .into_s3_nodedata(Arc::clone(&meta.data_cache))
             };
+            info!(
+                "ino={}, open_count={}, lookup_count={},attr={:?}",
+                serial_node.attr.get_ino(),
+                serial_node.open_count,
+                serial_node.lookup_count,
+                serial_node.attr
+            );
             Ok(Self {
                 s3_backend: Arc::clone(&meta.s3_backend),
                 parent: serial_node.parent,
@@ -531,6 +538,13 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
 
     /// Decrease node open count
     fn dec_open_count(&self) -> i64 {
+        if self.open_count.load(Ordering::Acquire) == 0 {
+            warn!(
+                "dec_open_count() found open_count is 0, ino={}, name={}",
+                self.get_ino(),
+                self.get_name()
+            );
+        }
         debug_assert!(self.open_count.load(Ordering::Acquire) > 0);
         self.open_count.fetch_sub(1, Ordering::AcqRel)
     }

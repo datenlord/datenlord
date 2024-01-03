@@ -13,7 +13,7 @@ use crossbeam_utils::atomic::AtomicCell;
 use nix::errno::Errno;
 use nix::sys::stat::SFlag;
 use nix::unistd;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, instrument};
 
 use super::context::ProtoVersion;
 use super::file_system::FileSystem;
@@ -446,12 +446,13 @@ impl<F: FileSystem + Send + Sync + 'static> Session<F> {
 /// This calls the appropriate filesystem operation method for the
 /// request and sends back the returned reply to the kernel
 #[allow(clippy::too_many_lines)]
+#[instrument(name="request",skip(req,fd, fs), fields(fuse_id =req.unique(),ino=req.nodeid()),ret)]
 async fn dispatch<'a>(
     req: &'a Request<'a>,
     fd: RawFd,
     fs: Arc<dyn FileSystem + Send + Sync + 'static>,
 ) -> nix::Result<usize> {
-    match *req.operation() {
+    let result = match *req.operation() {
         // Filesystem initialization
         Operation::Init { .. } => panic!("FUSE should have already initialized"),
 
@@ -808,7 +809,9 @@ async fn dispatch<'a>(
         Operation::CuseInit { arg } => {
             panic!("unsupported CuseInit arg={arg:?}");
         }
-    }
+    };
+
+    result
 }
 
 /// Replies ENOSYS
