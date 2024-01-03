@@ -85,7 +85,6 @@ pub const FUSE_ROOT_ID: u64 = 1;
 pub type INum = u64;
 
 /// FUSE attribute `fuse_attr`
-#[derive(Debug)]
 #[repr(C)]
 pub struct FuseAttr {
     /// Node i-number
@@ -122,6 +121,30 @@ pub struct FuseAttr {
     /// Alignment padding
     #[cfg(feature = "abi-7-9")]
     pub padding: u32,
+}
+
+impl std::fmt::Debug for FuseAttr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // fmt like : ino=xx,size=xx,blocks=xx,xx
+        write!(
+            f,
+            "ino={},size={},blocks={},atime={},mtime={},ctime={},atimensec={},mtimensec={},ctimensec={},mode={},nlink={},uid={},gid={},rdev={}",
+            self.ino,
+            self.size,
+            self.blocks,
+            self.atime,
+            self.mtime,
+            self.ctime,
+            self.atimensec,
+            self.mtimensec,
+            self.ctimensec,
+            self.mode,
+            self.nlink,
+            self.uid,
+            self.gid,
+            self.rdev,
+        )
+    }
 }
 
 /// FUSE kstatfs `fuse_kstatfs`

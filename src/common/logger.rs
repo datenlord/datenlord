@@ -1,5 +1,6 @@
 use tracing::level_filters::LevelFilter as Level;
 use tracing_subscriber::filter;
+use tracing_subscriber::fmt::format::FmtSpan;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::prelude::*;
 
@@ -51,7 +52,6 @@ impl LogRole {
         }
     }
 }
-
 /// Initialize the logger with the default settings.
 /// The log file is located at `./datenlord.log`.
 #[allow(clippy::let_underscore_must_use)]
@@ -63,7 +63,7 @@ pub fn init_logger(role: LogRole) {
         .with_target("h2", Level::WARN)
         .with_target("tower", Level::WARN)
         .with_target("datenlord::async_fuse::fuse", Level::INFO)
-        .with_target("", Level::DEBUG);
+        .with_target("", Level::INFO);
 
     let log_path = format!("./datenlord_{}.log", role.as_str());
     let file = std::fs::OpenOptions::new()
@@ -74,9 +74,12 @@ pub fn init_logger(role: LogRole) {
         .unwrap_or_else(|err| panic!("Failed to open log file ,err {err}"));
 
     let layer = tracing_subscriber::fmt::layer()
+        .compact()
+        .with_file(false)
+        .with_target(false)
         .with_ansi(false)
-        .event_format(tracing_subscriber::fmt::format().pretty())
         .with_writer(std::sync::Mutex::new(file))
+        .with_span_events(FmtSpan::NEW | FmtSpan::CLOSE)
         .with_filter(filter);
 
     let subscriber = tracing_subscriber::Registry::default().with(layer);

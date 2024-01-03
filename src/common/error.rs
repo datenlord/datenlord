@@ -229,7 +229,7 @@ pub enum DatenLordError {
     },
 
     /// Error caused by datenlord's internal logic
-    #[error("InternalErr, the error is {:?} context is {:#?}", .source,.context)]
+    #[error("InternalErr, the error is {} context is {:#?}", .source,.context)]
     InternalErr {
         /// Error source
         source: anyhow::Error,
