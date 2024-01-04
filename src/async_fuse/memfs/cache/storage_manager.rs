@@ -1,15 +1,18 @@
 //! The storage manager.
 
+use std::sync::Arc;
+use std::time::SystemTime;
+
 use clippy_utilities::OverflowArithmetic;
 use lockfree_cuckoohash::{pin, LockFreeCuckooHash as HashMap};
-use std::{sync::Arc, time::SystemTime};
 use tokio::task;
 use tracing::warn;
 
 use super::{Block, Storage};
 use crate::async_fuse::fuse::protocol::INum;
 
-/// The storage manager, which exposes the interfaces to `FileSystem` for interacting with the storage layers.
+/// The storage manager, which exposes the interfaces to `FileSystem` for
+/// interacting with the storage layers.
 #[derive(Debug)]
 pub struct StorageManager<S> {
     /// The top-level storage, `InMemoryCache` for example
@@ -60,7 +63,8 @@ where
                 blocks.push(block);
             } else {
                 // A "gap" exists in the range of the being-loaded blocks,
-                // the file is considered to be truncated, and all the rest (if exist) are ignored.
+                // the file is considered to be truncated, and all the rest (if exist) are
+                // ignored.
                 warn!("Cannot fetch block {block_id} from storage, consider to be truncated.");
                 break;
             }
@@ -220,7 +224,8 @@ where
             if invalid {
                 self.mtimes.remove(&ino);
             }
-            // No data will be written, so the passed-in mtime will be passed-out changelessly.
+            // No data will be written, so the passed-in mtime will be passed-out
+            // changelessly.
             return mtime;
         }
 
@@ -259,7 +264,8 @@ where
     /// After the truncating, the valid range of a file in the storage
     /// is `[0, to)`.
     ///
-    /// This method performs a store operation, therefore it also takes a `mtime` and returns a new `mtime` like `store` method.
+    /// This method performs a store operation, therefore it also takes a
+    /// `mtime` and returns a new `mtime` like `store` method.
     pub async fn truncate(
         &self,
         ino: INum,
@@ -317,16 +323,15 @@ where
 #[cfg(test)]
 #[allow(clippy::indexing_slicing)]
 mod tests {
-    use std::{
-        sync::Arc,
-        time::{Duration, SystemTime},
-    };
+    use std::sync::Arc;
+    use std::time::{Duration, SystemTime};
 
     use clippy_utilities::OverflowArithmetic;
 
+    use crate::async_fuse::memfs::cache::mock::MemoryStorage;
+    use crate::async_fuse::memfs::cache::policy::LruPolicy;
     use crate::async_fuse::memfs::cache::{
-        mock::MemoryStorage, policy::LruPolicy, Block, BlockCoordinate, InMemoryCache, Storage,
-        StorageManager,
+        Block, BlockCoordinate, InMemoryCache, Storage, StorageManager,
     };
 
     const BLOCK_SIZE_IN_BYTES: usize = 8;
@@ -588,21 +593,18 @@ mod tests {
 
     #[allow(clippy::unwrap_used)]
     mod concurrency {
-        use crate::async_fuse::fuse::fuse_reply::AsIoVec;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        use std::time::SystemTime;
+
+        use clippy_utilities::OverflowArithmetic;
+        use crossbeam_utils::atomic::AtomicCell;
 
         use super::{
             Block, BlockCoordinate, InMemoryCache, LruPolicy, MemoryStorage, Storage,
             StorageManager,
         };
-        use clippy_utilities::OverflowArithmetic;
-        use crossbeam_utils::atomic::AtomicCell;
-        use std::{
-            sync::{
-                atomic::{AtomicUsize, Ordering},
-                Arc,
-            },
-            time::SystemTime,
-        };
+        use crate::async_fuse::fuse::fuse_reply::AsIoVec;
 
         const BLOCK_SIZE: usize = 16;
         const REQUEST_SIZE: usize = 8;
