@@ -1,10 +1,11 @@
 //! The in-memory cache.
 
+use std::collections::HashMap as StdHashMap;
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use clippy_utilities::OverflowArithmetic;
 use lockfree_cuckoohash::{pin, LockFreeCuckooHash as HashMap};
-use std::collections::HashMap as StdHashMap;
-use std::sync::Arc;
 use tokio::sync::RwLock;
 
 use super::policy::EvictPolicy;
@@ -37,7 +38,8 @@ impl<P, S> InMemoryCache<P, S> {
     /// The limit of retrying to insert a block into the cache.
     const INSERT_RETRY_LIMMIT: usize = 10;
 
-    /// Create a new `InMemoryCache` with specified `policy`, `backend` and `block_size`.
+    /// Create a new `InMemoryCache` with specified `policy`, `backend` and
+    /// `block_size`.
     pub fn new(policy: P, backend: S, block_size: usize) -> Self {
         InMemoryCache {
             map: HashMap::new(),
@@ -68,7 +70,8 @@ impl<P, S> InMemoryCache<P, S> {
     }
 
     /// Update a block into cache in place.
-    /// Return the block if success (the destination existing in cache), otherwise returns `None`.
+    /// Return the block if success (the destination existing in cache),
+    /// otherwise returns `None`.
     async fn update_block(&self, ino: INum, block_id: usize, src: &Block) -> Option<Block> {
         let res = if let Some(file_cache) = self.get_file_cache(ino) {
             let mut file_cache = file_cache.write().await;
@@ -91,11 +94,11 @@ impl<P, S> InMemoryCache<P, S> {
         S: Storage + Send + Sync,
     {
         let evicted = self.policy.evict();
-        // There is still a gap between the removal from policy and the lock on file-level cache
-        // The evicted block may be modified and inserted to the cache again during the gap
-        // This may cause the block evicted to the backend incorrectly, but will not cause
-        // incorrect data fetched by the user.
-        // TODO: Maybe it's better to lock the `policy` via a `Mutex`.
+        // There is still a gap between the removal from policy and the lock on
+        // file-level cache The evicted block may be modified and inserted to
+        // the cache again during the gap This may cause the block evicted to
+        // the backend incorrectly, but will not cause incorrect data fetched by
+        // the user. TODO: Maybe it's better to lock the `policy` via a `Mutex`.
         if let Some(BlockCoordinate(ino, block_id)) = evicted {
             if let Some(file_cache) = self.get_file_cache(ino) {
                 let mut file_cache = file_cache.write().await;
@@ -103,9 +106,10 @@ impl<P, S> InMemoryCache<P, S> {
                 // With the file-level write lock protected, there is no gap
                 // between the removal of evicted block and writing to the backend
                 if let Some(evicted) = file_cache.remove(&block_id) {
-                    // A dirty block in cache must come from the backend (as it's already dirty when in backend),
-                    // or be inserted into cache by storing, which will be written-through to the backend.
-                    // That means, if a block in cache is dirty, it must have been shown in the backend.
+                    // A dirty block in cache must come from the backend (as it's already dirty when
+                    // in backend), or be inserted into cache by storing, which
+                    // will be written-through to the backend. That means, if a
+                    // block in cache is dirty, it must have been shown in the backend.
                     // Therefore, we can just drop it when evicting.
                     if !evicted.dirty() {
                         self.backend.store(ino, block_id, evicted).await;
@@ -168,9 +172,9 @@ where
 
     /// Loads a block from the backend.
     ///
-    /// If `backend` returns a `None`, this will create a new block with zeros filled,
-    /// inserts it into the `backend`, and returns it to caller. That means, this method
-    /// will never return `None`.
+    /// If `backend` returns a `None`, this will create a new block with zeros
+    /// filled, inserts it into the `backend`, and returns it to caller.
+    /// That means, this method will never return `None`.
     async fn load_from_backend(&self, ino: INum, block_id: usize) -> Option<Block> {
         if let Some(from_backend) = self.backend.load(ino, block_id).await {
             Some(from_backend)
@@ -200,8 +204,9 @@ where
         // TODO: Return error instead of panic.
         assert!(end_offset <= self.block_size, "out of range");
 
-        // If the writing block is the whole block, then there is no need to fetch a block from cache or backend,
-        // as the block in storage will be overwritten directly.
+        // If the writing block is the whole block, then there is no need to fetch a
+        // block from cache or backend, as the block in storage will be
+        // overwritten directly.
         if start_offset == 0 && end_offset == self.block_size {
             self.write_block_into_cache(ino, block_id, input.clone())
                 .await;
@@ -242,8 +247,9 @@ where
     }
 
     async fn flush_all(&self) {
-        // The `InMemoryCache` cannot iterate its `HashMap`, thus it cannot `flush_all` on all the file cache.
-        // As it runs with a "write through" policy, the backend takes the responsibility to do the actual `flush_all`.
+        // The `InMemoryCache` cannot iterate its `HashMap`, thus it cannot `flush_all`
+        // on all the file cache. As it runs with a "write through" policy, the
+        // backend takes the responsibility to do the actual `flush_all`.
         self.backend.flush_all().await;
     }
 
@@ -296,7 +302,8 @@ mod tests {
     use std::sync::Arc;
 
     use super::{Block, BlockCoordinate, InMemoryCache, Storage};
-    use crate::async_fuse::memfs::cache::{mock::MemoryStorage, policy::LruPolicy};
+    use crate::async_fuse::memfs::cache::mock::MemoryStorage;
+    use crate::async_fuse::memfs::cache::policy::LruPolicy;
 
     const BLOCK_SIZE_IN_BYTES: usize = 8;
     const BLOCK_CONTENT: &[u8; BLOCK_SIZE_IN_BYTES] = b"foo bar ";
@@ -404,7 +411,8 @@ mod tests {
     /// Prepare a backend and cache for test eviction.
     ///
     /// The backend does not contain any block.
-    /// The cache contains block `[0, 4)` for file `ino=0`. All the blocks are not dirty.
+    /// The cache contains block `[0, 4)` for file `ino=0`. All the blocks are
+    /// not dirty.
     async fn prepare_data_for_evict() -> (
         Arc<MemoryStorage>,
         InMemoryCache<LruPolicy<BlockCoordinate>, Arc<MemoryStorage>>,

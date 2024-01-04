@@ -496,11 +496,11 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
 
         let rmdir_res = self
             .metadata
-            .remove_node_helper(context,parent,dir_name, SFlag::S_IFDIR)
+            .unlink(context, parent, dir_name)
             .await
             .add_context(format!(
-                "rmdir() failed to remove sub-directory name={dir_name:?} under parent ino={parent}",
-            ));
+            "rmdir() failed to remove sub-directory name={dir_name:?} under parent ino={parent}",
+        ));
         match rmdir_res {
             Ok(()) => reply.ok().await,
             Err(e) => {
@@ -538,26 +538,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
             user_id: req.uid(),
             group_id: req.gid(),
         };
-
-        #[cfg(feature = "abi-7-23")]
-        let rename_res = if param.flags == 2 {
-            // RENAME_EXCHANGE
-            self.metadata.rename_exchange_helper(context, param).await
-        } else {
-            // Rename replace
-            self.metadata
-                .rename_may_replace_helper(context, param)
-                .await
-        };
-
-        #[cfg(not(feature = "abi-7-23"))]
-        // Ignore the RENAME_EXCHANGE when version is lower than 7.23
-        let rename_res = self
-            .metadata
-            .rename_may_replace_helper(context, param)
-            .await;
-
-        match rename_res {
+        match self.metadata.rename(context, param).await {
             Ok(()) => reply.ok().await,
             Err(e) => {
                 debug!("rename() failed, the error is: {:?}", e);

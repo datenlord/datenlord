@@ -4,7 +4,6 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use datenlord::config::StorageConfig;
-use nix::sys::stat::SFlag;
 
 use super::cache::IoMemBlock;
 use super::dist::server::CacheServer;
@@ -18,8 +17,6 @@ use crate::common::error::DatenLordResult;
 pub(crate) mod error {
     //! A module containing helper functions to build errors.
 
-    use std::fmt::Display;
-
     use super::INum;
     use crate::common::error::DatenLordError;
 
@@ -30,17 +27,6 @@ pub(crate) mod error {
             context: vec![format!(
                 "{ino}() found fs is inconsistent, the inode ino={fn_name} is not in cache.",
             )],
-        }
-    }
-
-    /// A helper function to build [`DatenLordError::InconsistentFS`] with
-    /// custom context.
-    pub(crate) fn build_inconsistent_fs_with_context<C: Display>(
-        fn_name: &str,
-        context: C,
-    ) -> DatenLordError {
-        DatenLordError::InconsistentFS {
-            context: vec![format!("{fn_name}() found fs is inconsistent: {context}",)],
         }
     }
 }
@@ -74,15 +60,6 @@ pub trait MetaData {
     /// Helper function to create node
     async fn mknod(&self, param: CreateParam) -> DatenLordResult<(Duration, FuseAttr, u64)>;
 
-    /// Helper function to remove node
-    async fn remove_node_helper(
-        &self,
-        context: ReqContext,
-        parent: INum,
-        node_name: &str,
-        node_type: SFlag,
-    ) -> DatenLordResult<()>;
-
     /// Helper function to lookup
     async fn lookup_helper(
         &self,
@@ -92,19 +69,7 @@ pub trait MetaData {
     ) -> DatenLordResult<(Duration, FuseAttr, u64)>;
 
     /// Rename helper to exchange on disk
-    #[cfg(feature = "abi-7-23")]
-    async fn rename_exchange_helper(
-        &self,
-        context: ReqContext,
-        param: RenameParam,
-    ) -> DatenLordResult<()>;
-
-    /// Rename helper to move on disk, it may replace destination entry
-    async fn rename_may_replace_helper(
-        &self,
-        context: ReqContext,
-        param: RenameParam,
-    ) -> DatenLordResult<()>;
+    async fn rename(&self, context: ReqContext, param: RenameParam) -> DatenLordResult<()>;
 
     /// Helper function of fsync
     async fn fsync_helper(&self, ino: u64, fh: u64, datasync: bool) -> DatenLordResult<()>;

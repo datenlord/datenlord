@@ -186,10 +186,11 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
     }
 
     /// This function is used to create a new `SerialNode` by `S3Node`
-    pub fn into_serial_node(self) -> SerialNode {
+    #[allow(clippy::wrong_self_convention)]
+    pub fn into_serial_node(&self) -> SerialNode {
         SerialNode {
             parent: self.parent,
-            name: self.name,
+            name: self.name.clone(),
             attr: file_attr_to_serial(&self.attr.read().clone()),
             data: self.data.serial(),
             open_count: self.open_count.load(Ordering::SeqCst),
@@ -373,6 +374,23 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
             );
             Ok(root_node)
         }
+    }
+
+    /// Check if node is a directory
+    /// # Return
+    /// - `Ok(())` if node is a directory
+    /// - `Err` if node is not a directory
+    pub fn check_is_dir(&self) -> DatenLordResult<()> {
+        if self.get_attr().kind != SFlag::S_IFDIR {
+            return build_error_result_from_errno(
+                Errno::ENOTDIR,
+                format!(
+                    "check_is_dir() failed as the node {} is not a directory",
+                    self.get_name()
+                ),
+            );
+        }
+        Ok(())
     }
 
     /// flush all data of a node
@@ -631,8 +649,8 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
     }
 
     /// Get a directory entry by name
-    fn get_entry(&self, name: &str) -> Option<&DirEntry> {
-        self.get_dir_data().get(name)
+    fn get_entry(&self, name: &str) -> Option<DirEntry> {
+        self.get_dir_data().get(name).cloned()
     }
 
     /// Create symlink in a directory
