@@ -60,4 +60,15 @@ if [ $? -ne 0 ]; then
 fi
 
 echo "Starting datenlord.. ... ... ..."
-./target/debug/datenlord --role=node --csi-endpoint=unix:///tmp/node.sock --csi-worker-port=0 --node-name=localhost --node-ip=127.0.0.1 --csi-driver-name=io.datenlord.csi.plugin --mount-path=$DATENLORD_LOCAL_BIND_DIR --kv-server-list=127.0.0.1:2379 --storage-s3-access-key-id test  --storage-s3-secret-access-key test1234 --storage-s3-bucket  fuse-test-bucket  --storage-s3-endpoint-url http://127.0.0.1:9000 --storage-cache-capacity=1073741824 --server-port=8800 --storage-type=none 
+./target/debug/datenlord \
+--role=node \
+--csi-endpoint=unix:///tmp/node.sock \
+--csi-worker-port=0 \
+--node-name=localhost \
+--node-ip=127.0.0.1 \
+--csi-driver-name=io.datenlord.csi.plugin \
+--mount-path=$DATENLORD_LOCAL_BIND_DIR \
+--kv-server-list=127.0.0.1:2379 \
+--storage-fs-root=/tmp/datenlord_backend \
+--server-port=8800 \
+--storage-type=fs 

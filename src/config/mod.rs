@@ -6,4 +6,7 @@ mod config;
 mod inner;
 
 pub use config::Config;
-pub use inner::{InnerConfig, Role as NodeRole, StorageConfig, StorageParams, StorageS3Config};
+pub use inner::{
+    InnerConfig, MemoryCacheConfig, Role as NodeRole, SoftLimit, StorageConfig, StorageParams,
+    StorageS3Config,
+};

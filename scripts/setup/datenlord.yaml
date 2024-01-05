@@ -207,18 +207,14 @@ spec:
           args:
             - "--role=node"
             - "--mount-path=$(FUSE_MOUNT_DIR)"
-            - "--storage-s3-access-key-id test"
-            - "--storage-s3-secret-access-key test1234"
-            - "--storage-s3-endpoint-url http://127.0.0.1:9000"
-            - "--storage-s3-bucket fuse-test-bucket"
+            - "--storage-fs-root=/tmp/datenlord_backend"
             - "--csi-endpoint=$(CSI_NODE_ENDPOINT)"
             - "--csi-driver-name=csi.datenlord.io"
             - "--kv-server-list=$(ETCD_ENDPOINT)"
             - "--node-name=$(NODE_ID)"
             - "--node-ip=$(NODE_IP)"
-            - "--storage-cache-capacity=$(CACHE_CAPACITY)"
             - "--server-port=8800"
-            - "--storage-type=none"
+            - "--storage-type=fs"
             - "--csi-worker-port=50051"
           lifecycle:
             #postStart:

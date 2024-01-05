@@ -81,6 +81,7 @@ impl Block {
     }
 
     /// Creates a block with `size` and a range.
+    #[must_use]
     pub fn new_zeroed_with_range(size: usize, start: usize, end: usize) -> Self {
         Block {
             inner: Arc::new(AlignedBytes::new_zeroed(size, PAGE_SIZE)),
@@ -95,6 +96,7 @@ impl Block {
     /// If `data` is longer than the block, the rest of the slice will be
     /// ignored; if `data` is shorter than the block, the rest part of the
     /// block will remains 0.
+    #[must_use]
     pub fn from_slice(size: usize, data: &[u8]) -> Self {
         let mut inner = AlignedBytes::new_zeroed(size, PAGE_SIZE);
 
@@ -120,6 +122,7 @@ impl Block {
     /// If `data` is longer than the block, the rest of the slice will be
     /// ignored; if `data` is shorter than the block, the rest part of the
     /// block will remains 0.
+    #[must_use]
     pub fn from_slice_with_range(size: usize, start: usize, end: usize, data: &[u8]) -> Self {
         debug_assert!(start <= end);
         debug_assert!(
@@ -170,6 +173,7 @@ impl Block {
     }
 
     /// Gets the valid range of this block.
+    #[must_use]
     pub fn as_slice(&self) -> &[u8] {
         self.inner.get(self.start..self.end).unwrap_or_else(|| {
             unreachable!(
@@ -359,7 +363,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "out of range")]
     fn test_io_block_out_of_range() {
-        Block::from_slice_with_range(4, 0, 8, b"abcd");
+        let _block = Block::from_slice_with_range(4, 0, 8, b"abcd");
     }
 
     #[test]

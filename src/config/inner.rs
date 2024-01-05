@@ -1,11 +1,13 @@
 use std::net::IpAddr;
+use std::num::NonZeroUsize;
 use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 
 use crate::common::error::DatenLordError;
 use crate::config::config::{
-    CSIConfig as SupperCSIConfig, Config as SuperConfig, S3StorageConfig as SuperS3StorageConfig,
+    CSIConfig as SupperCSIConfig, Config as SuperConfig,
+    MemoryCacheConfig as SuperMemoryCacheConfig, S3StorageConfig as SuperS3StorageConfig,
     StorageConfig as SuperStorageConfig,
 };
 
@@ -101,13 +103,13 @@ impl TryFrom<SuperConfig> for InnerConfig {
     }
 }
 
-/// Storage config
-/// Cache related config, currently only support cache capacity
-/// Storage backend related config, currently only support S3
+/// Storage related config
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct StorageConfig {
+    /// The size of blocks, default is 512 KiB.
+    pub block_size: usize,
     /// Cache capacity
-    pub cache_capacity: usize,
+    pub memory_cache_config: MemoryCacheConfig,
     /// Storage params
     pub params: StorageParams,
 }
@@ -117,10 +119,10 @@ impl TryFrom<SuperStorageConfig> for StorageConfig {
 
     #[inline]
     fn try_from(value: SuperStorageConfig) -> Result<Self, Self::Error> {
-        let cache_capacity = value.cache_capacity;
-        let params = match value.storage_type.as_str() {
-            "S3" => StorageParams::S3(value.s3_storage_config.try_into()?),
-            "none" => StorageParams::None(value.s3_storage_config.try_into()?),
+        let memory_cache_config = value.memory_cache_config.try_into()?;
+        let params = match value.storage_type.to_lowercase().as_str() {
+            "s3" => StorageParams::S3(value.s3_storage_config.try_into()?),
+            "fs" => StorageParams::Fs(value.fs_storage_root),
             _ => {
                 return Err(DatenLordError::ArgumentInvalid {
                     context: vec![format!(
@@ -130,23 +132,106 @@ impl TryFrom<SuperStorageConfig> for StorageConfig {
                 })
             }
         };
+        let block_size = value.block_size;
         Ok(StorageConfig {
-            cache_capacity,
+            block_size,
+            memory_cache_config,
             params,
         })
     }
 }
 
+/// Memory cache config
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct MemoryCacheConfig {
+    /// The capacity of memory cache in bytes, default is 8 GiB.
+    pub capacity: usize,
+    /// The limitation of the message queue of the write back task, default is
+    /// `1000`
+    pub command_queue_limit: usize,
+    /// A flag whether the cache runs in write-back policy, default is `false`
+    pub write_back: bool,
+    /// A soft limit of evict policy for write back task.
+    ///
+    /// It's a fraction with the form of `a,b`, which means that
+    /// the soft limit is `a/b` of the capacity.
+    pub soft_limit: SoftLimit,
+}
+
+/// A type to represent the soft limit of cache.
+///
+/// It's represented as a fraction, for example,
+/// a soft limit of `SoftLimit(3, 5)` means the soft limit is
+/// `3/5` if the policy's capacity.
+///
+/// Because the second component of this struct is used as a denominator,
+/// it cannot be zero, therefore, we use `NonZeroUsize` here.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SoftLimit(pub usize, pub NonZeroUsize);
+
+impl FromStr for SoftLimit {
+    type Err = DatenLordError;
+
+    #[inline]
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if let Some((a, b)) = s.split_once(',') {
+            let a = a.trim().parse::<usize>().map_err(|e|
+                DatenLordError::ArgumentInvalid { context: vec![
+                    e.to_string(),
+                    "The first component of `--storage-mem-cache-soft-limit` must be a valid value of `usize`.".to_owned(),
+                    ] }
+            )?;
+            let b = b.trim().parse::<NonZeroUsize>().map_err(|e|
+                DatenLordError::ArgumentInvalid { context: vec![
+                    e.to_string(),
+                    "The second component of `--storage-mem-cache-soft-limit` must be a valid value of `usize` and not zero.".to_owned(),
+                    ] }
+            )?;
+
+            Ok(SoftLimit(a, b))
+        } else {
+            Err(DatenLordError::ArgumentInvalid {
+                context: vec![
+                    "Argument `--storage-mem-cache-soft-limit` must be in form of `a,b`."
+                        .to_owned(),
+                ],
+            })
+        }
+    }
+}
+
+impl TryFrom<SuperMemoryCacheConfig> for MemoryCacheConfig {
+    type Error = DatenLordError;
+
+    #[inline]
+    fn try_from(value: SuperMemoryCacheConfig) -> Result<Self, Self::Error> {
+        let SuperMemoryCacheConfig {
+            capacity,
+            command_queue_limit,
+            write_back,
+            soft_limit,
+        } = value;
+
+        Ok(Self {
+            capacity,
+            command_queue_limit,
+            write_back,
+            soft_limit: soft_limit.parse()?,
+        })
+    }
+}
+
 /// Storage backend related config
-/// S3 : `endpoint_url`, `access_key_id`, `secret_access_key`, `bucket_name`
-/// None : currently it equal to a fake s3 storage, we will refactor it soon
+///
+/// - `S3` : `endpoint_url`, `access_key_id`, `secret_access_key`, `bucket_name`
+/// - `Fs` : A local filesystem based backend, with argument `backend_root`.
 /// TODO(xiaguan) add more storage types
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum StorageParams {
     /// S3 storage params
     S3(StorageS3Config),
-    /// None storage : currently it equal to a fake s3 storage
-    None(StorageS3Config),
+    /// Fs storage
+    Fs(String),
 }
 
 /// S3 config struct
