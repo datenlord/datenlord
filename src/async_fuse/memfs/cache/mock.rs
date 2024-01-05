@@ -1,6 +1,9 @@
 //! Mock storages for test and local nodes.
 
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    time::Duration,
+};
 
 use async_trait::async_trait;
 use clippy_utilities::OverflowArithmetic;
@@ -18,15 +21,25 @@ pub struct MemoryStorage {
     flushed: Mutex<HashSet<INum>>,
     /// The size of block
     block_size: usize,
+    /// The latency of all operations
+    latency: Duration,
 }
 
 impl MemoryStorage {
     /// Creates a memory storage with block size.
     #[must_use]
-    pub fn new(block_size: usize) -> Self {
+    pub fn new(block_size: usize, latency: Duration) -> Self {
         Self {
             block_size,
+            latency,
             ..Default::default()
+        }
+    }
+
+    /// If `self.latency` is not zero, sleep for the time of it.
+    async fn sleep(&self) {
+        if self.latency.as_millis() != 0 {
+            tokio::time::sleep(self.latency).await;
         }
     }
 
@@ -49,6 +62,7 @@ impl MemoryStorage {
 #[async_trait]
 impl Storage for MemoryStorage {
     async fn load_from_self(&self, ino: INum, block_id: usize) -> Option<Block> {
+        self.sleep().await;
         self.inner
             .lock()
             .get(&ino)
@@ -64,6 +78,7 @@ impl Storage for MemoryStorage {
     }
 
     async fn store(&self, ino: INum, block_id: usize, block: Block) {
+        self.sleep().await;
         self.inner
             .lock()
             .entry(ino)
@@ -74,6 +89,7 @@ impl Storage for MemoryStorage {
     }
 
     async fn remove(&self, ino: INum) {
+        self.sleep().await;
         self.inner.lock().remove(&ino);
     }
 
@@ -91,6 +107,7 @@ impl Storage for MemoryStorage {
     async fn truncate(&self, ino: INum, from_block: usize, to_block: usize, fill_start: usize) {
         debug_assert!(from_block >= to_block);
 
+        self.sleep().await;
         if let Some(file_cache) = self.inner.lock().get_mut(&ino) {
             for block_id in to_block..from_block {
                 file_cache.remove(&block_id);
@@ -126,7 +143,9 @@ impl Storage for MemoryStorage {
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
-    use super::{MemoryStorage, Storage};
+    use tokio::time::Instant;
+
+    use super::{Duration, MemoryStorage, Storage};
     use crate::async_fuse::memfs::cache::Block;
 
     const BLOCK_SIZE_IN_BYTES: usize = 8;
@@ -138,7 +157,7 @@ mod tests {
         let block_id = 0;
         let block = Block::from_slice(BLOCK_SIZE_IN_BYTES, BLOCK_CONTENT);
 
-        let storage = MemoryStorage::new(BLOCK_SIZE_IN_BYTES);
+        let storage = MemoryStorage::new(BLOCK_SIZE_IN_BYTES, Duration::from_millis(0));
         storage.store(ino, block_id, block).await;
         assert!(storage.contains(ino, block_id));
 
@@ -161,7 +180,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_flush() {
-        let storage = MemoryStorage::new(BLOCK_SIZE_IN_BYTES);
+        let storage = MemoryStorage::new(BLOCK_SIZE_IN_BYTES, Duration::from_millis(0));
         storage.flush(0).await;
         assert!(storage.flushed(0));
         assert!(!storage.flushed(0));
@@ -176,13 +195,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_invalid() {
-        let storage = MemoryStorage::new(BLOCK_SIZE_IN_BYTES);
+        let storage = MemoryStorage::new(BLOCK_SIZE_IN_BYTES, Duration::from_millis(0));
         storage.invalidate(0).await;
     }
 
     #[tokio::test]
     async fn test_truncate_whole_blocks() {
-        let storage = MemoryStorage::new(BLOCK_SIZE_IN_BYTES);
+        let storage = MemoryStorage::new(BLOCK_SIZE_IN_BYTES, Duration::from_millis(0));
         for block_id in 0..8 {
             storage
                 .store(0, block_id, Block::new_zeroed(BLOCK_SIZE_IN_BYTES))
@@ -201,7 +220,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_truncate_may_fill() {
-        let storage = MemoryStorage::new(BLOCK_SIZE_IN_BYTES);
+        let storage = MemoryStorage::new(BLOCK_SIZE_IN_BYTES, Duration::from_millis(0));
         for block_id in 0..8 {
             storage
                 .store(0, block_id, Block::new_zeroed(BLOCK_SIZE_IN_BYTES))
@@ -220,7 +239,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_truncate_in_the_same_block() {
-        let storage = MemoryStorage::new(BLOCK_SIZE_IN_BYTES);
+        let storage = MemoryStorage::new(BLOCK_SIZE_IN_BYTES, Duration::from_millis(0));
 
         let block = Block::from_slice(BLOCK_SIZE_IN_BYTES, BLOCK_CONTENT);
 
@@ -229,5 +248,51 @@ mod tests {
 
         let loaded = storage.load(0, 0).await.unwrap();
         assert_eq!(loaded.as_slice(), b"foo \0\0\0\0");
+    }
+
+    #[tokio::test]
+    async fn test_write_latency() {
+        let storage = MemoryStorage::new(BLOCK_SIZE_IN_BYTES, Duration::from_millis(50));
+
+        let block = Block::from_slice(BLOCK_SIZE_IN_BYTES, BLOCK_CONTENT);
+
+        let now = Instant::now();
+        storage.store(0, 0, block).await;
+        let duration = now.elapsed();
+
+        assert!(duration.as_millis() >= 50);
+    }
+
+    #[tokio::test]
+    async fn test_read_latency() {
+        let storage = MemoryStorage::new(BLOCK_SIZE_IN_BYTES, Duration::from_millis(50));
+
+        let now = Instant::now();
+        let _loaded = storage.load(0, 0).await;
+        let duration = now.elapsed();
+
+        assert!(duration.as_millis() >= 50);
+    }
+
+    #[tokio::test]
+    async fn test_remove_latency() {
+        let storage = MemoryStorage::new(BLOCK_SIZE_IN_BYTES, Duration::from_millis(50));
+
+        let now = Instant::now();
+        storage.remove(0).await;
+        let duration = now.elapsed();
+
+        assert!(duration.as_millis() >= 50);
+    }
+
+    #[tokio::test]
+    async fn test_truncate_latency() {
+        let storage = MemoryStorage::new(BLOCK_SIZE_IN_BYTES, Duration::from_millis(50));
+
+        let now = Instant::now();
+        storage.truncate(0, 1, 1, 4).await;
+        let duration = now.elapsed();
+
+        assert!(duration.as_millis() >= 50);
     }
 }

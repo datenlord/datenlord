@@ -571,7 +571,10 @@ mod tests {
 
     fn prepare_empty_storage() -> (Arc<MemoryStorage>, Arc<MemoryCacheType>) {
         let policy = LruPolicy::<BlockCoordinate>::new(CACHE_CAPACITY_IN_BLOCKS);
-        let backend = Arc::new(MemoryStorage::new(BLOCK_SIZE_IN_BYTES));
+        let backend = Arc::new(MemoryStorage::new(
+            BLOCK_SIZE_IN_BYTES,
+            Duration::from_millis(0),
+        ));
         let cache =
             MemoryCacheBuilder::new(policy, Arc::clone(&backend), BLOCK_SIZE_IN_BYTES).build();
 
@@ -673,7 +676,10 @@ mod tests {
         let limit = SoftLimit(1, NonZeroUsize::new(1).unwrap());
 
         let policy = LruPolicy::<BlockCoordinate>::new(CACHE_CAPACITY_IN_BLOCKS);
-        let backend = Arc::new(MemoryStorage::new(BLOCK_SIZE_IN_BYTES));
+        let backend = Arc::new(MemoryStorage::new(
+            BLOCK_SIZE_IN_BYTES,
+            Duration::from_millis(0),
+        ));
         let cache = MemoryCacheBuilder::new(policy, Arc::clone(&backend), BLOCK_SIZE_IN_BYTES)
             .limit(limit) // Manually disable the write back task
             .interval(Duration::from_secs(1))
@@ -884,7 +890,10 @@ mod tests {
 
     fn prepare_empty_storage_with_write_back() -> (Arc<MemoryStorage>, Arc<MemoryCacheType>) {
         let policy = LruPolicy::<BlockCoordinate>::new(CACHE_CAPACITY_IN_BLOCKS);
-        let backend = Arc::new(MemoryStorage::new(BLOCK_SIZE_IN_BYTES));
+        let backend = Arc::new(MemoryStorage::new(
+            BLOCK_SIZE_IN_BYTES,
+            Duration::from_millis(0),
+        ));
         let cache = MemoryCacheBuilder::new(policy, Arc::clone(&backend), BLOCK_SIZE_IN_BYTES)
             .write_through(false)
             .build();
