@@ -13,7 +13,7 @@ use parking_lot::RwLock;
 use super::cache::{GlobalCache, IoMemBlock};
 use super::dir::DirEntry;
 use super::fs_util::FileAttr;
-use super::{CreateParam, SetAttrParam};
+use super::CreateParam;
 use crate::async_fuse::fuse::fuse_reply::StatFsParam;
 use crate::async_fuse::fuse::protocol::INum;
 use crate::common::error::DatenLordResult;
@@ -51,8 +51,6 @@ pub trait Node: Sized {
     fn get_lookup_count(&self) -> i64;
     /// Decrease node lookup count
     fn dec_lookup_count_by(&self, nlookup: u64) -> i64;
-    /// Flush node data
-    async fn flush(&mut self, ino: INum, fh: u64);
     /// Duplicate fd
     async fn dup_fd(&self, oflags: OFlag) -> DatenLordResult<RawFd>;
     /// Check whether a node is an empty file or an empty directory
@@ -131,16 +129,9 @@ pub trait Node: Sized {
         write_to_disk: bool,
     ) -> DatenLordResult<usize>;
     /// Close file
-    async fn close(&mut self, ino: INum, fh: u64, flush: bool);
+    async fn close(&mut self);
     /// Close dir
-    async fn closedir(&self, ino: INum, fh: u64);
-    /// Precheck before set attr
-    async fn setattr_precheck(
-        &self,
-        param: &SetAttrParam,
-        uid: u32,
-        gid: u32,
-    ) -> DatenLordResult<(bool, FileAttr)>;
+    async fn closedir(&self);
     /// Mark as deferred deletion
     fn mark_deferred_deletion(&self);
     /// If node is marked as deferred deletion

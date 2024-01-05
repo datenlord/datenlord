@@ -342,9 +342,9 @@ fn test_rename_no_replace_flag(mount_dir: &Path) -> anyhow::Result<()> {
     // RENAME_NOREPLACE flag
     let result = renameat2(
         None,
-        source_file_str,
+        &source_file,
         None,
-        destination_file_str,
+        &destination_file,
         RenameFlags::RENAME_NOREPLACE,
     );
 

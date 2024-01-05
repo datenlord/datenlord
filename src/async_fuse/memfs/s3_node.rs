@@ -7,7 +7,6 @@ use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::SystemTime;
 
-use anyhow::anyhow;
 use async_trait::async_trait;
 use clippy_utilities::{Cast, OverflowArithmetic};
 use datenlord::config::StorageConfig;
@@ -22,7 +21,7 @@ use tracing::{debug, info, warn};
 use super::cache::{GlobalCache, IoMemBlock};
 use super::dir::DirEntry;
 use super::dist::client as dist_client;
-use super::fs_util::{self, FileAttr, NEED_CHECK_PERM};
+use super::fs_util::{self, FileAttr};
 use super::kv_engine::KVEngineType;
 use super::node::Node;
 use super::s3_metadata::S3MetaData;
@@ -30,7 +29,7 @@ use super::s3_wrapper::S3BackEnd;
 use super::serial::{
     dir_entry_to_serial, file_attr_to_serial, serial_to_file_attr, SerialNode, SerialNodeData,
 };
-use super::{CreateParam, SetAttrParam};
+use super::CreateParam;
 use crate::async_fuse::fuse::fuse_reply::{AsIoVec, StatFsParam};
 use crate::async_fuse::fuse::protocol::{INum, FUSE_ROOT_ID};
 use crate::async_fuse::metrics;
@@ -242,19 +241,6 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
         }
     }
 
-    /// Set node attribute
-    pub(crate) fn _set_attr(&mut self, new_attr: FileAttr, _broadcast: bool) -> FileAttr {
-        let old_attr = self.get_attr();
-        match self.data {
-            S3NodeData::Directory(..) => debug_assert_eq!(new_attr.kind, SFlag::S_IFDIR),
-            S3NodeData::RegFile(..) => debug_assert_eq!(new_attr.kind, SFlag::S_IFREG),
-            S3NodeData::SymLink(..) => debug_assert_eq!(new_attr.kind, SFlag::S_IFLNK),
-        }
-
-        self.attr.write().clone_from(&new_attr);
-        old_attr
-    }
-
     #[allow(clippy::unused_self)]
     /// Get new fd
     fn new_fd(&self) -> u32 {
@@ -274,36 +260,6 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
     /// Increase node lookup count
     fn inc_lookup_count(&self) -> i64 {
         self.lookup_count.fetch_add(1, Ordering::AcqRel)
-    }
-
-    /// Helper function to check need to load node data or not
-    #[allow(dead_code)]
-    fn need_load_node_data_helper(&self) -> bool {
-        if !self.is_node_data_empty() {
-            debug!(
-                "need_load_node_data_helper() found node data of name={:?} \
-                    and ino={} is in cache, no need to load",
-                self.get_name(),
-                self.get_ino(),
-            );
-            false
-        } else if self.get_attr().size > 0 {
-            debug!(
-                "need_load_node_data_helper() found node size of name={:?} \
-                    and ino={} is non-zero, need to load",
-                self.get_name(),
-                self.get_ino(),
-            );
-            true
-        } else {
-            debug!(
-                "need_load_node_data_helper() found node size of name={:?} \
-                    and ino={} is zero, no need to load",
-                self.get_name(),
-                self.get_ino(),
-            );
-            false
-        }
     }
 
     /// Get directory data
@@ -384,53 +340,6 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
             );
         }
         Ok(())
-    }
-
-    /// flush all data of a node
-    async fn flush_all_data(&mut self) -> DatenLordResult<()> {
-        if self.is_deferred_deletion() {
-            return Ok(());
-        }
-        let data_cache = match self.data {
-            S3NodeData::RegFile(ref data_cache) => Arc::<GlobalCache>::clone(data_cache),
-            // Do nothing for Directory.
-            // TODO: Sync dir data to S3 storage
-            S3NodeData::Directory(..) => return Ok(()),
-            S3NodeData::SymLink(..) => panic!("forbidden to flush data for link"),
-        };
-
-        let size = self.attr.read().size;
-        if self.need_load_file_data(0, size.cast()).await {
-            let load_res = self.load_data(0, size.cast()).await;
-            if let Err(e) = load_res {
-                debug!(
-                    "failed to load data for file {} while flushing data, the error is: {:?}",
-                    self.get_name(),
-                    e,
-                );
-                return Err(e);
-            }
-        }
-
-        let put_result = self
-            .s3_backend
-            .put_data_vec(
-                self.get_ino(),
-                data_cache.get_file_cache(self.get_ino(), 0, size.cast()),
-            )
-            .await;
-
-        match put_result {
-            Ok(()) => Ok(()),
-            Err(e) => {
-                debug!(
-                    "flush_all_data() failed to flush data for file {}, the error is: {}",
-                    self.get_name(),
-                    e,
-                );
-                Err(DatenLordError::from(anyhow!(e)))
-            }
-        }
     }
 
     /// Check if given uid and gid can access this node
@@ -521,7 +430,15 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
 
     /// Set node attribute
     fn set_attr(&mut self, new_attr: FileAttr) -> FileAttr {
-        self._set_attr(new_attr, true)
+        let old_attr = self.get_attr();
+        match self.data {
+            S3NodeData::Directory(..) => debug_assert_eq!(new_attr.kind, SFlag::S_IFDIR),
+            S3NodeData::RegFile(..) => debug_assert_eq!(new_attr.kind, SFlag::S_IFREG),
+            S3NodeData::SymLink(..) => debug_assert_eq!(new_attr.kind, SFlag::S_IFLNK),
+        }
+
+        self.attr.write().clone_from(&new_attr);
+        old_attr
     }
 
     /// Get node attribute and increase lookup count
@@ -578,12 +495,6 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
     /// If node is marked as deferred deletion
     fn is_deferred_deletion(&self) -> bool {
         self.deferred_deletion.load(Ordering::SeqCst)
-    }
-
-    async fn flush(&mut self, ino: INum, _fh: u64) {
-        if let Err(e) = self.flush_all_data().await {
-            panic!("failed to flash all data of {ino:?}, error is {e:?}");
-        }
     }
 
     /// Duplicate fd
@@ -981,29 +892,15 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
     /// Unlink directory entry from both cache and disk
     async fn unlink_entry(&mut self, child_name: &str) -> DatenLordResult<DirEntry> {
         let dir_data = self.get_dir_data_mut();
-        let removed_entry = dir_data.remove(child_name).unwrap_or_else(|| {
-            panic!(
-                "unlink_entry() found fs is inconsistent, the entry of name={:?} \
-                    is not in directory of name={:?} and ino={}",
-                child_name,
-                self.get_name(),
-                self.get_ino(),
+        let Some(removed_entry) = dir_data.remove(child_name) else {
+            return build_error_result_from_errno(
+                Errno::ENOENT,
+                format!("{child_name} is not found under its parent."),
             );
-        });
+        };
 
-        // delete from disk and close the handler
-        match removed_entry.entry_type() {
-            SFlag::S_IFDIR | SFlag::S_IFREG | SFlag::S_IFLNK => {
-                let ino = removed_entry.ino();
-                if let Err(e) = self.s3_backend.delete_data(ino).await {
-                    panic!("failed to delete data of {ino} from s3 backend, error is {e:?}");
-                }
-            }
-            _ => panic!(
-                "unlink_entry() found unsupported entry type={:?}",
-                removed_entry.entry_type()
-            ),
-        }
+        let entry_type = removed_entry.entry_type();
+        super::check_type_supported(&entry_type)?;
         self.update_mtime_ctime_to_now();
         Ok(removed_entry)
     }
@@ -1109,130 +1006,12 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
         Ok(written_size)
     }
 
-    async fn close(&mut self, ino: INum, _fh: u64, _flush: bool) {
-        if let Err(e) = self.flush_all_data().await {
-            panic!("failed to flush all data of {ino}, error is {e:?}");
-        }
+    async fn close(&mut self) {
         self.dec_open_count();
     }
 
-    /// TODO: push dir data to s3
-    async fn closedir(&self, _ino: INum, _fh: u64) {
+    async fn closedir(&self) {
         self.dec_open_count();
-    }
-
-    async fn setattr_precheck(
-        &self,
-        param: &SetAttrParam,
-        user_id: u32,
-        group_id: u32,
-    ) -> DatenLordResult<(bool, FileAttr)> {
-        let mut dirty_attr = self.get_attr();
-        let cur_attr = self.get_attr();
-
-        let st_now = SystemTime::now();
-        let mut attr_changed = false;
-
-        let check_permission = || -> DatenLordResult<()> {
-            if NEED_CHECK_PERM {
-                //  owner is root check the user_id
-                if cur_attr.uid == 0 && user_id != 0 {
-                    return build_error_result_from_errno(
-                        Errno::EPERM,
-                        "setattr() cannot change atime".to_owned(),
-                    );
-                }
-                self.attr.read().check_perm(user_id, group_id, 2)?;
-                if user_id != cur_attr.uid {
-                    return build_error_result_from_errno(
-                        Errno::EACCES,
-                        "setattr() cannot change atime".to_owned(),
-                    );
-                }
-                Ok(())
-            } else {
-                // We don't need to check permission
-                Ok(())
-            }
-        };
-
-        if let Some(gid) = param.g_id {
-            if user_id != 0 && cur_attr.uid != user_id {
-                return build_error_result_from_errno(
-                    Errno::EPERM,
-                    "setattr() cannot change gid".to_owned(),
-                );
-            }
-
-            if cur_attr.gid != gid {
-                dirty_attr.gid = gid;
-                attr_changed = true;
-            }
-        }
-
-        if let Some(uid) = param.u_id {
-            if cur_attr.uid != uid {
-                if user_id != 0 {
-                    return build_error_result_from_errno(
-                        Errno::EPERM,
-                        "setattr() cannot change uid".to_owned(),
-                    );
-                }
-                dirty_attr.uid = uid;
-                attr_changed = true;
-            }
-        }
-
-        if let Some(mode) = param.mode {
-            let mode: u16 = mode.cast();
-            if mode != cur_attr.perm {
-                if user_id != 0 && user_id != cur_attr.uid {
-                    return build_error_result_from_errno(
-                        Errno::EPERM,
-                        "setattr() cannot change mode".to_owned(),
-                    );
-                }
-                dirty_attr.perm = mode;
-                attr_changed = true;
-            }
-        }
-
-        if let Some(atime) = param.a_time {
-            check_permission()?;
-            if atime != cur_attr.atime {
-                dirty_attr.atime = atime;
-                attr_changed = true;
-            }
-        }
-
-        if let Some(mtime) = param.m_time {
-            check_permission()?;
-            if mtime != cur_attr.mtime {
-                dirty_attr.mtime = mtime;
-                attr_changed = true;
-            }
-        }
-
-        #[cfg(feature = "abi-7-23")]
-        if let Some(ctime) = param.c_time {
-            check_permission()?;
-            if ctime != cur_attr.ctime {
-                dirty_attr.ctime = ctime;
-                attr_changed = true;
-            }
-        }
-
-        if let Some(file_size) = param.size {
-            dirty_attr.size = file_size;
-            dirty_attr.mtime = st_now;
-            attr_changed = true;
-        }
-
-        if attr_changed {
-            dirty_attr.ctime = st_now;
-        }
-
-        Ok((attr_changed, dirty_attr))
     }
 
     /// Create child node
