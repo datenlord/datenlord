@@ -50,7 +50,7 @@ const MY_TTL_SEC: u64 = 3600; // TODO: should be a long value, say 1 hour
 const MY_GENERATION: u64 = 1; // TODO: find a proper way to set generation
 #[allow(dead_code)]
 /// The limit of transaction commit retrying times.
-const TXN_RETRY_LIMIT: u32 = 5;
+const TXN_RETRY_LIMIT: u32 = 10;
 
 /// File system in-memory meta-data
 #[derive(Debug)]
@@ -121,15 +121,6 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
                     child_name,
                 );
                 num_child_entries = num_child_entries.overflow_add(1);
-                debug!(
-                    "readdir() found one child of ino={}, name={:?}, offset={}, and entry={:?} \
-                        under the directory of ino={}",
-                    child_ino,
-                    child_name,
-                    offset.overflow_add(i.cast()).overflow_add(1),
-                    child_entry,
-                    ino,
-                );
             }
             num_child_entries
         };
