@@ -122,7 +122,6 @@ async fn parse_metadata(config: &InnerConfig) -> DatenLordResult<MetaData> {
     .await
 }
 
-#[allow(clippy::too_many_lines)]
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let config = InnerConfig::try_from(config::Config::parse())?;
