@@ -9,7 +9,7 @@ use std::time::Duration;
 use anyhow::Context;
 use async_trait::async_trait;
 use clippy_utilities::{Cast, OverflowArithmetic};
-use datenlord::config::{StorageConfig, StorageParams};
+use datenlord::config::{StorageConfig, StorageS3Config};
 use libc::{RENAME_EXCHANGE, RENAME_NOREPLACE};
 use nix::errno::Errno;
 use nix::sys::stat::SFlag;
@@ -411,10 +411,17 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         node_id: &str,
         storage_config: &StorageConfig,
     ) -> DatenLordResult<(Arc<Self>, Option<CacheServer>)> {
+        // TODO: Remove this when the `S3Backend` is removed.
         let s3_config = match storage_config.params {
-            StorageParams::S3(ref config) => config,
-            StorageParams::None(ref fake_s3_config) => fake_s3_config,
+            datenlord::config::StorageParams::S3(ref s3_config) => s3_config.clone(),
+            datenlord::config::StorageParams::Fs(_) => StorageS3Config {
+                endpoint_url: "http://127.0.0.1:9000".to_owned(),
+                access_key_id: "test".to_owned(),
+                secret_access_key: "test1234".to_owned(),
+                bucket_name: "fuse-test-bucket".to_owned(),
+            },
         };
+
         let bucket_name = &s3_config.bucket_name;
         let endpoint = &s3_config.endpoint_url;
         let access_key = &s3_config.access_key_id;

@@ -2,7 +2,9 @@
 
 use async_trait::async_trait;
 use clippy_utilities::OverflowArithmetic;
+use datenlord::config::{StorageParams, StorageS3Config};
 use futures::{stream, AsyncReadExt, AsyncWriteExt, StreamExt};
+use opendal::services::{Fs, S3};
 use opendal::{ErrorKind, Operator};
 
 use super::{Block, Storage};
@@ -16,6 +18,58 @@ fn get_file_path(ino: INum) -> String {
 /// Get block path by `ino` and `block_id`
 fn get_block_path(ino: INum, block_id: usize) -> String {
     format!("{ino}/{block_id}.block")
+}
+
+/// A builder to build `BackendWrapper`.
+#[derive(Debug)]
+pub struct BackendBuilder {
+    /// The storage config
+    config: StorageParams,
+    /// The size of a block
+    block_size: usize,
+}
+
+impl BackendBuilder {
+    /// Create a backend builder.
+    #[must_use]
+    pub fn new(config: StorageParams, block_size: usize) -> Self {
+        Self { config, block_size }
+    }
+
+    /// Build the backend.
+    pub fn build(self) -> opendal::Result<Backend> {
+        let BackendBuilder { config, block_size } = self;
+
+        let operator = match config {
+            StorageParams::S3(StorageS3Config {
+                ref endpoint_url,
+                ref access_key_id,
+                ref secret_access_key,
+                ref bucket_name,
+            }) => {
+                let mut builder = S3::default();
+
+                builder
+                    .endpoint(endpoint_url)
+                    .access_key_id(access_key_id)
+                    .secret_access_key(secret_access_key)
+                    .region("auto")
+                    .bucket(bucket_name);
+
+                Operator::new(builder)?.finish()
+            }
+            StorageParams::Fs(ref root) => {
+                let mut builder = Fs::default();
+                builder.root(root);
+                Operator::new(builder)?.finish()
+            }
+        };
+
+        Ok(Backend {
+            operator,
+            block_size,
+        })
+    }
 }
 
 /// The backend wrapper of `openDAL` operator.
