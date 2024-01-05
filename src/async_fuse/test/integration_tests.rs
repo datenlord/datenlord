@@ -300,6 +300,58 @@ fn test_rename_file_replace(mount_dir: &Path) -> anyhow::Result<()> {
 }
 
 #[cfg(test)]
+fn test_rename_non_existent_source(mount_dir: &Path) -> anyhow::Result<()> {
+    let non_existent_file = mount_dir.join("non_existent_file.txt");
+    let destination_file = mount_dir.join("destination_file.txt");
+
+    // Attempt to rename the non-existent file to the new location
+    match fs::rename(non_existent_file, destination_file) {
+        Ok(()) => Err(anyhow::anyhow!(
+            "Renaming a non-existent file unexpectedly succeeded"
+        )),
+        Err(e) => {
+            // Check if the error kind is NotFound, which is expected in this case
+            if e.kind() == std::io::ErrorKind::NotFound {
+                Ok(()) // Test passes
+            } else {
+                Err(anyhow::anyhow!(
+                    "Expected NotFound error, but got a different error: {:?}",
+                    e
+                ))
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+fn test_rename_to_non_existent_destination_directory(mount_dir: &Path) -> anyhow::Result<()> {
+    let source_file = mount_dir.join("source_file.txt");
+    let non_existent_dir = mount_dir.join("non_existent_dir");
+    let destination_file = non_existent_dir.join("destination_file.txt");
+
+    // Create a source file for testing.
+    std::fs::write(&source_file, "Some content")?;
+
+    // Attempt to rename the file to a non-existent directory
+    match fs::rename(&source_file, destination_file) {
+        Ok(()) => Err(anyhow::anyhow!(
+            "Renaming to a non-existent destination directory unexpectedly succeeded"
+        )),
+        Err(e) => {
+            // Check if the error kind is NotFound, which is expected in this case
+            if e.kind() == std::io::ErrorKind::NotFound {
+                Ok(()) // Test passes
+            } else {
+                Err(anyhow::anyhow!(
+                    "Expected NotFound error for non-existent directory, but got a different error: {:?}",
+                    e
+                ))
+            }
+        }
+    }
+}
+
+#[cfg(test)]
 #[cfg(feature = "abi-7-23")]
 fn test_rename_exchange(mount_dir: &Path) -> anyhow::Result<()> {
     use nix::fcntl::RenameFlags;
@@ -725,6 +777,10 @@ async fn _run_test(mount_dir_str: &str, is_s3: bool) -> anyhow::Result<()> {
     #[cfg(target_os = "linux")]
     test_bind_mount(mount_dir).context("test_bind_mount() failed")?;
     test_deferred_deletion(mount_dir).context("test_deferred_deletion() failed")?;
+    test_rename_non_existent_source(mount_dir)
+        .context("test_rename_non_existent_source() failed")?;
+    test_rename_to_non_existent_destination_directory(mount_dir)
+        .context("test_rename_to_non_existent_destination_directory() failed")?;
     test_rename_file_replace(mount_dir).context("test_rename_file_replace() failed")?;
     #[cfg(feature = "abi-7-23")]
     test_rename_exchange(mount_dir).context("test_rename_exchange() failed")?;
