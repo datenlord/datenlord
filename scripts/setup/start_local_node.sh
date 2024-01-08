@@ -9,7 +9,7 @@
 # But run `scripts/setup/start_local_node.sh "-F abi-7-23"`, this script will run `cargo build -F abi-7-23` to build DatenLord.
 
 export CONTROLLER_SOCKET_FILE=/tmp/controller.sock
-export BIND_MOUNTER=../target/debug/bind_mounter
+export BIND_MOUNTER=./target/debug/bind_mounter
 export NODE_SOCKET_FILE=/tmp/node.sock
 export RUST_BACKTRACE=full
 export RUST_LOG=debug
@@ -40,6 +40,11 @@ if [ -d $DATENLORD_LOCAL_BIND_DIR ]; then
   fi
   echo "$DATENLORD_LOCAL_BIND_DIR unmounted and removed."
 fi
+
+# Set bind_mounter's owner to root and set the setuid bit
+sudo chown root:root $BIND_MOUNTER
+sudo chmod u+s $BIND_MOUNTER
+ls -lsh $BIND_MOUNTER
 
 echo "==> Start to deploy datenlord locally"
 echo "==> Building datenlord"
