@@ -186,20 +186,6 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
     }
 
     /// This function is used to create a new `SerialNode` by `S3Node`
-    #[allow(clippy::wrong_self_convention)]
-    pub fn into_serial_node(&self) -> SerialNode {
-        SerialNode {
-            parent: self.parent,
-            name: self.name.clone(),
-            attr: file_attr_to_serial(&self.attr.read().clone()),
-            data: self.data.serial(),
-            open_count: self.open_count.load(Ordering::SeqCst),
-            lookup_count: self.lookup_count.load(Ordering::SeqCst),
-            deferred_deletion: self.deferred_deletion.load(Ordering::SeqCst),
-        }
-    }
-
-    /// This function is used to create a new `SerialNode` by `S3Node` ref
     pub fn to_serial_node(&self) -> SerialNode {
         SerialNode {
             parent: self.parent,
