@@ -1,20 +1,21 @@
 //! Types and functions related to the write back task.
 
-use clippy_utilities::OverflowArithmetic;
-use hashlink::LinkedHashSet;
-use tokio::select;
-use tokio::sync::{mpsc, oneshot};
-use tracing::warn;
-
 use std::collections::HashMap;
 use std::mem;
 use std::num::NonZeroUsize;
 use std::sync::{Arc, Weak};
 use std::time::Duration;
 
-use crate::async_fuse::fuse::protocol::INum;
+use clippy_utilities::OverflowArithmetic;
+use hashlink::LinkedHashSet;
+use tokio::select;
+use tokio::sync::{mpsc, oneshot};
+use tracing::{info, warn};
 
-use super::{policy::EvictPolicy, Block, BlockCoordinate, BlockId, MemoryCache, Storage};
+use crate::async_fuse::fuse::protocol::INum;
+use crate::async_fuse::memfs::cache::policy::EvictPolicy;
+use crate::async_fuse::memfs::cache::{Block, BlockCoordinate, BlockId, MemoryCache, Storage};
+
 /// A command sent from `MemoryCache` to the write back task.
 pub enum Command {
     /// Store a block to the backend later.
@@ -23,7 +24,8 @@ pub enum Command {
         coord: BlockCoordinate,
         /// The block
         block: Block,
-        /// A sender to notify the `MemoryCache` that the block has been flushed to the backend
+        /// A sender to notify the `MemoryCache` that the block has been flushed
+        /// to the backend
         sender: oneshot::Sender<()>,
     },
     /// Flush the file specified immediately.
@@ -131,9 +133,10 @@ where
     P: EvictPolicy<BlockCoordinate> + Send + Sync,
     S: Storage + Send + Sync,
 {
-    // `a` is a numerator while `b` is a denominator, which are to represent the soft limit.
-    // If `size > capacity * a / b`, the soft limit is considered to be hit.
-    // We use the equivalent inequation `size * b / a > capacity` to avoid overflowing.
+    // `a` is a numerator while `b` is a denominator, which are to represent the
+    // soft limit. If `size > capacity * a / b`, the soft limit is considered to
+    // be hit. We use the equivalent inequation `size * b / a > capacity` to
+    // avoid overflowing.
     let SoftLimit(a, b) = limit;
     let b = b.get();
 
@@ -155,8 +158,8 @@ where
 /// This task will smoothly write blocks back to the backend
 /// when the cache runs in write-back policy.
 ///
-/// And this task will evict blocks to the backend if the number of blocks hits the soft limit,
-/// whether the cache runs in write-back policy or not.
+/// And this task will evict blocks to the backend if the number of blocks hits
+/// the soft limit, whether the cache runs in write-back policy or not.
 pub(super) async fn run_write_back_task<P, S>(
     limit: SoftLimit,
     interval: Duration,
@@ -194,18 +197,20 @@ pub(super) async fn run_write_back_task<P, S>(
                         if let Some(cache) = storage.upgrade() {
                             flush_file(&mut lru_queue, &mut pending_blocks, cache, ino).await;
                         } else {
-                            return;
+                            panic!("Memory cache is dropped before being flushed.");
                         }
                     },
                     Some(Command::FlushAll(sender)) => {
                         if let Some(cache) = storage.upgrade() {
                             flush_all(&mut lru_queue, &mut pending_blocks, cache, sender).await;
                         } else {
-                            return;
+                            panic!("Memory cache is dropped before being flushed.");
                         }
                     }
                     None => {
                         // The command sender is closed, meaning that the `Storage` is also dropped.
+                        // Then the write back task should exit.
+                        info!("Write back task exits.");
                         return;
                     },
                 }
@@ -220,6 +225,9 @@ pub(super) async fn run_write_back_task<P, S>(
                         flush_a_block(&mut lru_queue, &mut pending_blocks, cache).await;
                     }
                 } else {
+                    // The command sender is closed, meaning that the `Storage` is also dropped.
+                    // Then the write back task should exit.
+                    info!("Write back task exits.");
                     return;
                 }
             },
