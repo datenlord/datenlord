@@ -1,5 +1,6 @@
 //! Allocate unique id between nodes.
 
+use std::fmt::{self, Display};
 use std::ops::Add;
 use std::sync::Arc;
 use std::time::Duration;
@@ -21,6 +22,15 @@ pub enum IdType {
     Fd,
 }
 
+impl Display for IdType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match *self {
+            IdType::INum => write!(f, "INum"),
+            IdType::Fd => write!(f, "Fd"),
+        }
+    }
+}
+
 impl IdType {
     /// Convert to str for unique key
     /// The return value can't be same
@@ -28,8 +38,8 @@ impl IdType {
     #[inline]
     pub fn to_unique_id(&self) -> u8 {
         match *self {
-            IdType::INum => 0,
-            IdType::Fd => 1,
+            IdType::INum => b'0',
+            IdType::Fd => b'1',
         }
     }
 }

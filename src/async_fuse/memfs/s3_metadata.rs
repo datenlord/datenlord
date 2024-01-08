@@ -22,7 +22,7 @@ use super::dist::client as dist_client;
 use super::dist::server::CacheServer;
 use super::fs_util::{self, NEED_CHECK_PERM};
 use super::id_alloc_used::INumAllocator;
-use super::kv_engine::{KVEngine, KVEngineType, KeyType, MetaTxn, ValueType};
+use super::kv_engine::{KVEngine, KVEngineType, MetaTxn, ValueType};
 use super::metadata::{error, MetaData, ReqContext};
 use super::node::Node;
 use super::s3_node::S3Node;
@@ -31,6 +31,7 @@ use super::{check_type_supported, CreateParam, RenameParam, SetAttrParam};
 use crate::async_fuse::fuse::fuse_reply::{ReplyDirectory, StatFsParam};
 use crate::async_fuse::fuse::protocol::{FuseAttr, INum, FUSE_ROOT_ID};
 use crate::async_fuse::memfs::check_name_length;
+use crate::async_fuse::memfs::kv_engine::KeyType;
 use crate::async_fuse::util::build_error_result_from_errno;
 use crate::common::error::DatenLordResult;
 use crate::common::error::{Context as DatenLordContext, DatenLordError}; /* conflict with anyhow::Context */

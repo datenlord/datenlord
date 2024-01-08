@@ -8,6 +8,9 @@ mod id_alloc_used;
 /// The KV engine module
 #[macro_use]
 pub mod kv_engine;
+/// Dir entry module
+#[allow(dead_code)]
+pub mod direntry;
 /// fs metadata module
 mod metadata;
 mod node;
