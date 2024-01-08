@@ -8,8 +8,8 @@ use etcd_client::{
 };
 
 use super::{
-    check_ttl, conv_u64_sec_2_i64, fmt, DeleteOption, KVEngine, KeyRange, KeyType, KvVersion,
-    LockKeyType, MetaTxn, SetOption, ValueType,
+    check_ttl, conv_u64_sec_2_i64, fmt, DeleteOption, KVEngine, KeyType, KvVersion, LockKeyType,
+    MetaTxn, SetOption, ValueType,
 };
 use crate::common::error::{Context, DatenLordResult};
 
@@ -38,6 +38,25 @@ impl EtcdKVEngine {
             })?;
         Ok(EtcdKVEngine { client })
     }
+
+    /// Get all key/value pairs with the given prefix.
+    async fn range_raw_key(&self, prefix: impl Into<Vec<u8>>) -> DatenLordResult<Vec<ValueType>> {
+        let mut client = self.client.clone();
+        let option = Some(GetOptions::new().with_prefix());
+        let resp = client
+            .get(prefix, option)
+            .await
+            .with_context(|| "failed to get from etcd engine".to_owned())?;
+        let kvs = resp.kvs();
+        let mut result = Vec::new();
+        for kv in kvs {
+            let value = serde_json::from_slice::<ValueType>(kv.value()).with_context(|| {
+                "failed to deserialize value from bytes, KVEngine's value supposed to be `ValueType`".to_owned()
+            })?;
+            result.push(value);
+        }
+        Ok(result)
+    }
 }
 
 #[async_trait]
@@ -62,33 +81,6 @@ impl KVEngine for EtcdKVEngine {
             .id())
     }
 
-    async fn range(&self, key_range: KeyRange) -> DatenLordResult<Vec<(Vec<u8>, Vec<u8>)>> {
-        // check that with_all_keys and with_prefix are not set at the same time
-        debug_assert!(
-            !(key_range.with_all_keys && key_range.with_prefix),
-            "with_all_keys and with_prefix are not set at the same time"
-        );
-        let option = if key_range.with_all_keys {
-            Some(GetOptions::new().with_all_keys())
-        } else if key_range.with_prefix {
-            Some(GetOptions::new().with_prefix())
-        } else {
-            Some(GetOptions::new().with_range(key_range.range_end))
-        };
-        let resp = self
-            .client
-            .kv_client()
-            .get(key_range.key, option)
-            .await
-            .with_context(|| "failed to get range at `KVEngine::range`".to_owned())?;
-        let kvs = resp.kvs();
-        let result: Vec<_> = kvs
-            .iter()
-            .map(|kv| (kv.key().to_vec(), kv.value().to_vec()))
-            .collect();
-        Ok(result)
-    }
-
     /// Distribute lock - lock
     /// - `timeout_sec` should be >=1s
     /// - `timeout_sec` should be >=1s
@@ -104,7 +96,10 @@ impl KVEngine for EtcdKVEngine {
             .id();
 
         let resp = client
-            .lock(key.get_key(), Some(LockOptions::new().with_lease(lease_id)))
+            .lock(
+                key.to_string_key(),
+                Some(LockOptions::new().with_lease(lease_id)),
+            )
             .await
             .with_context(|| "failed to lock at `MetaTxn::lock`".to_owned())?;
 
@@ -126,7 +121,7 @@ impl KVEngine for EtcdKVEngine {
     async fn get(&self, key: &KeyType) -> DatenLordResult<Option<ValueType>> {
         let mut client = self.client.clone();
         let resp = client
-            .get(key.get_key(), None)
+            .get(key.to_string_key(), None)
             .await
             .with_context(|| format!("failed to get from etcd engine, key={key:?}"))?;
 
@@ -163,7 +158,7 @@ impl KVEngine for EtcdKVEngine {
             .with_context(|| format!("failed to serialize value={value:?} to bytes"))?;
         let mut client = self.client.clone();
         let mut resp = client
-            .put(key.get_key(), serial_value, option)
+            .put(key.to_string_key(), serial_value, option)
             .await
             .with_context(|| "failed to put at `MetaTxn::set`".to_owned())?;
         if let Some(pre_kv) = resp.take_prev_key() {
@@ -196,7 +191,7 @@ impl KVEngine for EtcdKVEngine {
         let resp = self
             .client
             .kv_client()
-            .delete(key.get_key(), option)
+            .delete(key.to_string_key(), option)
             .await
             .with_context(|| format!("failed to get DeleteResponse from etcd for key={key:?}"))?;
         if let Some(pre_kv) = resp.prev_kvs().first() {
@@ -205,6 +200,11 @@ impl KVEngine for EtcdKVEngine {
         } else {
             Ok(None)
         }
+    }
+
+    async fn range(&self, prefix: &KeyType) -> DatenLordResult<Vec<ValueType>> {
+        let result = self.range_raw_key(prefix.to_string_key()).await?;
+        Ok(result)
     }
 }
 
@@ -235,7 +235,7 @@ impl EtcdTxn {
 impl MetaTxn for EtcdTxn {
     async fn get(&mut self, key: &KeyType) -> DatenLordResult<Option<ValueType>> {
         // first check if the key is in buffer (write op)
-        let key = key.get_key();
+        let key = key.to_string_key().into_bytes();
         assert!(
             self.buffer.get(&key).is_none(),
             "get the key after write in the same transaction"
@@ -266,7 +266,7 @@ impl MetaTxn for EtcdTxn {
     }
 
     fn set(&mut self, key: &KeyType, value: &ValueType) {
-        let key = key.get_key();
+        let key = key.to_string_key().into_bytes();
         // Because the ValueType derives the serde::Serialize
         // This unwrap will not panic.
         let value = serde_json::to_vec(value)
@@ -275,7 +275,7 @@ impl MetaTxn for EtcdTxn {
     }
 
     fn delete(&mut self, key: &KeyType) {
-        let key = key.get_key();
+        let key = key.to_string_key().into_bytes();
         self.buffer.insert(key, None);
     }
 
@@ -322,6 +322,7 @@ mod test {
     use std::time::Instant;
 
     use super::*;
+    use crate::async_fuse::memfs::direntry::{DirEntry, FileType};
     use crate::common::error::DatenLordError;
     use crate::retry_txn;
 
@@ -368,7 +369,7 @@ mod test {
             .unwrap();
         // insert a key , and then get it , and then delete it, and then get it again
         let key = KeyType::String("test_key".to_owned());
-        let value = ValueType::INum(123);
+        let value = ValueType::String("test_connect_local_key".to_owned());
         client.set(&key, &value, None).await.unwrap();
         let get_value = client.get(&key).await.unwrap().unwrap();
         assert_eq!(get_value, value);
@@ -390,9 +391,9 @@ mod test {
             .unwrap();
         let mut first_txn = client.new_meta_txn().await;
         let key1 = KeyType::String(String::from("test_commit key1"));
-        let value1 = ValueType::INum(12);
+        let value1 = ValueType::String("value1".to_owned());
         let key2 = KeyType::String(String::from("test_commit key2"));
-        let value2 = ValueType::INum(13);
+        let value2 = ValueType::String("value2".to_owned());
         first_txn.set(&key1, &value1);
         first_txn.set(&key2, &value2);
         first_txn.commit().await.unwrap();
@@ -408,10 +409,10 @@ mod test {
                     .unwrap();
                 let mut second_txn = client.new_meta_txn().await;
                 let key1 = KeyType::String(String::from("test_commit key1"));
-                let value1 = second_txn.get(&key1).await.unwrap();
-                assert!(value1.is_some());
-                if let Some(ValueType::INum(num)) = value1 {
-                    assert_eq!(num, 12);
+                let result1 = second_txn.get(&key1).await.unwrap();
+                assert!(result1.is_some());
+                if let Some(ValueType::String(value1)) = result1 {
+                    assert_eq!(value1, "value1");
                 } else {
                     panic!("wrong value type");
                 }
@@ -420,10 +421,10 @@ mod test {
                 // wait for the third txn to set the key
                 second_step_rx.recv().await.unwrap();
                 let key2 = KeyType::String(String::from("test_commit key2"));
-                let value2 = second_txn.get(&key2).await.unwrap();
-                assert!(value2.is_some());
-                if let Some(ValueType::INum(num)) = value2 {
-                    assert_eq!(num, 13);
+                let result2 = second_txn.get(&key2).await.unwrap();
+                assert!(result2.is_some());
+                if let Some(ValueType::String(value2)) = result2 {
+                    assert_eq!(value2, "value2");
                 } else {
                     panic!("wrong value type");
                 }
@@ -444,7 +445,7 @@ mod test {
             // wait for the second read first key and send the signal
             first_step_rx.recv().await.unwrap();
             let key1 = KeyType::String(String::from("test_commit key1"));
-            let value1 = ValueType::INum(14);
+            let value1 = ValueType::String("value3".to_owned());
             third_txn.set(&key1, &value1);
             third_txn.commit().await.unwrap();
             // send the signal to the second txn
@@ -466,5 +467,51 @@ mod test {
             (txn.commit().await, ())
         });
         result.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_range_get() {
+        let client = EtcdKVEngine::new_for_local_test(vec![ETCD_ADDRESS.to_owned()])
+            .await
+            .unwrap();
+        // Avoid conflict with other tests
+        let parent_id_1 = 1024 * 1024 * 1024;
+        let parent_id_2 = 1024 * 1024 * 1024 + 1;
+        let child_names = vec!["__1_child_a", "_1_child_b", "_child_c"];
+
+        for child_name in &child_names {
+            let key = KeyType::DirEntryKey((parent_id_1, (*child_name).to_owned()));
+            let value =
+                ValueType::DirEntry(DirEntry::new(1, (*child_name).to_owned(), FileType::Dir));
+            client.set(&key, &value, None).await.unwrap();
+        }
+
+        for child_name in &child_names {
+            let key = KeyType::DirEntryKey((parent_id_2, (*child_name).to_owned()));
+            let value =
+                ValueType::DirEntry(DirEntry::new(2, (*child_name).to_owned(), FileType::Dir));
+            client.set(&key, &value, None).await.unwrap();
+        }
+
+        // Range get
+        let key = KeyType::DirEntryKey((parent_id_1, String::new()));
+        let result = client.range(&key).await.unwrap();
+        assert_eq!(result.len(), 3);
+        for value in result {
+            let dir_entry = value.into_dir_entry();
+            assert_eq!(dir_entry.inum(), 1);
+            assert!(child_names.contains(&dir_entry.name()));
+            assert_eq!(dir_entry.file_type(), FileType::Dir);
+        }
+
+        let key = KeyType::DirEntryKey((parent_id_2, String::new()));
+        let result = client.range(&key).await.unwrap();
+        assert_eq!(result.len(), 3);
+        for value in result {
+            let dir_entry = value.into_dir_entry();
+            assert_eq!(dir_entry.inum(), 2);
+            assert!(child_names.contains(&dir_entry.name()));
+            assert_eq!(dir_entry.file_type(), FileType::Dir);
+        }
     }
 }
