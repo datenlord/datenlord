@@ -93,7 +93,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
             inode.close(ino, fh, flush).await;
             txn.set(
                 &KeyType::INum2Node(ino),
-                &ValueType::Node(inode.into_serial_node()),
+                &ValueType::Node(inode.to_serial_node()),
             );
             (txn.commit().await, ())
         })?;
@@ -166,7 +166,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
             let result = node.dup_fd(o_flags).await?;
             txn.set(
                 &KeyType::INum2Node(ino),
-                &ValueType::Node(node.into_serial_node()),
+                &ValueType::Node(node.to_serial_node()),
             );
             (txn.commit().await, result)
         })?;
@@ -201,7 +201,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
             inode.flush(ino, fh).await;
             txn.set(
                 &KeyType::INum2Node(ino),
-                &ValueType::Node(inode.into_serial_node()),
+                &ValueType::Node(inode.to_serial_node()),
             );
             (txn.commit().await, ())
         })?;
@@ -220,7 +220,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
             } else {
                 txn.set(
                     &KeyType::INum2Node(ino),
-                    &ValueType::Node(node.into_serial_node()),
+                    &ValueType::Node(node.to_serial_node()),
                 );
             }
             (txn.commit().await, ())
@@ -274,7 +274,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
             let result = node.dup_fd(o_flags).await;
             txn.set(
                 &KeyType::INum2Node(ino),
-                &ValueType::Node(node.into_serial_node()),
+                &ValueType::Node(node.to_serial_node()),
             );
             (txn.commit().await, result)
         })?
@@ -304,7 +304,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
             } else {
                 txn.set(
                     &KeyType::INum2Node(ino),
-                    &ValueType::Node(inode.into_serial_node()),
+                    &ValueType::Node(inode.to_serial_node()),
                 );
             }
             (txn.commit().await, ())
@@ -332,7 +332,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
             }
             txn.set(
                 &KeyType::INum2Node(ino),
-                &ValueType::Node(inode.into_serial_node()),
+                &ValueType::Node(inode.to_serial_node()),
             );
             (txn.commit().await, file_attr)
         })?;
@@ -394,7 +394,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
                 child_node.mark_deferred_deletion();
                 txn.set(
                     &KeyType::INum2Node(child_ino),
-                    &ValueType::Node(child_node.into_serial_node()),
+                    &ValueType::Node(child_node.to_serial_node()),
                 );
             } else {
                 if let SFlag::S_IFREG = child_node.get_type() {
@@ -404,7 +404,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
             }
             txn.set(
                 &KeyType::INum2Node(parent),
-                &ValueType::Node(parent_node.into_serial_node()),
+                &ValueType::Node(parent_node.to_serial_node()),
             );
             (txn.commit().await, ())
         })?;
@@ -479,7 +479,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
                 // insert (FUSE_ROOT_ID -> root_inode) into KV engine
                 txn.set(
                     &KeyType::INum2Node(FUSE_ROOT_ID),
-                    &ValueType::Node(root_inode.into_serial_node()),
+                    &ValueType::Node(root_inode.to_serial_node()),
                 );
                 (txn.commit().await, ())
             }
@@ -539,11 +539,11 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
             let ttl = Duration::new(MY_TTL_SEC, 0);
             txn.set(
                 &KeyType::INum2Node(new_num),
-                &ValueType::Node(new_node.into_serial_node()),
+                &ValueType::Node(new_node.to_serial_node()),
             );
             txn.set(
                 &KeyType::INum2Node(parent_ino),
-                &ValueType::Node(parent_node.into_serial_node()),
+                &ValueType::Node(parent_node.to_serial_node()),
             );
             (txn.commit().await, (ttl, fuse_attr))
         })?;
@@ -586,11 +586,11 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
             let fuse_attr = fs_util::convert_to_fuse_attr(child_attr);
             txn.set(
                 &KeyType::INum2Node(parent),
-                &ValueType::Node(parent_node.into_serial_node()),
+                &ValueType::Node(parent_node.to_serial_node()),
             );
             txn.set(
                 &KeyType::INum2Node(child_ino),
-                &ValueType::Node(child_node.into_serial_node()),
+                &ValueType::Node(child_node.to_serial_node()),
             );
             (txn.commit().await, (ttl, fuse_attr, MY_GENERATION))
         })
@@ -609,7 +609,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
             RENAME_EXCHANGE => true,
             _ => {
                 return build_error_result_from_errno(
-                    Errno::ENOTSUP,
+                    Errno::EINVAL,
                     format!("rename(): flags={flags} is not supported"),
                 )
             }
@@ -717,7 +717,16 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
                             ));
                         }
                     } else {
-                        // exchange is false, replace
+                        // exchange is false, replace or no_replace
+                        if flags & RENAME_NOREPLACE != 0 {
+                            return build_error_result_from_errno(
+                                Errno::EEXIST,
+                                format!(
+                                    "rename(): failed to rename() \
+                                        because new_name={new_name:?} already exists",
+                                ),
+                            );
+                        }
                         {
                             // Remove from old_parent
                             let mut raw_node = old_parent_node.lock().await;
@@ -738,16 +747,16 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
             if old_parent == new_parent {
                 txn.set(
                     &KeyType::INum2Node(old_parent),
-                    &ValueType::Node(old_parent_node.lock().await.into_serial_node()),
+                    &ValueType::Node(old_parent_node.lock().await.to_serial_node()),
                 );
             } else {
                 txn.set(
                     &KeyType::INum2Node(old_parent),
-                    &ValueType::Node(old_parent_node.lock().await.into_serial_node()),
+                    &ValueType::Node(old_parent_node.lock().await.to_serial_node()),
                 );
                 txn.set(
                     &KeyType::INum2Node(new_parent),
-                    &ValueType::Node(new_parent_node.lock().await.into_serial_node()),
+                    &ValueType::Node(new_parent_node.lock().await.to_serial_node()),
                 );
             }
 
@@ -791,7 +800,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         let result = inode.write_file(fh, offset, data, o_flags, false).await;
         txn.set(
             &KeyType::INum2Node(ino),
-            &ValueType::Node(inode.into_serial_node()),
+            &ValueType::Node(inode.to_serial_node()),
         );
         if !txn.commit().await? {
             // Transaction committed failed, but we don't retry here

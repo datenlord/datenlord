@@ -324,6 +324,51 @@ fn test_rename_non_existent_source(mount_dir: &Path) -> anyhow::Result<()> {
 }
 
 #[cfg(test)]
+#[cfg(feature = "abi-7-23")]
+fn test_rename_no_replace_flag(mount_dir: &Path) -> anyhow::Result<()> {
+    use nix::fcntl::{renameat2, RenameFlags};
+
+    let source_file_str = "source_file_no_replace_flag.txt";
+    let destination_file_str = "destination_file_no_replace_flag.txt";
+
+    let source_file = mount_dir.join(source_file_str);
+    let destination_file = mount_dir.join(destination_file_str);
+
+    // Create a source file and a destination file to set up the test environment
+    std::fs::write(source_file.clone(), "source content")?;
+    std::fs::write(destination_file.clone(), "destination content")?;
+
+    // Attempt to rename the source file to the destination location with
+    // RENAME_NOREPLACE flag
+    let result = renameat2(
+        None,
+        source_file_str,
+        None,
+        destination_file_str,
+        RenameFlags::RENAME_NOREPLACE,
+    );
+
+    match result {
+        Ok(()) => Err(anyhow::anyhow!(
+            "Renaming with RENAME_NOREPLACE flag unexpectedly succeeded"
+        )),
+        Err(e) => {
+            if e == nix::errno::Errno::EEXIST {
+                // Remove the source file and destination file
+                std::fs::remove_file(source_file)?;
+                std::fs::remove_file(destination_file)?;
+                Ok(()) // Test passes
+            } else {
+                Err(anyhow::anyhow!(
+                    "Expected EEXIST error, but got a different error: {:?}",
+                    e
+                ))
+            }
+        }
+    }
+}
+
+#[cfg(test)]
 fn test_rename_to_non_existent_destination_directory(mount_dir: &Path) -> anyhow::Result<()> {
     let source_file = mount_dir.join("source_file.txt");
     let non_existent_dir = mount_dir.join("non_existent_dir");
@@ -779,6 +824,8 @@ async fn _run_test(mount_dir_str: &str, is_s3: bool) -> anyhow::Result<()> {
     test_deferred_deletion(mount_dir).context("test_deferred_deletion() failed")?;
     test_rename_non_existent_source(mount_dir)
         .context("test_rename_non_existent_source() failed")?;
+    #[cfg(feature = "abi-7-23")]
+    test_rename_no_replace_flag(mount_dir).context("test_rename_no_replace_flag() failed")?;
     test_rename_to_non_existent_destination_directory(mount_dir)
         .context("test_rename_to_non_existent_destination_directory() failed")?;
     test_rename_file_replace(mount_dir).context("test_rename_file_replace() failed")?;
