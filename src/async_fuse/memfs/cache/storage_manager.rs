@@ -329,8 +329,7 @@ mod tests {
     use crate::async_fuse::memfs::cache::mock::MemoryStorage;
     use crate::async_fuse::memfs::cache::policy::LruPolicy;
     use crate::async_fuse::memfs::cache::{
-        Block, BlockCoordinate, MemoryCache,
-        MemoryCacheBuilder, Storage, StorageManager,
+        Block, BlockCoordinate, MemoryCache, MemoryCacheBuilder, Storage, StorageManager,
     };
 
     const BLOCK_SIZE_IN_BYTES: usize = 8;
@@ -630,11 +629,11 @@ mod tests {
         use clippy_utilities::OverflowArithmetic;
         use crossbeam_utils::atomic::AtomicCell;
 
-        use crate::async_fuse::fuse::fuse_reply::AsIoVec;
         use super::{
             Block, BlockCoordinate, LruPolicy, MemoryCacheBuilder, MemoryStorage, Storage,
             StorageManager,
         };
+        use crate::async_fuse::fuse::fuse_reply::AsIoVec;
 
         const BLOCK_SIZE: usize = 16;
         const REQUEST_SIZE: usize = 8;
@@ -807,19 +806,17 @@ mod tests {
 
     #[allow(clippy::unwrap_used)]
     mod latency {
-        use clippy_utilities::OverflowArithmetic;
+        use std::num::NonZeroUsize;
+        use std::sync::Arc;
+        use std::time::{Duration, SystemTime};
 
-        use crate::async_fuse::memfs::cache::SoftLimit;
+        use clippy_utilities::OverflowArithmetic;
 
         use super::{
             BlockCoordinate, LruPolicy, MemoryCacheBuilder, MemoryStorage, Storage, StorageManager,
             BLOCK_CONTENT, BLOCK_SIZE_IN_BYTES,
         };
-        use std::{
-            num::NonZeroUsize,
-            sync::Arc,
-            time::{Duration, SystemTime},
-        };
+        use crate::async_fuse::memfs::cache::SoftLimit;
 
         macro_rules! elapsed {
             ($body:expr) => {{

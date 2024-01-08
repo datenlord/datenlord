@@ -1,9 +1,7 @@
 //! Mock storages for test and local nodes.
 
-use std::{
-    collections::{HashMap, HashSet},
-    time::Duration,
-};
+use std::collections::{HashMap, HashSet};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use clippy_utilities::OverflowArithmetic;
