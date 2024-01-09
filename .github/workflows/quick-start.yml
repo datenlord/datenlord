@@ -1,0 +1,73 @@
+name: Quick-Start-Test
+on:
+  pull_request:
+    branches: [master]  
+
+env:
+    RUST_VERSION: 1.74.0
+    IMAGE_VERSION: "quick_start_${{ github.run_number }}"
+
+jobs: 
+    build:
+        runs-on: ubuntu-latest
+    
+        permissions:
+          packages: write
+
+        steps:
+        - uses: actions/checkout@v2
+        - name: Docker Login
+          env:
+            DOCKER_USER: ${{ github.actor }}
+            DOCKER_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+          run: |
+            docker login ghcr.io -u $DOCKER_USER -p $DOCKER_PASSWORD
+        - name: Build the Docker image
+          run: |
+            docker build . --build-arg RUST_IMAGE_VERSION=$RUST_VERSION --file Dockerfile --target datenlord --tag ghcr.io/datenlord/datenlord:$IMAGE_VERSION
+        - name: Docker Push
+          run: |
+            docker push ghcr.io/datenlord/datenlord:$IMAGE_VERSION
+
+    quick_start_test:
+        runs-on: ubuntu-latest
+    
+        needs: ["build"]
+        steps:
+          - name: Free Disk Space (Ubuntu)
+            run: |
+              # Don't run this in your local machine
+              sudo rm -rf /usr/share/dotnet
+              sudo rm -rf /opt/ghc
+              sudo rm -rf "/usr/local/share/boost"
+              sudo rm -rf "$AGENT_TOOLSDIRECTORY"
+              sudo rm -f /home/runner/runners/2.305.0.tgz
+              sudo rm -f /home/runner/runners/2.306.0.tgz
+              sudo rm -rf /usr/local/lib/android
+              sudo rm -rf /usr/local/share/chromium
+              sudo rm -rf /usr/lib/google-cloud-sdk/
+              sudo rm -rf /usr/lib/firefox
+              sudo rm -rf /usr/share/swift
+              sudo rm -rf /opt/microsoft/msedge
+          - uses: actions/checkout@v2
+          - name: Install Kind
+            run: |
+              sh scripts/setup/install-kind.sh
+          - name: Create Kind Cluster
+            run: |
+              sh scripts/setup/create-kind-cluster.sh
+          - name: Deploy DatenLord from ghcr.io
+            env:
+              CONFIG_KIND: scripts/setup/datenlord.yaml
+              CONFIG_GHCR: datenlord-deploy.yaml
+              CONTROLLER_APP_LABEL: csi-controller-datenlord
+              NODE_APP_LABEL: csi-nodeplugin-datenlord
+              DATENLORD_NAMESPACE: csi-datenlord
+            run: |
+              sed -e "s/e2e_test/$IMAGE_VERSION/g" $CONFIG_KIND > $CONFIG_GHCR
+              kubectl apply -f $CONFIG_GHCR
+              kubectl wait --for=condition=Ready pod -l app=$CONTROLLER_APP_LABEL -n $DATENLORD_NAMESPACE --timeout=120s
+              kubectl wait --for=condition=Ready pod -l app=$NODE_APP_LABEL -n $DATENLORD_NAMESPACE --timeout=120s
+          - name: Delete Kind Cluster
+            run: |
+              kind delete cluster
