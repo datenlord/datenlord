@@ -816,7 +816,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
                     } else {
                         let mut old_raw_node = old_parent_node.lock().await;
                         let mut new_raw_node = new_parent_node.lock().await;
-                        old_raw_node.get_dir_data_mut().remove(old_name);
+                        old_raw_node.remove_entry_for_rename(old_name);
                         new_raw_node.insert_entry_for_rename(DirEntry::new(
                             new_name.into(),
                             Arc::clone(old_entry.file_attr_arc_ref()),
@@ -859,11 +859,52 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
                         {
                             // Remove from old_parent
                             let mut raw_node = old_parent_node.lock().await;
-                            raw_node.get_dir_data_mut().remove(old_name);
+                            raw_node.remove_entry_for_rename(old_name);
                         }
                         {
-                            // Insert into new_parent
                             let mut raw_node = new_parent_node.lock().await;
+
+                            // Delete the new file.
+                            Self::check_sticky_bit(&context, &raw_node, &new_entry)?;
+                            let dest_ino = new_entry.ino();
+
+                            let dest_node = self.get_inode_from_txn(txn.as_mut(), dest_ino).await?;
+
+                            // If child is a directory, it must be empty
+                            if let SFlag::S_IFDIR = dest_node.get_type() {
+                                if !dest_node.get_dir_data().is_empty() {
+                                    return build_error_result_from_errno(
+                                        Errno::ENOTEMPTY,
+                                        format!(
+                                            "failed to remove a non-empty directory in rename() name={:?} \
+                                                under parent ino={} and name={:?}",
+                                            new_entry.entry_name(),
+                                            new_parent,
+                                            raw_node.get_name(),
+                                        ),
+                                    );
+                                }
+                            }
+
+                            let deferred_deletion =
+                                dest_node.get_open_count() > 0 || dest_node.get_lookup_count() > 0;
+
+                            if deferred_deletion {
+                                dest_node.mark_deferred_deletion();
+                                txn.set(
+                                    &KeyType::INum2Node(dest_ino),
+                                    &ValueType::Node(dest_node.to_serial_node()),
+                                );
+                            } else {
+                                if let SFlag::S_IFREG = dest_node.get_type() {
+                                    self.local_mtime.remove(&dest_ino);
+                                    self.local_size.remove(&dest_ino);
+                                    self.storage.remove(dest_ino).await;
+                                }
+                                txn.delete(&KeyType::INum2Node(dest_ino));
+                            }
+
+                            // Insert into new_parent, and the old dest node will be unlinked.
                             raw_node.insert_entry_for_rename(DirEntry::new(
                                 new_name.into(),
                                 Arc::clone(old_entry.file_attr_arc_ref()),
