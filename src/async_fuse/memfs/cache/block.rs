@@ -92,8 +92,9 @@ impl Block {
 
     /// Creates a block with `size` and a data slice.
     ///
-    /// If `data` is longer than the block, the rest of the slice will be ignored;
-    /// if `data` is shorter than the block, the rest part of the block will remains 0.
+    /// If `data` is longer than the block, the rest of the slice will be
+    /// ignored; if `data` is shorter than the block, the rest part of the
+    /// block will remains 0.
     pub fn from_slice(size: usize, data: &[u8]) -> Self {
         let mut inner = AlignedBytes::new_zeroed(size, PAGE_SIZE);
 
@@ -113,11 +114,12 @@ impl Block {
         }
     }
 
-    /// Creates a block with `size` and a data slice, the content of data slice will be
-    /// written to the block from `start` offset.
+    /// Creates a block with `size` and a data slice, the content of data slice
+    /// will be written to the block from `start` offset.
     ///
-    /// If `data` is longer than the block, the rest of the slice will be ignored;
-    /// if `data` is shorter than the block, the rest part of the block will remains 0.
+    /// If `data` is longer than the block, the rest of the slice will be
+    /// ignored; if `data` is shorter than the block, the rest part of the
+    /// block will remains 0.
     pub fn from_slice_with_range(size: usize, start: usize, end: usize, data: &[u8]) -> Self {
         debug_assert!(start <= end);
         debug_assert!(
@@ -177,9 +179,9 @@ impl Block {
         })
     }
 
-    /// Gets a mutable slice of the the valid range, copy them if there are other
-    /// blocks hold the same data via `Arc`. See also [`Arc::make_mut`](fn@
-    /// `std::sync::Arc::make_mut`).
+    /// Gets a mutable slice of the the valid range, copy them if there are
+    /// other blocks hold the same data via `Arc`. See also
+    /// [`Arc::make_mut`](fn@ `std::sync::Arc::make_mut`).
     pub fn make_mut_slice(&mut self) -> &mut [u8] {
         Arc::make_mut(&mut self.inner)
             .get_mut(self.start..self.end)
@@ -193,8 +195,9 @@ impl Block {
 
     /// Updates `self` with another block.
     ///
-    /// Contents in `self` that overlaps with the `other` range will be overwritten,
-    /// if the range of `other` is out of range of `self`, the range of `self` will be extended.
+    /// Contents in `self` that overlaps with the `other` range will be
+    /// overwritten, if the range of `other` is out of range of `self`, the
+    /// range of `self` will be extended.
     ///
     /// This method calls `make_mut_slice` internal.
     pub fn update(&mut self, other: &Block) {
@@ -220,8 +223,8 @@ impl Block {
     }
 
     /// Sets the block to be dirty.
-    pub fn set_dirty(&mut self) {
-        self.dirty = true;
+    pub fn set_dirty(&mut self, dirty: bool) {
+        self.dirty = dirty;
     }
 }
 
@@ -363,7 +366,7 @@ mod tests {
     fn test_dirty_block() {
         let mut block = Block::new_zeroed(8);
         assert!(!block.dirty());
-        block.set_dirty();
+        block.set_dirty(true);
         assert!(block.dirty());
     }
 

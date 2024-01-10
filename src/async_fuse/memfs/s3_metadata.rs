@@ -10,17 +10,17 @@ use anyhow::Context;
 use async_trait::async_trait;
 use clippy_utilities::{Cast, OverflowArithmetic};
 use datenlord::config::{StorageConfig, StorageParams};
+use libc::{RENAME_EXCHANGE, RENAME_NOREPLACE};
 use nix::errno::Errno;
 use nix::sys::stat::SFlag;
-use parking_lot::RwLock as SyncRwLock; // conflict with tokio RwLock
 use tokio::sync::Mutex;
-use tracing::{debug, info, instrument};
+use tracing::{debug, info, instrument, warn};
 
 use super::cache::{GlobalCache, IoMemBlock};
 use super::dir::DirEntry;
 use super::dist::client as dist_client;
 use super::dist::server::CacheServer;
-use super::fs_util::{self, FileAttr, NEED_CHECK_PERM};
+use super::fs_util::{self, NEED_CHECK_PERM};
 use super::id_alloc_used::INumAllocator;
 use super::kv_engine::{KVEngine, KVEngineType, KeyType, MetaTxn, ValueType};
 use super::metadata::{error, MetaData, ReqContext};
@@ -28,14 +28,12 @@ use super::node::Node;
 use super::s3_node::S3Node;
 use super::s3_wrapper::S3BackEnd;
 use super::{check_type_supported, CreateParam, RenameParam, SetAttrParam};
-#[cfg(feature = "abi-7-18")]
-use crate::async_fuse::fuse::fuse_reply::FuseDeleteNotification;
 use crate::async_fuse::fuse::fuse_reply::{ReplyDirectory, StatFsParam};
 use crate::async_fuse::fuse::protocol::{FuseAttr, INum, FUSE_ROOT_ID};
 use crate::async_fuse::memfs::check_name_length;
 use crate::async_fuse::util::build_error_result_from_errno;
 use crate::common::error::DatenLordResult;
-use crate::common::error::{Context as DatenLordContext, DatenLordError}; // conflict with anyhow::Context
+use crate::common::error::{Context as DatenLordContext, DatenLordError}; /* conflict with anyhow::Context */
 use crate::function_name;
 
 /// A helper function to build [`DatenLordError::InconsistentFS`] with default
@@ -95,7 +93,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
             inode.close(ino, fh, flush).await;
             txn.set(
                 &KeyType::INum2Node(ino),
-                &ValueType::Node(inode.into_serial_node()),
+                &ValueType::Node(inode.to_serial_node()),
             );
             (txn.commit().await, ())
         })?;
@@ -168,7 +166,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
             let result = node.dup_fd(o_flags).await?;
             txn.set(
                 &KeyType::INum2Node(ino),
-                &ValueType::Node(node.into_serial_node()),
+                &ValueType::Node(node.to_serial_node()),
             );
             (txn.commit().await, result)
         })?;
@@ -203,7 +201,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
             inode.flush(ino, fh).await;
             txn.set(
                 &KeyType::INum2Node(ino),
-                &ValueType::Node(inode.into_serial_node()),
+                &ValueType::Node(inode.to_serial_node()),
             );
             (txn.commit().await, ())
         })?;
@@ -222,7 +220,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
             } else {
                 txn.set(
                     &KeyType::INum2Node(ino),
-                    &ValueType::Node(node.into_serial_node()),
+                    &ValueType::Node(node.to_serial_node()),
                 );
             }
             (txn.commit().await, ())
@@ -276,7 +274,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
             let result = node.dup_fd(o_flags).await;
             txn.set(
                 &KeyType::INum2Node(ino),
-                &ValueType::Node(node.into_serial_node()),
+                &ValueType::Node(node.to_serial_node()),
             );
             (txn.commit().await, result)
         })?
@@ -306,7 +304,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
             } else {
                 txn.set(
                     &KeyType::INum2Node(ino),
-                    &ValueType::Node(inode.into_serial_node()),
+                    &ValueType::Node(inode.to_serial_node()),
                 );
             }
             (txn.commit().await, ())
@@ -334,7 +332,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
             }
             txn.set(
                 &KeyType::INum2Node(ino),
-                &ValueType::Node(inode.into_serial_node()),
+                &ValueType::Node(inode.to_serial_node()),
             );
             (txn.commit().await, file_attr)
         })?;
@@ -343,29 +341,74 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
 
     #[instrument(skip(self), err, ret)]
     async fn unlink(&self, context: ReqContext, parent: INum, name: &str) -> DatenLordResult<()> {
-        let entry_type = {
-            let parent_node = self.get_node_from_kv_engine(parent).await?.ok_or_else(|| {
-                error::build_inconsistent_fs_with_context(
-                    function_name!(),
-                    format!("parent of ino={parent} should be in cache before remove its child"),
-                )
-            })?;
-            let child_entry = parent_node.get_entry(name).ok_or_else(|| error::build_inconsistent_fs_with_context(
-                function_name!(),
-                format!("the child entry name={name:?} to remove is not under parent of ino={parent}"
-                )
-            ))?;
-            let entry_type = child_entry.entry_type();
-            debug_assert_ne!(
-                SFlag::S_IFDIR,
-                entry_type,
-                "unlink() should not remove sub-directory name={name:?} under parent ino={parent}",
-            );
-            entry_type
-        };
+        retry_txn!(TXN_RETRY_LIMIT, {
+            let mut txn = self.kv_engine.new_meta_txn().await;
+            let mut parent_node = self.get_inode_from_txn(txn.as_mut(), parent).await?;
+            parent_node.check_is_dir()?;
+            let child_entry = match parent_node.get_entry(name) {
+                None => {
+                    return build_error_result_from_errno(
+                        Errno::ENOENT,
+                        format!(
+                            "failed to find child name={:?} \
+                                under parent ino={} and name={:?}",
+                            name,
+                            parent,
+                            parent_node.get_name(),
+                        ),
+                    );
+                }
+                Some(child_entry) => {
+                    Self::check_sticky_bit(&context, &parent_node, &child_entry)?;
+                    debug_assert_eq!(&name, &child_entry.entry_name());
+                    child_entry
+                }
+            };
 
-        self.remove_node_helper(context, parent, name, entry_type)
-            .await
+            let child_ino = child_entry.ino();
+            let child_node = self.get_inode_from_txn(txn.as_mut(), child_ino).await?;
+
+            // If child is a directory, it must be empty
+            if let SFlag::S_IFDIR = child_node.get_type() {
+                if !child_node.get_dir_data().is_empty() {
+                    return build_error_result_from_errno(
+                        Errno::ENOTEMPTY,
+                        format!(
+                            "failed to unlink() a non-empty directory name={:?} \
+                                under parent ino={} and name={:?}",
+                            name,
+                            parent,
+                            parent_node.get_name(),
+                        ),
+                    );
+                }
+            }
+
+            parent_node.unlink_entry(name).await?;
+
+            // Ready to unlink
+            let deferred_deletion =
+                child_node.get_open_count() > 0 || child_node.get_lookup_count() > 0;
+
+            if deferred_deletion {
+                child_node.mark_deferred_deletion();
+                txn.set(
+                    &KeyType::INum2Node(child_ino),
+                    &ValueType::Node(child_node.to_serial_node()),
+                );
+            } else {
+                if let SFlag::S_IFREG = child_node.get_type() {
+                    self.data_cache.remove_file_cache(child_ino).await;
+                }
+                txn.delete(&KeyType::INum2Node(child_ino));
+            }
+            txn.set(
+                &KeyType::INum2Node(parent),
+                &ValueType::Node(parent_node.to_serial_node()),
+            );
+            (txn.commit().await, ())
+        })?;
+        Ok(())
     }
 
     async fn new(
@@ -436,7 +479,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
                 // insert (FUSE_ROOT_ID -> root_inode) into KV engine
                 txn.set(
                     &KeyType::INum2Node(FUSE_ROOT_ID),
-                    &ValueType::Node(root_inode.into_serial_node()),
+                    &ValueType::Node(root_inode.to_serial_node()),
                 );
                 (txn.commit().await, ())
             }
@@ -482,56 +525,29 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         check_type_supported(&param.node_type)?;
         let parent_ino = param.parent;
         // pre-check : check whether the child name is valid
-        let mut parent_node = self
-            .get_node_from_kv_engine(parent_ino)
-            .await?
-            .ok_or_else(|| {
-                error::build_inconsistent_fs_with_context(
-                    function_name!(),
-                    format!(
-                        "parent of ino={parent_ino} should be in cache before create its child"
-                    ),
-                )
-            })?;
-        parent_node.check_name_availability(&param.name)?;
-        // allocate a new i-node number
-        let new_inum = self.alloc_inum().await?;
+        let (ttl, fuse_attr) = retry_txn!(TXN_RETRY_LIMIT, {
+            let mut txn = self.kv_engine.new_meta_txn().await;
+            let mut parent_node = self.get_inode_from_txn(txn.as_mut(), parent_ino).await?;
+            parent_node.check_name_availability(&param.name)?;
 
-        let new_node = parent_node
-            .create_child_node(
-                &param,
-                new_inum,
-                Arc::<GlobalCache>::clone(&self.data_cache),
-            )
-            .await?;
+            let new_num = self.alloc_inum().await?;
 
-        let new_ino = new_node.get_ino();
-        let new_node_attr = new_node.get_attr();
-        let fuse_attr = fs_util::convert_to_fuse_attr(new_node_attr);
-        self.set_node_to_kv_engine(new_ino, new_node).await?;
-        self.set_node_to_kv_engine(parent_ino, parent_node).await?;
-
-        let ttl = Duration::new(MY_TTL_SEC, 0);
+            let new_node = parent_node
+                .create_child_node(&param, new_num, Arc::<GlobalCache>::clone(&self.data_cache))
+                .await?;
+            let fuse_attr = fs_util::convert_to_fuse_attr(new_node.get_attr());
+            let ttl = Duration::new(MY_TTL_SEC, 0);
+            txn.set(
+                &KeyType::INum2Node(new_num),
+                &ValueType::Node(new_node.to_serial_node()),
+            );
+            txn.set(
+                &KeyType::INum2Node(parent_ino),
+                &ValueType::Node(parent_node.to_serial_node()),
+            );
+            (txn.commit().await, (ttl, fuse_attr))
+        })?;
         Ok((ttl, fuse_attr, MY_GENERATION))
-    }
-
-    #[instrument(skip(self), err, ret)]
-    /// Helper function to remove node
-    async fn remove_node_helper(
-        &self,
-        context: ReqContext,
-        parent: INum,
-        node_name: &str,
-        node_type: SFlag,
-    ) -> DatenLordResult<()> {
-        debug!(
-            "remove_node_helper() about to remove parent ino={:?}, \
-            child_name={:?}, child_type={:?}",
-            parent, node_name, node_type
-        );
-        self.remove_node_local(context, parent, node_name, node_type, false)
-            .await?;
-        Ok(())
     }
 
     #[instrument(skip(self), err, ret)]
@@ -543,150 +559,209 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         parent: INum,
         child_name: &str,
     ) -> DatenLordResult<(Duration, FuseAttr, u64)> {
-        let pre_check_res = self
-            .lookup_pre_check(parent, child_name, context.user_id, context.group_id)
-            .await;
-        let (child_ino, _, _) = match pre_check_res {
-            Ok((ino, child_type, child_attr)) => (ino, child_type, child_attr),
-            Err(e) => {
-                debug!("lookup() failed to pre-check, the error is: {:?}", e);
-                return Err(e);
-            }
-        };
+        retry_txn!(TXN_RETRY_LIMIT, {
+            let mut txn = self.kv_engine.new_meta_txn().await;
+            let parent_node = self.get_inode_from_txn(txn.as_mut(), parent).await?;
+            let Some(child_entry) = parent_node.get_entry(child_name) else {
+                return build_error_result_from_errno(
+                    Errno::ENOENT,
+                    format!(
+                        "failed to find child name={:?} under parent ino={} and name={:?}",
+                        child_name,
+                        parent,
+                        parent_node.get_name(),
+                    ),
+                );
+            };
 
-        let ttl = Duration::new(MY_TTL_SEC, 0);
-        let child_node = self
-            .get_node_from_kv_engine(child_ino)
-            .await?
-            .ok_or_else(|| build_inconsistent_fs!(child_ino))?;
-        let attr = child_node.lookup_attr();
-        debug!(
-            "ino={} lookup_count={} lookup_attr={:?}",
-            child_ino,
-            child_node.get_lookup_count(),
-            attr
-        );
-        self.set_node_to_kv_engine(child_ino, child_node).await?;
-        let fuse_attr = fs_util::convert_to_fuse_attr(attr);
-        Ok((ttl, fuse_attr, MY_GENERATION))
+            parent_node
+                .get_attr()
+                .check_perm(context.user_id, context.group_id, 1)?;
+
+            let child_ino = child_entry.ino();
+            let child_node = self.get_inode_from_txn(txn.as_mut(), child_ino).await?;
+            let child_attr = child_node.lookup_attr();
+
+            let ttl = Duration::new(MY_TTL_SEC, 0);
+            let fuse_attr = fs_util::convert_to_fuse_attr(child_attr);
+            txn.set(
+                &KeyType::INum2Node(parent),
+                &ValueType::Node(parent_node.to_serial_node()),
+            );
+            txn.set(
+                &KeyType::INum2Node(child_ino),
+                &ValueType::Node(child_node.to_serial_node()),
+            );
+            (txn.commit().await, (ttl, fuse_attr, MY_GENERATION))
+        })
     }
 
     /// Rename helper for exchange rename
     #[instrument(skip(self), err, ret)]
-    #[cfg(feature = "abi-7-23")]
-    async fn rename_exchange_helper(
-        &self,
-        context: ReqContext,
-        param: RenameParam,
-    ) -> DatenLordResult<()> {
+    async fn rename(&self, context: ReqContext, param: RenameParam) -> DatenLordResult<()> {
         let old_parent = param.old_parent;
         let old_name = param.old_name.as_str();
         let new_parent = param.new_parent;
         let new_name = param.new_name.as_str();
         let flags = param.flags;
-        let no_replace = flags == 1; // RENAME_NOREPLACE
+        let exchange = match flags {
+            0 | RENAME_NOREPLACE => false,
+            RENAME_EXCHANGE => true,
+            _ => {
+                return build_error_result_from_errno(
+                    Errno::EINVAL,
+                    format!("rename(): flags={flags} is not supported"),
+                )
+            }
+        };
 
-        if no_replace {
-            return build_error_result_from_errno(
-                Errno::EINVAL,
-                "Both RENAME_NOREPLACE and RENAME_EXCHANGE were specified in flags.".into(),
-            );
+        if old_parent == new_parent && old_name == new_name {
+            return Ok(());
         }
+
+        let build_enoent = |name: &str, parent: INum, parent_name: &str| {
+            build_error_result_from_errno(
+                Errno::ENOENT,
+                format!(
+                    "exchange_pre_check() failed to find child entry of name={name:?} \
+                        under parent directory ino={parent} and name={parent_name:?}"
+                ),
+            )
+        };
 
         retry_txn!(TXN_RETRY_LIMIT, {
             let mut txn = self.kv_engine.new_meta_txn().await;
-            let check_res = self
-                .exchange_pre_check(
-                    txn.as_mut(),
-                    &context,
-                    old_parent,
-                    old_name,
-                    new_parent,
-                    new_name,
-                )
-                .await?;
-            let (mut old_parent_node, old_ino, new_parent_node, new_ino) = check_res;
+            let old_parent_node = Arc::new(Mutex::new(
+                self.get_inode_from_txn(txn.as_mut(), old_parent).await?,
+            ));
+            let old_entry = {
+                let raw_node = old_parent_node.lock().await;
+                raw_node.check_is_dir()?;
+                match raw_node.get_entry(old_name) {
+                    None => {
+                        return build_enoent(old_name, old_parent, raw_node.get_name());
+                    }
+                    Some(old_entry) => {
+                        Self::check_sticky_bit(&context, &raw_node, &old_entry)?;
+                        old_entry
+                    }
+                }
+            };
 
-            // If the old node is the same file as the new node, do nothing
-            if old_ino == new_ino {
-                return Ok(());
+            let new_parent_node = if old_parent == new_parent {
+                Arc::clone(&old_parent_node)
+            } else {
+                Arc::new(Mutex::new(
+                    self.get_inode_from_txn(txn.as_mut(), new_parent).await?,
+                ))
+            };
+            {
+                let raw_node = new_parent_node.lock().await;
+                raw_node.check_is_dir()?;
             }
 
-            let mut old_node = self.get_inode_from_txn(txn.as_mut(), old_ino).await?;
-            let mut new_node = self.get_inode_from_txn(txn.as_mut(), new_ino).await?;
+            let new_entry = {
+                let raw_node = new_parent_node.lock().await;
+                raw_node.get_entry(new_name)
+            };
 
-            old_node.set_parent_ino(new_parent);
-            new_node.set_parent_ino(old_parent);
-            old_node.set_name(new_name);
-            new_node.set_name(old_name);
+            match new_entry {
+                None => {
+                    // new_name does not exist under new_parent
+                    if exchange {
+                        // exchange is true, new name must exist
+                        return build_enoent(
+                            new_name,
+                            new_parent,
+                            new_parent_node.lock().await.get_name(),
+                        );
+                    }
+                    // exchange is false, so we can do rename directly
+                    if old_parent == new_parent {
+                        let mut raw_node = old_parent_node.lock().await;
+                        raw_node.get_dir_data_mut().remove(old_name);
+                        raw_node.insert_entry_for_rename(DirEntry::new(
+                            new_name.into(),
+                            Arc::clone(old_entry.file_attr_arc_ref()),
+                        ));
+                    } else {
+                        let mut old_raw_node = old_parent_node.lock().await;
+                        let mut new_raw_node = new_parent_node.lock().await;
+                        old_raw_node.get_dir_data_mut().remove(old_name);
+                        new_raw_node.insert_entry_for_rename(DirEntry::new(
+                            new_name.into(),
+                            Arc::clone(old_entry.file_attr_arc_ref()),
+                        ));
+                    }
+                }
+                Some(new_entry) => {
+                    // new_name exists under new_parent
+                    if exchange {
+                        // exchange is true, so we can do exchange
+                        {
+                            // Remove from old_parent
+                            let mut raw_node = old_parent_node.lock().await;
+                            raw_node.get_dir_data_mut().remove(old_name);
+                            raw_node.insert_entry_for_rename(DirEntry::new(
+                                new_name.into(),
+                                Arc::clone(old_entry.file_attr_arc_ref()),
+                            ));
+                        }
+                        {
+                            // Remove from new_parent
+                            let mut raw_node = new_parent_node.lock().await;
+                            raw_node.get_dir_data_mut().remove(new_name);
+                            raw_node.insert_entry_for_rename(DirEntry::new(
+                                old_name.into(),
+                                Arc::clone(new_entry.file_attr_arc_ref()),
+                            ));
+                        }
+                    } else {
+                        // exchange is false, replace or no_replace
+                        if flags & RENAME_NOREPLACE != 0 {
+                            return build_error_result_from_errno(
+                                Errno::EEXIST,
+                                format!(
+                                    "rename(): failed to rename() \
+                                        because new_name={new_name:?} already exists",
+                                ),
+                            );
+                        }
+                        {
+                            // Remove from old_parent
+                            let mut raw_node = old_parent_node.lock().await;
+                            raw_node.get_dir_data_mut().remove(old_name);
+                        }
+                        {
+                            // Insert into new_parent
+                            let mut raw_node = new_parent_node.lock().await;
+                            raw_node.insert_entry_for_rename(DirEntry::new(
+                                new_name.into(),
+                                Arc::clone(old_entry.file_attr_arc_ref()),
+                            ));
+                        }
+                    }
+                }
+            };
 
-            txn.set(
-                &KeyType::INum2Node(old_ino),
-                &ValueType::Node(old_node.into_serial_node()),
-            );
-            txn.set(
-                &KeyType::INum2Node(new_ino),
-                &ValueType::Node(new_node.into_serial_node()),
-            );
-
-            if let Some(mut new_parent_node) = new_parent_node {
-                // The two parent node is not the same node
-                let old_entry = old_parent_node.get_dir_data_mut().remove(old_name).unwrap_or_else(||unreachable!("Impossible case when exchange,\
-                                                                                                                                    as {old_name} under {old_parent} is checked to be existed."));
-                let new_entry = new_parent_node.get_dir_data_mut().remove(new_name).unwrap_or_else(||unreachable!("Impossible case when exchange,\
-                                                                                                                                    as {new_name} under {new_parent} is checked to be existed."));
-                old_parent_node.insert_entry_for_rename(DirEntry::new(
-                    old_name.into(),
-                    Arc::clone(new_entry.file_attr_arc_ref()),
-                ));
-                new_parent_node.insert_entry_for_rename(DirEntry::new(
-                    new_name.into(),
-                    Arc::clone(old_entry.file_attr_arc_ref()),
-                ));
-
+            if old_parent == new_parent {
                 txn.set(
                     &KeyType::INum2Node(old_parent),
-                    &ValueType::Node(old_parent_node.into_serial_node()),
+                    &ValueType::Node(old_parent_node.lock().await.to_serial_node()),
+                );
+            } else {
+                txn.set(
+                    &KeyType::INum2Node(old_parent),
+                    &ValueType::Node(old_parent_node.lock().await.to_serial_node()),
                 );
                 txn.set(
                     &KeyType::INum2Node(new_parent),
-                    &ValueType::Node(new_parent_node.into_serial_node()),
-                );
-            } else {
-                let old_entry = old_parent_node.get_dir_data_mut().remove(old_name).unwrap_or_else(||unreachable!("Impossible case when exchange,\
-                                                                                                                                    as {old_name} under {old_parent} is checked to be existed."));
-                let new_entry = old_parent_node.get_dir_data_mut().remove(new_name).unwrap_or_else(||unreachable!("Impossible case when exchange,\
-                                                                                                                                    as {new_name} under {new_parent} is checked to be existed."));
-
-                old_parent_node.insert_entry_for_rename(DirEntry::new(
-                    old_name.into(),
-                    Arc::clone(new_entry.file_attr_arc_ref()),
-                ));
-                old_parent_node.insert_entry_for_rename(DirEntry::new(
-                    new_name.into(),
-                    Arc::clone(old_entry.file_attr_arc_ref()),
-                ));
-
-                txn.set(
-                    &KeyType::INum2Node(old_parent),
-                    &ValueType::Node(old_parent_node.into_serial_node()),
+                    &ValueType::Node(new_parent_node.lock().await.to_serial_node()),
                 );
             }
 
             (txn.commit().await, ())
         })
-    }
-
-    #[instrument(skip(self), err, ret)]
-    /// Rename helper to move on disk, it may replace destination entry
-    async fn rename_may_replace_helper(
-        &self,
-        context: ReqContext,
-        param: RenameParam,
-    ) -> DatenLordResult<()> {
-        self.rename_may_replace_local(context, &param, false)
-            .await?;
-        Ok(())
     }
 
     #[instrument(skip(self), err, ret)]
@@ -719,29 +794,24 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         flags: u32,
     ) -> DatenLordResult<usize> {
         let data_len = data.len();
-        let (result, _) = {
-            let mut inode = self
-                .get_node_from_kv_engine(ino)
-                .await?
-                .ok_or_else(|| build_inconsistent_fs!(ino))?;
-            let parent_ino = inode.get_parent_ino();
-
-            debug!(
-                "write_helper() about to write {} byte data to file of ino={} \
-                and name {:?} at offset={}",
-                data.len(),
-                ino,
-                inode.get_name(),
-                offset
+        let mut txn = self.kv_engine.new_meta_txn().await;
+        let mut inode = self.get_inode_from_txn(txn.as_mut(), ino).await?;
+        let o_flags = fs_util::parse_oflag(flags);
+        let result = inode.write_file(fh, offset, data, o_flags, false).await;
+        txn.set(
+            &KeyType::INum2Node(ino),
+            &ValueType::Node(inode.to_serial_node()),
+        );
+        if !txn.commit().await? {
+            // Transaction committed failed, but we don't retry here
+            // Print a warning log and return the result
+            warn!("write_helper() failed to commit txn");
+            // Currently, we consider it as a IO error
+            return build_error_result_from_errno(
+                Errno::EIO,
+                "write_helper() failed to commit txn".to_owned(),
             );
-            let o_flags = fs_util::parse_oflag(flags);
-            let write_to_disk = true;
-            let res = inode
-                .write_file(fh, offset, data, o_flags, write_to_disk)
-                .await;
-            self.set_node_to_kv_engine(ino, inode).await?;
-            (res, parent_ino)
-        };
+        }
         self.invalidate_remote(ino, offset, data_len).await?;
         result
     }
@@ -762,608 +832,6 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
             Some(r) => Some(r.into_s3_node(self).await?),
             None => None,
         })
-    }
-
-    /// Set node to kv engine use inum
-    pub async fn set_node_to_kv_engine(&self, inum: INum, node: S3Node<S>) -> DatenLordResult<()> {
-        let inum_key = KeyType::INum2Node(inum);
-        let node_value = ValueType::Node(node.into_serial_node());
-        self.kv_engine
-            .set(&inum_key, &node_value, None)
-            .await
-            .add_context(format!(
-                "{}() failed to set node of ino={inum} to kv engine",
-                function_name!()
-            ))?;
-
-        Ok(())
-    }
-
-    /// Remove node from kv engine use inum
-    pub async fn remove_node_from_kv_engine(&self, inum: INum) -> DatenLordResult<()> {
-        self.kv_engine
-            .delete(&KeyType::INum2Node(inum), None)
-            .await
-            .add_context(format!(
-                "{}() failed to remove node of ino={inum} from kv engine",
-                function_name!()
-            ))?;
-
-        Ok(())
-    }
-
-    /// Helper function to pre-check if node can be deferred deleted.
-    fn deferred_delete_pre_check(inode: &S3Node<S>) -> (bool, INum, String) {
-        debug_assert!(inode.get_lookup_count() >= 0); // lookup count cannot be negative
-        debug_assert!(inode.get_open_count() >= 0);
-        // pre-check whether deferred delete or not
-        (
-            inode.get_lookup_count() > 0 || inode.get_open_count() > 0,
-            inode.get_parent_ino(),
-            inode.get_name().to_owned(),
-        )
-    }
-
-    /// Helper function to delete or deferred delete node
-    async fn may_deferred_delete_node_helper(
-        &self,
-        ino: INum,
-        from_remote: bool,
-    ) -> DatenLordResult<()> {
-        // remove entry from parent i-node
-        let inode = self.get_node_from_kv_engine(ino).await?.ok_or_else(|| {
-            anyhow::anyhow!(
-                "{}() failed to \
-                         find the i-node of ino={ino} to remove",
-                function_name!()
-            )
-        })?;
-        let (deferred_deletion, parent_ino, node_name) = Self::deferred_delete_pre_check(&inode);
-        let mut parent_node = self
-            .get_node_from_kv_engine(parent_ino)
-            .await?
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "{}() failed to \
-                     find the parent of ino={parent_ino} for i-node of ino={ino}",
-                    function_name!()
-                )
-            })?;
-        let deleted_entry = parent_node
-            .unlink_entry(&node_name)
-            .await
-            .add_context(format!(
-                "{}() failed to remove entry name={node_name:?} \
-                 and ino={ino} from parent directory ino={parent_ino}",
-                function_name!()
-            ))?;
-        debug!(
-            "may_deferred_delete_node_helper() successfully remove entry name={:?} \
-                 ino={} from parent directory ino={}",
-            node_name, ino, parent_ino
-        );
-        debug_assert_eq!(node_name, deleted_entry.entry_name());
-        debug_assert_eq!(deleted_entry.ino(), ino);
-
-        if deferred_deletion {
-            // Deferred deletion
-            let inode = self.get_node_from_kv_engine(ino).await?.unwrap_or_else(|| {
-                unreachable!(
-                    "impossible case, may_deferred_delete_node_helper() \
-                     i-node of ino={ino} is not in cache",
-                );
-            });
-            debug!(
-                "may_deferred_delete_node_helper() deferred removed \
-                    the i-node name={:?} of ino={} under parent ino={}, \
-                    open count={}, lookup count={}",
-                inode.get_name(),
-                ino,
-                parent_ino,
-                inode.get_open_count(),
-                inode.get_lookup_count(),
-            );
-            inode.mark_deferred_deletion();
-            // Notify kernel to drop cache
-            if from_remote && inode.get_lookup_count() > 0 {
-                let fuse_fd = *self.fuse_fd.lock().await;
-                // fuse_fd must be set
-                assert!(fuse_fd > 0_i32);
-                #[cfg(feature = "abi-7-18")]
-                {
-                    let fuse_delete_notification = FuseDeleteNotification::new(fuse_fd);
-                    fuse_delete_notification
-                        .notify(parent_ino, ino, inode.get_name().to_owned())
-                        .await?;
-                }
-            }
-        } else {
-            // immediate deletion
-            self.remove_node_from_kv_engine(ino).await?;
-        }
-        self.set_node_to_kv_engine(parent_ino, parent_node).await?;
-        Ok(())
-    }
-
-    /// Lookup helper function to pre-check
-    async fn lookup_pre_check(
-        &self,
-        parent: INum,
-        name: &str,
-        user_id: u32,
-        group_id: u32,
-    ) -> DatenLordResult<(INum, SFlag, Arc<SyncRwLock<FileAttr>>)> {
-        // lookup child ino and type first
-        let parent_node = self
-            .get_node_from_kv_engine(parent)
-            .await?
-            .ok_or_else(|| build_inconsistent_fs!(parent))?;
-        parent_node.get_attr().check_perm(user_id, group_id, 1)?;
-        if let Some(child_entry) = parent_node.get_entry(name) {
-            let ino = child_entry.ino();
-            let child_type = child_entry.entry_type();
-            Ok((ino, child_type, Arc::clone(child_entry.file_attr_arc_ref())))
-        } else {
-            debug!(
-                "lookup_helper() failed to find the file name={:?} \
-                    under parent directory of ino={} and name={:?}",
-                name,
-                parent,
-                parent_node.get_name(),
-            );
-            // lookup() didn't find anything, this is normal
-            build_error_result_from_errno(
-                Errno::ENOENT,
-                format!(
-                    "lookup_helper() failed to find the file name={:?} \
-                        under parent directory of ino={} and name={:?}",
-                    name,
-                    parent,
-                    parent_node.get_name(),
-                ),
-            )
-        }
-    }
-
-    /// Helper function to pre-check for exchange rename.
-    ///
-    /// This function ensures:
-    /// 1. The old parent, old entry, the new parent and the new entry exist.
-    /// 2. Both the old parent and the new parent are directories.
-    /// 3. The user renaming the file is permitted to do this operation when the
-    ///    sticky bit of one of the old entry or the new entry is set.
-    ///
-    /// When all checks above passed,
-    /// this function returns a tuple containing:
-    /// - A `S3Node` of old parent
-    /// - The ino of old entry
-    /// - A `S3Node` of new parent, or `None` if the new parent is same as old
-    ///   parent
-    /// - The ino of new entry
-    ///
-    /// Otherwise, it returns an `Err`.
-    #[cfg(feature = "abi-7-23")]
-    async fn exchange_pre_check<T: MetaTxn + ?Sized>(
-        &self,
-        txn: &mut T,
-        context: &ReqContext,
-        old_parent: INum,
-        old_name: &str,
-        new_parent: INum,
-        new_name: &str,
-    ) -> DatenLordResult<(S3Node<S>, INum, Option<S3Node<S>>, INum)> {
-        let check_node_is_dir = |node: &S3Node<S>| {
-            if node.get_type() == SFlag::S_IFDIR {
-                Ok(())
-            } else {
-                build_error_result_from_errno(
-                    Errno::ENOTDIR,
-                    format!("{} is not a dir.", node.get_ino()),
-                )
-            }
-        };
-
-        let build_enoent = |name: &str, parent: INum, parent_node: &S3Node<S>| {
-            build_error_result_from_errno(
-                Errno::ENOENT,
-                format!(
-                    "exchange_pre_check() failed to find child entry of name={:?} \
-                        under parent directory ino={} and name={:?}",
-                    name,
-                    parent,
-                    parent_node.get_name(),
-                ),
-            )
-        };
-
-        let old_parent_node = txn
-            .get(&KeyType::INum2Node(old_parent))
-            .await?
-            .ok_or_else(|| {
-                anyhow::Error::new(Errno::ENOENT)
-                    .context(format!("Old parent {old_parent} does not exist."))
-            })?
-            .into_s3_node(self)
-            .await?;
-        check_node_is_dir(&old_parent_node)?;
-
-        let old_entry_ino = match old_parent_node.get_entry(old_name) {
-            None => {
-                debug!(
-                    "exchange() failed to find child entry of name={:?} under parent directory ino={} and name={:?}",
-                    old_name, old_parent, old_parent_node.get_name(),
-                );
-                return build_enoent(old_name, old_parent, &old_parent_node);
-            }
-            Some(old_entry) => {
-                Self::check_sticky_bit(context, &old_parent_node, old_entry)?;
-                debug_assert_eq!(&old_name, &old_entry.entry_name());
-                old_entry.ino()
-            }
-        };
-
-        let new_parent_node = if old_parent == new_parent {
-            None
-        } else {
-            let new_parent_node = txn
-                .get(&KeyType::INum2Node(new_parent))
-                .await?
-                .ok_or_else(|| {
-                    anyhow::Error::new(Errno::ENOENT)
-                        .context(format!("New parent {new_parent} does not exist."))
-                })?
-                .into_s3_node(self)
-                .await?;
-
-            check_node_is_dir(&new_parent_node)?;
-
-            Some(new_parent_node)
-        };
-
-        let new_parent_ref = new_parent_node.as_ref().unwrap_or(&old_parent_node);
-
-        let new_entry_ino = match new_parent_ref.get_entry(new_name) {
-            None => {
-                debug!(
-                    "exchange() failed to find child entry of name={:?} under parent directory ino={} and name={:?}",
-                    new_name, new_parent, new_parent_ref.get_name(),
-                );
-                return build_enoent(new_name, new_parent, new_parent_ref);
-            }
-            Some(new_entry) => {
-                Self::check_sticky_bit(context, new_parent_ref, new_entry)?;
-                debug_assert_eq!(&new_name, &new_entry.entry_name());
-                new_entry.ino()
-            }
-        };
-        Ok((
-            old_parent_node,
-            old_entry_ino,
-            new_parent_node,
-            new_entry_ino,
-        ))
-    }
-
-    /// Rename helper function to pre-check
-    ///
-    /// This function ensures:
-    /// 1. The old parent, old entry (`old_name`) and the new parent exists.
-    /// 2. The user renaming the file is permitted to do this operation when the
-    ///    sticky bit of one of the old entry or the new entry (if exists) is
-    ///    set.
-    /// 3. The new entry does not exists, or the `no_replace` is false.
-    ///
-    /// When all checks above passed,
-    /// this function returns a tuple containing the fd of old parent,
-    /// the ino of old node,
-    /// the fd of new parent and the ino of new node (if exists).
-    ///
-    /// Otherwise, it returns an `Err`.
-    async fn rename_pre_check(
-        &self,
-        context: ReqContext,
-        old_parent: INum,
-        old_name: &str,
-        new_parent: INum,
-        new_name: &str,
-        no_replace: bool,
-    ) -> DatenLordResult<(RawFd, INum, RawFd, Option<INum>)> {
-        let old_parent_node = self
-            .get_node_from_kv_engine(old_parent)
-            .await?
-            .ok_or_else(|| {
-                error::build_inconsistent_fs_with_context(
-                    function_name!(),
-                    format!("the parent i-node of ino={old_parent} should be in cache"),
-                )
-            })?;
-        let old_parent_fd = old_parent_node.get_fd();
-        let old_entry_ino = match old_parent_node.get_entry(old_name) {
-            None => {
-                debug!(
-                    "rename() failed to find child entry of name={:?} under parent directory ino={} and name={:?}",
-                    old_name, old_parent, old_parent_node.get_name(),
-                );
-                return build_error_result_from_errno(
-                    Errno::ENOENT,
-                    format!(
-                        "rename_pre_check() failed to find child entry of name={:?} \
-                            under parent directory ino={} and name={:?}",
-                        old_name,
-                        old_parent,
-                        old_parent_node.get_name(),
-                    ),
-                );
-            }
-            Some(old_entry) => {
-                Self::check_sticky_bit(&context, &old_parent_node, old_entry)?;
-                debug_assert_eq!(&old_name, &old_entry.entry_name());
-                old_entry.ino()
-            }
-        };
-
-        let new_parent_node = self
-            .get_node_from_kv_engine(new_parent)
-            .await?
-            .ok_or_else(|| {
-                error::build_inconsistent_fs_with_context(
-                    function_name!(),
-                    format!("the new parent i-node of ino={new_parent} should be in cache"),
-                )
-            })?;
-        let new_parent_fd = new_parent_node.get_fd();
-        let new_entry_ino = if let Some(new_entry) = new_parent_node.get_entry(new_name) {
-            Self::check_sticky_bit(&context, &new_parent_node, new_entry)?;
-            debug_assert_eq!(&new_name, &new_entry.entry_name());
-            let new_ino = new_entry.ino();
-            if no_replace {
-                debug!(
-                    "rename() found i-node of ino={} and name={:?} under new parent ino={} and name={:?}, \
-                        but RENAME_NOREPLACE is specified",
-                    new_ino, new_name, new_parent, new_parent_node.get_name(),
-                );
-                return build_error_result_from_errno(
-                    Errno::EEXIST, // RENAME_NOREPLACE
-                    format!(
-                        "rename() found i-node of ino={} and name={:?} under new parent ino={} and name={:?}, \
-                            but RENAME_NOREPLACE is specified",
-                        new_ino, new_name, new_parent, new_parent_node.get_name(),
-                    ),
-                );
-            }
-            debug!(
-                "rename() found the new parent directory of ino={} and name={:?} already has a child with name={:?}",
-                new_parent, new_parent_node.get_name(), new_name,
-            );
-            Some(new_ino)
-        } else {
-            None
-        };
-        debug!(
-            "rename() pre-check passed, old parent ino={}, old name={:?}, new parent ino={}, new name={:?}, \
-                old entry ino={}, new entry ino={:?}",
-            old_parent, old_name, new_parent, new_name, old_entry_ino, new_entry_ino,
-        );
-        Ok((old_parent_fd, old_entry_ino, new_parent_fd, new_entry_ino))
-    }
-
-    /// Rename in cache helper
-    async fn rename_in_cache_helper(
-        &self,
-        old_parent: INum,
-        old_name: &str,
-        new_parent: INum,
-        new_name: &str,
-    ) -> DatenLordResult<Option<DirEntry>> {
-        let mut old_parent_node = self.get_node_from_kv_engine(old_parent).await?.unwrap_or_else(|| {
-            unreachable!(
-                "impossible case when rename, the from parent i-node of ino={old_parent} should be in cache",
-            )
-        });
-        let entry_to_move = match old_parent_node.remove_entry_for_rename(old_name) {
-            None => unreachable!(
-                "impossible case when rename, the from entry of name={:?} \
-                        should be under from directory ino={} and name={:?}",
-                old_name,
-                old_parent,
-                old_parent_node.get_name(),
-            ),
-            Some(old_entry) => DirEntry::new(
-                new_name.to_owned(),
-                Arc::clone(old_entry.file_attr_arc_ref()),
-            ),
-        };
-        self.set_node_to_kv_engine(old_parent, old_parent_node)
-            .await?;
-
-        // TODO : the error is: {}
-
-        let mut new_parent_node = self.get_node_from_kv_engine(new_parent).await?.unwrap_or_else(|| {
-            unreachable!(
-                "impossible case when rename, the to parent i-node of ino={new_parent} should be in cache"
-            )
-        });
-        let result = new_parent_node.insert_entry_for_rename(entry_to_move);
-        self.set_node_to_kv_engine(new_parent, new_parent_node)
-            .await?;
-        Ok(result)
-    }
-
-    /// Rename to move on disk locally, it may replace destination entry
-    async fn rename_may_replace_local(
-        &self,
-        context: ReqContext,
-        param: &RenameParam,
-        from_remote: bool,
-    ) -> DatenLordResult<()> {
-        let old_parent = param.old_parent;
-        let old_name = &param.old_name;
-        let new_parent = param.new_parent;
-        let new_name = &param.new_name;
-        let flags = param.flags;
-        debug!(
-            "rename(old parent={}, old name={:?}, new parent={}, new name={:?})",
-            old_parent, old_name, new_parent, new_name,
-        );
-        let no_replace = flags == 1; // RENAME_NOREPLACE
-
-        let pre_check_res = self
-            .rename_pre_check(
-                context, old_parent, old_name, new_parent, new_name, no_replace,
-            )
-            .await;
-        let (_, old_entry_ino, _, new_entry_ino) = match pre_check_res {
-            Ok((old_parent_fd, old_entry_ino, new_parent_fd, new_entry_ino)) => {
-                (old_parent_fd, old_entry_ino, new_parent_fd, new_entry_ino)
-            }
-            Err(e) => {
-                debug!("rename() pre-check failed, the error is: {:?}", e);
-                return Err(e);
-            }
-        };
-
-        // Just replace new entry, may deferred delete
-        if let Some(new_ino) = new_entry_ino {
-            self.may_deferred_delete_node_helper(new_ino, from_remote)
-                .await
-                .add_context(format!(
-                    "{}() failed to \
-                        maybe deferred delete the replaced i-node ino={new_ino}",
-                    function_name!()
-                ))?;
-        }
-
-        {
-            let mut moved_node = self.get_node_from_kv_engine(old_entry_ino).await?.unwrap_or_else(|| {
-                unreachable!(
-                    "impossible case when rename, the from entry i-node of ino={old_entry_ino} should be in cache",
-                )
-            });
-            moved_node.set_parent_ino(new_parent);
-            moved_node.set_name(new_name);
-            debug!(
-                "rename_may_replace_local() successfully moved the from i-node \
-                of ino={} and name={:?} under from parent ino={} to \
-                the to i-node of ino={} and name={:?} under to parent ino={}",
-                old_entry_ino, old_name, old_parent, old_entry_ino, new_name, new_parent,
-            );
-            self.set_node_to_kv_engine(old_entry_ino, moved_node)
-                .await?;
-        };
-
-        let rename_replace_res = self
-            .rename_in_cache_helper(old_parent, old_name, new_parent, new_name)
-            .await?;
-        debug_assert!(
-            rename_replace_res.is_none(),
-            "rename_may_replace_local() should already have \
-                deleted the target i-node to be replaced",
-        );
-        Ok(())
-    }
-
-    /// Helper function to remove node locally
-    pub(crate) async fn remove_node_local(
-        &self,
-        context: ReqContext,
-        parent: INum,
-        node_name: &str,
-        node_type: SFlag,
-        from_remote: bool,
-    ) -> DatenLordResult<()> {
-        let node_ino: INum;
-        {
-            // pre-checks
-            let parent_node = self.get_node_from_kv_engine(parent).await?.ok_or_else(|| {
-                error::build_inconsistent_fs_with_context(
-                    function_name!(),
-                    format!("parent of ino={parent} should be in cache before remove its child"),
-                )
-            })?;
-            match parent_node.get_entry(node_name) {
-                None => {
-                    debug!(
-                        "remove_node_local() failed to find i-node name={:?} \
-                            under parent of ino={}",
-                        node_name, parent,
-                    );
-                    return build_error_result_from_errno(
-                        Errno::ENOENT,
-                        format!(
-                            "remove_node_local() failed to find i-node name={node_name:?} \
-                                under parent of ino={parent}",
-                        ),
-                    );
-                }
-                Some(child_entry) => {
-                    Self::check_sticky_bit(&context, &parent_node, child_entry)?;
-                    node_ino = child_entry.ino();
-                    if let SFlag::S_IFDIR = node_type {
-                        // check the directory to delete is empty
-                        let dir_node =
-                            self.get_node_from_kv_engine(node_ino)
-                                .await?
-                                .ok_or_else(|| {
-                                    error::build_inconsistent_fs_with_context(
-                                        function_name!(),
-                                        format!(
-                                            "directory name={node_name:?} of ino={node_ino} \
-                                found under the parent of ino={parent}, \
-                                but no i-node found for this directory"
-                                        ),
-                                    )
-                                })?;
-                        if !dir_node.is_node_data_empty() {
-                            debug!(
-                                "remove_node_local() cannot remove \
-                                    the non-empty directory name={:?} of ino={} \
-                                    under the parent directory of ino={}",
-                                node_name, node_ino, parent,
-                            );
-                            return build_error_result_from_errno(
-                                Errno::ENOTEMPTY,
-                                format!(
-                                    "remove_node_local() cannot remove \
-                                        the non-empty directory name={node_name:?} of ino={node_ino} \
-                                        under the parent directory of ino={parent}",
-                                ),
-                            );
-                        }
-                    }
-
-                    let child_node = self.get_node_from_kv_engine(node_ino)
-                        .await?
-                        .ok_or_else(|| error::build_inconsistent_fs_with_context(
-                            function_name!(),
-                            format!("i-node name={node_name:?} of ino={node_ino} found under the parent of ino={parent}, but no i-node found for this node"
-                            )))?;
-
-                    debug_assert_eq!(node_ino, child_node.get_ino());
-                    debug_assert_eq!(node_name, child_node.get_name());
-                    debug_assert_eq!(parent, child_node.get_parent_ino());
-                    debug_assert_eq!(node_type, child_node.get_type());
-                    debug_assert_eq!(node_type, child_node.get_attr().kind);
-                }
-            }
-        }
-        {
-            // all checks passed, ready to remove,
-            // when deferred deletion, remove entry from directory first
-            self.may_deferred_delete_node_helper(node_ino, from_remote)
-                .await
-                .add_context(format!(
-                    "{}() failed to maybe deferred delete child i-node of ino={node_ino}, \
-                        name={node_name:?} and type={node_type:?} under parent ino={parent}",
-                    function_name!()
-                ))?;
-            // reply.ok().await?;
-            debug!(
-                "remove_node_local() successfully removed child i-node of ino={}, \
-                    name={:?} and type={:?} under parent ino={}",
-                node_ino, node_name, node_type, parent,
-            );
-        };
-        Ok(())
     }
 
     /// Allocate a new uinque inum for new node

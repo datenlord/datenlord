@@ -1,15 +1,17 @@
 //! The storage manager.
 
+use std::sync::Arc;
+use std::time::SystemTime;
+
 use clippy_utilities::OverflowArithmetic;
 use lockfree_cuckoohash::{pin, LockFreeCuckooHash as HashMap};
-use std::{sync::Arc, time::SystemTime};
 use tokio::task;
-use tracing::warn;
 
 use super::{Block, Storage};
 use crate::async_fuse::fuse::protocol::INum;
 
-/// The storage manager, which exposes the interfaces to `FileSystem` for interacting with the storage layers.
+/// The storage manager, which exposes the interfaces to `FileSystem` for
+/// interacting with the storage layers.
 #[derive(Debug)]
 pub struct StorageManager<S> {
     /// The top-level storage, `InMemoryCache` for example
@@ -59,10 +61,10 @@ where
             if let Some(block) = block {
                 blocks.push(block);
             } else {
-                // A "gap" exists in the range of the being-loaded blocks,
-                // the file is considered to be truncated, and all the rest (if exist) are ignored.
-                warn!("Cannot fetch block {block_id} from storage, consider to be truncated.");
-                break;
+                let mut zero_filled = Block::new_zeroed(self.block_size);
+                zero_filled.set_dirty(true);
+                self.storage.store(ino, block_id, zero_filled.clone()).await;
+                blocks.push(zero_filled);
             }
         }
 
@@ -79,7 +81,7 @@ where
         let mut handles = vec![];
 
         for (mut io_block, block_id) in io_blocks.zip(start_block..) {
-            io_block.set_dirty();
+            io_block.set_dirty(true);
             let storage = Arc::clone(&self.storage);
             let handle = task::spawn(async move { storage.store(ino, block_id, io_block).await });
             handles.push(handle);
@@ -92,7 +94,7 @@ where
         }
     }
 
-    /// Convert `IoBlock`s from slice.
+    /// Convert slice to `Block`s.
     fn make_blocks_from_slice(&self, offset: usize, data: &[u8]) -> Vec<Block> {
         let data_len = data.len();
         let block_num = {
@@ -220,7 +222,8 @@ where
             if invalid {
                 self.mtimes.remove(&ino);
             }
-            // No data will be written, so the passed-in mtime will be passed-out changelessly.
+            // No data will be written, so the passed-in mtime will be passed-out
+            // changelessly.
             return mtime;
         }
 
@@ -259,7 +262,8 @@ where
     /// After the truncating, the valid range of a file in the storage
     /// is `[0, to)`.
     ///
-    /// This method performs a store operation, therefore it also takes a `mtime` and returns a new `mtime` like `store` method.
+    /// This method performs a store operation, therefore it also takes a
+    /// `mtime` and returns a new `mtime` like `store` method.
     pub async fn truncate(
         &self,
         ino: INum,
@@ -317,28 +321,30 @@ where
 #[cfg(test)]
 #[allow(clippy::indexing_slicing)]
 mod tests {
-    use std::{
-        sync::Arc,
-        time::{Duration, SystemTime},
-    };
+    use std::sync::Arc;
+    use std::time::{Duration, SystemTime};
 
     use clippy_utilities::OverflowArithmetic;
 
+    use crate::async_fuse::memfs::cache::mock::MemoryStorage;
+    use crate::async_fuse::memfs::cache::policy::LruPolicy;
     use crate::async_fuse::memfs::cache::{
-        mock::MemoryStorage, policy::LruPolicy, Block, BlockCoordinate, InMemoryCache, Storage,
-        StorageManager,
+        Block, BlockCoordinate, MemoryCache, MemoryCacheBuilder, Storage, StorageManager,
     };
 
     const BLOCK_SIZE_IN_BYTES: usize = 8;
     const BLOCK_CONTENT: &[u8; BLOCK_SIZE_IN_BYTES] = b"foo bar ";
     const CACHE_CAPACITY_IN_BLOCKS: usize = 4;
 
-    type MemoryCacheType = InMemoryCache<LruPolicy<BlockCoordinate>, Arc<MemoryStorage>>;
+    type MemoryCacheType = MemoryCache<LruPolicy<BlockCoordinate>, Arc<MemoryStorage>>;
 
-    fn create_storage() -> (Arc<MemoryStorage>, StorageManager<MemoryCacheType>) {
-        let backend = Arc::new(MemoryStorage::new(BLOCK_SIZE_IN_BYTES));
+    fn create_storage() -> (Arc<MemoryStorage>, StorageManager<Arc<MemoryCacheType>>) {
+        let backend = Arc::new(MemoryStorage::new(
+            BLOCK_SIZE_IN_BYTES,
+            Duration::from_millis(0),
+        ));
         let lru = LruPolicy::<BlockCoordinate>::new(CACHE_CAPACITY_IN_BLOCKS);
-        let cache = InMemoryCache::new(lru, Arc::clone(&backend), BLOCK_SIZE_IN_BYTES);
+        let cache = MemoryCacheBuilder::new(lru, Arc::clone(&backend), BLOCK_SIZE_IN_BYTES).build();
         let storage = StorageManager::new(cache, BLOCK_SIZE_IN_BYTES);
 
         (backend, storage)
@@ -433,6 +439,34 @@ mod tests {
         assert_eq!(loaded.len(), 2);
         assert_eq!(loaded[0].as_slice(), b"foo bar ");
         assert_eq!(loaded[1].as_slice(), b"2000");
+    }
+
+    #[tokio::test]
+    async fn test_read_write_inexist_block() {
+        const ZEROED_BLOCK: &[u8; BLOCK_SIZE_IN_BYTES] = &[0_u8; BLOCK_SIZE_IN_BYTES];
+
+        let ino = 0;
+        let offset = 0;
+        let mtime = SystemTime::now();
+
+        let (_, storage) = create_storage();
+
+        let loaded = storage.load(ino, offset, BLOCK_SIZE_IN_BYTES, mtime).await;
+
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].as_slice(), ZEROED_BLOCK);
+
+        let loaded = storage
+            .load(
+                ino,
+                BLOCK_SIZE_IN_BYTES,
+                BLOCK_SIZE_IN_BYTES.overflow_mul(2),
+                mtime,
+            )
+            .await;
+        assert_eq!(loaded.len(), 2);
+        assert_eq!(loaded[0].as_slice(), ZEROED_BLOCK);
+        assert_eq!(loaded[0].as_slice(), ZEROED_BLOCK);
     }
 
     #[tokio::test]
@@ -588,21 +622,18 @@ mod tests {
 
     #[allow(clippy::unwrap_used)]
     mod concurrency {
-        use crate::async_fuse::fuse::fuse_reply::AsIoVec;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        use std::time::{Duration, SystemTime};
 
-        use super::{
-            Block, BlockCoordinate, InMemoryCache, LruPolicy, MemoryStorage, Storage,
-            StorageManager,
-        };
         use clippy_utilities::OverflowArithmetic;
         use crossbeam_utils::atomic::AtomicCell;
-        use std::{
-            sync::{
-                atomic::{AtomicUsize, Ordering},
-                Arc,
-            },
-            time::SystemTime,
+
+        use super::{
+            Block, BlockCoordinate, LruPolicy, MemoryCacheBuilder, MemoryStorage, Storage,
+            StorageManager,
         };
+        use crate::async_fuse::fuse::fuse_reply::AsIoVec;
 
         const BLOCK_SIZE: usize = 16;
         const REQUEST_SIZE: usize = 8;
@@ -658,14 +689,21 @@ mod tests {
             }
         }
 
+        fn create_storage_for_concurrent_test() -> Arc<StorageManager<impl Storage>> {
+            let backend = Arc::new(MemoryStorage::new(BLOCK_SIZE, Duration::from_millis(0)));
+            let lru = LruPolicy::<BlockCoordinate>::new(TOTAL_SIZE.overflow_div(BLOCK_SIZE));
+            let cache = MemoryCacheBuilder::new(lru, Arc::clone(&backend), BLOCK_SIZE)
+                .write_through(false)
+                .command_queue_limit(500)
+                .build();
+            Arc::new(StorageManager::new(cache, BLOCK_SIZE))
+        }
+
         #[tokio::test]
         async fn test_concurrency_aligned() {
             let byte_offset = 0;
 
-            let backend = Arc::new(MemoryStorage::new(BLOCK_SIZE));
-            let lru = LruPolicy::<BlockCoordinate>::new(TOTAL_SIZE.overflow_div(BLOCK_SIZE));
-            let cache = InMemoryCache::new(lru, Arc::clone(&backend), BLOCK_SIZE);
-            let storage = Arc::new(StorageManager::new(cache, BLOCK_SIZE));
+            let storage = create_storage_for_concurrent_test();
 
             let write_pointer = Arc::new(AtomicUsize::new(0));
             let mtime = Arc::new(AtomicCell::new(SystemTime::now()));
@@ -717,10 +755,7 @@ mod tests {
         async fn test_concurrency_unaligned() {
             let byte_offset = 4;
 
-            let backend = Arc::new(MemoryStorage::new(BLOCK_SIZE));
-            let lru = LruPolicy::<BlockCoordinate>::new(TOTAL_SIZE.overflow_div(BLOCK_SIZE));
-            let cache = InMemoryCache::new(lru, Arc::clone(&backend), BLOCK_SIZE);
-            let storage = Arc::new(StorageManager::new(cache, BLOCK_SIZE));
+            let storage = create_storage_for_concurrent_test();
 
             let write_pointer = Arc::new(AtomicUsize::new(0));
             let mtime = Arc::new(AtomicCell::new(SystemTime::now()));
@@ -766,6 +801,138 @@ mod tests {
             writer.await.unwrap();
             reader1.await.unwrap();
             reader2.await.unwrap();
+        }
+    }
+
+    #[allow(clippy::unwrap_used)]
+    mod latency {
+        use std::num::NonZeroUsize;
+        use std::sync::Arc;
+        use std::time::{Duration, SystemTime};
+
+        use clippy_utilities::OverflowArithmetic;
+
+        use super::{
+            BlockCoordinate, LruPolicy, MemoryCacheBuilder, MemoryStorage, Storage, StorageManager,
+            BLOCK_CONTENT, BLOCK_SIZE_IN_BYTES,
+        };
+        use crate::async_fuse::memfs::cache::SoftLimit;
+
+        macro_rules! elapsed {
+            ($body:expr) => {{
+                let now = tokio::time::Instant::now();
+                let result = $body;
+                let latency = now.elapsed();
+
+                (latency, result)
+            }};
+        }
+
+        fn create_storage_with_latency(write_through: bool) -> Arc<StorageManager<impl Storage>> {
+            let limit = SoftLimit(1, NonZeroUsize::new(1).unwrap());
+
+            let backend = Arc::new(MemoryStorage::new(
+                BLOCK_SIZE_IN_BYTES,
+                Duration::from_millis(100),
+            ));
+            let lru = LruPolicy::<BlockCoordinate>::new(16);
+            let cache = MemoryCacheBuilder::new(lru, Arc::clone(&backend), BLOCK_SIZE_IN_BYTES)
+                .write_through(write_through)
+                .limit(limit)
+                .build();
+            Arc::new(StorageManager::new(cache, BLOCK_SIZE_IN_BYTES))
+        }
+
+        #[tokio::test]
+        async fn test_write_through_latency() {
+            let storage = create_storage_with_latency(true);
+
+            let (latency, mtime) =
+                elapsed!(storage.store(0, 0, BLOCK_CONTENT, SystemTime::now()).await);
+            assert!(latency.as_millis() >= 100, "latency = {latency:?}");
+
+            let (latency, _) = elapsed!(storage.load(0, 0, BLOCK_SIZE_IN_BYTES, mtime).await);
+            assert!(latency.as_millis() < 2, "latency = {latency:?}");
+
+            // Update
+            let (latency, _) = elapsed!(storage.store(0, 0, &BLOCK_CONTENT[..4], mtime).await);
+            assert!(latency.as_millis() >= 100, "latency = {latency:?}");
+
+            // Invalidate the cache, and update
+            let (latency, mtime) = elapsed!(
+                storage
+                    .store(0, 0, &BLOCK_CONTENT[..4], SystemTime::now())
+                    .await
+            );
+            assert!(latency.as_millis() >= 200, "latency = {latency:?}");
+
+            let (latency, _) = elapsed!(storage.truncate(0, BLOCK_SIZE_IN_BYTES, 4, mtime).await);
+            assert!(latency.as_millis() >= 100, "latency = {latency:?}");
+
+            let (latency, _) = elapsed!(storage.truncate(0, 4, 1, SystemTime::now()).await);
+            assert!(latency.as_millis() >= 100, "latency = {latency:?}");
+
+            // Invalid the cache, and load
+            let (latency, _) = elapsed!(
+                storage
+                    .load(0, 0, BLOCK_SIZE_IN_BYTES, SystemTime::now())
+                    .await
+            );
+            assert!(latency.as_millis() >= 100, "latency = {latency:?}");
+        }
+
+        #[tokio::test]
+        async fn test_write_back_latency() {
+            let storage = create_storage_with_latency(false);
+
+            let (latency, mtime) =
+                elapsed!(storage.store(0, 0, BLOCK_CONTENT, SystemTime::now()).await);
+            assert!(latency.as_millis() < 2, "latency = {latency:?}");
+
+            let (latency, _) = elapsed!(storage.load(0, 0, BLOCK_SIZE_IN_BYTES, mtime).await);
+            assert!(latency.as_millis() < 2, "latency = {latency:?}");
+
+            // Update
+            let (latency, _) = elapsed!(storage.store(0, 0, &BLOCK_CONTENT[..4], mtime).await);
+            assert!(latency.as_millis() < 2, "latency = {latency:?}");
+
+            // Invalidate the cache, and update
+            let (latency, mtime) = elapsed!(
+                storage
+                    .store(0, 0, &BLOCK_CONTENT[..4], SystemTime::now())
+                    .await
+            );
+            assert!(latency.as_millis() >= 100, "latency = {latency:?}");
+
+            let (latency, _) = elapsed!(storage.truncate(0, BLOCK_SIZE_IN_BYTES, 4, mtime).await);
+            assert!(latency.as_millis() < 2, "latency = {latency:?}");
+
+            let (latency, _) = elapsed!(storage.truncate(0, 4, 1, SystemTime::now()).await);
+            assert!(latency.as_millis() < 2, "latency = {latency:?}");
+
+            // Invalidate the cache, and load
+            let (latency, _) = elapsed!(
+                storage
+                    .load(0, 0, BLOCK_SIZE_IN_BYTES, SystemTime::now())
+                    .await
+            );
+            assert!(latency.as_millis() >= 100, "latency = {latency:?}");
+        }
+
+        #[tokio::test]
+        async fn test_write_back_flush_latency() {
+            let storage = create_storage_with_latency(false);
+            let mut mtime = SystemTime::now();
+            for block_id in 0..8 {
+                let offset = block_id.overflow_mul(BLOCK_SIZE_IN_BYTES);
+                mtime = storage.store(0, offset, BLOCK_CONTENT, mtime).await;
+            }
+
+            // Wait for all blocks being flushed
+            tokio::time::sleep(Duration::from_millis(900)).await;
+
+            let (latency, ()) = elapsed!(storage.flush(0).await);
+            assert!(latency.as_millis() < 10, "latency = {latency:?}");
         }
     }
 }

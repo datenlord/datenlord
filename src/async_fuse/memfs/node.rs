@@ -62,7 +62,7 @@ pub trait Node: Sized {
     /// Check whether to load file content data or not
     async fn need_load_file_data(&self, offset: usize, len: usize) -> bool;
     /// Get a directory entry by name
-    fn get_entry(&self, name: &str) -> Option<&DirEntry>;
+    fn get_entry(&self, name: &str) -> Option<DirEntry>;
     /// Create symlink in a directory
     async fn create_child_symlink(
         &mut self,

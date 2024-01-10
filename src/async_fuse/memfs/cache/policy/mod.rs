@@ -14,11 +14,17 @@ pub trait EvictPolicy<K> {
 
     /// Evict a key from the policy manually.
     ///
-    /// If the policy is not full, returns None.
+    /// If the policy is empty, returns None.
     fn evict(&self) -> Option<K>;
 
     /// Try to put a key into the policy.
     ///
     /// Returns if the putting is successful.
     fn try_put(&self, key: K) -> bool;
+
+    /// Returns the capacity of this policy.
+    fn capacity(&self) -> usize;
+
+    /// Returns the current size of this policy.
+    fn size(&self) -> usize;
 }
