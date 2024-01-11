@@ -897,8 +897,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
                                 );
                             } else {
                                 if let SFlag::S_IFREG = dest_node.get_type() {
-                                    self.local_mtime.remove(&dest_ino);
-                                    self.local_size.remove(&dest_ino);
+                                    self.local_mtime_and_size.remove(&dest_ino);
                                     self.storage.remove(dest_ino).await;
                                 }
                                 txn.delete(&KeyType::INum2Node(dest_ino));

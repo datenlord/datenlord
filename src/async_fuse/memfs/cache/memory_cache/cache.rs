@@ -306,6 +306,18 @@ where
     }
 
     async fn remove(&self, ino: INum) {
+        if !self.write_through {
+            let mut pending_write_back = self.pending_write_back.write().await;
+            if self
+                .command_sender
+                .send(Command::Cancel(ino))
+                .await
+                .is_err()
+            {
+                warn!("Write back task is closed unexpectedly.");
+            }
+            pending_write_back.remove(&ino);
+        }
         self.map.remove(&ino);
         self.backend.remove(ino).await;
     }
