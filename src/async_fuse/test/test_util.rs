@@ -12,12 +12,12 @@ use tracing::{debug, info}; // warn, error
 
 use crate::async_fuse::fuse::{mount, session};
 use crate::async_fuse::memfs;
-use crate::async_fuse::memfs::cache::policy::LruPolicy;
-use crate::async_fuse::memfs::cache::{
-    BackendBuilder, BlockCoordinate, MemoryCacheBuilder, StorageManager, BLOCK_SIZE_IN_BYTES,
-};
 use crate::async_fuse::memfs::kv_engine::{KVEngine, KVEngineType};
 use crate::common::logger::{init_logger, LogRole};
+use crate::storage::policy::LruPolicy;
+use crate::storage::{
+    BackendBuilder, BlockCoordinate, MemoryCacheBuilder, StorageManager, BLOCK_SIZE_IN_BYTES,
+};
 
 pub const TEST_NODE_ID: &str = "test_node";
 pub const TEST_ETCD_ENDPOINT: &str = "127.0.0.1:2379";

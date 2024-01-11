@@ -14,8 +14,6 @@ use nix::sys::stat::SFlag;
 use tokio::sync::Mutex;
 use tracing::{debug, info, instrument, warn};
 
-use super::cache::policy::LruPolicy;
-use super::cache::{Backend, Block, BlockCoordinate, MemoryCache, StorageManager};
 use super::fs_util::{self, FileAttr, NEED_CHECK_PERM};
 use super::id_alloc_used::INumAllocator;
 use super::kv_engine::{KVEngine, KVEngineType, MetaTxn, ValueType};
@@ -34,6 +32,8 @@ use crate::common::error::{
     DatenLordResult,
 };
 use crate::function_name;
+use crate::storage::policy::LruPolicy;
+use crate::storage::{Backend, Block, BlockCoordinate, MemoryCache, StorageManager};
 
 /// A helper function to build [`DatenLordError::InconsistentFS`] with default
 /// context and get the function name automatic.
