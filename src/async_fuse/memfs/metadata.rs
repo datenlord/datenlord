@@ -4,13 +4,13 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 
-use super::cache::{Block, Storage, StorageManager};
 use super::kv_engine::KVEngineType;
 use super::node::Node;
 use super::{CreateParam, RenameParam, SetAttrParam};
 use crate::async_fuse::fuse::fuse_reply::{ReplyDirectory, StatFsParam};
 use crate::async_fuse::fuse::protocol::{FuseAttr, INum};
 use crate::common::error::DatenLordResult;
+use crate::storage::{Block, Storage, StorageManager};
 
 pub(crate) mod error {
     //! A module containing helper functions to build errors.

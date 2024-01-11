@@ -143,8 +143,7 @@ impl Storage for MemoryStorage {
 mod tests {
     use tokio::time::Instant;
 
-    use super::{Duration, MemoryStorage, Storage};
-    use crate::async_fuse::memfs::cache::Block;
+    use super::{Block, Duration, MemoryStorage, Storage};
 
     const BLOCK_SIZE_IN_BYTES: usize = 8;
     const BLOCK_CONTENT: &[u8; BLOCK_SIZE_IN_BYTES] = b"foo bar ";

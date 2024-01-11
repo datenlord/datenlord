@@ -4,10 +4,10 @@ use std::sync::Arc;
 
 use clippy_utilities::OverflowArithmetic;
 
-use self::memfs::cache::policy::LruPolicy;
-use self::memfs::cache::{BackendBuilder, BlockCoordinate, MemoryCacheBuilder, StorageManager};
 use self::memfs::kv_engine::KVEngineType;
 use crate::async_fuse::fuse::session;
+use crate::storage::policy::LruPolicy;
+use crate::storage::{BackendBuilder, BlockCoordinate, MemoryCacheBuilder, StorageManager};
 use crate::AsyncFuseArgs;
 
 pub mod fuse;

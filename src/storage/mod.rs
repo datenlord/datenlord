@@ -1,21 +1,18 @@
 //! This is the storage managing mechanism implementation for the memfs
 
-// TODO: Remove this after the storage is ready for product env.
-#![allow(dead_code)]
-
 mod backend;
 mod block;
 mod memory_cache;
-mod storage;
 mod storage_manager;
+mod storage_trait;
 
 pub mod policy;
 
 pub use backend::{Backend, BackendBuilder};
 pub use block::{Block, BlockCoordinate};
 pub use memory_cache::{MemoryCache, MemoryCacheBuilder};
-pub use storage::Storage;
 pub use storage_manager::StorageManager;
+pub use storage_trait::Storage;
 
 /// The number of bytes in one KiB.
 pub const KB_SIZE: usize = 1024;

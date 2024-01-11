@@ -13,8 +13,8 @@ use tokio::sync::{mpsc, oneshot};
 use tracing::{info, warn};
 
 use crate::async_fuse::fuse::protocol::INum;
-use crate::async_fuse::memfs::cache::policy::EvictPolicy;
-use crate::async_fuse::memfs::cache::{Block, BlockCoordinate, BlockId, MemoryCache, Storage};
+use crate::storage::policy::EvictPolicy;
+use crate::storage::{Block, BlockCoordinate, BlockId, MemoryCache, Storage};
 
 /// A command sent from `MemoryCache` to the write back task.
 pub enum Command {

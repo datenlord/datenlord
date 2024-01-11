@@ -491,7 +491,7 @@ mod tests {
         use tokio::fs;
 
         use super::{prepare_backend, BACKEND_ROOT, BLOCK_CONTENT, BLOCK_SIZE_IN_BYTES};
-        use crate::async_fuse::memfs::cache::{Block, Storage};
+        use crate::storage::{Block, Storage};
 
         async fn cleanup(backend_root: &str) {
             if fs::try_exists(backend_root).await.unwrap() {
