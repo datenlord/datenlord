@@ -1,16 +1,18 @@
 //! Types and functions related to the write back task.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::mem;
 use std::sync::{Arc, Weak};
 use std::time::Duration;
 
 use clippy_utilities::OverflowArithmetic;
 use datenlord::config::SoftLimit;
+use futures::future::OptionFuture;
 use hashlink::LinkedHashSet;
 use tokio::select;
 use tokio::sync::{mpsc, oneshot};
-use tracing::{info, warn};
+use tokio::task::JoinHandle;
+use tracing::{error, info, warn};
 
 use crate::async_fuse::fuse::protocol::INum;
 use crate::async_fuse::memfs::cache::policy::EvictPolicy;
@@ -56,24 +58,50 @@ fn calculate_period(
     }
 }
 
+/// Write a block back to the backend.
+async fn write_back_one_block<P, S>(
+    cache: Arc<MemoryCache<P, S>>,
+    ino: INum,
+    block_id: BlockId,
+    block: Block,
+    sender: oneshot::Sender<()>,
+) where
+    P: EvictPolicy<BlockCoordinate> + Send + Sync + 'static,
+    S: Storage + Send + Sync + 'static,
+{
+    cache.backend().store(ino, block_id, block).await;
+    sender.send(()).unwrap_or_else(|()| {
+        warn!("The receiver of pending block is closed unexpectedly.");
+    });
+}
+
 /// Flush a pending block to the backend
-async fn flush_a_block<P, S>(
+///
+/// # Panics
+/// If this function is called out of the context of a tokio runtime,
+/// it will panic.
+fn flush_a_block<P, S>(
     lru_queue: &mut LinkedHashSet<BlockCoordinate>,
     pending_blocks: &mut HashMap<INum, HashMap<BlockId, (Block, oneshot::Sender<()>)>>,
-    cache: Arc<MemoryCache<P, S>>,
+    task_queue: &mut VecDeque<JoinHandle<()>>,
+    cache: &Arc<MemoryCache<P, S>>,
 ) where
-    P: EvictPolicy<BlockCoordinate> + Send + Sync,
-    S: Storage + Send + Sync,
+    P: EvictPolicy<BlockCoordinate> + Send + Sync + 'static,
+    S: Storage + Send + Sync + 'static,
 {
     if let Some(BlockCoordinate(ino, block_id)) = lru_queue.pop_front() {
         if let Some((block, sender)) = pending_blocks
             .get_mut(&ino)
             .and_then(|file_level_pending_blocks| file_level_pending_blocks.remove(&block_id))
         {
-            cache.backend().store(ino, block_id, block).await;
-            sender.send(()).unwrap_or_else(|()| {
-                warn!("The receiver of pending block is closed unexpectedly.");
-            });
+            let handle = tokio::spawn(write_back_one_block(
+                Arc::clone(cache),
+                ino,
+                block_id,
+                block,
+                sender,
+            ));
+            task_queue.push_back(handle);
         }
     }
 }
@@ -85,18 +113,30 @@ async fn flush_file<P, S>(
     cache: Arc<MemoryCache<P, S>>,
     ino: INum,
 ) where
-    P: EvictPolicy<BlockCoordinate> + Send + Sync,
-    S: Storage + Send + Sync,
+    P: EvictPolicy<BlockCoordinate> + Send + Sync + 'static,
+    S: Storage + Send + Sync + 'static,
 {
     let file_level_pending_blocks = pending_blocks.remove(&ino);
     lru_queue.retain_with_order(|&BlockCoordinate(i, _)| i != ino);
 
+    let mut handles = vec![];
+
     if let Some(file_level_pending_blocks) = file_level_pending_blocks {
         for (block_id, (block, sender)) in file_level_pending_blocks {
-            cache.backend().store(ino, block_id, block).await;
-            sender.send(()).unwrap_or_else(|()| {
-                warn!("The receiver of pending block is closed unexpectedly.");
-            });
+            let handle = tokio::spawn(write_back_one_block(
+                Arc::clone(&cache),
+                ino,
+                block_id,
+                block,
+                sender,
+            ));
+            handles.push(handle);
+        }
+    }
+
+    for handle in handles {
+        if let Err(e) = handle.await {
+            error!("Failed to flush a block, the nested error is: {e}");
         }
     }
 }
@@ -108,19 +148,31 @@ async fn flush_all<P, S>(
     cache: Arc<MemoryCache<P, S>>,
     sender: oneshot::Sender<()>,
 ) where
-    P: EvictPolicy<BlockCoordinate> + Send + Sync,
-    S: Storage + Send + Sync,
+    P: EvictPolicy<BlockCoordinate> + Send + Sync + 'static,
+    S: Storage + Send + Sync + 'static,
 {
     lru_queue.clear();
 
     let blocks = mem::take(pending_blocks);
 
+    let mut handles = vec![];
+
     for (ino, file_level_pending_blocks) in blocks {
         for (block_id, (block, block_sender)) in file_level_pending_blocks {
-            cache.backend().store(ino, block_id, block).await;
-            block_sender.send(()).unwrap_or_else(|()| {
-                warn!("The receiver of pending block is closed unexpectedly.");
-            });
+            let handle = tokio::spawn(write_back_one_block(
+                Arc::clone(&cache),
+                ino,
+                block_id,
+                block,
+                block_sender,
+            ));
+            handles.push(handle);
+        }
+    }
+
+    for handle in handles {
+        if let Err(e) = handle.await {
+            error!("Failed to flush a block, the nested error is: {e}");
         }
     }
 
@@ -162,6 +214,10 @@ where
 ///
 /// And this task will evict blocks to the backend if the number of blocks hits
 /// the soft limit, whether the cache runs in write-back policy or not.
+///
+/// TODO: Make the write back task into a struct is better, as it's going to be
+/// more complex.
+#[allow(clippy::pattern_type_mismatch)]
 pub(super) async fn run_write_back_task<P, S>(
     limit: SoftLimit,
     interval: Duration,
@@ -169,8 +225,8 @@ pub(super) async fn run_write_back_task<P, S>(
     mut command_receiver: mpsc::Receiver<Command>,
     command_queue_limit: usize,
 ) where
-    P: EvictPolicy<BlockCoordinate> + Send + Sync,
-    S: Storage + Send + Sync,
+    P: EvictPolicy<BlockCoordinate> + Send + Sync + 'static,
+    S: Storage + Send + Sync + 'static,
 {
     let period = interval;
     let mut interval = tokio::time::interval(period);
@@ -178,6 +234,8 @@ pub(super) async fn run_write_back_task<P, S>(
     let mut lru_queue = LinkedHashSet::new();
     let mut pending_blocks: HashMap<INum, HashMap<BlockId, (Block, oneshot::Sender<()>)>> =
         HashMap::new();
+    // A queue of tasks for the being written blocks
+    let mut task_queue = VecDeque::new();
 
     loop {
         // Tune the interval according the payload.
@@ -221,6 +279,18 @@ pub(super) async fn run_write_back_task<P, S>(
                     },
                 }
             },
+            // In fact, there is no need to await the join handles.
+            // When we can return a error from `Storage` methods,
+            // the error can be returned by the sender, and is not needed
+            // to be handled here.
+            Some(res) = OptionFuture::from(task_queue.front_mut()) => {
+                // `res` is the output of polling the front of `task_queue`.
+                // So we can drop the popped front element.
+                let _: Option<JoinHandle<()>> = task_queue.pop_front();
+                if let Err(e) = res {
+                    error!("Failed to flush a block, the nested error is: {e}");
+                }
+            },
             _ = interval.tick() => {
                 // If the queue is empty, do evict;
                 // Otherwise, flush a block to the backend
@@ -228,7 +298,7 @@ pub(super) async fn run_write_back_task<P, S>(
                     if lru_queue.is_empty() {
                         do_evict(limit, cache).await;
                     } else {
-                        flush_a_block(&mut lru_queue, &mut pending_blocks, cache).await;
+                        flush_a_block(&mut lru_queue, &mut pending_blocks, &mut task_queue, &cache);
                     }
                 } else {
                     // The command sender is closed, meaning that the `Storage` is also dropped.
@@ -237,6 +307,7 @@ pub(super) async fn run_write_back_task<P, S>(
                     return;
                 }
             },
+            else => unreachable!("One of the branches above must be matched."),
         }
     }
 }
