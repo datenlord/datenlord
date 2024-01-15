@@ -1,6 +1,8 @@
 //! The `MemoryCache` implementation.
 
 use std::collections::{BTreeSet, HashMap as StdHashMap};
+use std::mem;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -38,10 +40,10 @@ pub struct MemoryCache<P, S> {
     /// The block size
     block_size: usize,
     /// A flag that if the `MemoryCache` runs in writing-through policy
-    write_through: bool,
+    write_through: AtomicBool,
     /// The pending written-back blocks.
     /// TODO: receive a `Result` to handle the error
-    pending_write_back: RwLock<StdHashMap<INum, Vec<oneshot::Receiver<()>>>>,
+    pending_write_back: RwLock<StdHashMap<INum, StdHashMap<BlockId, oneshot::Receiver<()>>>>,
     /// A command sender for write back task
     command_sender: mpsc::Sender<Command>,
     /// A set of blocks to be removed, when a file is truncated.
@@ -65,10 +67,43 @@ impl<P, S> MemoryCache<P, S> {
             policy,
             backend,
             block_size,
-            write_through,
+            write_through: AtomicBool::new(write_through),
             pending_write_back: RwLock::default(),
             command_sender,
             truncate_records: HashMap::new(),
+        }
+    }
+
+    /// Check if the cache is running on wtire through policy.
+    fn write_through(&self) -> bool {
+        self.write_through.load(Ordering::Acquire)
+    }
+
+    /// Fallback to write through.
+    async fn fallback(&self)
+    where
+        S: Storage,
+    {
+        self.write_through.store(true, Ordering::Release);
+
+        // Ensure that all pending blocks are flushed to the backend.
+        let pending = mem::take(&mut *self.pending_write_back.write().await);
+        for (ino, pending_blocks) in pending {
+            if let Some(lock) = self.get_file_cache(ino) {
+                let cache = lock.read_owned().await;
+
+                for (block_id, receiver) in pending_blocks {
+                    if receiver.await.is_err() {
+                        // This block is not flushed to the backend successfully.
+                        // Flush it now.
+                        if let Some(block) = cache.get(&block_id) {
+                            self.backend.store(ino, block_id, block.clone()).await;
+                        }
+                        // If the block is not shown in the cache, it should
+                        // have been evicted to the backend.
+                    }
+                }
+            }
         }
     }
 
@@ -104,25 +139,36 @@ impl<P, S> MemoryCache<P, S> {
 
     /// Send a block to the write back task, and it will be stored to the
     /// backend later.
-    async fn send_block_to_write_back_task(&self, ino: INum, block_id: BlockId, block: Block) {
+    async fn send_block_to_write_back_task(&self, ino: INum, block_id: BlockId, block: Block)
+    where
+        S: Storage,
+    {
         let (sender, receiver) = oneshot::channel();
 
-        self.command_sender
+        match self
+            .command_sender
             .send(Command::Store {
                 coord: BlockCoordinate(ino, block_id),
                 block,
                 sender,
             })
             .await
-            .unwrap_or_else(|_| {
-                panic!("Command receiver in write back task is closed unexpectedly.")
-            });
-        self.pending_write_back
-            .write()
-            .await
-            .entry(ino)
-            .or_default()
-            .push(receiver);
+        {
+            Ok(()) => {
+                self.pending_write_back
+                    .write()
+                    .await
+                    .entry(ino)
+                    .or_default()
+                    .insert(block_id, receiver);
+            }
+            Err(mpsc::error::SendError(Command::Store { block, .. })) => {
+                warn!("The write back task is closed unexpectedly.");
+                self.fallback().await;
+                self.backend.store(ino, block_id, block).await;
+            }
+            _ => unreachable!("All possible branches are matched."),
+        }
     }
 
     /// Update a block into cache in place.
@@ -133,7 +179,7 @@ impl<P, S> MemoryCache<P, S> {
             let mut file_cache = file_cache.write().await;
             if let Some(block) = file_cache.get_mut(&block_id) {
                 merge_two_blocks(src, block);
-                if !self.write_through {
+                if !self.write_through() {
                     if let Some(truncate_record) = {
                         let guard = pin();
                         self.truncate_records.get(&ino, &guard).cloned()
@@ -177,7 +223,7 @@ impl<P, S> MemoryCache<P, S> {
                     // That means, if a block in cache is dirty, and the writing-through policy is
                     // enabled, it must have been shown in the backend.
                     // Therefore, we can just drop it when evicting.
-                    if !self.write_through || !evicted.dirty() {
+                    if !self.write_through() || !evicted.dirty() {
                         self.backend.store(ino, block_id, evicted).await;
                     }
                 }
@@ -224,7 +270,7 @@ impl<P, S> MemoryCache<P, S> {
 
         file_cache.insert(block_id, block);
 
-        if !self.write_through {
+        if !self.write_through() {
             if let Some(truncate_record) = {
                 let guard = pin();
                 self.truncate_records.get(&ino, &guard).cloned()
@@ -272,7 +318,7 @@ where
             self.write_block_into_cache(ino, block_id, input.clone())
                 .await;
 
-            if self.write_through {
+            if self.write_through() {
                 self.backend.store(ino, block_id, input).await;
             } else {
                 self.send_block_to_write_back_task(ino, block_id, input)
@@ -297,7 +343,7 @@ where
             to_be_inserted
         };
 
-        if self.write_through {
+        if self.write_through() {
             self.backend.store(ino, block_id, dirty_block).await;
         } else {
             self.send_block_to_write_back_task(ino, block_id, dirty_block)
@@ -306,7 +352,8 @@ where
     }
 
     async fn remove(&self, ino: INum) {
-        if !self.write_through {
+        if !self.write_through() {
+            self.truncate_records.remove(&ino);
             let mut pending_write_back = self.pending_write_back.write().await;
             if self
                 .command_sender
@@ -315,8 +362,11 @@ where
                 .is_err()
             {
                 warn!("Write back task is closed unexpectedly.");
+                drop(pending_write_back);
+                self.fallback().await;
+            } else {
+                pending_write_back.remove(&ino);
             }
-            pending_write_back.remove(&ino);
         }
         self.map.remove(&ino);
         self.backend.remove(ino).await;
@@ -328,21 +378,52 @@ where
     }
 
     async fn flush(&self, ino: INum) {
-        if !self.write_through {
+        if !self.write_through() {
             {
                 let mut pending_write_back = self.pending_write_back.write().await;
                 if let Ok(()) = self.command_sender.send(Command::Flush(ino)).await {
                     if let Some(file_level_pending) = pending_write_back.remove(&ino) {
                         drop(pending_write_back);
 
-                        #[allow(clippy::let_underscore_must_use)]
-                        for receiver in file_level_pending {
-                            // It's not a big deal that the oneshot sender is closed.
-                            let _: Result<(), oneshot::error::RecvError> = receiver.await;
+                        let mut file_level_pending = file_level_pending.into_iter();
+                        let mut remain_block = None;
+                        for (block_id, receiver) in file_level_pending.by_ref() {
+                            if receiver.await.is_err() {
+                                warn!("Write back task is closed unexpectedly.");
+                                self.fallback().await;
+                                remain_block = Some(block_id);
+                                break;
+                            }
+                        }
+                        // If the write back task quited by accident, this value will be set to
+                        // `Some`. Then we need to flush the file manually
+                        if let Some(remain_block) = remain_block {
+                            if let Some(lock) = self.get_file_cache(ino) {
+                                let cache = lock.read_owned().await;
+
+                                if let Some(block) = cache.get(&remain_block) {
+                                    self.backend.store(ino, remain_block, block.clone()).await;
+                                }
+
+                                for (block_id, receiver) in file_level_pending {
+                                    if receiver.await.is_err() {
+                                        // This block is not flushed to the backend successfully.
+                                        // Flush it now.
+                                        if let Some(block) = cache.get(&block_id) {
+                                            self.backend.store(ino, block_id, block.clone()).await;
+                                        }
+                                        // If the block is not shown in the
+                                        // cache, it should have been evicted to
+                                        // the backend.
+                                    }
+                                }
+                            }
                         }
                     }
                 } else {
                     warn!("Write back task is closed unexpectedly.");
+                    drop(pending_write_back);
+                    self.fallback().await;
                 }
             }
 
@@ -388,17 +469,22 @@ where
     }
 
     async fn flush_all(&self) {
-        if !self.write_through {
+        if !self.write_through() {
             let mut pending_write_back = self.pending_write_back.write().await;
             let (sender, receiver) = oneshot::channel();
 
             if let Ok(()) = self.command_sender.send(Command::FlushAll(sender)).await {
                 if receiver.await.is_err() {
                     warn!("Receiver is closed unexpectedly.");
+                    drop(pending_write_back);
+                    self.fallback().await;
+                } else {
+                    pending_write_back.clear();
                 }
-                pending_write_back.clear();
             } else {
                 warn!("Write back task is closed unexpectedly.");
+                drop(pending_write_back);
+                self.fallback().await;
             }
         }
 
@@ -441,7 +527,7 @@ where
                     let fill_block_id = to_block.overflow_sub(1);
                     if let Some(block) = file_cache.get_mut(&fill_block_id) {
                         fill_block_with_zeros(block);
-                    } else if !self.write_through {
+                    } else if !self.write_through() {
                         drop(file_cache);
                         let mut block = self
                             .load_from_backend(ino, fill_block_id)
@@ -460,7 +546,7 @@ where
             };
         }
 
-        if self.write_through {
+        if self.write_through() {
             self.backend
                 .truncate(ino, from_block, to_block, fill_start)
                 .await;

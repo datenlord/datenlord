@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use datenlord::config::SoftLimit;
 use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
 
 use super::{write_back_task, MemoryCache};
 use crate::async_fuse::memfs::cache::policy::EvictPolicy;
@@ -94,7 +95,7 @@ where
     /// # Panic
     /// This method will panic if it's not called in a context of `tokio`
     /// runtime.
-    pub fn build(self) -> Arc<MemoryCache<P, S>> {
+    pub fn build(self) -> (Arc<MemoryCache<P, S>>, JoinHandle<()>) {
         let MemoryCacheBuilder {
             policy,
             backend,
@@ -116,7 +117,7 @@ where
         ));
 
         let weak = Arc::downgrade(&cache);
-        tokio::spawn(write_back_task::run_write_back_task(
+        let handle = tokio::spawn(write_back_task::run_write_back_task(
             limit,
             interval,
             weak,
@@ -124,6 +125,6 @@ where
             command_queue_limit,
         ));
 
-        cache
+        (cache, handle)
     }
 }

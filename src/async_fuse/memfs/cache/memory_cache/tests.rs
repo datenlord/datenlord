@@ -23,7 +23,8 @@ fn prepare_empty_storage() -> (Arc<MemoryStorage>, Arc<MemoryCacheType>) {
         BLOCK_SIZE_IN_BYTES,
         Duration::from_millis(0),
     ));
-    let cache = MemoryCacheBuilder::new(policy, Arc::clone(&backend), BLOCK_SIZE_IN_BYTES).build();
+    let (cache, _) =
+        MemoryCacheBuilder::new(policy, Arc::clone(&backend), BLOCK_SIZE_IN_BYTES).build();
 
     (backend, cache)
 }
@@ -127,7 +128,7 @@ async fn prepare_data_for_evict() -> (Arc<MemoryStorage>, Arc<MemoryCacheType>) 
         BLOCK_SIZE_IN_BYTES,
         Duration::from_millis(0),
     ));
-    let cache = MemoryCacheBuilder::new(policy, Arc::clone(&backend), BLOCK_SIZE_IN_BYTES)
+    let (cache, _) = MemoryCacheBuilder::new(policy, Arc::clone(&backend), BLOCK_SIZE_IN_BYTES)
         .limit(limit) // Manually disable the write back task
         .interval(Duration::from_secs(1))
         .build();
@@ -341,7 +342,7 @@ fn prepare_empty_storage_with_write_back() -> (Arc<MemoryStorage>, Arc<MemoryCac
         BLOCK_SIZE_IN_BYTES,
         Duration::from_millis(0),
     ));
-    let cache = MemoryCacheBuilder::new(policy, Arc::clone(&backend), BLOCK_SIZE_IN_BYTES)
+    let (cache, _) = MemoryCacheBuilder::new(policy, Arc::clone(&backend), BLOCK_SIZE_IN_BYTES)
         .write_through(false)
         .build();
 
@@ -489,4 +490,32 @@ async fn test_write_back_task() {
         assert!(!file_cache.contains_key(&0));
         assert!(!file_cache.contains_key(&1));
     }
+}
+
+#[tokio::test]
+async fn test_fallback() {
+    let policy = LruPolicy::<BlockCoordinate>::new(CACHE_CAPACITY_IN_BLOCKS);
+    let backend = Arc::new(MemoryStorage::new(
+        BLOCK_SIZE_IN_BYTES,
+        Duration::from_millis(0),
+    ));
+    let (cache, handle) =
+        MemoryCacheBuilder::new(policy, Arc::clone(&backend), BLOCK_SIZE_IN_BYTES)
+            .interval(Duration::from_secs(1))
+            .write_through(false)
+            .build();
+
+    for block_id in 0..CACHE_CAPACITY_IN_BLOCKS {
+        cache
+            .store(0, block_id, Block::new_zeroed(BLOCK_SIZE_IN_BYTES))
+            .await;
+    }
+
+    handle.abort();
+
+    // This will calls the fallback.
+    cache.flush(0).await;
+
+    // And it's guaranteed that all blocks will be flushed to the backend finally.
+    assert!(backend.contains(0, 3));
 }

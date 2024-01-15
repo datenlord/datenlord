@@ -344,7 +344,8 @@ mod tests {
             Duration::from_millis(0),
         ));
         let lru = LruPolicy::<BlockCoordinate>::new(CACHE_CAPACITY_IN_BLOCKS);
-        let cache = MemoryCacheBuilder::new(lru, Arc::clone(&backend), BLOCK_SIZE_IN_BYTES).build();
+        let (cache, _) =
+            MemoryCacheBuilder::new(lru, Arc::clone(&backend), BLOCK_SIZE_IN_BYTES).build();
         let storage = StorageManager::new(cache, BLOCK_SIZE_IN_BYTES);
 
         (backend, storage)
@@ -692,7 +693,7 @@ mod tests {
         fn create_storage_for_concurrent_test() -> Arc<StorageManager<impl Storage>> {
             let backend = Arc::new(MemoryStorage::new(BLOCK_SIZE, Duration::from_millis(0)));
             let lru = LruPolicy::<BlockCoordinate>::new(TOTAL_SIZE.overflow_div(BLOCK_SIZE));
-            let cache = MemoryCacheBuilder::new(lru, Arc::clone(&backend), BLOCK_SIZE)
+            let (cache, _) = MemoryCacheBuilder::new(lru, Arc::clone(&backend), BLOCK_SIZE)
                 .write_through(false)
                 .command_queue_limit(500)
                 .build();
@@ -838,10 +839,11 @@ mod tests {
                 Duration::from_millis(OPERATION_LATENCY.cast()),
             ));
             let lru = LruPolicy::<BlockCoordinate>::new(16);
-            let cache = MemoryCacheBuilder::new(lru, Arc::clone(&backend), BLOCK_SIZE_IN_BYTES)
-                .write_through(write_through)
-                .limit(limit)
-                .build();
+            let (cache, _) =
+                MemoryCacheBuilder::new(lru, Arc::clone(&backend), BLOCK_SIZE_IN_BYTES)
+                    .write_through(write_through)
+                    .limit(limit)
+                    .build();
             Arc::new(StorageManager::new(cache, BLOCK_SIZE_IN_BYTES))
         }
 
