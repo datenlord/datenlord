@@ -65,6 +65,9 @@ tracing-subscriber = "0.3"
 hashlink = "0.8.4"
 clap = { version = "4", features = ["derive"] }
 opendal = {version = "0.43.0", features = ["layers-prometheus"]}
+signal-hook = { version = "0.3.17", features = ["iterator"]}
+signal-hook-tokio = { version = "0.3.1", features = ["futures-v0_3"] }
+tokio-util = "0.7.10"
 
 [build-dependencies]
 protoc-grpcio = "3.0.0"
