@@ -1,4 +1,3 @@
-use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -84,7 +83,7 @@ pub enum SerialSFlag {
 #[derive(Serialize, Deserialize, Debug, Eq, PartialEq)]
 pub enum SerialNodeData {
     /// Directory data
-    Directory(BTreeMap<String, SerialDirEntry>),
+    Directory,
     /// File data is ignored ,because `Arc<GlobalCache>` is not serializable
     File,
     /// Symbolic link data
@@ -95,13 +94,7 @@ impl SerialNodeData {
     /// Deserializes the node data
     pub fn into_s3_nodedata(self, data_cache: Arc<GlobalCache>) -> S3NodeData {
         match self {
-            SerialNodeData::Directory(dir) => {
-                let mut dir_entry_map = BTreeMap::new();
-                for (name, entry) in dir {
-                    dir_entry_map.insert(name, serial_to_dir_entry(&entry));
-                }
-                S3NodeData::Directory(dir_entry_map)
-            }
+            SerialNodeData::Directory => S3NodeData::Directory,
             SerialNodeData::File => S3NodeData::RegFile(data_cache),
             SerialNodeData::SymLink(path) => S3NodeData::SymLink(path),
         }

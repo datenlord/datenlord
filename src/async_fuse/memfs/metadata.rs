@@ -17,12 +17,18 @@ use crate::common::error::DatenLordResult;
 pub(crate) mod error {
     //! A module containing helper functions to build errors.
 
+    use tracing::error;
+
     use super::INum;
     use crate::common::error::DatenLordError;
 
     /// A helper function to build [`DatenLordError::InconsistentFS`] with
     /// default context.
     pub(crate) fn build_inconsistent_fs(ino: INum, fn_name: &str) -> DatenLordError {
+        error!(
+            "{}() found fs is inconsistent, the inode ino={} is not in cache.",
+            fn_name, ino
+        );
         DatenLordError::InconsistentFS {
             context: vec![format!(
                 "{ino}() found fs is inconsistent, the inode ino={fn_name} is not in cache.",

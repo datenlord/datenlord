@@ -233,16 +233,16 @@ impl EtcdTxn {
 
 #[async_trait]
 impl MetaTxn for EtcdTxn {
-    async fn get(&mut self, key: &KeyType) -> DatenLordResult<Option<ValueType>> {
+    async fn get(&mut self, key_arg: &KeyType) -> DatenLordResult<Option<ValueType>> {
         // first check if the key is in buffer (write op)
-        let key = key.to_string_key().into_bytes();
+        let key = key_arg.to_string_key().into_bytes();
         assert!(
             self.buffer.get(&key).is_none(),
-            "get the key after write in the same transaction"
+            "get the key={key_arg:?} after write in the same transaction"
         );
         assert!(
             self.version_map.get(&key).is_none(),
-            "get the key twice in the same transaction"
+            "get the key={key_arg:?} twice in the same transaction"
         );
         // Fetch the value from `etcd`
         let resp = self
@@ -271,6 +271,18 @@ impl MetaTxn for EtcdTxn {
         // This unwrap will not panic.
         let value = serde_json::to_vec(value)
             .unwrap_or_else(|value| panic!("failed to serialize value to json,value = {value:?}"));
+        #[cfg(debug)]
+        {
+            let prev_value = self.buffer.get(&key);
+            if let Some(prev_value) = prev_value {
+                // If the value is None, it means that the key is deleted in the same
+                // transaction.
+                assert!(
+                    prev_value.is_none(),
+                    "set the key={key:?} after delete in the same transaction"
+                );
+            }
+        }
         self.buffer.insert(key, Some(value));
     }
 
@@ -322,7 +334,7 @@ mod test {
     use std::time::Instant;
 
     use super::*;
-    use crate::async_fuse::memfs::direntry::{DirEntry, FileType};
+    use crate::async_fuse::memfs::direntry::{DirEntryV2, FileType};
     use crate::common::error::DatenLordError;
     use crate::retry_txn;
 
@@ -482,14 +494,14 @@ mod test {
         for child_name in &child_names {
             let key = KeyType::DirEntryKey((parent_id_1, (*child_name).to_owned()));
             let value =
-                ValueType::DirEntry(DirEntry::new(1, (*child_name).to_owned(), FileType::Dir));
+                ValueType::DirEntry(DirEntryV2::new(1, (*child_name).to_owned(), FileType::Dir));
             client.set(&key, &value, None).await.unwrap();
         }
 
         for child_name in &child_names {
             let key = KeyType::DirEntryKey((parent_id_2, (*child_name).to_owned()));
             let value =
-                ValueType::DirEntry(DirEntry::new(2, (*child_name).to_owned(), FileType::Dir));
+                ValueType::DirEntry(DirEntryV2::new(2, (*child_name).to_owned(), FileType::Dir));
             client.set(&key, &value, None).await.unwrap();
         }
 
@@ -499,7 +511,7 @@ mod test {
         assert_eq!(result.len(), 3);
         for value in result {
             let dir_entry = value.into_dir_entry();
-            assert_eq!(dir_entry.inum(), 1);
+            assert_eq!(dir_entry.ino(), 1);
             assert!(child_names.contains(&dir_entry.name()));
             assert_eq!(dir_entry.file_type(), FileType::Dir);
         }
@@ -509,7 +521,7 @@ mod test {
         assert_eq!(result.len(), 3);
         for value in result {
             let dir_entry = value.into_dir_entry();
-            assert_eq!(dir_entry.inum(), 2);
+            assert_eq!(dir_entry.ino(), 2);
             assert!(child_names.contains(&dir_entry.name()));
             assert_eq!(dir_entry.file_type(), FileType::Dir);
         }

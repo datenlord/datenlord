@@ -25,7 +25,7 @@ pub use key_type::{KeyType, LockKeyType};
 pub use value_type::ValueType;
 /// The Txn is used to provide support for metadata.
 #[async_trait]
-pub trait MetaTxn {
+pub trait MetaTxn: Send {
     /// Get the value by the key.
     /// Notice : do not get the same key twice in one transaction.
     async fn get(&mut self, key: &KeyType) -> DatenLordResult<Option<ValueType>>;
