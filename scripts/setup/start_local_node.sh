@@ -60,7 +60,7 @@ if [ $? -ne 0 ]; then
 fi
 
 echo "Starting datenlord.. ... ... ..."
-./target/debug/datenlord \
+cargo run $BUILD_FLAGS --bin=datenlord -- \
 --role=node \
 --csi-endpoint=unix:///tmp/node.sock \
 --csi-worker-port=0 \

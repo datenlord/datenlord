@@ -28,7 +28,7 @@ use crate::async_fuse::util::build_error_result_from_errno;
 use crate::common::error::DatenLordResult;
 
 /// S3's available fd count
-static GLOBAL_S3_FD_CNT: AtomicU32 = AtomicU32::new(4);
+pub static GLOBAL_S3_FD_CNT: AtomicU32 = AtomicU32::new(4);
 
 /// A file node data or a directory node data
 #[derive(Debug)]
