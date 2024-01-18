@@ -3,23 +3,29 @@ use std::os::unix::ffi::OsStringExt;
 use std::os::unix::io::RawFd;
 use std::sync::atomic::AtomicU32;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use clippy_utilities::{Cast, OverflowArithmetic};
 use libc::{RENAME_EXCHANGE, RENAME_NOREPLACE};
 use lockfree_cuckoohash::{pin, LockFreeCuckooHash as HashMap};
 use nix::errno::Errno;
+use nix::fcntl::OFlag;
 use nix::sys::stat::SFlag;
 use tokio::sync::Mutex;
-use tracing::{debug, info, instrument, warn};
+use tracing::{debug, info, instrument};
 
-use super::fs_util::{self, FileAttr, NEED_CHECK_PERM};
+use super::cache::policy::LruPolicy;
+use super::cache::{Backend, Block, BlockCoordinate, GlobalCache, MemoryCache, StorageManager};
+use super::dist::server::CacheServer;
+use super::fs_util::{self, NEED_CHECK_PERM};
 use super::id_alloc_used::INumAllocator;
 use super::kv_engine::{KVEngine, KVEngineType, MetaTxn, ValueType};
 use super::metadata::{error, MetaData, ReqContext};
 use super::node::Node;
-use super::s3_node::S3Node;
+use super::open_file::OpenFiles;
+use super::s3_node::{S3Node, GLOBAL_S3_FD_CNT};
+use super::s3_wrapper::S3BackEnd;
 use super::{check_type_supported, CreateParam, RenameParam, SetAttrParam};
 use crate::async_fuse::fuse::fuse_reply::{ReplyDirectory, StatFsParam};
 use crate::async_fuse::fuse::protocol::{FuseAttr, INum, FUSE_ROOT_ID};
@@ -66,8 +72,8 @@ pub struct S3MetaData {
     pub(crate) kv_engine: Arc<KVEngineType>,
     /// Inum allocator
     inum_allocator: INumAllocator<KVEngineType>,
-    /// Mtime and size cache in local
-    local_mtime_and_size: HashMap<INum, (SystemTime, u64)>,
+    /// opend files
+    open_files: OpenFiles,
 }
 
 #[async_trait]
@@ -87,16 +93,26 @@ impl MetaData for S3MetaData {
         if flush {
             self.flush(ino, fh).await?;
         }
-        retry_txn!(TXN_RETRY_LIMIT, {
-            let mut txn = self.kv_engine.new_meta_txn().await;
-            let mut inode = self.get_inode_from_txn(txn.as_mut(), ino).await?;
-            inode.close().await;
-            txn.set(
-                &KeyType::INum2Node(ino),
-                &ValueType::Node(inode.to_serial_node()),
-            );
-            (txn.commit().await, ())
-        })?;
+        if let Some(open_file) = self.open_files.close(ino) {
+            // open_count reaches 0, flush the metadata to kv
+            info!("release() ino={} fh={} file is closed", ino, fh);
+            let attr = {
+                let open_file = open_file.read();
+                open_file.attr
+            };
+            retry_txn!(TXN_RETRY_LIMIT, {
+                let mut txn = self.kv_engine.new_meta_txn().await;
+                let mut node = self.get_inode_from_txn(txn.as_mut(), ino).await?;
+                node.set_attr(attr);
+                txn.set(
+                    &KeyType::INum2Node(ino),
+                    &ValueType::Node(node.to_serial_node()),
+                );
+                (txn.commit().await, ())
+            })?;
+        } else {
+            info!("release() ino={} fh={} file is still open", ino, fh);
+        }
         Ok(())
     }
 
@@ -178,50 +194,8 @@ impl MetaData for S3MetaData {
 
     #[instrument(skip(self))]
     async fn flush(&self, ino: u64, _fh: u64) -> DatenLordResult<()> {
-        let local_mtime_and_size = {
-            let guard = pin();
-
-            self.local_mtime_and_size
-                .remove_with_guard(&ino, &guard)
-                .copied()
-        };
-
-        retry_txn!(TXN_RETRY_LIMIT, {
-            let mut txn = self.kv_engine.new_meta_txn().await;
-            let mut inode = self.get_inode_from_txn(txn.as_mut(), ino).await?;
-
-            if inode.is_deferred_deletion() {
-                // If a file is marked as deferred delete, there is no need to flush it.
-                // But the local node may continue to access this file, which depends on
-                // the local mtime and local size. Therefore, we need to insert the removed
-                // local mtime and local size back to the cache.
-                if let Some(local_mtime_and_size) = local_mtime_and_size {
-                    self.local_mtime_and_size.insert(ino, local_mtime_and_size);
-                }
-                return Ok(());
-            }
-
-            // Flush the storage cache
-            self.storage.flush(ino).await?;
-
-            let mut file_attr = inode.get_attr();
-
-            if let Some((local_mtime, local_size)) = local_mtime_and_size {
-                file_attr.mtime = local_mtime;
-                file_attr.size = local_size;
-
-                // `ctime` may be greater than `mtime`, use the greater one
-                file_attr.ctime = local_mtime.max(file_attr.ctime);
-            }
-
-            inode.set_attr(file_attr);
-
-            txn.set(
-                &KeyType::INum2Node(ino),
-                &ValueType::Node(inode.to_serial_node()),
-            );
-            (txn.commit().await, ())
-        })?;
+        // Flush the storage cache
+        self.storage.flush(ino).await;
         Ok(())
     }
 
@@ -253,15 +227,11 @@ impl MetaData for S3MetaData {
         offset: i64,
         size: u32,
     ) -> DatenLordResult<Vec<Block>> {
-        let inode = self
-            .get_node_from_kv_engine(ino)
-            .await?
-            .ok_or_else(|| build_inconsistent_fs!(ino))?;
+        let open_file = self.open_files.get(ino);
 
         let (mtime, file_size) = {
-            let local_mtime_and_size = self.get_local_mtime_and_size(ino);
-            let file_attr = inode.get_attr();
-            local_mtime_and_size.unwrap_or((file_attr.mtime, file_attr.size))
+            let attr = open_file.read().attr;
+            (attr.mtime, attr.size)
         };
 
         if offset.cast::<u64>() >= file_size {
@@ -294,28 +264,49 @@ impl MetaData for S3MetaData {
         //         flags,
         //     ))
         // } else {
-        retry_txn!(TXN_RETRY_LIMIT, {
+        // First find in open_files
+        let o_flags = fs_util::parse_oflag(flags);
+        let access_mode = match o_flags & (OFlag::O_RDONLY | OFlag::O_WRONLY | OFlag::O_RDWR) {
+            OFlag::O_RDONLY => 4,
+            OFlag::O_WRONLY => 2,
+            _ => 6,
+        };
+        if let Some(open_file) = self.open_files.try_open(ino) {
+            let open_file = open_file.read();
+            open_file
+                .attr
+                .check_perm(context.user_id, context.group_id, access_mode)?;
+            return Ok(GLOBAL_S3_FD_CNT.fetch_add(1, Ordering::SeqCst).cast());
+        }
+        // The file was not opened before, so we need to open it.
+        let (result, attr) = retry_txn!(TXN_RETRY_LIMIT, {
             let mut txn = self.kv_engine.new_meta_txn().await;
             let node = self.get_inode_from_txn(txn.as_mut(), ino).await?;
-            let o_flags = fs_util::parse_oflag(flags);
-            node.open_pre_check(o_flags, context.user_id, context.group_id)?;
-
+            let attr = node.get_attr();
+            attr.check_perm(context.user_id, context.group_id, access_mode)?;
             let result = node.dup_fd(o_flags).await;
             txn.set(
                 &KeyType::INum2Node(ino),
                 &ValueType::Node(node.to_serial_node()),
             );
-            (txn.commit().await, result)
-        })?
+            (txn.commit().await, (result, attr))
+        })?;
+        self.open_files.open(ino, attr);
+        result
     }
 
     #[instrument(skip(self), err, ret)]
     async fn getattr(&self, ino: u64) -> DatenLordResult<(Duration, FuseAttr)> {
+        if let Some(open_file) = self.open_files.try_get(ino) {
+            let open_file = open_file.read();
+            let attr = fs_util::convert_to_fuse_attr(open_file.attr);
+            return Ok((Duration::new(MY_TTL_SEC, 0), attr));
+        }
         let inode = self
             .get_node_from_kv_engine(ino)
             .await?
             .ok_or_else(|| build_inconsistent_fs!(ino))?;
-        let attr = self.apply_local_mtime_and_size(inode.get_attr());
+        let attr = inode.get_attr();
         let ttl = Duration::new(MY_TTL_SEC, 0);
         let fuse_attr = fs_util::convert_to_fuse_attr(attr);
         Ok((ttl, fuse_attr))
@@ -354,69 +345,20 @@ impl MetaData for S3MetaData {
             let mut inode = self.get_inode_from_txn(txn.as_mut(), ino).await?;
 
             let origin_attr = inode.get_attr();
-            let applied_attr = if SFlag::S_IFREG == origin_attr.kind {
-                self.apply_local_mtime_and_size(origin_attr)
-            } else {
-                origin_attr
-            };
+            let applied_attr = origin_attr;
 
-            let dirty_attr_for_reply = match applied_attr.setattr_precheck(
-                param,
-                context.user_id,
-                context.group_id,
-            )? {
-                Some(mut dirty_attr) => {
-                    // This is to be inserted in KV, whose `mtime` and `size` should be reset to
-                    // origin, because changes of this field are invisible to other
-                    // nodes until flush.
-                    let mut dirty_attr_for_kv = dirty_attr;
-
-                    // There are `mtime` and `size` caches for regular files. Check the change of
-                    // these fields, and set them to the cache.
-                    if SFlag::S_IFREG == applied_attr.kind {
-                        if (dirty_attr.mtime, dirty_attr.size)
-                            != (applied_attr.mtime, applied_attr.size)
-                        {
-                            self.local_mtime_and_size
-                                .insert(ino, (dirty_attr.mtime, dirty_attr.size));
-                        }
-                        // Reset `mtime` and `size` to origin, because changes of these fields is
-                        // invisible to other nodes until flush.
-                        dirty_attr_for_kv.mtime = origin_attr.mtime;
-                        dirty_attr_for_kv.size = origin_attr.size;
-
-                        // The file also needs to be truncated, if the new size is shorter.
-                        if dirty_attr.size < applied_attr.size {
-                            let new_mtime = self
-                                .storage
-                                .truncate(
-                                    ino,
-                                    applied_attr.size.cast(),
-                                    dirty_attr.size.cast(),
-                                    applied_attr.mtime,
-                                )
-                                .await?;
-                            self.local_mtime_and_size
-                                .insert(ino, (new_mtime, dirty_attr.size));
-                            dirty_attr.mtime = new_mtime;
-                        }
+            let dirty_attr_for_reply =
+                match applied_attr.setattr_precheck(param, context.user_id, context.group_id)? {
+                    Some(dirty_attr) => {
+                        let dirty_attr_for_kv = dirty_attr;
+                        inode.set_attr(dirty_attr_for_kv);
+                        dirty_attr
                     }
-
-                    inode.set_attr(dirty_attr_for_kv);
-
-                    debug!(
-                        "setattr() successfully set the attribute of ino={} and name={:?}, the set attr={:?}",
-                        ino, inode.get_name(), dirty_attr,
-                    );
-
-                    // The attr with new `size` and `mtime` should be replied.
-                    dirty_attr
-                }
-                None => {
-                    // setattr did not change any attribute.
-                    return Ok((ttl, fs_util::convert_to_fuse_attr(origin_attr)));
-                }
-            };
+                    None => {
+                        // setattr did not change any attribute.
+                        return Ok((ttl, fs_util::convert_to_fuse_attr(origin_attr)));
+                    }
+                };
 
             txn.set(
                 &KeyType::INum2Node(ino),
@@ -493,7 +435,6 @@ impl MetaData for S3MetaData {
                 );
             } else {
                 if let SFlag::S_IFREG = child_node.get_type() {
-                    self.local_mtime_and_size.remove(&child_ino);
                     self.storage.remove(child_ino).await?;
                 }
                 txn.delete(&KeyType::INum2Node(child_ino));
@@ -519,7 +460,7 @@ impl MetaData for S3MetaData {
             inum_allocator: INumAllocator::new(Arc::clone(&kv_engine)),
             kv_engine,
             storage: Arc::new(storage),
-            local_mtime_and_size: HashMap::new(),
+            open_files: OpenFiles::new(),
         });
 
         retry_txn!(TXN_RETRY_LIMIT, {
@@ -564,7 +505,6 @@ impl MetaData for S3MetaData {
             if let SFlag::S_IFREG = node.get_type() {
                 let ino = node.get_ino();
                 self.storage.remove(ino).await?;
-                self.local_mtime_and_size.remove(&ino);
             }
             true
         } else {
@@ -660,7 +600,7 @@ impl MetaData for S3MetaData {
 
             let child_ino = child_entry.ino();
             let child_node = self.get_inode_from_txn(txn.as_mut(), child_ino).await?;
-            let child_attr = self.apply_local_mtime_and_size(child_node.lookup_attr());
+            let child_attr = child_node.get_attr();
 
             let ttl = Duration::new(MY_TTL_SEC, 0);
             let fuse_attr = fs_util::convert_to_fuse_attr(child_attr);
@@ -839,8 +779,17 @@ impl MetaData for S3MetaData {
         _datasync: bool,
         // reply: ReplyEmpty,
     ) -> DatenLordResult<()> {
-        // We do not have completed metadata cache,
-        // so there are no need to handle the situation that the metadata is not synced.
+        retry_txn!(TXN_RETRY_LIMIT, {
+            let mut txn = self.kv_engine.new_meta_txn().await;
+            let mut node = self.get_inode_from_txn(txn.as_mut(), ino).await?;
+            let open_file = self.open_files.get(ino);
+            node.set_attr(open_file.read().attr);
+            txn.set(
+                &KeyType::INum2Node(ino),
+                &ValueType::Node(node.to_serial_node()),
+            );
+            (txn.commit().await, ())
+        })?;
         self.flush(ino, fh).await
     }
 
@@ -854,37 +803,25 @@ impl MetaData for S3MetaData {
         data: Vec<u8>,
         _flags: u32,
     ) -> DatenLordResult<usize> {
-        let mut txn = self.kv_engine.new_meta_txn().await;
-        let inode = self.get_inode_from_txn(txn.as_mut(), ino).await?;
+        let open_file = self.open_files.get(ino);
 
         let (mtime, file_size) = {
-            let local_mtime_and_size = self.get_local_mtime_and_size(ino);
-            let file_attr = inode.get_attr();
-            local_mtime_and_size.unwrap_or((file_attr.mtime, file_attr.size))
+            let attr = open_file.read().attr;
+            (attr.mtime, attr.size)
         };
 
-        let new_mtime = self.storage.store(ino, offset.cast(), &data, mtime).await?;
+        let new_mtime = self.storage.store(ino, offset.cast(), &data, mtime).await;
         let written_size = data.len();
         let new_size = file_size.max(offset.cast::<u64>().overflow_add(written_size.cast()));
 
-        // In fact, no changes will be written to the `inode`,
-        // and the `txn.set` here is just for atomic ensuring.
-        txn.set(
-            &KeyType::INum2Node(ino),
-            &ValueType::Node(inode.to_serial_node()),
-        );
-
-        if !txn.commit().await? {
-            // Transaction committed failed, but we don't retry here
-            // Print a warning log and return the result
-            warn!("write_helper() failed to commit txn");
-            // Currently, we consider it as a IO error
-            return build_error_result_from_errno(
-                Errno::EIO,
-                "write_helper() failed to commit txn".to_owned(),
-            );
+        // Update the `mtime` and `size` of the file
+        {
+            let raw_open_file = self.open_files.get(ino);
+            let mut open_file = raw_open_file.write();
+            open_file.attr.mtime = new_mtime;
+            open_file.attr.size = new_size;
         }
-        self.local_mtime_and_size.insert(ino, (new_mtime, new_size));
+
         Ok(written_size)
     }
 }
@@ -903,28 +840,6 @@ impl S3MetaData {
         Ok(raw_data.map(|value| value.into_s3_node(self)))
     }
 
-    /// Get the local cache of `mtime` and `size` of a file.
-    fn get_local_mtime_and_size(&self, ino: INum) -> Option<(SystemTime, u64)> {
-        let guard = pin();
-
-        self.local_mtime_and_size.get(&ino, &guard).copied()
-    }
-
-    /// Apply the local `mtime` and `size` to `attr`.
-    fn apply_local_mtime_and_size(&self, mut attr: FileAttr) -> FileAttr {
-        let ino = attr.ino;
-
-        let Some((local_mtime, local_size)) = self.get_local_mtime_and_size(ino) else {
-            return attr;
-        };
-
-        attr.mtime = local_mtime;
-        attr.ctime = local_mtime.max(attr.ctime);
-        attr.size = local_size;
-
-        attr
-    }
-
     /// Allocate a new uinque inum for new node
     async fn alloc_inum(&self) -> DatenLordResult<INum> {
         let result = self.inum_allocator.alloc_inum_for_fnode().await;
@@ -937,7 +852,7 @@ impl S3MetaData {
     async fn check_sticky_bit<T: MetaTxn + ?Sized>(
         &self,
         context: &ReqContext,
-        parent_node: &S3Node,
+        parent_node: &S3Node<S>,
         child_entry: &DirEntry,
         txn: &mut T,
     ) -> DatenLordResult<()> {
@@ -966,7 +881,7 @@ impl S3MetaData {
         &self,
         txn: &mut T,
         ino: INum,
-    ) -> DatenLordResult<Option<S3Node>> {
+    ) -> DatenLordResult<Option<S3Node<S>>> {
         let inode = txn
             .get(&KeyType::INum2Node(ino))
             .await
@@ -985,7 +900,7 @@ impl S3MetaData {
         &self,
         txn: &mut T,
         ino: INum,
-    ) -> DatenLordResult<S3Node> {
+    ) -> DatenLordResult<S3Node<S>> {
         Ok(txn
             .get(&KeyType::INum2Node(ino))
             .await
