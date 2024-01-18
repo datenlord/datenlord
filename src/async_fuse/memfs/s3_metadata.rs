@@ -1,4 +1,3 @@
-use std::collections::BTreeMap;
 use std::fmt::Debug;
 use std::os::unix::ffi::OsStringExt;
 use std::os::unix::io::RawFd;
@@ -19,7 +18,6 @@ use tracing::{debug, info, instrument, warn};
 
 use super::cache::policy::LruPolicy;
 use super::cache::{Backend, Block, BlockCoordinate, GlobalCache, MemoryCache, StorageManager};
-use super::dir::DirEntry;
 use super::dist::client as dist_client;
 use super::dist::server::CacheServer;
 use super::fs_util::{self, FileAttr, NEED_CHECK_PERM};
@@ -33,6 +31,7 @@ use super::{check_type_supported, CreateParam, RenameParam, SetAttrParam};
 use crate::async_fuse::fuse::fuse_reply::{ReplyDirectory, StatFsParam};
 use crate::async_fuse::fuse::protocol::{FuseAttr, INum, FUSE_ROOT_ID};
 use crate::async_fuse::memfs::check_name_length;
+use crate::async_fuse::memfs::direntry::DirEntryV2;
 use crate::async_fuse::memfs::kv_engine::KeyType;
 use crate::async_fuse::util::build_error_result_from_errno;
 use crate::common::error::{
@@ -114,7 +113,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         Ok(())
     }
 
-    #[instrument(skip(self), err, ret)]
+    #[instrument(skip(self, reply), err, ret)]
     async fn readdir(
         &self,
         context: ReqContext,
@@ -123,22 +122,6 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         offset: i64,
         reply: &mut ReplyDirectory,
     ) -> DatenLordResult<()> {
-        let mut readdir_helper = |data: &BTreeMap<String, DirEntry>| -> usize {
-            let mut num_child_entries = 0;
-            for (i, (child_name, child_entry)) in data.iter().enumerate().skip(offset.cast()) {
-                let child_ino = child_entry.ino();
-                reply.add(
-                    child_ino,
-                    offset.overflow_add(i.cast()).overflow_add(1), /* i + 1 means the index of
-                                                                    * the next entry */
-                    child_entry.entry_type(),
-                    child_name,
-                );
-                num_child_entries = num_child_entries.overflow_add(1);
-            }
-            num_child_entries
-        };
-
         let inode = self
             .get_node_from_kv_engine(ino)
             .await?
@@ -146,17 +129,25 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         inode
             .get_attr()
             .check_perm(context.user_id, context.group_id, 5)?;
-        if inode.need_load_dir_data() {
-            inode.load_data(0_usize, 0_usize).await?;
+
+        let dir_entries = self.get_all_dir_entry(ino).await?;
+        for (i, dir_etnry) in dir_entries.iter().enumerate().skip(offset.cast()) {
+            reply.add(
+                dir_etnry.ino(),
+                offset.overflow_add(i.cast()).overflow_add(1), /* i + 1 means the index of
+                                                                * the next entry */
+                dir_etnry.file_type().into(),
+                dir_etnry.name(),
+            );
         }
-        let num_child_entries = inode.read_dir(&mut readdir_helper);
-        debug!(
-            "readdir() successfully read {} entries \
-                under the directory of ino={} and name={:?}",
-            num_child_entries,
+        info!(
+            "readdir() ino={} offset={} child_size={} reply={:?}",
             ino,
-            inode.get_name(),
+            offset,
+            dir_entries.len(),
+            reply
         );
+
         Ok(())
     }
 
@@ -199,45 +190,11 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
     }
 
     #[instrument(skip(self))]
-    async fn flush(&self, ino: u64, _fh: u64) -> DatenLordResult<()> {
-        let local_mtime_and_size = {
-            let guard = pin();
-
-            self.local_mtime_and_size
-                .remove_with_guard(&ino, &guard)
-                .copied()
-        };
-
+    async fn flush(&self, ino: u64, fh: u64) -> DatenLordResult<()> {
         retry_txn!(TXN_RETRY_LIMIT, {
             let mut txn = self.kv_engine.new_meta_txn().await;
             let mut inode = self.get_inode_from_txn(txn.as_mut(), ino).await?;
-
-            if inode.is_deferred_deletion() {
-                // If a file is marked as deferred delete, there is no need to flush it.
-                // But the local node may continue to access this file, which depends on
-                // the local mtime and local size. Therefore, we need to insert the removed
-                // local mtime and local size back to the cache.
-                if let Some(local_mtime_and_size) = local_mtime_and_size {
-                    self.local_mtime_and_size.insert(ino, local_mtime_and_size);
-                }
-                return Ok(());
-            }
-
-            // Flush the storage cache
-            self.storage.flush(ino).await;
-
-            let mut file_attr = inode.get_attr();
-
-            if let Some((local_mtime, local_size)) = local_mtime_and_size {
-                file_attr.mtime = local_mtime;
-                file_attr.size = local_size;
-
-                // `ctime` may be greater than `mtime`, use the greater one
-                file_attr.ctime = local_mtime.max(file_attr.ctime);
-            }
-
-            inode.set_attr(file_attr);
-
+            inode.flush(ino, fh).await;
             txn.set(
                 &KeyType::INum2Node(ino),
                 &ValueType::Node(inode.to_serial_node()),
@@ -248,11 +205,11 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
     }
 
     #[instrument(skip(self))]
-    async fn releasedir(&self, ino: u64, _fh: u64) -> DatenLordResult<()> {
+    async fn releasedir(&self, ino: u64, fh: u64) -> DatenLordResult<()> {
         retry_txn!(TXN_RETRY_LIMIT, {
             let mut txn = self.kv_engine.new_meta_txn().await;
             let node = self.get_inode_from_txn(txn.as_mut(), ino).await?;
-            node.closedir().await;
+            node.closedir(ino, fh).await;
             let is_deleted = self.delete_check(&node).await?;
             if is_deleted {
                 txn.delete(&KeyType::INum2Node(ino));
@@ -274,35 +231,23 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         _fh: u64,
         offset: i64,
         size: u32,
-    ) -> DatenLordResult<Vec<Block>> {
+    ) -> DatenLordResult<Vec<IoMemBlock>> {
         let inode = self
             .get_node_from_kv_engine(ino)
             .await?
             .ok_or_else(|| build_inconsistent_fs!(ino))?;
 
-        let (mtime, file_size) = {
-            let local_mtime_and_size = self.get_local_mtime_and_size(ino);
-            let file_attr = inode.get_attr();
-            local_mtime_and_size.unwrap_or((file_attr.mtime, file_attr.size))
-        };
+        let size: u64 =
+            if offset.cast::<u64>().overflow_add(size.cast::<u64>()) > inode.get_attr().size {
+                inode.get_attr().size.overflow_sub(offset.cast::<u64>())
+            } else {
+                size.cast()
+            };
 
-        if offset.cast::<u64>() >= file_size {
-            return Ok(vec![]);
+        if inode.need_load_file_data(offset.cast(), size.cast()).await {
+            inode.load_data(offset.cast(), size.cast()).await?;
         }
-
-        // Ensure `offset + size` is le than the size of the file
-        let read_size: u64 = if offset.cast::<u64>().overflow_add(size.cast::<u64>()) > file_size {
-            file_size.overflow_sub(offset.cast::<u64>())
-        } else {
-            size.cast()
-        };
-
-        let data = self
-            .storage
-            .load(ino, offset.cast(), read_size.cast(), mtime)
-            .await;
-
-        Ok(data)
+        return Ok(inode.get_file_data(offset.cast(), size.cast()).await);
     }
 
     #[instrument(skip(self), err, ret)]
@@ -337,7 +282,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
             .get_node_from_kv_engine(ino)
             .await?
             .ok_or_else(|| build_inconsistent_fs!(ino))?;
-        let attr = self.apply_local_mtime_and_size(inode.get_attr());
+        let attr = inode.get_attr();
         let ttl = Duration::new(MY_TTL_SEC, 0);
         let fuse_attr = fs_util::convert_to_fuse_attr(attr);
         Ok((ttl, fuse_attr))
@@ -371,97 +316,32 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         param: &SetAttrParam,
     ) -> DatenLordResult<(Duration, FuseAttr)> {
         let ttl = Duration::new(MY_TTL_SEC, 0);
-
-        let mut txn = self.kv_engine.new_meta_txn().await;
-        let mut inode = self.get_inode_from_txn(txn.as_mut(), ino).await?;
-
-        let origin_attr = inode.get_attr();
-        let applied_attr = if SFlag::S_IFREG == origin_attr.kind {
-            self.apply_local_mtime_and_size(origin_attr)
-        } else {
-            origin_attr
-        };
-
-        let dirty_attr_for_reply = match applied_attr.setattr_precheck(
-            param,
-            context.user_id,
-            context.group_id,
-        )? {
-            Some(mut dirty_attr) => {
-                // This is to be inserted in KV, whose `mtime` and `size` should be reset to
-                // origin, because changes of this field are invisible to other
-                // nodes until flush.
-                let mut dirty_attr_for_kv = dirty_attr;
-
-                // There are `mtime` and `size` caches for regular files. Check the change of
-                // these fields, and set them to the cache.
-                if SFlag::S_IFREG == applied_attr.kind {
-                    if (dirty_attr.mtime, dirty_attr.size)
-                        != (applied_attr.mtime, applied_attr.size)
-                    {
-                        self.local_mtime_and_size
-                            .insert(ino, (dirty_attr.mtime, dirty_attr.size));
-                    }
-                    // Reset `mtime` and `size` to origin, because changes of these fields is
-                    // invisible to other nodes until flush.
-                    dirty_attr_for_kv.mtime = origin_attr.mtime;
-                    dirty_attr_for_kv.size = origin_attr.size;
-
-                    // The file also needs to be truncated, if the new size is shorter.
-                    if dirty_attr.size < applied_attr.size {
-                        let new_mtime = self
-                            .storage
-                            .truncate(
-                                ino,
-                                applied_attr.size.cast(),
-                                dirty_attr.size.cast(),
-                                applied_attr.mtime,
-                            )
-                            .await;
-                        self.local_mtime_and_size
-                            .insert(ino, (new_mtime, dirty_attr.size));
-                        dirty_attr.mtime = new_mtime;
-                    }
-                }
-
-                inode.set_attr(dirty_attr_for_kv);
-
-                debug!(
-                        "setattr() successfully set the attribute of ino={} and name={:?}, the set attr={:?}",
-                        ino, inode.get_name(), dirty_attr,
-                    );
-
-                // The attr with new `size` and `mtime` should be replied.
-                dirty_attr
+        let file_attr = retry_txn!(TXN_RETRY_LIMIT, {
+            let mut txn = self.kv_engine.new_meta_txn().await;
+            let mut inode = self.get_inode_from_txn(txn.as_mut(), ino).await?;
+            let (attr_changed, file_attr) = inode
+                .setattr_precheck(param, context.user_id, context.group_id)
+                .await?;
+            debug!("setattr_helper() attr_changed={}", attr_changed);
+            if attr_changed {
+                inode.set_attr(file_attr);
             }
-            None => {
-                // setattr did not change any attribute.
-                return Ok((ttl, fs_util::convert_to_fuse_attr(origin_attr)));
-            }
-        };
-
-        txn.set(
-            &KeyType::INum2Node(ino),
-            &ValueType::Node(inode.to_serial_node()),
-        );
-
-        if txn.commit().await? {
-            Ok((ttl, fs_util::convert_to_fuse_attr(dirty_attr_for_reply)))
-        } else {
-            build_error_result_from_errno(
-                Errno::EIO,
-                "setattr(): Txn commit failed in a write operation.".to_owned(),
-            )
-        }
+            txn.set(
+                &KeyType::INum2Node(ino),
+                &ValueType::Node(inode.to_serial_node()),
+            );
+            (txn.commit().await, file_attr)
+        })?;
+        Ok((ttl, fs_util::convert_to_fuse_attr(file_attr)))
     }
 
     #[instrument(skip(self), err, ret)]
     async fn unlink(&self, context: ReqContext, parent: INum, name: &str) -> DatenLordResult<()> {
         retry_txn!(TXN_RETRY_LIMIT, {
             let mut txn = self.kv_engine.new_meta_txn().await;
-            let mut parent_node = self.get_inode_from_txn(txn.as_mut(), parent).await?;
+            let parent_node = self.get_inode_from_txn(txn.as_mut(), parent).await?;
             parent_node.check_is_dir()?;
-            let child_entry = match parent_node.get_entry(name) {
+            let child_entry = match self.try_get_dir_entry(txn.as_mut(), parent, name).await? {
                 None => {
                     return build_error_result_from_errno(
                         Errno::ENOENT,
@@ -475,18 +355,21 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
                     );
                 }
                 Some(child_entry) => {
-                    Self::check_sticky_bit(&context, &parent_node, &child_entry)?;
-                    debug_assert_eq!(&name, &child_entry.entry_name());
+                    self.check_sticky_bit(&context, &parent_node, &child_entry, txn.as_mut())
+                        .await?;
+                    debug_assert_eq!(&name, &child_entry.name());
                     child_entry
                 }
             };
 
             let child_ino = child_entry.ino();
+            info!("Try to  get child node of ino={}", child_ino);
             let child_node = self.get_inode_from_txn(txn.as_mut(), child_ino).await?;
 
             // If child is a directory, it must be empty
             if let SFlag::S_IFDIR = child_node.get_type() {
-                if !child_node.get_dir_data().is_empty() {
+                let dir_entries = self.get_all_dir_entry(child_ino).await?;
+                if !dir_entries.is_empty() {
                     return build_error_result_from_errno(
                         Errno::ENOTEMPTY,
                         format!(
@@ -500,7 +383,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
                 }
             }
 
-            parent_node.unlink_entry(name).await?;
+            txn.delete(&KeyType::DirEntryKey((parent, name.into())));
 
             // Ready to unlink
             let deferred_deletion =
@@ -653,16 +536,35 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         check_name_length(&param.name)?;
         check_type_supported(&param.node_type)?;
         let parent_ino = param.parent;
-        // pre-check : check whether the child name is valid
         let (ttl, fuse_attr) = retry_txn!(TXN_RETRY_LIMIT, {
             let mut txn = self.kv_engine.new_meta_txn().await;
             let mut parent_node = self.get_inode_from_txn(txn.as_mut(), parent_ino).await?;
-            parent_node.check_name_availability(&param.name)?;
+
+            if self
+                .try_get_dir_entry(txn.as_mut(), parent_ino, &param.name)
+                .await?
+                .is_some()
+            {
+                return build_error_result_from_errno(
+                    Errno::EEXIST,
+                    format!(
+                        "failed to create file name={:?} under parent ino={} and name={:?}",
+                        param.name,
+                        parent_ino,
+                        parent_node.get_name(),
+                    ),
+                );
+            }
 
             let new_num = self.alloc_inum().await?;
 
             let new_node = parent_node
-                .create_child_node(&param, new_num, Arc::<GlobalCache>::clone(&self.data_cache))
+                .create_child_node(
+                    &param,
+                    new_num,
+                    Arc::<GlobalCache>::clone(&self.data_cache),
+                    txn.as_mut(),
+                )
                 .await?;
             let fuse_attr = fs_util::convert_to_fuse_attr(new_node.get_attr());
             let ttl = Duration::new(MY_TTL_SEC, 0);
@@ -690,22 +592,22 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
     ) -> DatenLordResult<(Duration, FuseAttr, u64)> {
         retry_txn!(TXN_RETRY_LIMIT, {
             let mut txn = self.kv_engine.new_meta_txn().await;
-            let parent_node = self.get_inode_from_txn(txn.as_mut(), parent).await?;
-            let Some(child_entry) = parent_node.get_entry(child_name) else {
+            if NEED_CHECK_PERM {
+                let parent_node = self.get_inode_from_txn(txn.as_mut(), parent).await?;
+                parent_node
+                    .get_attr()
+                    .check_perm(context.user_id, context.group_id, 1)?;
+            }
+
+            let Some(child_entry) = self
+                .try_get_dir_entry(txn.as_mut(), parent, child_name)
+                .await?
+            else {
                 return build_error_result_from_errno(
                     Errno::ENOENT,
-                    format!(
-                        "failed to find child name={:?} under parent ino={} and name={:?}",
-                        child_name,
-                        parent,
-                        parent_node.get_name(),
-                    ),
+                    format!("failed to find child name={child_name:?} under parent ino={parent} "),
                 );
             };
-
-            parent_node
-                .get_attr()
-                .check_perm(context.user_id, context.group_id, 1)?;
 
             let child_ino = child_entry.ino();
             let child_node = self.get_inode_from_txn(txn.as_mut(), child_ino).await?;
@@ -713,10 +615,6 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
 
             let ttl = Duration::new(MY_TTL_SEC, 0);
             let fuse_attr = fs_util::convert_to_fuse_attr(child_attr);
-            txn.set(
-                &KeyType::INum2Node(parent),
-                &ValueType::Node(parent_node.to_serial_node()),
-            );
             txn.set(
                 &KeyType::INum2Node(child_ino),
                 &ValueType::Node(child_node.to_serial_node()),
@@ -733,6 +631,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         let new_parent = param.new_parent;
         let new_name = param.new_name.as_str();
         let flags = param.flags;
+
         let exchange = match flags {
             0 | RENAME_NOREPLACE => false,
             RENAME_EXCHANGE => true,
@@ -748,12 +647,12 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
             return Ok(());
         }
 
-        let build_enoent = |name: &str, parent: INum, parent_name: &str| {
+        let build_enoent = |name: &str, parent: INum, child_name: &str| {
             build_error_result_from_errno(
                 Errno::ENOENT,
                 format!(
                     "exchange_pre_check() failed to find child entry of name={name:?} \
-                        under parent directory ino={parent} and name={parent_name:?}"
+                        under parent directory ino={parent} and name={child_name:?}"
                 ),
             )
         };
@@ -764,14 +663,17 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
                 self.get_inode_from_txn(txn.as_mut(), old_parent).await?,
             ));
             let old_entry = {
-                let raw_node = old_parent_node.lock().await;
-                raw_node.check_is_dir()?;
-                match raw_node.get_entry(old_name) {
+                let old_parent_node = old_parent_node.lock().await;
+                match self
+                    .try_get_dir_entry(txn.as_mut(), old_parent, old_name)
+                    .await?
+                {
                     None => {
-                        return build_enoent(old_name, old_parent, raw_node.get_name());
+                        return build_enoent(old_name, old_parent, old_name);
                     }
                     Some(old_entry) => {
-                        Self::check_sticky_bit(&context, &raw_node, &old_entry)?;
+                        self.check_sticky_bit(&context, &old_parent_node, &old_entry, txn.as_mut())
+                            .await?;
                         old_entry
                     }
                 }
@@ -784,16 +686,10 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
                     self.get_inode_from_txn(txn.as_mut(), new_parent).await?,
                 ))
             };
-            {
-                let raw_node = new_parent_node.lock().await;
-                raw_node.check_is_dir()?;
-            }
 
-            let new_entry = {
-                let raw_node = new_parent_node.lock().await;
-                raw_node.get_entry(new_name)
-            };
-
+            let new_entry = self
+                .try_get_dir_entry(txn.as_mut(), new_parent, new_name)
+                .await?;
             match new_entry {
                 None => {
                     // new_name does not exist under new_parent
@@ -806,45 +702,42 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
                         );
                     }
                     // exchange is false, so we can do rename directly
-                    if old_parent == new_parent {
-                        let mut raw_node = old_parent_node.lock().await;
-                        raw_node.get_dir_data_mut().remove(old_name);
-                        raw_node.insert_entry_for_rename(DirEntry::new(
+                    // Remove from old_parent and insert into new_parent
+                    txn.delete(&KeyType::DirEntryKey((old_parent, old_name.into())));
+                    txn.set(
+                        &KeyType::DirEntryKey((new_parent, new_name.into())),
+                        &ValueType::DirEntry(DirEntryV2::new(
+                            old_entry.ino(),
                             new_name.into(),
-                            Arc::clone(old_entry.file_attr_arc_ref()),
-                        ));
-                    } else {
-                        let mut old_raw_node = old_parent_node.lock().await;
-                        let mut new_raw_node = new_parent_node.lock().await;
-                        old_raw_node.remove_entry_for_rename(old_name);
-                        new_raw_node.insert_entry_for_rename(DirEntry::new(
-                            new_name.into(),
-                            Arc::clone(old_entry.file_attr_arc_ref()),
-                        ));
-                    }
+                            old_entry.file_type(),
+                        )),
+                    );
                 }
                 Some(new_entry) => {
                     // new_name exists under new_parent
                     if exchange {
                         // exchange is true, so we can do exchange
-                        {
-                            // Remove from old_parent
-                            let mut raw_node = old_parent_node.lock().await;
-                            raw_node.get_dir_data_mut().remove(old_name);
-                            raw_node.insert_entry_for_rename(DirEntry::new(
+                        txn.delete(&KeyType::DirEntryKey((old_parent, old_name.into())));
+                        txn.delete(&KeyType::DirEntryKey((new_parent, new_name.into())));
+
+                        // old_name -> new_entry
+                        // new_name -> old_entry
+                        txn.set(
+                            &KeyType::DirEntryKey((old_parent, old_name.into())),
+                            &ValueType::DirEntry(DirEntryV2::new(
+                                new_entry.ino(),
                                 new_name.into(),
-                                Arc::clone(old_entry.file_attr_arc_ref()),
-                            ));
-                        }
-                        {
-                            // Remove from new_parent
-                            let mut raw_node = new_parent_node.lock().await;
-                            raw_node.get_dir_data_mut().remove(new_name);
-                            raw_node.insert_entry_for_rename(DirEntry::new(
+                                new_entry.file_type(),
+                            )),
+                        );
+                        txn.set(
+                            &KeyType::DirEntryKey((new_parent, new_name.into())),
+                            &ValueType::DirEntry(DirEntryV2::new(
+                                old_entry.ino(),
                                 old_name.into(),
-                                Arc::clone(new_entry.file_attr_arc_ref()),
-                            ));
-                        }
+                                old_entry.file_type(),
+                            )),
+                        );
                     } else {
                         // exchange is false, replace or no_replace
                         if flags & RENAME_NOREPLACE != 0 {
@@ -856,62 +749,26 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
                                 ),
                             );
                         }
-                        {
-                            // Remove from old_parent
-                            let mut raw_node = old_parent_node.lock().await;
-                            raw_node.remove_entry_for_rename(old_name);
-                        }
-                        {
-                            let mut raw_node = new_parent_node.lock().await;
-
-                            // Delete the new file.
-                            Self::check_sticky_bit(&context, &raw_node, &new_entry)?;
-                            let dest_ino = new_entry.ino();
-
-                            let dest_node = self.get_inode_from_txn(txn.as_mut(), dest_ino).await?;
-
-                            // If child is a directory, it must be empty
-                            if let SFlag::S_IFDIR = dest_node.get_type() {
-                                if !dest_node.get_dir_data().is_empty() {
-                                    return build_error_result_from_errno(
-                                        Errno::ENOTEMPTY,
-                                        format!(
-                                            "failed to remove a non-empty directory in rename() name={:?} \
-                                                under parent ino={} and name={:?}",
-                                            new_entry.entry_name(),
-                                            new_parent,
-                                            raw_node.get_name(),
-                                        ),
-                                    );
-                                }
-                            }
-
-                            let deferred_deletion =
-                                dest_node.get_open_count() > 0 || dest_node.get_lookup_count() > 0;
-
-                            if deferred_deletion {
-                                dest_node.mark_deferred_deletion();
-                                txn.set(
-                                    &KeyType::INum2Node(dest_ino),
-                                    &ValueType::Node(dest_node.to_serial_node()),
-                                );
-                            } else {
-                                if let SFlag::S_IFREG = dest_node.get_type() {
-                                    self.local_mtime_and_size.remove(&dest_ino);
-                                    self.storage.remove(dest_ino).await;
-                                }
-                                txn.delete(&KeyType::INum2Node(dest_ino));
-                            }
-
-                            // Insert into new_parent, and the old dest node will be unlinked.
-                            raw_node.insert_entry_for_rename(DirEntry::new(
+                        let delete_key = KeyType::DirEntryKey((old_parent, old_name.into()));
+                        info!("delete key={:?}", delete_key);
+                        txn.delete(&delete_key);
+                        txn.set(
+                            &KeyType::DirEntryKey((new_parent, new_name.into())),
+                            &ValueType::DirEntry(DirEntryV2::new(
+                                old_entry.ino(),
                                 new_name.into(),
-                                Arc::clone(old_entry.file_attr_arc_ref()),
-                            ));
-                        }
+                                old_entry.file_type(),
+                            )),
+                        );
                     }
                 }
             };
+            {
+                old_parent_node.lock().await.update_mtime_ctime_to_now();
+            }
+            {
+                new_parent_node.lock().await.update_mtime_ctime_to_now();
+            }
 
             if old_parent == new_parent {
                 txn.set(
@@ -1069,17 +926,26 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
 
     /// If sticky bit is set, only the owner of the directory, the owner of the
     /// file, or the superuser can rename or delete files.
-    fn check_sticky_bit(
+    async fn check_sticky_bit<T: MetaTxn + ?Sized>(
+        &self,
         context: &ReqContext,
         parent_node: &S3Node<S>,
-        child_entry: &DirEntry,
+        child_entry: &DirEntryV2,
+        txn: &mut T,
     ) -> DatenLordResult<()> {
+        if !NEED_CHECK_PERM {
+            return Ok(());
+        }
         let parent_attr = parent_node.get_attr();
+        let child_ino = child_entry.ino();
+        let child_node = self.get_inode_from_txn(txn, child_ino).await?;
+        let child_attr = child_node.get_attr();
+
         if NEED_CHECK_PERM
             && context.user_id != 0
             && (parent_attr.perm & 0o1000 != 0)
             && context.user_id != parent_attr.uid
-            && context.user_id != child_entry.file_attr_arc_ref().read().uid
+            && context.user_id != child_attr.uid
         {
             build_error_result_from_errno(Errno::EACCES, "Sticky bit set".to_owned())
         } else {
@@ -1121,5 +987,37 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
             .ok_or_else(|| build_inconsistent_fs!(ino))? // inode must exist
             .into_s3_node(self)
             .await
+    }
+
+    /// Helper function to get dir entry from `MetaTxn`
+    async fn try_get_dir_entry<T: MetaTxn + ?Sized>(
+        &self,
+        txn: &mut T,
+        parent: INum,
+        name: &str,
+    ) -> DatenLordResult<Option<DirEntryV2>> {
+        let key = KeyType::DirEntryKey((parent, name.to_owned()));
+        let value = txn.get(&key).await.add_context(format!(
+            "{}() failed to get dir entry of name={:?} \
+                    under parent ino={} from kv engine",
+            function_name!(),
+            name,
+            parent,
+        ))?;
+        match value {
+            Some(value) => Ok(Some(value.into_dir_entry())),
+            None => Ok(None),
+        }
+    }
+
+    /// Helper function to get all dir etnry in a directory from `KVEngine`
+    async fn get_all_dir_entry(&self, parent: INum) -> DatenLordResult<Vec<DirEntryV2>> {
+        let key = KeyType::DirEntryKey((parent, String::new()));
+        let raw_values = self.kv_engine.range(&key).await?;
+        let mut values = Vec::with_capacity(raw_values.len());
+        for raw_value in raw_values {
+            values.push(raw_value.into_dir_entry());
+        }
+        Ok(values)
     }
 }

@@ -46,18 +46,37 @@ impl TryFrom<SFlag> for FileType {
     }
 }
 
+impl From<FileType> for SFlag {
+    /// Converts a `FileType` value into an `SFlag`.
+    ///
+    /// # Arguments
+    ///
+    /// * `value` - The `FileType` value representing file type at the OS level.
+    ///
+    /// # Returns
+    ///
+    /// * `SFlag` - The `SFlag` value corresponding to the `FileType`.
+    fn from(value: FileType) -> Self {
+        match value {
+            FileType::Dir => SFlag::S_IFDIR,
+            FileType::File => SFlag::S_IFREG,
+            FileType::Symlink => SFlag::S_IFLNK,
+        }
+    }
+}
+
 /// Represents a directory entry in a filesystem.
 #[derive(Debug, Serialize, Deserialize, Eq, PartialEq)]
-pub struct DirEntry {
+pub struct DirEntryV2 {
     /// The inode number of the child
-    inum: INum,
+    ino: INum,
     /// The name of the child
     name: String,
     /// The type of the child
     file_type: FileType,
 }
 
-impl DirEntry {
+impl DirEntryV2 {
     /// Creates a new `DirEntry`.
     ///
     /// # Arguments
@@ -72,7 +91,7 @@ impl DirEntry {
     #[must_use]
     pub fn new(inum: INum, name: String, file_type: FileType) -> Self {
         Self {
-            inum,
+            ino: inum,
             name,
             file_type,
         }
@@ -80,8 +99,8 @@ impl DirEntry {
 
     /// Returns the inode number of the file or directory.
     #[must_use]
-    pub fn inum(&self) -> INum {
-        self.inum
+    pub fn ino(&self) -> INum {
+        self.ino
     }
 
     /// Returns the name of the file or directory.
@@ -120,9 +139,9 @@ mod tests {
 
     #[test]
     fn test_dir_entry_serialization() {
-        let dir_entry = DirEntry::new(1, "test".to_owned(), FileType::Dir);
+        let dir_entry = DirEntryV2::new(1, "test".to_owned(), FileType::Dir);
         let dir_entry_bytes = bincode::serialize(&dir_entry).unwrap();
-        let dir_entry2: DirEntry = bincode::deserialize(&dir_entry_bytes).unwrap();
+        let dir_entry2: DirEntryV2 = bincode::deserialize(&dir_entry_bytes).unwrap();
         assert_eq!(dir_entry, dir_entry2);
     }
 }

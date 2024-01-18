@@ -185,38 +185,37 @@ fn test_deferred_deletion(mount_dir: &Path) -> anyhow::Result<()> {
 
 #[cfg(test)]
 fn test_rename_file(mount_dir: &Path) -> anyhow::Result<()> {
-    info!("rename file");
+    info!("test rename file");
     let from_dir = Path::new(mount_dir).join("from_dir");
     if from_dir.exists() {
-        fs::remove_dir_all(&from_dir)?;
+        fs::remove_dir_all(&from_dir).context("failed to remove from_dir")?;
     }
-    fs::create_dir_all(&from_dir)?;
+    fs::create_dir_all(&from_dir).context("failed to create from_dir")?;
 
     let to_dir = Path::new(&mount_dir).join("to_dir");
     if to_dir.exists() {
-        fs::remove_dir_all(&to_dir)?;
+        fs::remove_dir_all(&to_dir).context("failed to remove to_dir")?;
     }
-    fs::create_dir_all(&to_dir)?;
+    fs::create_dir_all(&to_dir).context("failed to create to_dir")?;
 
     let old_file = from_dir.join("old.txt");
-    fs::write(&old_file, FILE_CONTENT)?;
+    fs::write(&old_file, FILE_CONTENT).context(format!("failed to write to file={old_file:?}",))?;
 
     let new_file = to_dir.join("new.txt");
 
-    fs::rename(&old_file, &new_file)?;
-
-    let bytes = fs::read(&new_file)?;
-    let content = String::from_utf8(bytes)?;
-    assert_eq!(
-        content, FILE_CONTENT,
-        "the file read result is not the same as the expected content",
-    );
+    fs::rename(&old_file, &new_file).context("rename should not fail")?;
 
     assert!(
         !old_file.exists(),
         "the old file {old_file:?} should have been removed",
     );
     assert!(new_file.exists(), "the new file {new_file:?} should exist",);
+    let bytes = fs::read(&new_file).context(format!("failed to read file={new_file:?}",))?;
+    let content = String::from_utf8(bytes)?;
+    assert_eq!(
+        content, FILE_CONTENT,
+        "the file read result is not the same as the expected content",
+    );
 
     // Clean up
     fs::remove_dir_all(&from_dir)?;

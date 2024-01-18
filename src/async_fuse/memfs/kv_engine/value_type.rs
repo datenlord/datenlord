@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::async_fuse::memfs::direntry::DirEntry;
+use crate::async_fuse::memfs::direntry::DirEntryV2;
 use crate::async_fuse::memfs::s3_node::S3Node;
 use crate::async_fuse::memfs::s3_wrapper::S3BackEnd;
 use crate::async_fuse::memfs::serial::SerialNode;
@@ -16,7 +16,7 @@ pub enum ValueType {
     /// SerialNode
     Node(SerialNode),
     /// SerialDirEntry
-    DirEntry(DirEntry),
+    DirEntry(DirEntryV2),
     /// Next id allocate range begin
     NextIdAllocateRangeBegin(u64),
     /// Raw value
@@ -83,7 +83,7 @@ impl ValueType {
     /// Panics if `ValueType` is not `ValueType::DirEntry`.
     #[allow(clippy::wildcard_enum_match_arm)] // Allow wildcard because there should be only one enum branch matches one specific type.
     #[must_use]
-    pub fn into_dir_entry(self) -> DirEntry {
+    pub fn into_dir_entry(self) -> DirEntryV2 {
         match self {
             ValueType::DirEntry(direntry) => direntry,
             _ => panic!("expect ValueType::DirEntry but get {self:?}"),

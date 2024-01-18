@@ -1,6 +1,5 @@
 //! The implementation of filesystem node
 
-use std::collections::BTreeMap;
 use std::os::unix::io::RawFd;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, Ordering};
@@ -19,17 +18,15 @@ use parking_lot::RwLock;
 use tracing::{debug, info, warn};
 
 use super::cache::{GlobalCache, IoMemBlock};
-use super::dir::DirEntry;
+use super::direntry::{DirEntryV2, FileType};
 use super::dist::client as dist_client;
-use super::fs_util::{self, FileAttr};
-use super::kv_engine::KVEngineType;
+use super::fs_util::{self, FileAttr, NEED_CHECK_PERM};
+use super::kv_engine::{KVEngineType, KeyType, MetaTxn, ValueType};
 use super::node::Node;
 use super::s3_metadata::S3MetaData;
 use super::s3_wrapper::S3BackEnd;
-use super::serial::{
-    dir_entry_to_serial, file_attr_to_serial, serial_to_file_attr, SerialNode, SerialNodeData,
-};
-use super::CreateParam;
+use super::serial::{file_attr_to_serial, serial_to_file_attr, SerialNode, SerialNodeData};
+use super::{CreateParam, SetAttrParam};
 use crate::async_fuse::fuse::fuse_reply::{AsIoVec, StatFsParam};
 use crate::async_fuse::fuse::protocol::{INum, FUSE_ROOT_ID};
 use crate::async_fuse::metrics;
@@ -43,7 +40,7 @@ static GLOBAL_S3_FD_CNT: AtomicU32 = AtomicU32::new(4);
 #[derive(Debug)]
 pub enum S3NodeData {
     /// Directory entry data
-    Directory(BTreeMap<String, DirEntry>),
+    Directory,
     /// File content data
     RegFile(Arc<GlobalCache>),
     /// Symlink target data
@@ -55,13 +52,7 @@ impl S3NodeData {
     /// Serializes the node data
     pub fn serial(&self) -> SerialNodeData {
         match *self {
-            Self::Directory(ref dir) => {
-                let mut serial_dir = BTreeMap::new();
-                for (name, dir_entry) in dir {
-                    serial_dir.insert(name.clone(), dir_entry_to_serial(dir_entry));
-                }
-                SerialNodeData::Directory(serial_dir)
-            }
+            Self::Directory => SerialNodeData::Directory,
             Self::RegFile(_) => SerialNodeData::File,
             Self::SymLink(ref target) => SerialNodeData::SymLink(target.clone()),
         }
@@ -144,29 +135,11 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
         meta: &S3MetaData<S>,
     ) -> BoxFuture<'_, DatenLordResult<S3Node<S>>> {
         async move {
-            // check if the node is a directory
-            // if it is a directory, we need to fetch it's children's file attributes
-            let dir_data = if let SerialNodeData::Directory(ref dir) = serial_node.data {
-                let mut dir_entries = BTreeMap::new();
-                for (name, serial_dir_entry) in dir {
-                    let child_ino = serial_dir_entry.get_child_ino();
-                    // Fetch the child node from kv
-                    let child_node = meta.get_node_from_kv_engine(child_ino).await?;
-                    // If the child_node is None , it means it has been deleted,skip
-                    if let Some(child_node) = child_node {
-                        let child_attr = *child_node.attr.read();
-                        dir_entries.insert(
-                            name.clone(),
-                            DirEntry::new(name.clone(), Arc::new(RwLock::new(child_attr))),
-                        );
-                    }
-                }
-                S3NodeData::Directory(dir_entries)
-            } else {
-                serial_node
-                    .data
-                    .into_s3_nodedata(Arc::clone(&meta.data_cache))
-            };
+            // Convert `SerialNodeData` to `S3NodeData`
+            let dir_data = serial_node
+                .data
+                .into_s3_nodedata(Arc::clone(&meta.data_cache));
+
             info!(
                 "ino={}, open_count={}, lookup_count={},attr={:?}",
                 serial_node.attr.get_ino(),
@@ -213,7 +186,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
         data_cache: &Arc<GlobalCache>,
     ) -> Self {
         let data = match child_attr.read().kind {
-            SFlag::S_IFDIR => S3NodeData::Directory(BTreeMap::new()),
+            SFlag::S_IFDIR => S3NodeData::Directory,
             SFlag::S_IFREG => S3NodeData::RegFile(Arc::<GlobalCache>::clone(data_cache)),
             SFlag::S_IFLNK => {
                 if let Some(path) = target_path {
@@ -241,6 +214,19 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
         }
     }
 
+    /// Set node attribute
+    pub(crate) fn _set_attr(&mut self, new_attr: FileAttr, _broadcast: bool) -> FileAttr {
+        let old_attr = self.get_attr();
+        match self.data {
+            S3NodeData::Directory => debug_assert_eq!(new_attr.kind, SFlag::S_IFDIR),
+            S3NodeData::RegFile(..) => debug_assert_eq!(new_attr.kind, SFlag::S_IFREG),
+            S3NodeData::SymLink(..) => debug_assert_eq!(new_attr.kind, SFlag::S_IFLNK),
+        }
+
+        self.attr.write().clone_from(&new_attr);
+        old_attr
+    }
+
     #[allow(clippy::unused_self)]
     /// Get new fd
     fn new_fd(&self) -> u32 {
@@ -249,7 +235,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
     }
 
     /// Update mtime and ctime to now
-    fn update_mtime_ctime_to_now(&mut self) {
+    pub fn update_mtime_ctime_to_now(&mut self) {
         let mut attr = self.get_attr();
         let st_now = SystemTime::now();
         attr.mtime = st_now;
@@ -260,26 +246,6 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
     /// Increase node lookup count
     fn inc_lookup_count(&self) -> i64 {
         self.lookup_count.fetch_add(1, Ordering::AcqRel)
-    }
-
-    /// Get directory data
-    pub(crate) fn get_dir_data(&self) -> &BTreeMap<String, DirEntry> {
-        match self.data {
-            S3NodeData::Directory(ref dir_data) => dir_data,
-            S3NodeData::RegFile(..) | S3NodeData::SymLink(..) => {
-                panic!("forbidden to get DirData from non-directory node")
-            }
-        }
-    }
-
-    /// Get mutable directory data
-    pub(crate) fn get_dir_data_mut(&mut self) -> &mut BTreeMap<String, DirEntry> {
-        match self.data {
-            S3NodeData::Directory(ref mut dir_data) => dir_data,
-            S3NodeData::RegFile(..) | S3NodeData::SymLink(..) => {
-                panic!("forbidden to get DirData from non-directory node")
-            }
-        }
     }
 
     /// Increase node open count
@@ -315,7 +281,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
                 root_ino,
                 name,
                 attr,
-                S3NodeData::Directory(BTreeMap::new()),
+                S3NodeData::Directory,
                 s3_backend,
                 &meta.kv_engine,
                 &meta.node_id,
@@ -351,21 +317,6 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
             _ => 6,
         };
         attr.check_perm(user_id, group_id, access_mode)
-    }
-
-    /// Check if `name` is available for use
-    /// # Return
-    /// - `Ok(())` if `name` is valid
-    /// - `Err` if `name` is invalid or already exists
-    pub fn check_name_availability(&self, name: &str) -> DatenLordResult<()> {
-        if self.get_dir_data().contains_key(name) {
-            return build_error_result_from_errno(
-                Errno::EEXIST,
-                "check_name_availability() failed as the child name already exists".to_owned(),
-            );
-        }
-
-        Ok(())
     }
 }
 
@@ -416,7 +367,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
     /// Get node type, directory or file
     fn get_type(&self) -> SFlag {
         match self.data {
-            S3NodeData::Directory(..) => SFlag::S_IFDIR,
+            S3NodeData::Directory => SFlag::S_IFDIR,
             S3NodeData::RegFile(..) => SFlag::S_IFREG,
             S3NodeData::SymLink(..) => SFlag::S_IFLNK,
         }
@@ -503,15 +454,6 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
         Ok(self.new_fd().cast())
     }
 
-    /// Check whether a node is an empty file or an empty directory
-    fn is_node_data_empty(&self) -> bool {
-        match self.data {
-            S3NodeData::Directory(ref dir_node) => dir_node.is_empty(),
-            S3NodeData::RegFile(..) => true, // always check the cache
-            S3NodeData::SymLink(..) => panic!("forbidden to check symlink is empty or not"),
-        }
-    }
-
     /// check whether to load directory entry data or not
     fn need_load_dir_data(&self) -> bool {
         debug_assert_eq!(
@@ -553,32 +495,24 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
                 }
                 cache_miss
             }
-            S3NodeData::Directory(..) | S3NodeData::SymLink(..) => {
+            S3NodeData::Directory | S3NodeData::SymLink(..) => {
                 panic!("need_load_file_data should handle regular file")
             }
         }
     }
 
-    /// Get a directory entry by name
-    fn get_entry(&self, name: &str) -> Option<DirEntry> {
-        self.get_dir_data().get(name).cloned()
-    }
-
     /// Create symlink in a directory
-    async fn create_child_symlink(
+    async fn create_child_symlink<T: MetaTxn + ?Sized>(
         &mut self,
         inum: INum,
         child_symlink_name: &str,
         target_path: PathBuf,
+        txn: &mut T,
     ) -> DatenLordResult<Self> {
-        let dir_data = self.get_dir_data();
-        debug_assert!(
-            !dir_data.contains_key(child_symlink_name),
-            "create_child_symlink() cannot create duplicated symlink name={child_symlink_name:?}",
-        );
         let target_str = target_path
             .to_str()
             .unwrap_or_else(|| panic!("failed to convert {target_path:?} to utf8 string"));
+
         if let Err(e) = self
             .s3_backend
             .put_data(inum, target_str.as_bytes(), 0, target_str.len())
@@ -601,18 +535,12 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
             ..FileAttr::now()
         }));
 
-        let target_path = {
-            // insert new entry to parent directory
-            let entry = DirEntry::new(
-                child_symlink_name.to_owned(),
-                // SFlag::S_IFLNK,
-                Arc::clone(&child_attr),
-            );
-            let dir_data_mut = self.get_dir_data_mut();
-            let previous_value = dir_data_mut.insert(child_symlink_name.to_owned(), entry);
-            debug_assert!(previous_value.is_none()); // double check creation race
-            target_path
-        };
+        let new_entry = DirEntryV2::new(inum, child_symlink_name.to_owned(), FileType::Symlink);
+
+        txn.set(
+            &KeyType::DirEntryKey((self.get_ino(), child_symlink_name.to_owned())),
+            &ValueType::DirEntry(new_entry),
+        );
 
         self.update_mtime_ctime_to_now();
         Ok(Self::new(
@@ -627,49 +555,16 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
         ))
     }
 
-    /// Read symlink itself in a directory, not follow symlink
-    async fn load_child_symlink(
-        &self,
-        child_symlink_name: &str,
-        child_attr: Arc<RwLock<FileAttr>>,
-    ) -> DatenLordResult<Self> {
-        let inum = child_attr.read().ino;
-
-        let target_path = PathBuf::from(
-            String::from_utf8(self.s3_backend.get_data(inum).await.unwrap_or_else(|e| {
-                panic!("failed to get data of {inum} from s3 backend, error is {e:?}")
-            }))
-            .unwrap_or_else(|e| panic!("failed to convert to utf string, error is {e:?}")),
-        );
-
-        Ok(Self::new(
-            self.get_ino(),
-            child_symlink_name,
-            child_attr,
-            S3NodeData::SymLink(target_path),
-            Arc::clone(&self.s3_backend),
-            &self.kv_engine,
-            &self.k8s_node_id,
-            &self.storage_config,
-        ))
-    }
-
     /// Create sub-directory in a directory
-    async fn create_child_dir(
+    async fn create_child_dir<T: MetaTxn + ?Sized>(
         &mut self,
         inum: INum,
         child_dir_name: &str,
         mode: Mode,
         user_id: u32,
         group_id: u32,
+        txn: &mut T,
     ) -> DatenLordResult<Self> {
-        let dir_data = self.get_dir_data();
-        // TODO return error
-        debug_assert!(
-            !dir_data.contains_key(child_dir_name),
-            "create_child_dir() cannot create duplicated directory name={child_dir_name:?}"
-        );
-
         // get new directory attribute
         let child_attr = Arc::new(RwLock::new(FileAttr {
             ino: inum,
@@ -681,18 +576,18 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
             ..FileAttr::now()
         }));
 
-        // insert new entry to parent directory
-        let entry = DirEntry::new(child_dir_name.to_owned(), Arc::clone(&child_attr));
+        let new_etnry = DirEntryV2::new(inum, child_dir_name.to_owned(), FileType::Dir);
 
-        let dir_data_mut = self.get_dir_data_mut();
-        let previous_value = dir_data_mut.insert(child_dir_name.to_owned(), entry);
-        debug_assert!(previous_value.is_none()); // double check creation race
+        txn.set(
+            &KeyType::DirEntryKey((self.get_ino(), child_dir_name.to_owned())),
+            &ValueType::DirEntry(new_etnry),
+        );
 
         let child_node = Self::new(
             self.get_ino(),
             child_dir_name,
             child_attr,
-            S3NodeData::Directory(BTreeMap::new()),
+            S3NodeData::Directory,
             Arc::clone(&self.s3_backend),
             &self.kv_engine,
             &self.k8s_node_id,
@@ -724,7 +619,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
     }
 
     /// Create file in a directory
-    async fn create_child_file(
+    async fn create_child_file<T: MetaTxn + ?Sized>(
         &mut self,
         inum: INum,
         child_file_name: &str,
@@ -733,17 +628,12 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
         user_id: u32,
         group_id: u32,
         global_cache: Arc<GlobalCache>,
+        txn: &mut T,
     ) -> DatenLordResult<Self> {
-        let dir_data = self.get_dir_data();
-        debug_assert!(
-            !dir_data.contains_key(child_file_name),
-            "open_child_file_helper() cannot create duplicated file name={child_file_name:?}"
-        );
         debug_assert!(oflags.contains(OFlag::O_CREAT));
         if let Err(e) = self.s3_backend.put_data(inum, b"", 0, 0).await {
             panic!("failed to put data of file {inum} to s3 backend, error is {e:?}");
         }
-
         // get new file attribute
         let child_attr = Arc::new(RwLock::new(FileAttr {
             ino: inum,
@@ -758,13 +648,12 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
         }));
         debug_assert_eq!(SFlag::S_IFREG, child_attr.read().kind);
 
-        let entry = DirEntry::new(child_file_name.to_owned(), Arc::clone(&child_attr));
+        let new_etnry = DirEntryV2::new(inum, child_file_name.to_owned(), FileType::File);
 
-        let dir_data_mut = self.get_dir_data_mut();
-        // insert new entry to parent directory
-        // TODO: support thread-safe
-        let previous_value = dir_data_mut.insert(child_file_name.to_owned(), entry);
-        debug_assert!(previous_value.is_none()); // double check creation race
+        txn.set(
+            &KeyType::DirEntryKey((self.get_ino(), child_file_name.to_owned())),
+            &ValueType::DirEntry(new_etnry),
+        );
 
         self.update_mtime_ctime_to_now();
         Ok(Self::new(
@@ -783,7 +672,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
     /// The `offset` and `len` is used for regular file
     async fn load_data(&self, offset: usize, len: usize) -> DatenLordResult<usize> {
         match self.data {
-            S3NodeData::Directory(..) => Ok(0),
+            S3NodeData::Directory => Ok(0),
             S3NodeData::RegFile(ref global_cache) => {
                 let aligned_offset = global_cache.round_down(offset);
                 let new_len_tmp =
@@ -864,57 +753,21 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
         }
     }
 
-    /// Insert directory entry for rename()
-    fn insert_entry_for_rename(&mut self, child_entry: DirEntry) -> Option<DirEntry> {
-        let dir_data = self.get_dir_data_mut();
-        let previous_entry = dir_data.insert(child_entry.entry_name().into(), child_entry);
-
-        self.update_mtime_ctime_to_now();
-        debug!(
-            "insert_entry_for_rename() successfully inserted new entry \
-                and replaced previous entry={:?}",
-            previous_entry,
-        );
-
-        previous_entry
-    }
-
-    /// Remove directory entry from cache only for rename()
-    fn remove_entry_for_rename(&mut self, child_name: &str) -> Option<DirEntry> {
-        let dir_data = self.get_dir_data_mut();
-        let remove_res = dir_data.remove(child_name);
-        if remove_res.is_some() {
-            self.update_mtime_ctime_to_now();
-        }
-        remove_res
-    }
-
     /// Unlink directory entry from both cache and disk
-    async fn unlink_entry(&mut self, child_name: &str) -> DatenLordResult<DirEntry> {
-        let dir_data = self.get_dir_data_mut();
-        let Some(removed_entry) = dir_data.remove(child_name) else {
-            return build_error_result_from_errno(
-                Errno::ENOENT,
-                format!("{child_name} is not found under its parent."),
-            );
-        };
-
-        let entry_type = removed_entry.entry_type();
-        super::check_type_supported(&entry_type)?;
+    async fn unlink_entry(&mut self, removed_entry: &DirEntryV2) -> DatenLordResult<()> {
+        // delete from disk and close the handler
+        let ino = removed_entry.ino();
+        if let Err(e) = self.s3_backend.delete_data(ino).await {
+            panic!("failed to delete data of {ino} from s3 backend, error is {e:?}");
+        }
         self.update_mtime_ctime_to_now();
-        Ok(removed_entry)
-    }
-
-    /// Read directory
-    fn read_dir(&self, func: &mut dyn FnMut(&BTreeMap<String, DirEntry>) -> usize) -> usize {
-        let dir_data = self.get_dir_data();
-        func(dir_data)
+        Ok(())
     }
 
     /// Get symlink target path
     fn get_symlink_target(&self) -> &Path {
         match self.data {
-            S3NodeData::Directory(..) | S3NodeData::RegFile(..) => {
+            S3NodeData::Directory | S3NodeData::RegFile(..) => {
                 panic!("forbidden to read target path from non-symlink node")
             }
             S3NodeData::SymLink(ref target_path) => target_path,
@@ -939,7 +792,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
     /// Get file data
     async fn get_file_data(&self, offset: usize, len: usize) -> Vec<IoMemBlock> {
         match self.data {
-            S3NodeData::Directory(..) | S3NodeData::SymLink(..) => {
+            S3NodeData::Directory | S3NodeData::SymLink(..) => {
                 panic!("forbidden to load FileData from non-file node")
             }
             S3NodeData::RegFile(ref cache) => cache.get_file_cache(self.get_ino(), offset, len),
@@ -972,7 +825,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
         }
 
         let cache = match self.data {
-            S3NodeData::Directory(..) | S3NodeData::SymLink(..) => {
+            S3NodeData::Directory | S3NodeData::SymLink(..) => {
                 panic!("forbidden to load FileData from non-file node")
             }
             S3NodeData::RegFile(ref file_data) => file_data,
@@ -1015,19 +868,21 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
     }
 
     /// Create child node
-    async fn create_child_node(
+    /// TODO: refactor the create_child_xxx() functions
+    /// to reduce the duplicated code
+    async fn create_child_node<T: MetaTxn + ?Sized>(
         &mut self,
         param: &CreateParam,
         new_inum: INum,
         global_cache: Arc<GlobalCache>,
+        txn: &mut T,
     ) -> DatenLordResult<Self> {
-        self.check_name_availability(param.name.as_str())?;
         let child_name = param.name.as_str();
         let m_flags = fs_util::parse_mode(param.mode);
         match param.node_type {
             SFlag::S_IFDIR => {
                 let child_node = self
-                    .create_child_dir(new_inum, child_name, m_flags, param.uid, param.gid)
+                    .create_child_dir(new_inum, child_name, m_flags, param.uid, param.gid, txn)
                     .await?;
                 Ok(child_node)
             }
@@ -1042,6 +897,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
                         param.uid,
                         param.gid,
                         global_cache,
+                        txn,
                     )
                     .await?;
                 Ok(child_node)
@@ -1052,7 +908,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
                     None => panic!("create_child_node() found link is None"),
                 };
                 let child_node = self
-                    .create_child_symlink(new_inum, child_name, target_path)
+                    .create_child_symlink(new_inum, child_name, target_path, txn)
                     .await?;
                 Ok(child_node)
             }
