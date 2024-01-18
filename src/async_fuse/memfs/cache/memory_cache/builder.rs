@@ -8,7 +8,8 @@ use datenlord::config::SoftLimit;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
-use super::{write_back_task, MemoryCache};
+use super::write_back_task::WriteBackTask;
+use super::MemoryCache;
 use crate::async_fuse::memfs::cache::policy::EvictPolicy;
 use crate::async_fuse::memfs::cache::{BlockCoordinate, Storage};
 
@@ -117,14 +118,10 @@ where
         ));
 
         let weak = Arc::downgrade(&cache);
-        let handle = tokio::spawn(write_back_task::run_write_back_task(
-            limit,
-            interval,
-            weak,
-            receiver,
-            command_queue_limit,
-        ));
 
+        let write_back_task =
+            WriteBackTask::new(weak, receiver, limit, interval, command_queue_limit);
+        let handle = tokio::spawn(write_back_task.run());
         (cache, handle)
     }
 }
