@@ -40,19 +40,60 @@ pub struct Config {
 #[derive(Debug, Parser)]
 /// Storage config
 pub struct StorageConfig {
-    #[clap(long = "storage-type", value_name = "VALUE", default_value = "none")]
-    /// Storage type: S3,None
+    #[clap(long = "storage-type", value_name = "VALUE", default_value = "fs")]
+    /// Storage type: s3, fs
     pub storage_type: String,
+    /// The size of blocks, default is 512 KiB.
     #[clap(
-        long = "storage-cache-capacity",
+        long = "storage-block-size",
         value_name = "VALUE",
-        default_value_t = 1073741824
+        default_value_t = 0x8_0000
     )]
-    /// Set memory cache capacity, default is 1GB
-    pub cache_capacity: usize,
+    pub block_size: usize,
+    #[clap(flatten)]
+    /// The memory cache config
+    pub memory_cache_config: MemoryCacheConfig,
     #[clap(flatten)]
     /// S3 storage config
     pub s3_storage_config: S3StorageConfig,
+    #[clap(
+        long = "storage-fs-root",
+        value_name = "VALUE",
+        default_value = "/tmp/datenlord_backend"
+    )]
+    /// The root of FS backend
+    pub fs_storage_root: String,
+}
+
+/// Memory cache config
+#[derive(Debug, Parser)]
+pub struct MemoryCacheConfig {
+    /// The capacity of memory cache in bytes, default is 8 GiB.
+    #[clap(
+        long = "storage-mem-cache-capacity",
+        value_name = "VALUE",
+        default_value_t = 0x2_0000_0000
+    )]
+    pub capacity: usize,
+    /// The limitation of the message queue of the write back task, default is
+    /// 1000
+    #[clap(
+        long = "storage-mem-cache-command-limit",
+        value_name = "VALUE",
+        default_value_t = 1000
+    )]
+    pub command_queue_limit: usize,
+    /// A flag whether the cache runs in write-back policy, default is false
+    #[clap(long = "storage-mem-cache-write-back")]
+    pub write_back: bool,
+    /// A soft limit of evict policy for write back task.
+    ///
+    /// It's a fraction with the form of `a,b`, which means that
+    /// the soft limit is `a/b` of the capacity.
+    ///
+    /// **Note**: `b` cannot be set to 0.
+    #[clap(long = "storage-mem-cache-soft-limit", default_value = "3,5")]
+    pub soft_limit: String,
 }
 
 /// S3 storage config
@@ -102,10 +143,12 @@ pub struct CSIConfig {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use std::net::IpAddr;
+    use std::num::NonZeroUsize;
     use std::str::FromStr;
 
     use super::*;
     use crate::config::inner::{InnerConfig, Role, StorageParams as InnerStorageParams};
+    use crate::config::SoftLimit;
 
     #[test]
     #[allow(clippy::indexing_slicing)]
@@ -127,16 +170,10 @@ mod tests {
             "unix:///tmp/node.sock ",
             "--csi-driver-name",
             "io.datenlord.csi.plugin",
-            "--storage-s3-endpoint-url",
-            "http://127.0.0.1:9000",
-            "--storage-s3-access-key-id",
-            "test_access_key",
-            "--storage-s3-secret-access-key",
-            "test_secret_key",
-            "--storage-s3-bucket",
-            "test_bucket",
             "--csi-worker-port",
             "9001",
+            "--storage-fs-root",
+            "/tmp/datenlord_backend",
         ];
         let config = Config::parse_from(args);
         assert_eq!(config.role, "node");
@@ -151,10 +188,7 @@ mod tests {
         assert_eq!(config.server_port, 8800);
 
         // Following are the default values
-        assert_eq!(config.storage.storage_type, "none");
-
-        // Cache capacity
-        assert_eq!(config.storage.cache_capacity, 0x4000_0000);
+        assert_eq!(config.storage.storage_type, "fs");
 
         // Cast to InnerConfig
         let inner_config: InnerConfig = config.try_into().unwrap();
@@ -170,11 +204,20 @@ mod tests {
         assert_eq!(kv_addrs[1], "127.0.0.1:7891");
 
         let storage_config = inner_config.storage;
-        assert_eq!(storage_config.cache_capacity, 0x4000_0000);
         match storage_config.params {
-            InnerStorageParams::None(_) => {}
-            InnerStorageParams::S3(_) => panic!("storage params should be None"),
+            InnerStorageParams::Fs(root) => assert_eq!(root, "/tmp/datenlord_backend"),
+            InnerStorageParams::S3(_) => panic!("storage params should be Fs"),
         }
+        assert_eq!(storage_config.block_size, 0x8_0000);
+
+        let memory_cache_config = storage_config.memory_cache_config;
+        assert_eq!(memory_cache_config.capacity, 0x2_0000_0000);
+        assert_eq!(memory_cache_config.command_queue_limit, 1000);
+        assert!(!memory_cache_config.write_back);
+        assert_eq!(
+            memory_cache_config.soft_limit,
+            SoftLimit(3, NonZeroUsize::new(5).unwrap())
+        );
 
         let csi_config = inner_config.csi_config;
         assert_eq!(csi_config.endpoint, "unix:///tmp/node.sock ");
@@ -201,8 +244,6 @@ mod tests {
             "http://127.0.0.1:9000",
             "--storage-type",
             "S3",
-            "--storage-cache-capacity",
-            "1024",
             "--storage-s3-endpoint-url",
             "http://127.0.0.1:9000",
             "--storage-s3-access-key-id",
@@ -216,7 +257,6 @@ mod tests {
         ];
         let config: InnerConfig = Config::parse_from(args).try_into().unwrap();
         let storage_config = config.storage;
-        assert_eq!(storage_config.cache_capacity, 1024);
         match storage_config.params {
             InnerStorageParams::S3(s3_config) => {
                 assert_eq!(s3_config.endpoint_url, "http://127.0.0.1:9000");
@@ -224,8 +264,93 @@ mod tests {
                 assert_eq!(s3_config.secret_access_key, "test_secret_key");
                 assert_eq!(s3_config.bucket_name, "test_bucket");
             }
-            InnerStorageParams::None(_) => panic!("storage params should be S3"),
+            InnerStorageParams::Fs(_) => panic!("storage params should be S3"),
         }
+    }
+
+    #[test]
+    fn test_memory_cache_config() {
+        let args = vec![
+            "datenlord",
+            "--role",
+            "node",
+            "--node-name",
+            "node1",
+            "--node-ip",
+            "127.0.0.1",
+            "--mount-path",
+            "/tmp/datenlord_data_dir",
+            "--kv-server-list",
+            "127.0.0.1:7890,127.0.0.1:7891",
+            "--csi-endpoint",
+            "unix:///tmp/node.sock ",
+            "--csi-driver-name",
+            "io.datenlord.csi.plugin",
+            "--csi-worker-port",
+            "9001",
+            "--storage-mem-cache-capacity",
+            "10240",
+            "--storage-mem-cache-command-limit",
+            "2000",
+            "--storage-mem-cache-write-back",
+            "--storage-mem-cache-soft-limit",
+            "1,2",
+        ];
+
+        let config = Config::parse_from(args);
+
+        let memory_cache_config = &config.storage.memory_cache_config;
+
+        assert_eq!(memory_cache_config.capacity, 10240);
+        assert_eq!(memory_cache_config.command_queue_limit, 2000);
+        assert!(memory_cache_config.write_back);
+        assert_eq!(memory_cache_config.soft_limit, "1,2");
+
+        let config: InnerConfig = config.try_into().unwrap();
+        let memory_cache_config = &config.storage.memory_cache_config;
+
+        let soft_limit = SoftLimit(1, NonZeroUsize::new(2).unwrap());
+        assert_eq!(memory_cache_config.capacity, 10240);
+        assert_eq!(memory_cache_config.command_queue_limit, 2000);
+        assert!(memory_cache_config.write_back);
+        assert_eq!(memory_cache_config.soft_limit, soft_limit);
+    }
+
+    #[test]
+    #[allow(clippy::assertions_on_result_states)]
+    fn test_invalid_soft_limit() {
+        let build_args = |soft_limit: &'static str| {
+            vec![
+                "datenlord",
+                "--role",
+                "node",
+                "--node-name",
+                "node1",
+                "--node-ip",
+                "127.0.0.1",
+                "--mount-path",
+                "/tmp/datenlord_data_dir",
+                "--kv-server-list",
+                "127.0.0.1:7890,127.0.0.1:7891",
+                "--csi-endpoint",
+                "unix:///tmp/node.sock ",
+                "--csi-driver-name",
+                "io.datenlord.csi.plugin",
+                "--storage-mem-cache-soft-limit",
+                soft_limit,
+                "--csi-worker-port",
+                "9001",
+            ]
+        };
+
+        let config: Result<InnerConfig, _> = Config::parse_from(build_args("a,1")).try_into();
+        assert!(config.is_err());
+
+        let config: Result<InnerConfig, _> = Config::parse_from(build_args("1,a")).try_into();
+        assert!(config.is_err());
+
+        let config: Result<InnerConfig, _> = Config::parse_from(build_args("1,0")).try_into();
+        assert!(config.is_err());
     }
 
     #[test]

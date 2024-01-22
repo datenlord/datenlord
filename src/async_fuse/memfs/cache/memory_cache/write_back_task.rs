@@ -2,11 +2,11 @@
 
 use std::collections::HashMap;
 use std::mem;
-use std::num::NonZeroUsize;
 use std::sync::{Arc, Weak};
 use std::time::Duration;
 
 use clippy_utilities::OverflowArithmetic;
+use datenlord::config::SoftLimit;
 use hashlink::LinkedHashSet;
 use tokio::select;
 use tokio::sync::{mpsc, oneshot};
@@ -234,14 +234,3 @@ pub(super) async fn run_write_back_task<P, S>(
         }
     }
 }
-
-/// A type to represent the soft limit of cache.
-///
-/// It's represented as a fraction, for example,
-/// a soft limit of `SoftLimit(3, 5)` means the soft limit is
-/// `3/5` if the policy's capacity.
-///
-/// Because the second component of this struct is used as a denominator,
-/// it cannot be zero, therefore, we use `NonZeroUsize` here.
-#[derive(Debug, Clone, Copy)]
-pub struct SoftLimit(pub usize, pub NonZeroUsize);

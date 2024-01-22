@@ -1,13 +1,17 @@
 use std::fs;
+use std::num::NonZeroUsize;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use datenlord::config::{StorageConfig, StorageParams, StorageS3Config};
+use datenlord::config::{
+    MemoryCacheConfig, SoftLimit, StorageConfig, StorageParams, StorageS3Config,
+};
 use tracing::{debug, info}; // warn, error
 
 use crate::async_fuse::fuse::{mount, session};
 use crate::async_fuse::memfs;
+use crate::async_fuse::memfs::cache::BLOCK_SIZE_IN_BYTES;
 use crate::async_fuse::memfs::kv_engine::{KVEngine, KVEngineType};
 use crate::async_fuse::memfs::s3_wrapper::DoNothingImpl;
 use crate::common::logger::{init_logger, LogRole};
@@ -27,8 +31,19 @@ fn test_storage_config() -> StorageConfig {
         secret_access_key: "test1234".to_owned(),
         bucket_name: "fuse-test-bucket".to_owned(),
     };
+
+    let soft_limit = SoftLimit(
+        3,
+        NonZeroUsize::new(5).unwrap_or_else(|| unreachable!("5 is not 0.")),
+    );
     StorageConfig {
-        cache_capacity: CACHE_DEFAULT_CAPACITY,
+        block_size: BLOCK_SIZE_IN_BYTES,
+        memory_cache_config: MemoryCacheConfig {
+            capacity: CACHE_DEFAULT_CAPACITY,
+            command_queue_limit: 1000,
+            write_back: false,
+            soft_limit,
+        },
         params: StorageParams::S3(s3_config),
     }
 }
@@ -64,7 +79,8 @@ pub async fn setup(mount_dir: &Path, is_s3: bool) -> anyhow::Result<tokio::task:
     let fs_task = tokio::task::spawn(async move {
         async fn run_fs(mount_point: &Path, is_s3: bool) -> anyhow::Result<()> {
             let storage_config = test_storage_config();
-            let kv_engine = Arc::new(KVEngineType::new(vec![TEST_ETCD_ENDPOINT.to_owned()]).await?);
+            let kv_engine: Arc<memfs::kv_engine::etcd_impl::EtcdKVEngine> =
+                Arc::new(KVEngineType::new(vec![TEST_ETCD_ENDPOINT.to_owned()]).await?);
             if is_s3 {
                 let fs: memfs::MemFs<memfs::S3MetaData<DoNothingImpl>> = memfs::MemFs::new(
                     mount_point

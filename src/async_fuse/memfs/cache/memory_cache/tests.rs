@@ -4,7 +4,8 @@ use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::Duration;
 
-use super::write_back_task::SoftLimit;
+use datenlord::config::SoftLimit;
+
 use super::{MemoryCache, MemoryCacheBuilder};
 use crate::async_fuse::memfs::cache::mock::MemoryStorage;
 use crate::async_fuse::memfs::cache::policy::LruPolicy;

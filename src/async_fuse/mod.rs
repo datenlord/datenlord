@@ -37,12 +37,12 @@ pub async fn start_async_fuse(
     memfs::kv_engine::kv_utils::register_volume(&kv_engine, &args.node_id, &volume_info).await?;
 
     let mount_point = std::path::Path::new(&args.mount_dir);
-
+    let global_cache_capacity = args.storage_config.memory_cache_config.capacity;
     match args.storage_config.params {
         StorageParams::S3(_) => {
             let fs: memfs::MemFs<memfs::S3MetaData<S3BackEndImpl>> = memfs::MemFs::new(
                 &args.mount_dir,
-                args.storage_config.cache_capacity,
+                global_cache_capacity,
                 &args.ip_address.to_string(),
                 args.server_port,
                 kv_engine,
@@ -54,10 +54,10 @@ pub async fn start_async_fuse(
             let ss = session::new_session_of_memfs(mount_point, fs).await?;
             ss.run().await?;
         }
-        StorageParams::None(_) => {
+        StorageParams::Fs(_) => {
             let fs: memfs::MemFs<memfs::S3MetaData<DoNothingImpl>> = memfs::MemFs::new(
                 &args.mount_dir,
-                args.storage_config.cache_capacity,
+                global_cache_capacity,
                 &args.ip_address.to_string(),
                 args.server_port,
                 kv_engine,

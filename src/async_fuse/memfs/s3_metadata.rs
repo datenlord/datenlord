@@ -9,7 +9,7 @@ use std::time::Duration;
 use anyhow::Context;
 use async_trait::async_trait;
 use clippy_utilities::{Cast, OverflowArithmetic};
-use datenlord::config::{StorageConfig, StorageParams};
+use datenlord::config::{StorageConfig, StorageS3Config};
 use libc::{RENAME_EXCHANGE, RENAME_NOREPLACE};
 use nix::errno::Errno;
 use nix::sys::stat::SFlag;
@@ -22,7 +22,7 @@ use super::dist::client as dist_client;
 use super::dist::server::CacheServer;
 use super::fs_util::{self, NEED_CHECK_PERM};
 use super::id_alloc_used::INumAllocator;
-use super::kv_engine::{KVEngine, KVEngineType, KeyType, MetaTxn, ValueType};
+use super::kv_engine::{KVEngine, KVEngineType, MetaTxn, ValueType};
 use super::metadata::{error, MetaData, ReqContext};
 use super::node::Node;
 use super::s3_node::S3Node;
@@ -31,6 +31,7 @@ use super::{check_type_supported, CreateParam, RenameParam, SetAttrParam};
 use crate::async_fuse::fuse::fuse_reply::{ReplyDirectory, StatFsParam};
 use crate::async_fuse::fuse::protocol::{FuseAttr, INum, FUSE_ROOT_ID};
 use crate::async_fuse::memfs::check_name_length;
+use crate::async_fuse::memfs::kv_engine::KeyType;
 use crate::async_fuse::util::build_error_result_from_errno;
 use crate::common::error::DatenLordResult;
 use crate::common::error::{Context as DatenLordContext, DatenLordError}; /* conflict with anyhow::Context */
@@ -50,7 +51,7 @@ const MY_TTL_SEC: u64 = 3600; // TODO: should be a long value, say 1 hour
 const MY_GENERATION: u64 = 1; // TODO: find a proper way to set generation
 #[allow(dead_code)]
 /// The limit of transaction commit retrying times.
-const TXN_RETRY_LIMIT: u32 = 5;
+const TXN_RETRY_LIMIT: u32 = 10;
 
 /// File system in-memory meta-data
 #[derive(Debug)]
@@ -121,15 +122,6 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
                     child_name,
                 );
                 num_child_entries = num_child_entries.overflow_add(1);
-                debug!(
-                    "readdir() found one child of ino={}, name={:?}, offset={}, and entry={:?} \
-                        under the directory of ino={}",
-                    child_ino,
-                    child_name,
-                    offset.overflow_add(i.cast()).overflow_add(1),
-                    child_entry,
-                    ino,
-                );
             }
             num_child_entries
         };
@@ -419,10 +411,17 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         node_id: &str,
         storage_config: &StorageConfig,
     ) -> DatenLordResult<(Arc<Self>, Option<CacheServer>)> {
+        // TODO: Remove this when the `S3Backend` is removed.
         let s3_config = match storage_config.params {
-            StorageParams::S3(ref config) => config,
-            StorageParams::None(ref fake_s3_config) => fake_s3_config,
+            datenlord::config::StorageParams::S3(ref s3_config) => s3_config.clone(),
+            datenlord::config::StorageParams::Fs(_) => StorageS3Config {
+                endpoint_url: "http://127.0.0.1:9000".to_owned(),
+                access_key_id: "test".to_owned(),
+                secret_access_key: "test1234".to_owned(),
+                bucket_name: "fuse-test-bucket".to_owned(),
+            },
         };
+
         let bucket_name = &s3_config.bucket_name;
         let endpoint = &s3_config.endpoint_url;
         let access_key = &s3_config.access_key_id;

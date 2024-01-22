@@ -4,11 +4,12 @@ use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::Duration;
 
+use datenlord::config::SoftLimit;
 use tokio::sync::mpsc;
 
 use super::{write_back_task, MemoryCache};
 use crate::async_fuse::memfs::cache::policy::EvictPolicy;
-use crate::async_fuse::memfs::cache::{BlockCoordinate, SoftLimit, Storage};
+use crate::async_fuse::memfs::cache::{BlockCoordinate, Storage};
 
 /// The default limitation of the command queue of write back task.
 const DEFAULT_COMMAND_QUEUE_LIMIT: usize = 1000;
@@ -16,6 +17,7 @@ const DEFAULT_COMMAND_QUEUE_LIMIT: usize = 1000;
 const DEFAULT_INTERVAL_IN_MILLISEC: u64 = 100;
 
 /// A builder to configure and build a `MemoryCache`.
+#[derive(Debug)]
 pub struct MemoryCacheBuilder<P, S> {
     /// The `policy` used by the built `MemoryCache`
     policy: P,
@@ -57,6 +59,7 @@ where
     }
 
     /// Set write policy. Write through is enabled by default.
+    #[must_use]
     pub fn write_through(mut self, write_through: bool) -> Self {
         self.write_through = write_through;
         self
@@ -65,18 +68,21 @@ where
     /// Set the soft limit for the write back task.
     ///
     /// See [`SoftLimit`] for details.
+    #[must_use]
     pub fn limit(mut self, limit: SoftLimit) -> Self {
         self.limit = limit;
         self
     }
 
     /// Set the interval for the write back task
+    #[must_use]
     pub fn interval(mut self, interval: Duration) -> Self {
         self.interval = interval;
         self
     }
 
     /// Set the limitation of the message queue of the write back task.
+    #[must_use]
     pub fn command_queue_limit(mut self, limit: usize) -> Self {
         self.command_queue_limit = limit;
         self

@@ -1,239 +1,28 @@
 use core::fmt::Debug;
 use std::fmt;
-use std::fmt::Display;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
 
-use super::s3_node::S3Node;
-use super::s3_wrapper::S3BackEnd;
-use super::{INum, S3MetaData};
-use crate::async_fuse::memfs::dist::id_alloc::IdType;
 use crate::common::async_fuse_error::KVEngineError;
 use crate::common::error::{DatenLordError, DatenLordResult};
 
 /// The `KVEngineType` is used to provide support for metadata.
-/// We use this alias to avoid tem
+/// We use this alias to avoid generic type.
 pub type KVEngineType = etcd_impl::EtcdKVEngine;
-
-use super::serial::{SerialDirEntry, SerialFileAttr, SerialNode};
 
 /// The etcd implementation of `KVEngine` and `MetaTxn`
 pub mod etcd_impl;
 /// The `kv_utils` is used to provide some common functions for `KVEngine`
 pub mod kv_utils;
 
-/// The `ValueType` is used to provide support for metadata.
-///
-/// The variants `DirEntry`, `INum` and `Attr` are not used currently,
-/// but preserved for the future.
-#[derive(Serialize, Deserialize, Debug, Eq, PartialEq)]
-pub enum ValueType {
-    /// SerialNode
-    Node(SerialNode),
-    /// SerialDirEntry
-    DirEntry(SerialDirEntry),
-    /// INum
-    INum(INum),
-    /// FileAttr
-    Attr(SerialFileAttr),
-    /// Next id allocate range begin
-    NextIdAllocateRangeBegin(u64),
-    /// Raw value
-    Raw(Vec<u8>),
-    /// String value
-    String(String),
-}
+/// The key type api
+pub mod key_type;
+/// The value type api
+pub mod value_type;
 
-impl ValueType {
-    #[allow(dead_code, clippy::wildcard_enum_match_arm)] // Allow wildcard because there should be only one enum branch matches one specific type.
-    /// Turn the `ValueType` into `SerialNode` then into `S3Node`.
-    /// # Panics
-    /// Panics if `ValueType` is not `ValueType::Node`.
-    pub async fn into_s3_node<S: S3BackEnd + Send + Sync + 'static>(
-        self,
-        meta: &S3MetaData<S>,
-    ) -> DatenLordResult<S3Node<S>> {
-        match self {
-            ValueType::Node(node) => S3Node::from_serial_node(node, meta).await,
-            _ => {
-                panic!("expect ValueType::Node but get {self:?}");
-            }
-        }
-    }
-
-    /// Turn the `ValueType` into `NextIdAllocateRangeBegin`.
-    /// # Panics
-    /// Panics if `ValueType` is not `ValueType::NextIdAllocateRangeBegin`.
-    #[allow(clippy::wildcard_enum_match_arm)] // Allow wildcard because there should be only one enum branch matches one specific type.
-    #[must_use]
-    pub fn into_next_id_allocate_range_begin(self) -> u64 {
-        match self {
-            ValueType::NextIdAllocateRangeBegin(begin) => begin,
-            _ => panic!("expect ValueType::NextIdAllocateRangeBegin but get {self:?}"),
-        }
-    }
-
-    /// Turn the `ValueType` into `INum`.
-    /// # Panics
-    /// Panics if `ValueType` is not `ValueType::INum`.
-    #[allow(clippy::wildcard_enum_match_arm)] // Allow wildcard because there should be only one enum branch matches one specific type.
-    #[must_use]
-    pub fn into_inum(self) -> INum {
-        match self {
-            ValueType::INum(inum) => inum,
-            _ => panic!("expect ValueType::INum but get {self:?}"),
-        }
-    }
-
-    /// Turn the `ValueType` into `String`
-    /// # Panics
-    /// Panics if `ValueType` is not `ValueType::String`.
-    #[allow(clippy::wildcard_enum_match_arm)] // Allow wildcard because there should be only one enum branch matches one specific type.
-    #[must_use]
-    pub fn into_string(self) -> String {
-        match self {
-            ValueType::String(string) => string,
-            _ => panic!("expect ValueType::String but get {self:?}"),
-        }
-    }
-
-    /// Turn the `ValueType` into `Raw`
-    /// # Panics
-    /// Panics if `ValueType` is not `ValueType::Raw`.
-    #[allow(clippy::wildcard_enum_match_arm)] // Allow wildcard because there should be only one enum branch matches one specific type.
-    #[must_use]
-    pub fn into_raw(self) -> Vec<u8> {
-        match self {
-            ValueType::Raw(raw) => raw,
-            _ => panic!("expect ValueType::Raw but get {self:?}"),
-        }
-    }
-}
-
-/// The `KeyType` is used to locate the value in the distributed K/V storage.
-/// Every key is prefixed with a string to indicate the type of the value.
-/// If you want to add a new type of value, you need to add a new variant to the
-/// enum. And you need to add a new match arm to the `get_key` function , make
-/// sure the key is unique.
-#[derive(Debug, Eq, PartialEq)]
-pub enum KeyType {
-    /// INum -> SerailNode
-    INum2Node(INum),
-    /// INum -> DirEntry
-    INum2DirEntry(INum),
-    /// INum -> SerialFileAttr
-    INum2Attr(INum),
-    /// IdAllocator value key
-    IdAllocatorValue(IdType),
-    /// Node ip and port info : node_id -> "{node_ipaddr}:{port}"
-    /// The corresponding value type is ValueType::String
-    NodeIpPort(String),
-    /// Volume information
-    /// The corresponding value type is ValueType::RawData
-    VolumeInfo(String),
-    /// Node list
-    /// The corresponding value type is ValueType::RawData
-    FileNodeList(INum),
-    /// Just a string key for testing the KVEngine.
-    #[cfg(test)]
-    String(String),
-}
-
-// ::<KeyType>::get() -> ValueType
-/// Lock key type the memfs used.
-#[derive(Debug, Eq, PartialEq)]
-#[allow(variant_size_differences)]
-pub enum LockKeyType {
-    /// IdAllocator lock key
-    IdAllocatorLock(IdType),
-    /// ETCD volume information lock
-    VolumeInfoLock,
-    /// ETCD file node list lock
-    FileNodeListLock(INum),
-}
-
-impl Display for KeyType {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match *self {
-            KeyType::INum2Node(ref i) => write!(f, "INum2Node{{i: {i}}}"),
-            KeyType::INum2DirEntry(ref i) => write!(f, "INum2DirEntry{{i: {i}}}"),
-            #[cfg(test)]
-            KeyType::String(ref s) => write!(f, "String{{s: {s}}}"),
-            KeyType::INum2Attr(ref i) => write!(f, "INum2Attr{{i: {i}}}"),
-            KeyType::IdAllocatorValue(ref id_type) => {
-                write!(f, "IdAllocatorValue{{unique_id: {id_type:?}}}")
-            }
-            KeyType::NodeIpPort(ref s) => write!(f, "NodeIpPort{{s: {s}}}"),
-            KeyType::VolumeInfo(ref s) => write!(f, "VolumeInfo{{s: {s}}}"),
-            KeyType::FileNodeList(ref s) => write!(f, "FileNodeList{{s: {s:?}}}"),
-        }
-    }
-}
-
-impl Display for LockKeyType {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match *self {
-            LockKeyType::IdAllocatorLock(ref id_type) => {
-                write!(f, "IdAllocatorLock{{unique_id: {id_type:?}}}")
-            }
-            LockKeyType::VolumeInfoLock => {
-                write!(f, "LockKeyType::VolumeInfoLock ")
-            }
-            LockKeyType::FileNodeListLock(ref file_name) => {
-                write!(f, "LockKeyType::FileNodeList {{file_name: {file_name:?}}}")
-            }
-        }
-    }
-}
-
-/// Get key serialized data with prefix and key.
-#[inline]
-fn serialize_key<K: ?Sized + Serialize>(key_prefix: u16, key: &K) -> Vec<u8> {
-    let mut v = vec![];
-    bincode::serialize_into(&mut v, &key_prefix).unwrap_or_else(|e| {
-        panic!("serialize key prefix failed, err:{e}");
-    });
-    assert_eq!(v.len(), 2);
-    bincode::serialize_into(&mut v, key).unwrap_or_else(|e| {
-        panic!("serialize key failed, err:{e}");
-    });
-
-    v
-}
-
-impl KeyType {
-    /// Get the key in bytes.
-    #[must_use]
-    pub fn get_key(&self) -> Vec<u8> {
-        match *self {
-            KeyType::INum2Node(ref i) => serialize_key(0, i),
-            KeyType::INum2DirEntry(ref i) => serialize_key(1, i),
-            #[cfg(test)]
-            KeyType::String(ref s) => serialize_key(2, s),
-            KeyType::INum2Attr(ref i) => serialize_key(3, i),
-            KeyType::IdAllocatorValue(ref id_type) => serialize_key(4, &id_type.to_unique_id()),
-            KeyType::NodeIpPort(ref s) => serialize_key(6, s),
-            KeyType::VolumeInfo(ref s) => serialize_key(8, s),
-            KeyType::FileNodeList(ref s) => serialize_key(10, s),
-        }
-    }
-}
-
-impl LockKeyType {
-    /// Get the key in vec bytes.
-    fn get_key(&self) -> Vec<u8> {
-        match *self {
-            LockKeyType::IdAllocatorLock(ref id_type) => {
-                serialize_key(100, &id_type.to_unique_id())
-            }
-            LockKeyType::VolumeInfoLock => serialize_key(101, &0_i32),
-            LockKeyType::FileNodeListLock(ref file_name) => serialize_key(102, file_name),
-        }
-    }
-}
-
+pub use key_type::{KeyType, LockKeyType};
+pub use value_type::ValueType;
 /// The Txn is used to provide support for metadata.
 #[async_trait]
 pub trait MetaTxn {
@@ -436,8 +225,8 @@ pub trait KVEngine: Send + Sync + Debug + Sized {
     /// Lease grant
     async fn lease_grant(&self, ttl: i64) -> DatenLordResult<i64>;
 
-    /// Range query
-    async fn range(&self, key_range: KeyRange) -> DatenLordResult<Vec<(Vec<u8>, Vec<u8>)>>;
+    /// Range get, return all key-value pairs start with prefix
+    async fn range(&self, prefix: &KeyType) -> DatenLordResult<Vec<ValueType>>;
 }
 
 /// The version of the key.

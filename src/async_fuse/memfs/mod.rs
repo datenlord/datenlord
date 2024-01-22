@@ -1,5 +1,5 @@
 //! The implementation of user space file system
-mod cache;
+pub mod cache;
 mod dir;
 /// distributed communication module
 pub mod dist;
@@ -8,6 +8,9 @@ mod id_alloc_used;
 /// The KV engine module
 #[macro_use]
 pub mod kv_engine;
+/// Dir entry module
+#[allow(dead_code)]
+pub mod direntry;
 /// fs metadata module
 mod metadata;
 mod node;
@@ -143,7 +146,6 @@ const MAX_NAME_LEN: usize = 255;
 
 /// Check the name length is valid or not
 pub fn check_name_length(name: &str) -> DatenLordResult<()> {
-    debug!("check name length = {}", name.chars().count());
     if name.len() > MAX_NAME_LEN {
         error!("name = {} is too long ,size = {}", name, name.len());
         build_error_result_from_errno(Errno::ENAMETOOLONG, "name too long ".to_owned())
@@ -238,22 +240,8 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         };
         let lookup_res = self.metadata.lookup_helper(context, parent, name).await;
         match lookup_res {
-            Ok((ttl, fuse_attr, generation)) => {
-                debug!(
-                    "lookup() successfully found the node name={:?} \
-                        under parent ino={}, the attr={:?}",
-                    name, parent, &fuse_attr,
-                );
-                reply.entry(ttl, fuse_attr, generation).await
-            }
-            Err(e) => {
-                debug!(
-                    "lookup() failed to find the node name={:?} under parent ino={}, \
-                        the error is: {:?}",
-                    name, parent, e,
-                );
-                reply.error(e).await
-            }
+            Ok((ttl, fuse_attr, generation)) => reply.entry(ttl, fuse_attr, generation).await,
+            Err(e) => reply.error(e).await,
         }
     }
 

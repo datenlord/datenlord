@@ -3,7 +3,7 @@
 use std::fmt;
 
 use clippy_utilities::Cast;
-use tracing::warn;
+use tracing::debug;
 
 use super::context::ProtoVersion;
 use super::de::{DeserializeError, Deserializer};
@@ -703,8 +703,8 @@ impl fmt::Display for Request<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "FUSE({:3}) ino={:#018x} opcode={} operation={}",
-            self.header.unique, self.header.nodeid, self.header.opcode, self.operation,
+            "fuse={} ino={} operation={}",
+            self.header.unique, self.header.nodeid, self.operation,
         )
     }
 }
@@ -735,7 +735,7 @@ impl<'a> Request<'a> {
             }
         })?;
         if de.remaining_len() > 0 {
-            warn!(
+            debug!(
                 "request bytes is not completely consumed: \
                     bytes.len() = {}, header = {:?}, de.remaining_len() = {}, de = {:?}",
                 bytes.len(),

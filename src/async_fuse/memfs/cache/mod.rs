@@ -3,6 +3,7 @@
 // TODO: Remove this after the storage is ready for product env.
 #![allow(dead_code)]
 
+mod backend;
 mod block;
 mod global_cache;
 mod memory_cache;
@@ -11,9 +12,10 @@ mod storage_manager;
 
 pub mod policy;
 
+pub use backend::{Backend, BackendBuilder};
 pub use block::{Block, BlockCoordinate};
 pub use global_cache::*;
-pub use memory_cache::{MemoryCache, MemoryCacheBuilder, SoftLimit};
+pub use memory_cache::{MemoryCache, MemoryCacheBuilder};
 pub use storage::Storage;
 pub use storage_manager::StorageManager;
 

@@ -811,12 +811,12 @@ mod tests {
         use std::time::{Duration, SystemTime};
 
         use clippy_utilities::OverflowArithmetic;
+        use datenlord::config::SoftLimit;
 
         use super::{
             BlockCoordinate, LruPolicy, MemoryCacheBuilder, MemoryStorage, Storage, StorageManager,
             BLOCK_CONTENT, BLOCK_SIZE_IN_BYTES,
         };
-        use crate::async_fuse::memfs::cache::SoftLimit;
 
         macro_rules! elapsed {
             ($body:expr) => {{
