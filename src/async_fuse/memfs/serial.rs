@@ -3,31 +3,12 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use nix::sys::stat::SFlag;
-use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 
 use super::cache::GlobalCache;
-use super::dir::DirEntry;
 use super::fs_util::FileAttr;
 use super::s3_node::S3NodeData;
 use crate::async_fuse::fuse::protocol::INum;
-
-/// Serializable `DirEntry`
-#[derive(Serialize, Deserialize, Debug, Eq, PartialEq)]
-pub struct SerialDirEntry {
-    /// The entry name
-    name: String,
-    /// File attr
-    pub(crate) file_attr: SerialFileAttr,
-}
-
-impl SerialDirEntry {
-    #[must_use]
-    /// Get the child inode number
-    pub fn get_child_ino(&self) -> INum {
-        self.file_attr.get_ino()
-    }
-}
 
 /// Serializable `FileAttr`
 #[derive(Serialize, Deserialize, Debug, Clone, Eq, PartialEq)]
@@ -139,24 +120,6 @@ pub const fn serial_to_entry_type(entry_type: &SerialSFlag) -> SFlag {
         SerialSFlag::Reg => SFlag::S_IFREG,
         SerialSFlag::Lnk => SFlag::S_IFLNK,
     }
-}
-
-/// Convert `DirEntry` to `SerialDirEntry`
-#[must_use]
-pub fn dir_entry_to_serial(entry: &DirEntry) -> SerialDirEntry {
-    SerialDirEntry {
-        name: entry.entry_name().to_owned(),
-        file_attr: file_attr_to_serial(&entry.file_attr_arc_ref().read()),
-    }
-}
-
-/// Convert `SerialDirEntry` to `DirEntry`
-#[must_use]
-pub fn serial_to_dir_entry(entry: &SerialDirEntry) -> DirEntry {
-    DirEntry::new(
-        entry.name.clone(),
-        Arc::new(RwLock::new(serial_to_file_attr(&entry.file_attr))),
-    )
 }
 
 /// Convert `FileAttr` to `SerialFileAttr`
@@ -306,20 +269,5 @@ mod test {
         let serial_file_attr = file_attr_to_serial(&file_attr);
         let converted_file_attr = serial_to_file_attr(&serial_file_attr);
         assert!(fileattr_equal(&file_attr, &converted_file_attr));
-    }
-
-    #[test]
-    fn test_direntry_serialize() {
-        let test_name = String::from("test_a_really_long_name");
-        let test_file_attr = create_file_attr();
-        let direntry = DirEntry::new(test_name.clone(), Arc::new(RwLock::new(test_file_attr)));
-        let serial_direntry = dir_entry_to_serial(&direntry);
-        assert_eq!(test_name, serial_direntry.name);
-        let direntry_after = serial_to_dir_entry(&serial_direntry);
-        assert_eq!(test_name, direntry_after.entry_name());
-        assert!(fileattr_equal(
-            &test_file_attr,
-            &direntry_after.file_attr_arc_ref().read()
-        ));
     }
 }

@@ -1,12 +1,9 @@
 //! Response between caches
 
-use std::collections::BTreeMap;
-
 use serde::{Deserialize, Serialize};
 
-use super::super::dir::DirEntry;
 use super::super::fs_util::FileAttr;
-use super::super::serial::{self, SerialDirEntry, SerialFileAttr};
+use super::super::serial::{self, SerialFileAttr};
 use super::request::Index;
 
 /// Cache operation response
@@ -17,40 +14,6 @@ pub enum CacheResponse {
     TurnOff(bool),
     /// Invalidate cache response
     Invalidate(bool),
-}
-
-/// Serialize dir entry map
-fn serialize_direntry_map(map: &BTreeMap<String, DirEntry>) -> Vec<u8> {
-    let mut target: BTreeMap<String, SerialDirEntry> = BTreeMap::new();
-
-    // Checked before
-    for (name, entry) in map {
-        target.insert(name.clone(), serial::dir_entry_to_serial(entry));
-    }
-
-    let target = Some(target);
-
-    bincode::serialize(&target)
-        .unwrap_or_else(|e| panic!("fail to serialize `LoadDir` response, {e}"))
-}
-
-/// Deserialize dir entry map
-fn deserialize_direntry_map(bin: &[u8]) -> Option<BTreeMap<String, DirEntry>> {
-    let map_opt: Option<BTreeMap<String, SerialDirEntry>> = bincode::deserialize(bin)
-        .unwrap_or_else(|e| panic!("fail to deserialize DirEntry Map, {e}"));
-
-    if let Some(map) = map_opt {
-        let mut target: BTreeMap<String, DirEntry> = BTreeMap::new();
-
-        // Checked before
-        for (ref name, ref entry) in map {
-            target.insert(name.clone(), serial::serial_to_dir_entry(entry));
-        }
-
-        Some(target)
-    } else {
-        None
-    }
 }
 
 /// Serialize `TurnOff` response
@@ -79,26 +42,6 @@ pub fn check_available(index: &Option<Vec<Index>>) -> Vec<u8> {
 pub fn deserialize_check_available(bin: &[u8]) -> Option<Vec<Index>> {
     bincode::deserialize(bin)
         .unwrap_or_else(|e| panic!("fail to deserialize `CheckAvailable` response, {e}"))
-}
-
-/// Serialize `LoadDir` response for empty dir
-#[must_use]
-pub fn load_dir_none() -> Vec<u8> {
-    let target: Option<BTreeMap<String, SerialDirEntry>> = None;
-    bincode::serialize(&target)
-        .unwrap_or_else(|e| panic!("fail to serialize `LoadDir` response, {e}"))
-}
-
-/// Serialize `LoadDir` response
-#[must_use]
-pub fn load_dir(map: &BTreeMap<String, DirEntry>) -> Vec<u8> {
-    serialize_direntry_map(map)
-}
-
-/// Deserialize `LoadDir` response
-#[must_use]
-pub fn deserialize_load_dir(bin: &[u8]) -> Option<BTreeMap<String, DirEntry>> {
-    deserialize_direntry_map(bin)
 }
 
 /// Serialize `UpdateDir` response
