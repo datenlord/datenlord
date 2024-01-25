@@ -13,7 +13,7 @@ use super::cache::{GlobalCache, IoMemBlock};
 use super::direntry::DirEntry;
 use super::fs_util::FileAttr;
 use super::kv_engine::MetaTxn;
-use super::{CreateParam, SetAttrParam};
+use super::CreateParam;
 use crate::async_fuse::fuse::fuse_reply::StatFsParam;
 use crate::async_fuse::fuse::protocol::INum;
 use crate::common::error::DatenLordResult;

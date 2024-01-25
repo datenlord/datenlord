@@ -20,13 +20,13 @@ use tracing::{debug, info, warn};
 use super::cache::{GlobalCache, IoMemBlock};
 use super::direntry::{DirEntry, FileType};
 use super::dist::client as dist_client;
-use super::fs_util::{self, FileAttr, NEED_CHECK_PERM};
+use super::fs_util::{self, FileAttr};
 use super::kv_engine::{KVEngineType, KeyType, MetaTxn, ValueType};
 use super::node::Node;
 use super::s3_metadata::S3MetaData;
 use super::s3_wrapper::S3BackEnd;
 use super::serial::{file_attr_to_serial, serial_to_file_attr, SerialNode, SerialNodeData};
-use super::{CreateParam, SetAttrParam};
+use super::CreateParam;
 use crate::async_fuse::fuse::fuse_reply::{AsIoVec, StatFsParam};
 use crate::async_fuse::fuse::protocol::{INum, FUSE_ROOT_ID};
 use crate::async_fuse::metrics;
@@ -135,11 +135,9 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
         meta: &S3MetaData<S>,
     ) -> BoxFuture<'_, DatenLordResult<S3Node<S>>> {
         async move {
-            // Convert `SerialNodeData` to `S3NodeData`
             let dir_data = serial_node
                 .data
                 .into_s3_nodedata(Arc::clone(&meta.data_cache));
-
             info!(
                 "ino={}, open_count={}, lookup_count={},attr={:?}",
                 serial_node.attr.get_ino(),
@@ -383,7 +381,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
     fn set_attr(&mut self, new_attr: FileAttr) -> FileAttr {
         let old_attr = self.get_attr();
         match self.data {
-            S3NodeData::Directory(..) => debug_assert_eq!(new_attr.kind, SFlag::S_IFDIR),
+            S3NodeData::Directory => debug_assert_eq!(new_attr.kind, SFlag::S_IFDIR),
             S3NodeData::RegFile(..) => debug_assert_eq!(new_attr.kind, SFlag::S_IFREG),
             S3NodeData::SymLink(..) => debug_assert_eq!(new_attr.kind, SFlag::S_IFLNK),
         }

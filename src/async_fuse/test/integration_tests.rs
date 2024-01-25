@@ -47,7 +47,7 @@ fn test_create_file(mount_dir: &Path) -> anyhow::Result<()> {
 #[cfg(test)]
 fn test_name_too_long(mount_dir: &Path) -> anyhow::Result<()> {
     use nix::fcntl::open;
-    info!("test_name_too_long");
+    info!("test name_too_long");
 
     let file_name = "a".repeat(256);
     // try to create file, dir, symlink with name too long
@@ -84,7 +84,7 @@ fn test_name_too_long(mount_dir: &Path) -> anyhow::Result<()> {
 
 #[cfg(test)]
 fn test_file_manipulation_rust_way(mount_dir: &Path) -> anyhow::Result<()> {
-    info!("file manipulation Rust style");
+    info!("test file manipulation Rust style");
     let file_path = Path::new(mount_dir).join("tmp.txt");
     fs::write(&file_path, FILE_CONTENT)?;
     let bytes = fs::read(&file_path)?;
@@ -101,7 +101,7 @@ fn test_file_manipulation_rust_way(mount_dir: &Path) -> anyhow::Result<()> {
 
 #[cfg(test)]
 fn test_directory_manipulation_rust_way(mount_dir: &Path) -> anyhow::Result<()> {
-    info!("Directory manipulation Rust style");
+    info!("test Directory manipulation Rust style");
 
     // Fixed directory name
     let dir_name = "test_dir";
@@ -135,7 +135,7 @@ fn test_directory_manipulation_rust_way(mount_dir: &Path) -> anyhow::Result<()> 
 
 #[cfg(test)]
 fn test_deferred_deletion(mount_dir: &Path) -> anyhow::Result<()> {
-    info!("file deletion deferred");
+    info!("test file deletion deferred");
     let file_path = Path::new(mount_dir).join("test_file.txt");
     let oflags = OFlag::O_CREAT | OFlag::O_EXCL | OFlag::O_RDWR;
     let file_mode = Mode::from_bits_truncate(0o644);
@@ -225,7 +225,7 @@ fn test_rename_file(mount_dir: &Path) -> anyhow::Result<()> {
 
 #[cfg(test)]
 fn test_rename_file_replace(mount_dir: &Path) -> anyhow::Result<()> {
-    info!("rename file no replace");
+    info!("test rename file no replace");
     let oflags = OFlag::O_CREAT | OFlag::O_EXCL | OFlag::O_RDWR;
     let file_mode = Mode::from_bits_truncate(0o644);
 
@@ -300,6 +300,7 @@ fn test_rename_file_replace(mount_dir: &Path) -> anyhow::Result<()> {
 
 #[cfg(test)]
 fn test_rename_non_existent_source(mount_dir: &Path) -> anyhow::Result<()> {
+    info!("test rename non-existent source");
     let non_existent_file = mount_dir.join("non_existent_file.txt");
     let destination_file = mount_dir.join("destination_file.txt");
 
@@ -327,6 +328,7 @@ fn test_rename_non_existent_source(mount_dir: &Path) -> anyhow::Result<()> {
 fn test_rename_no_replace_flag(mount_dir: &Path) -> anyhow::Result<()> {
     use nix::fcntl::{renameat2, RenameFlags};
 
+    info!("test rename no replace flag");
     let source_file_str = "source_file_no_replace_flag.txt";
     let destination_file_str = "destination_file_no_replace_flag.txt";
 
@@ -369,6 +371,7 @@ fn test_rename_no_replace_flag(mount_dir: &Path) -> anyhow::Result<()> {
 
 #[cfg(test)]
 fn test_rename_to_non_existent_destination_directory(mount_dir: &Path) -> anyhow::Result<()> {
+    info!("test rename to non-existent destination directory");
     let source_file = mount_dir.join("source_file.txt");
     let non_existent_dir = mount_dir.join("non_existent_dir");
     let destination_file = non_existent_dir.join("destination_file.txt");
@@ -401,7 +404,7 @@ fn test_rename_exchange(mount_dir: &Path) -> anyhow::Result<()> {
     use nix::fcntl::RenameFlags;
     use nix::sys::stat;
 
-    info!("rename file exchange");
+    info!("test rename file exchange");
 
     let base_dir = Path::new(mount_dir).join("exchange");
     if base_dir.exists() {
@@ -527,7 +530,7 @@ fn test_rename_exchange(mount_dir: &Path) -> anyhow::Result<()> {
 }
 #[cfg(test)]
 fn test_rename_dir(mount_dir: &Path) -> anyhow::Result<()> {
-    info!("rename directory");
+    info!("test rename directory");
     let from_dir = Path::new(mount_dir).join("from_dir");
     if from_dir.exists() {
         fs::remove_dir_all(&from_dir)?;
@@ -562,7 +565,7 @@ fn test_rename_dir(mount_dir: &Path) -> anyhow::Result<()> {
 
 #[cfg(test)]
 fn test_symlink_dir(mount_dir: &Path) -> anyhow::Result<()> {
-    info!("create and read symlink to directory");
+    info!("test create and read symlink to directory");
 
     let current_dir = std::env::current_dir()?;
     std::env::set_current_dir(Path::new(mount_dir))?;
@@ -627,7 +630,7 @@ fn test_symlink_dir(mount_dir: &Path) -> anyhow::Result<()> {
 
 #[cfg(test)]
 fn test_symlink_file(mount_dir: &Path) -> anyhow::Result<()> {
-    info!("create and read symlink to file");
+    info!("test create and read symlink to file");
 
     let current_dir = std::env::current_dir()?;
     std::env::set_current_dir(Path::new(mount_dir))?;
