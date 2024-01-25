@@ -18,7 +18,6 @@ use tracing::{debug, info, instrument, warn};
 
 use super::cache::policy::LruPolicy;
 use super::cache::{Backend, Block, BlockCoordinate, GlobalCache, MemoryCache, StorageManager};
-use super::dist::client as dist_client;
 use super::dist::server::CacheServer;
 use super::fs_util::{self, FileAttr, NEED_CHECK_PERM};
 use super::id_alloc_used::INumAllocator;
@@ -36,7 +35,6 @@ use crate::async_fuse::memfs::kv_engine::KeyType;
 use crate::async_fuse::util::build_error_result_from_errno;
 use crate::common::error::{
     Context as DatenLordContext, // conflict with anyhow::Context
-    DatenLordError,
     DatenLordResult,
 };
 use crate::function_name;
@@ -113,7 +111,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         Ok(())
     }
 
-    #[instrument(skip(self, reply), err, ret)]
+    #[instrument(skip(self), err, ret)]
     async fn readdir(
         &self,
         context: ReqContext,
@@ -190,11 +188,45 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
     }
 
     #[instrument(skip(self))]
-    async fn flush(&self, ino: u64, fh: u64) -> DatenLordResult<()> {
+    async fn flush(&self, ino: u64, _fh: u64) -> DatenLordResult<()> {
+        let local_mtime_and_size = {
+            let guard = pin();
+
+            self.local_mtime_and_size
+                .remove_with_guard(&ino, &guard)
+                .copied()
+        };
+
         retry_txn!(TXN_RETRY_LIMIT, {
             let mut txn = self.kv_engine.new_meta_txn().await;
             let mut inode = self.get_inode_from_txn(txn.as_mut(), ino).await?;
-            inode.flush(ino, fh).await;
+
+            if inode.is_deferred_deletion() {
+                // If a file is marked as deferred delete, there is no need to flush it.
+                // But the local node may continue to access this file, which depends on
+                // the local mtime and local size. Therefore, we need to insert the removed
+                // local mtime and local size back to the cache.
+                if let Some(local_mtime_and_size) = local_mtime_and_size {
+                    self.local_mtime_and_size.insert(ino, local_mtime_and_size);
+                }
+                return Ok(());
+            }
+
+            // Flush the storage cache
+            self.storage.flush(ino).await;
+
+            let mut file_attr = inode.get_attr();
+
+            if let Some((local_mtime, local_size)) = local_mtime_and_size {
+                file_attr.mtime = local_mtime;
+                file_attr.size = local_size;
+
+                // `ctime` may be greater than `mtime`, use the greater one
+                file_attr.ctime = local_mtime.max(file_attr.ctime);
+            }
+
+            inode.set_attr(file_attr);
+
             txn.set(
                 &KeyType::INum2Node(ino),
                 &ValueType::Node(inode.to_serial_node()),
@@ -205,11 +237,11 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
     }
 
     #[instrument(skip(self))]
-    async fn releasedir(&self, ino: u64, fh: u64) -> DatenLordResult<()> {
+    async fn releasedir(&self, ino: u64, _fh: u64) -> DatenLordResult<()> {
         retry_txn!(TXN_RETRY_LIMIT, {
             let mut txn = self.kv_engine.new_meta_txn().await;
             let node = self.get_inode_from_txn(txn.as_mut(), ino).await?;
-            node.closedir(ino, fh).await;
+            node.closedir().await;
             let is_deleted = self.delete_check(&node).await?;
             if is_deleted {
                 txn.delete(&KeyType::INum2Node(ino));
@@ -231,23 +263,35 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         _fh: u64,
         offset: i64,
         size: u32,
-    ) -> DatenLordResult<Vec<IoMemBlock>> {
+    ) -> DatenLordResult<Vec<Block>> {
         let inode = self
             .get_node_from_kv_engine(ino)
             .await?
             .ok_or_else(|| build_inconsistent_fs!(ino))?;
 
-        let size: u64 =
-            if offset.cast::<u64>().overflow_add(size.cast::<u64>()) > inode.get_attr().size {
-                inode.get_attr().size.overflow_sub(offset.cast::<u64>())
-            } else {
-                size.cast()
-            };
+        let (mtime, file_size) = {
+            let local_mtime_and_size = self.get_local_mtime_and_size(ino);
+            let file_attr = inode.get_attr();
+            local_mtime_and_size.unwrap_or((file_attr.mtime, file_attr.size))
+        };
 
-        if inode.need_load_file_data(offset.cast(), size.cast()).await {
-            inode.load_data(offset.cast(), size.cast()).await?;
+        if offset.cast::<u64>() >= file_size {
+            return Ok(vec![]);
         }
-        return Ok(inode.get_file_data(offset.cast(), size.cast()).await);
+
+        // Ensure `offset + size` is le than the size of the file
+        let read_size: u64 = if offset.cast::<u64>().overflow_add(size.cast::<u64>()) > file_size {
+            file_size.overflow_sub(offset.cast::<u64>())
+        } else {
+            size.cast()
+        };
+
+        let data = self
+            .storage
+            .load(ino, offset.cast(), read_size.cast(), mtime)
+            .await;
+
+        Ok(data)
     }
 
     #[instrument(skip(self), err, ret)]
@@ -282,7 +326,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
             .get_node_from_kv_engine(ino)
             .await?
             .ok_or_else(|| build_inconsistent_fs!(ino))?;
-        let attr = inode.get_attr();
+        let attr = self.apply_local_mtime_and_size(inode.get_attr());
         let ttl = Duration::new(MY_TTL_SEC, 0);
         let fuse_attr = fs_util::convert_to_fuse_attr(attr);
         Ok((ttl, fuse_attr))
@@ -316,30 +360,93 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         param: &SetAttrParam,
     ) -> DatenLordResult<(Duration, FuseAttr)> {
         let ttl = Duration::new(MY_TTL_SEC, 0);
-        let file_attr = retry_txn!(TXN_RETRY_LIMIT, {
+        let result = retry_txn!(TXN_RETRY_LIMIT, {
             let mut txn = self.kv_engine.new_meta_txn().await;
             let mut inode = self.get_inode_from_txn(txn.as_mut(), ino).await?;
-            let (attr_changed, file_attr) = inode
-                .setattr_precheck(param, context.user_id, context.group_id)
-                .await?;
-            debug!("setattr_helper() attr_changed={}", attr_changed);
-            if attr_changed {
-                inode.set_attr(file_attr);
-            }
+
+            let origin_attr = inode.get_attr();
+            let applied_attr = if SFlag::S_IFREG == origin_attr.kind {
+                self.apply_local_mtime_and_size(origin_attr)
+            } else {
+                origin_attr
+            };
+
+            let dirty_attr_for_reply = match applied_attr.setattr_precheck(
+                param,
+                context.user_id,
+                context.group_id,
+            )? {
+                Some(mut dirty_attr) => {
+                    // This is to be inserted in KV, whose `mtime` and `size` should be reset to
+                    // origin, because changes of this field are invisible to other
+                    // nodes until flush.
+                    let mut dirty_attr_for_kv = dirty_attr;
+
+                    // There are `mtime` and `size` caches for regular files. Check the change of
+                    // these fields, and set them to the cache.
+                    if SFlag::S_IFREG == applied_attr.kind {
+                        if (dirty_attr.mtime, dirty_attr.size)
+                            != (applied_attr.mtime, applied_attr.size)
+                        {
+                            self.local_mtime_and_size
+                                .insert(ino, (dirty_attr.mtime, dirty_attr.size));
+                        }
+                        // Reset `mtime` and `size` to origin, because changes of these fields is
+                        // invisible to other nodes until flush.
+                        dirty_attr_for_kv.mtime = origin_attr.mtime;
+                        dirty_attr_for_kv.size = origin_attr.size;
+
+                        // The file also needs to be truncated, if the new size is shorter.
+                        if dirty_attr.size < applied_attr.size {
+                            let new_mtime = self
+                                .storage
+                                .truncate(
+                                    ino,
+                                    applied_attr.size.cast(),
+                                    dirty_attr.size.cast(),
+                                    applied_attr.mtime,
+                                )
+                                .await;
+                            self.local_mtime_and_size
+                                .insert(ino, (new_mtime, dirty_attr.size));
+                            dirty_attr.mtime = new_mtime;
+                        }
+                    }
+
+                    inode.set_attr(dirty_attr_for_kv);
+
+                    debug!(
+                        "setattr() successfully set the attribute of ino={} and name={:?}, the set attr={:?}",
+                        ino, inode.get_name(), dirty_attr,
+                    );
+
+                    // The attr with new `size` and `mtime` should be replied.
+                    dirty_attr
+                }
+                None => {
+                    // setattr did not change any attribute.
+                    return Ok((ttl, fs_util::convert_to_fuse_attr(origin_attr)));
+                }
+            };
+
             txn.set(
                 &KeyType::INum2Node(ino),
                 &ValueType::Node(inode.to_serial_node()),
             );
-            (txn.commit().await, file_attr)
+
+            (
+                txn.commit().await,
+                (ttl, fs_util::convert_to_fuse_attr(dirty_attr_for_reply)),
+            )
         })?;
-        Ok((ttl, fs_util::convert_to_fuse_attr(file_attr)))
+        Ok(result)
     }
 
     #[instrument(skip(self), err, ret)]
     async fn unlink(&self, context: ReqContext, parent: INum, name: &str) -> DatenLordResult<()> {
         retry_txn!(TXN_RETRY_LIMIT, {
             let mut txn = self.kv_engine.new_meta_txn().await;
-            let parent_node = self.get_inode_from_txn(txn.as_mut(), parent).await?;
+            let mut parent_node = self.get_inode_from_txn(txn.as_mut(), parent).await?;
             parent_node.check_is_dir()?;
             let child_entry = match self.try_get_dir_entry(txn.as_mut(), parent, name).await? {
                 None => {
@@ -363,7 +470,6 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
             };
 
             let child_ino = child_entry.ino();
-            info!("Try to  get child node of ino={}", child_ino);
             let child_node = self.get_inode_from_txn(txn.as_mut(), child_ino).await?;
 
             // If child is a directory, it must be empty
@@ -384,6 +490,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
             }
 
             txn.delete(&KeyType::DirEntryKey((parent, name.into())));
+            parent_node.update_mtime_ctime_to_now();
 
             // Ready to unlink
             let deferred_deletion =
@@ -623,7 +730,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         })
     }
 
-    /// Rename helper for exchange rename
+    #[allow(clippy::too_many_lines)] // TODO: refactor it into smaller functions
     #[instrument(skip(self), err, ret)]
     async fn rename(&self, context: ReqContext, param: RenameParam) -> DatenLordResult<()> {
         let old_parent = param.old_parent;
@@ -631,7 +738,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         let new_parent = param.new_parent;
         let new_name = param.new_name.as_str();
         let flags = param.flags;
-
+        // TODO: replace the new_node should delete its related data
         let exchange = match flags {
             0 | RENAME_NOREPLACE => false,
             RENAME_EXCHANGE => true,
@@ -750,7 +857,6 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
                             );
                         }
                         let delete_key = KeyType::DirEntryKey((old_parent, old_name.into()));
-                        info!("delete key={:?}", delete_key);
                         txn.delete(&delete_key);
                         txn.set(
                             &KeyType::DirEntryKey((new_parent, new_name.into())),
@@ -804,7 +910,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
         self.flush(ino, fh).await
     }
 
-    #[instrument(skip(self), err, ret)]
+    #[instrument(skip(self, data), err, ret)]
     /// Helper function to write data
     async fn write_helper(
         &self,
@@ -893,35 +999,6 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
         let result = self.inum_allocator.alloc_inum_for_fnode().await;
         debug!("alloc_inum_for_fnode() result={result:?}");
         result
-    }
-
-    /// Invalidate cache from other nodes
-    #[allow(dead_code)]
-    async fn invalidate_remote(
-        &self,
-        full_ino: INum,
-        offset: i64,
-        len: usize,
-    ) -> DatenLordResult<()> {
-        let volume_info = serde_json::to_string(self.storage_config.as_ref())?;
-
-        dist_client::invalidate(
-            &self.kv_engine,
-            &self.node_id,
-            &volume_info,
-            full_ino,
-            offset
-                .overflow_div(self.data_cache.get_align().cast())
-                .cast(),
-            offset
-                .overflow_add(len.cast())
-                .overflow_sub(1)
-                .overflow_div(self.data_cache.get_align().cast())
-                .cast(),
-        )
-        .await
-        .map_err(DatenLordError::from)
-        .add_context("failed to invlidate others' cache")
     }
 
     /// If sticky bit is set, only the owner of the directory, the owner of the

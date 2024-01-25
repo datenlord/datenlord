@@ -1,5 +1,5 @@
 //! The implementation of user space file system
-mod cache;
+pub mod cache;
 /// distributed communication module
 pub mod dist;
 mod fs_util;
