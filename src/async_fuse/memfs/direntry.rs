@@ -67,7 +67,7 @@ impl From<FileType> for SFlag {
 
 /// Represents a directory entry in a filesystem.
 #[derive(Debug, Serialize, Deserialize, Eq, PartialEq)]
-pub struct DirEntryV2 {
+pub struct DirEntry {
     /// The inode number of the child
     ino: INum,
     /// The name of the child
@@ -76,7 +76,7 @@ pub struct DirEntryV2 {
     file_type: FileType,
 }
 
-impl DirEntryV2 {
+impl DirEntry {
     /// Creates a new `DirEntry`.
     ///
     /// # Arguments
@@ -139,9 +139,9 @@ mod tests {
 
     #[test]
     fn test_dir_entry_serialization() {
-        let dir_entry = DirEntryV2::new(1, "test".to_owned(), FileType::Dir);
+        let dir_entry = DirEntry::new(1, "test".to_owned(), FileType::Dir);
         let dir_entry_bytes = bincode::serialize(&dir_entry).unwrap();
-        let dir_entry2: DirEntryV2 = bincode::deserialize(&dir_entry_bytes).unwrap();
+        let dir_entry2: DirEntry = bincode::deserialize(&dir_entry_bytes).unwrap();
         assert_eq!(dir_entry, dir_entry2);
     }
 }

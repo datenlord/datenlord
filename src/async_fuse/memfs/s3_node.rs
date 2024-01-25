@@ -18,7 +18,7 @@ use parking_lot::RwLock;
 use tracing::{debug, info, warn};
 
 use super::cache::{GlobalCache, IoMemBlock};
-use super::direntry::{DirEntryV2, FileType};
+use super::direntry::{DirEntry, FileType};
 use super::dist::client as dist_client;
 use super::fs_util::{self, FileAttr, NEED_CHECK_PERM};
 use super::kv_engine::{KVEngineType, KeyType, MetaTxn, ValueType};
@@ -535,7 +535,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
             ..FileAttr::now()
         }));
 
-        let new_entry = DirEntryV2::new(inum, child_symlink_name.to_owned(), FileType::Symlink);
+        let new_entry = DirEntry::new(inum, child_symlink_name.to_owned(), FileType::Symlink);
 
         txn.set(
             &KeyType::DirEntryKey((self.get_ino(), child_symlink_name.to_owned())),
@@ -576,7 +576,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
             ..FileAttr::now()
         }));
 
-        let new_etnry = DirEntryV2::new(inum, child_dir_name.to_owned(), FileType::Dir);
+        let new_etnry = DirEntry::new(inum, child_dir_name.to_owned(), FileType::Dir);
 
         txn.set(
             &KeyType::DirEntryKey((self.get_ino(), child_dir_name.to_owned())),
@@ -648,7 +648,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
         }));
         debug_assert_eq!(SFlag::S_IFREG, child_attr.read().kind);
 
-        let new_etnry = DirEntryV2::new(inum, child_file_name.to_owned(), FileType::File);
+        let new_etnry = DirEntry::new(inum, child_file_name.to_owned(), FileType::File);
 
         txn.set(
             &KeyType::DirEntryKey((self.get_ino(), child_file_name.to_owned())),
@@ -754,7 +754,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> Node for S3Node<S> {
     }
 
     /// Unlink directory entry from both cache and disk
-    async fn unlink_entry(&mut self, removed_entry: &DirEntryV2) -> DatenLordResult<()> {
+    async fn unlink_entry(&mut self, removed_entry: &DirEntry) -> DatenLordResult<()> {
         // delete from disk and close the handler
         let ino = removed_entry.ino();
         if let Err(e) = self.s3_backend.delete_data(ino).await {

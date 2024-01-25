@@ -31,7 +31,7 @@ use super::{check_type_supported, CreateParam, RenameParam, SetAttrParam};
 use crate::async_fuse::fuse::fuse_reply::{ReplyDirectory, StatFsParam};
 use crate::async_fuse::fuse::protocol::{FuseAttr, INum, FUSE_ROOT_ID};
 use crate::async_fuse::memfs::check_name_length;
-use crate::async_fuse::memfs::direntry::DirEntryV2;
+use crate::async_fuse::memfs::direntry::DirEntry;
 use crate::async_fuse::memfs::kv_engine::KeyType;
 use crate::async_fuse::util::build_error_result_from_errno;
 use crate::common::error::{
@@ -706,7 +706,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
                     txn.delete(&KeyType::DirEntryKey((old_parent, old_name.into())));
                     txn.set(
                         &KeyType::DirEntryKey((new_parent, new_name.into())),
-                        &ValueType::DirEntry(DirEntryV2::new(
+                        &ValueType::DirEntry(DirEntry::new(
                             old_entry.ino(),
                             new_name.into(),
                             old_entry.file_type(),
@@ -724,7 +724,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
                         // new_name -> old_entry
                         txn.set(
                             &KeyType::DirEntryKey((old_parent, old_name.into())),
-                            &ValueType::DirEntry(DirEntryV2::new(
+                            &ValueType::DirEntry(DirEntry::new(
                                 new_entry.ino(),
                                 new_name.into(),
                                 new_entry.file_type(),
@@ -732,7 +732,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
                         );
                         txn.set(
                             &KeyType::DirEntryKey((new_parent, new_name.into())),
-                            &ValueType::DirEntry(DirEntryV2::new(
+                            &ValueType::DirEntry(DirEntry::new(
                                 old_entry.ino(),
                                 old_name.into(),
                                 old_entry.file_type(),
@@ -754,7 +754,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
                         txn.delete(&delete_key);
                         txn.set(
                             &KeyType::DirEntryKey((new_parent, new_name.into())),
-                            &ValueType::DirEntry(DirEntryV2::new(
+                            &ValueType::DirEntry(DirEntry::new(
                                 old_entry.ino(),
                                 new_name.into(),
                                 old_entry.file_type(),
@@ -930,7 +930,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
         &self,
         context: &ReqContext,
         parent_node: &S3Node<S>,
-        child_entry: &DirEntryV2,
+        child_entry: &DirEntry,
         txn: &mut T,
     ) -> DatenLordResult<()> {
         if !NEED_CHECK_PERM {
@@ -995,7 +995,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
         txn: &mut T,
         parent: INum,
         name: &str,
-    ) -> DatenLordResult<Option<DirEntryV2>> {
+    ) -> DatenLordResult<Option<DirEntry>> {
         let key = KeyType::DirEntryKey((parent, name.to_owned()));
         let value = txn.get(&key).await.add_context(format!(
             "{}() failed to get dir entry of name={:?} \
@@ -1011,7 +1011,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
     }
 
     /// Helper function to get all dir etnry in a directory from `KVEngine`
-    async fn get_all_dir_entry(&self, parent: INum) -> DatenLordResult<Vec<DirEntryV2>> {
+    async fn get_all_dir_entry(&self, parent: INum) -> DatenLordResult<Vec<DirEntry>> {
         let key = KeyType::DirEntryKey((parent, String::new()));
         let raw_values = self.kv_engine.range(&key).await?;
         let mut values = Vec::with_capacity(raw_values.len());

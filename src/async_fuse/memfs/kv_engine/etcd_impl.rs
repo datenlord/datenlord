@@ -334,7 +334,7 @@ mod test {
     use std::time::Instant;
 
     use super::*;
-    use crate::async_fuse::memfs::direntry::{DirEntryV2, FileType};
+    use crate::async_fuse::memfs::direntry::{DirEntry, FileType};
     use crate::common::error::DatenLordError;
     use crate::retry_txn;
 
@@ -494,14 +494,14 @@ mod test {
         for child_name in &child_names {
             let key = KeyType::DirEntryKey((parent_id_1, (*child_name).to_owned()));
             let value =
-                ValueType::DirEntry(DirEntryV2::new(1, (*child_name).to_owned(), FileType::Dir));
+                ValueType::DirEntry(DirEntry::new(1, (*child_name).to_owned(), FileType::Dir));
             client.set(&key, &value, None).await.unwrap();
         }
 
         for child_name in &child_names {
             let key = KeyType::DirEntryKey((parent_id_2, (*child_name).to_owned()));
             let value =
-                ValueType::DirEntry(DirEntryV2::new(2, (*child_name).to_owned(), FileType::Dir));
+                ValueType::DirEntry(DirEntry::new(2, (*child_name).to_owned(), FileType::Dir));
             client.set(&key, &value, None).await.unwrap();
         }
 
