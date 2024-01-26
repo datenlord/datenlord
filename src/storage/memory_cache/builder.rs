@@ -7,7 +7,8 @@ use std::time::Duration;
 use datenlord::config::SoftLimit;
 use tokio::sync::mpsc;
 
-use super::{write_back_task, MemoryCache};
+use super::write_back_task::WriteBackTask;
+use super::MemoryCache;
 use crate::storage::policy::EvictPolicy;
 use crate::storage::{BlockCoordinate, Storage};
 
@@ -105,24 +106,19 @@ where
             command_queue_limit,
         } = self;
 
-        let (sender, receiver) = mpsc::channel(command_queue_limit);
+        let (tx, rx) = mpsc::channel(command_queue_limit);
 
         let cache = Arc::new(MemoryCache::new(
             policy,
             backend,
             block_size,
             write_through,
-            sender,
+            tx,
         ));
 
-        let weak = Arc::downgrade(&cache);
-        tokio::spawn(write_back_task::run_write_back_task(
-            limit,
-            interval,
-            weak,
-            receiver,
-            command_queue_limit,
-        ));
+        let write_back_task =
+            WriteBackTask::new(Arc::clone(&cache), rx, limit, interval, command_queue_limit);
+        tokio::spawn(write_back_task.run());
 
         cache
     }
