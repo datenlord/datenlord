@@ -7,6 +7,7 @@ use futures::{stream, AsyncReadExt, AsyncWriteExt, StreamExt};
 use opendal::services::{Fs, S3};
 use opendal::{ErrorKind, Operator};
 
+use super::error::StorageResult;
 use super::{Block, Storage};
 use crate::async_fuse::fuse::protocol::INum;
 
@@ -94,7 +95,7 @@ impl Backend {
 
 #[async_trait]
 impl Storage for Backend {
-    async fn load_from_self(&self, ino: INum, block_id: usize) -> Option<Block> {
+    async fn load_from_self(&self, ino: INum, block_id: usize) -> StorageResult<Option<Block>> {
         let mut block = Block::new_zeroed(self.block_size);
 
         if let Err(e) = self
@@ -108,27 +109,27 @@ impl Storage for Backend {
             .await
         {
             if e.kind() == std::io::ErrorKind::NotFound {
-                None
+                Ok(None)
             } else {
                 panic!(
                     "Failed to load a block from backend where ino={ino} and block={block_id}: {e}"
                 );
             }
         } else {
-            Some(block)
+            Ok(Some(block))
         }
     }
 
-    async fn load_from_backend(&self, _: INum, _: usize) -> Option<Block> {
+    async fn load_from_backend(&self, _: INum, _: usize) -> StorageResult<Option<Block>> {
         // This storage has no backend.
-        None
+        Ok(None)
     }
 
-    async fn cache_block_from_backend(&self, _: INum, _: usize, _: Block) {
+    async fn cache_block_from_backend(&self, _: INum, _: usize, _: Block) -> StorageResult<()> {
         unreachable!("This storage has no backend, and has no cache.");
     }
 
-    async fn store(&self, ino: INum, block_id: usize, block: Block) {
+    async fn store(&self, ino: INum, block_id: usize, block: Block) -> StorageResult<()> {
         let path = get_block_path(ino, block_id);
 
         let block_start = block.start();
@@ -145,7 +146,7 @@ impl Storage for Backend {
             writer.close().await.unwrap_or_else(|e| {
                 panic!("Failed to close the writer where ion={ino} and block={block_id}: {e}")
             });
-            return;
+            return Ok(());
         }
 
         let mut dest = self.operator.read(&path).await.unwrap_or_else(|e| {
@@ -169,33 +170,46 @@ impl Storage for Backend {
         self.operator.write(&path, dest).await.unwrap_or_else(|e| {
             panic!("Failed to store a block to backend where ino={ino} and block={block_id}: {e}")
         });
+
+        Ok(())
     }
 
-    async fn remove(&self, ino: INum) {
+    async fn remove(&self, ino: INum) -> StorageResult<()> {
         self.operator
             .remove_all(&get_file_path(ino))
             .await
             .unwrap_or_else(|e| {
                 panic!("Failed to remove a file from the backend of ino={ino}: {e}")
             });
+
+        Ok(())
     }
 
-    async fn invalidate(&self, _: INum) {
+    async fn invalidate(&self, _: INum) -> StorageResult<()> {
         // This storage has no cache, therefore, its contents cannot be
         // invalidated.
+        Ok(())
     }
 
-    async fn flush(&self, _: INum) {
+    async fn flush(&self, _: INum) -> StorageResult<()> {
         // This storage has no cache and backend, therefore, there is no need to
         // flush its data.
+        Ok(())
     }
 
-    async fn flush_all(&self) {
+    async fn flush_all(&self) -> StorageResult<()> {
         // This storage has no cache and backend, therefore, there is no need to
         // flush its data.
+        Ok(())
     }
 
-    async fn truncate(&self, ino: INum, from_block: usize, to_block: usize, fill_start: usize) {
+    async fn truncate(
+        &self,
+        ino: INum,
+        from_block: usize,
+        to_block: usize,
+        fill_start: usize,
+    ) -> StorageResult<()> {
         let paths =
             stream::iter(to_block..from_block).map(|block_id| get_block_path(ino, block_id));
 
@@ -209,7 +223,7 @@ impl Storage for Backend {
                     .remove_all(&file_path)
                     .await
                     .unwrap_or_else(|e| panic!("Failed to remove file a file of ino={ino}: {e}"));
-                return;
+                return Ok(());
             }
 
             self.operator.remove_via(paths).await.unwrap_or_else(|e| panic!("Failed to truncate file ino={ino} from block {from_block} to block {to_block}: {e}"));
@@ -230,6 +244,8 @@ impl Storage for Backend {
                 }
             }
         }
+
+        Ok(())
     }
 }
 
@@ -266,7 +282,7 @@ mod tests {
 
         let backend_root = Path::new(&backend_root);
 
-        let loaded = backend.load(0, 0).await;
+        let loaded = backend.load(0, 0).await.unwrap();
         assert!(loaded.is_none());
 
         fs::create_dir_all(backend_root.join("0")).await.unwrap();
@@ -274,7 +290,7 @@ mod tests {
             .await
             .unwrap();
 
-        let loaded = backend.load(0, 0).await.unwrap();
+        let loaded = backend.load(0, 0).await.unwrap().unwrap();
         assert_eq!(loaded.as_slice(), BLOCK_CONTENT);
 
         fs::remove_dir_all(backend_root).await.unwrap();
@@ -289,14 +305,14 @@ mod tests {
         let backend_root = Path::new(&backend_root);
 
         let block = Block::from_slice(BLOCK_SIZE_IN_BYTES, BLOCK_CONTENT);
-        backend.store(0, 0, block.clone()).await;
+        backend.store(0, 0, block.clone()).await.unwrap();
 
         let block_path = backend_root.join("0").join("0.block");
 
         let read_block_content = fs::read(&block_path).await.unwrap();
         assert_eq!(BLOCK_CONTENT, &read_block_content[..BLOCK_SIZE_IN_BYTES]);
 
-        let loaded = backend.load(0, 0).await.unwrap();
+        let loaded = backend.load(0, 0).await.unwrap().unwrap();
         assert_eq!(loaded.as_slice(), BLOCK_CONTENT);
 
         fs::remove_dir_all(backend_root).await.unwrap();
@@ -313,8 +329,8 @@ mod tests {
         let mut block = Block::from_slice(BLOCK_SIZE_IN_BYTES, BLOCK_CONTENT);
         block.set_start(3);
         block.set_end(7);
-        backend.store(0, 0, block).await;
-        let loaded = backend.load(0, 0).await.unwrap();
+        backend.store(0, 0, block).await.unwrap();
+        let loaded = backend.load(0, 0).await.unwrap().unwrap();
         assert_eq!(loaded.as_slice(), b"\0\0\0 bar\0");
 
         fs::remove_dir_all(backend_root).await.unwrap();
@@ -331,15 +347,15 @@ mod tests {
         let mut block = Block::from_slice(BLOCK_SIZE_IN_BYTES, BLOCK_CONTENT);
         block.set_start(0);
         block.set_end(4);
-        backend.store(0, 0, block).await;
-        let loaded = backend.load(0, 0).await.unwrap();
+        backend.store(0, 0, block).await.unwrap();
+        let loaded = backend.load(0, 0).await.unwrap().unwrap();
         assert_eq!(loaded.as_slice(), b"foo \0\0\0\0");
 
         let mut block = Block::from_slice(BLOCK_SIZE_IN_BYTES, BLOCK_CONTENT);
         block.set_start(4);
         block.set_end(8);
-        backend.store(0, 0, block).await;
-        let loaded = backend.load(0, 0).await.unwrap();
+        backend.store(0, 0, block).await.unwrap();
+        let loaded = backend.load(0, 0).await.unwrap().unwrap();
         assert_eq!(loaded.as_slice(), BLOCK_CONTENT);
 
         fs::remove_dir_all(backend_root).await.unwrap();
@@ -354,13 +370,13 @@ mod tests {
         let backend_root = Path::new(&backend_root);
 
         let block = Block::from_slice(BLOCK_SIZE_IN_BYTES, BLOCK_CONTENT);
-        backend.store(0, 0, block).await;
-        let loaded = backend.load(0, 0).await.unwrap();
+        backend.store(0, 0, block).await.unwrap();
+        let loaded = backend.load(0, 0).await.unwrap().unwrap();
         assert_eq!(loaded.as_slice(), BLOCK_CONTENT);
 
         let block = Block::from_slice_with_range(BLOCK_SIZE_IN_BYTES, 4, 8, b"foo ");
-        backend.store(0, 0, block).await;
-        let loaded = backend.load(0, 0).await.unwrap();
+        backend.store(0, 0, block).await.unwrap();
+        let loaded = backend.load(0, 0).await.unwrap().unwrap();
         assert_eq!(loaded.as_slice(), b"foo foo ");
 
         fs::remove_dir_all(backend_root).await.unwrap();
@@ -381,20 +397,27 @@ mod tests {
                     block_id,
                     Block::from_slice(BLOCK_SIZE_IN_BYTES, BLOCK_CONTENT),
                 )
-                .await;
+                .await
+                .unwrap();
         }
 
-        backend.truncate(0, 4, 1, BLOCK_SIZE_IN_BYTES).await;
-        let loaded = backend.load(0, 0).await.unwrap();
+        backend
+            .truncate(0, 4, 1, BLOCK_SIZE_IN_BYTES)
+            .await
+            .unwrap();
+        let loaded = backend.load(0, 0).await.unwrap().unwrap();
         assert_eq!(loaded.as_slice(), BLOCK_CONTENT);
 
         for block_id in 1..4 {
-            let loaded = backend.load(0, block_id).await;
+            let loaded = backend.load(0, block_id).await.unwrap();
             assert!(loaded.is_none());
         }
 
         // truncate to block_id=0 will remove the whole file.
-        backend.truncate(0, 1, 0, BLOCK_SIZE_IN_BYTES).await;
+        backend
+            .truncate(0, 1, 0, BLOCK_SIZE_IN_BYTES)
+            .await
+            .unwrap();
 
         // check if the file is removed from the backend.
         let file_path = backend_root.join("0");
@@ -419,11 +442,12 @@ mod tests {
                     block_id,
                     Block::from_slice(BLOCK_SIZE_IN_BYTES, BLOCK_CONTENT),
                 )
-                .await;
+                .await
+                .unwrap();
         }
 
-        backend.truncate(0, 4, 1, 4).await;
-        let loaded = backend.load(0, 0).await.unwrap();
+        backend.truncate(0, 4, 1, 4).await.unwrap();
+        let loaded = backend.load(0, 0).await.unwrap().unwrap();
         assert_eq!(loaded.as_slice(), b"foo \0\0\0\0");
 
         fs::remove_dir_all(backend_root).await.unwrap();
@@ -439,14 +463,15 @@ mod tests {
 
         backend
             .store(0, 0, Block::from_slice(BLOCK_SIZE_IN_BYTES, BLOCK_CONTENT))
-            .await;
+            .await
+            .unwrap();
 
         fs::remove_file(backend_root.join("0").join("0.block"))
             .await
             .unwrap();
 
         // Should not panic
-        backend.truncate(0, 4, 1, 4).await;
+        backend.truncate(0, 4, 1, 4).await.unwrap();
 
         fs::remove_dir_all(backend_root).await.unwrap();
     }
@@ -461,8 +486,9 @@ mod tests {
 
         backend
             .store(0, 0, Block::from_slice(BLOCK_SIZE_IN_BYTES, BLOCK_CONTENT))
-            .await;
-        backend.remove(0).await;
+            .await
+            .unwrap();
+        backend.remove(0).await.unwrap();
 
         assert!(!fs::try_exists(backend_root.join("0")).await.unwrap());
 
@@ -476,9 +502,9 @@ mod tests {
         let backend = prepare_backend(&backend_root);
 
         // Do nothing, and should not panic.
-        backend.flush(0).await;
-        backend.flush_all().await;
-        backend.invalidate(0).await;
+        backend.flush(0).await.unwrap();
+        backend.flush_all().await.unwrap();
+        backend.invalidate(0).await.unwrap();
 
         fs::remove_dir_all(backend_root).await.unwrap();
     }
@@ -525,7 +551,7 @@ mod tests {
                 .unwrap();
 
             // Permission Denied
-            let _: Option<Block> = backend.load(0, 0).await;
+            let _: Option<Block> = backend.load(0, 0).await.unwrap();
         }
 
         #[tokio::test]
@@ -547,7 +573,8 @@ mod tests {
             // Permission Denied
             backend
                 .store(0, 0, Block::new_zeroed(BLOCK_SIZE_IN_BYTES))
-                .await;
+                .await
+                .unwrap();
         }
 
         #[tokio::test]
@@ -560,7 +587,8 @@ mod tests {
 
             backend
                 .store(0, 0, Block::new_zeroed(BLOCK_SIZE_IN_BYTES))
-                .await;
+                .await
+                .unwrap();
 
             let backend_root = Path::new(&backend_root);
 
@@ -571,7 +599,7 @@ mod tests {
                 .unwrap();
 
             // Permission Denied
-            backend.remove(0).await;
+            backend.remove(0).await.unwrap();
         }
 
         #[tokio::test]
@@ -585,7 +613,8 @@ mod tests {
             for block_id in 0..8 {
                 backend
                     .store(0, block_id, Block::new_zeroed(BLOCK_SIZE_IN_BYTES))
-                    .await;
+                    .await
+                    .unwrap();
             }
 
             let backend_root = Path::new(&backend_root);
@@ -597,7 +626,7 @@ mod tests {
                 .unwrap();
 
             // Permission Denied
-            backend.truncate(0, 8, 4, 4).await;
+            backend.truncate(0, 8, 4, 4).await.unwrap();
         }
     }
 }

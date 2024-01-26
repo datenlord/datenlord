@@ -36,13 +36,13 @@ async fn test_write_whole_block() {
     let (backend, cache) = prepare_empty_storage();
 
     let block = Block::from_slice(BLOCK_SIZE_IN_BYTES, BLOCK_CONTENT);
-    cache.store(ino, block_id, block).await;
+    cache.store(ino, block_id, block).await.unwrap();
 
-    let loaded_from_cache = cache.load(ino, block_id).await.unwrap();
+    let loaded_from_cache = cache.load(ino, block_id).await.unwrap().unwrap();
     assert_eq!(loaded_from_cache.as_slice(), BLOCK_CONTENT);
 
     // test write through
-    let loaded_from_backend = backend.load(ino, block_id).await.unwrap();
+    let loaded_from_backend = backend.load(ino, block_id).await.unwrap().unwrap();
     assert_eq!(loaded_from_backend.as_slice(), loaded_from_cache.as_slice());
 }
 
@@ -54,16 +54,16 @@ async fn test_overwrite() {
     let (_, cache) = prepare_empty_storage();
 
     let block = Block::from_slice(BLOCK_SIZE_IN_BYTES, BLOCK_CONTENT);
-    cache.store(ino, block_id, block).await;
+    cache.store(ino, block_id, block).await.unwrap();
 
     let block = Block::from_slice_with_range(BLOCK_SIZE_IN_BYTES, 4, 7, b"foo ");
-    cache.store(ino, block_id, block).await;
-    let loaded = cache.load(ino, block_id).await.unwrap();
+    cache.store(ino, block_id, block).await.unwrap();
+    let loaded = cache.load(ino, block_id).await.unwrap().unwrap();
     assert_eq!(loaded.as_slice(), b"foo foo ");
 
     let block = Block::from_slice_with_range(BLOCK_SIZE_IN_BYTES, 0, 4, b"bar xxx ");
-    cache.store(ino, block_id, block).await;
-    let loaded = cache.load(ino, block_id).await.unwrap();
+    cache.store(ino, block_id, block).await.unwrap();
+    let loaded = cache.load(ino, block_id).await.unwrap().unwrap();
     assert_eq!(loaded.as_slice(), b"bar foo ");
 }
 
@@ -74,10 +74,10 @@ async fn test_load_inexist_block() {
 
     let (_, cache) = prepare_empty_storage();
 
-    let block = cache.load(ino, 1).await;
+    let block = cache.load(ino, 1).await.unwrap();
     assert!(block.is_none());
 
-    let block = cache.load(1, block_id).await;
+    let block = cache.load(1, block_id).await.unwrap();
     assert!(block.is_none());
 }
 
@@ -88,12 +88,12 @@ async fn test_append() {
     let (_, cache) = prepare_empty_storage();
 
     let block = Block::from_slice(BLOCK_SIZE_IN_BYTES, BLOCK_CONTENT);
-    cache.store(ino, 0, block).await;
+    cache.store(ino, 0, block).await.unwrap();
 
     let block = Block::from_slice_with_range(BLOCK_SIZE_IN_BYTES, 0, 4, b"xxx foo ");
-    cache.store(ino, 1, block).await;
+    cache.store(ino, 1, block).await.unwrap();
 
-    let loaded = cache.load(ino, 1).await.unwrap();
+    let loaded = cache.load(ino, 1).await.unwrap().unwrap();
     assert_eq!(loaded.as_slice(), b"xxx \0\0\0\0");
 }
 
@@ -105,12 +105,12 @@ async fn test_remove() {
     let (backend, cache) = prepare_empty_storage();
 
     let block = Block::from_slice(BLOCK_SIZE_IN_BYTES, BLOCK_CONTENT);
-    cache.store(ino, block_id, block).await;
+    cache.store(ino, block_id, block).await.unwrap();
 
-    cache.remove(ino).await;
+    cache.remove(ino).await.unwrap();
     assert!(!backend.contains(ino, block_id));
 
-    let loaded = cache.load(ino, block_id).await;
+    let loaded = cache.load(ino, block_id).await.unwrap();
     assert!(loaded.is_none());
 }
 
@@ -135,16 +135,16 @@ async fn prepare_data_for_evict() -> (Arc<MemoryStorage>, Arc<MemoryCacheType>) 
     // Fill the backend
     for block_id in 0..CACHE_CAPACITY_IN_BLOCKS {
         let block = Block::from_slice(BLOCK_SIZE_IN_BYTES, BLOCK_CONTENT);
-        backend.store(0, block_id, block).await;
+        backend.store(0, block_id, block).await.unwrap();
     }
 
     // Warn up the data
     for block_id in 0..CACHE_CAPACITY_IN_BLOCKS {
-        cache.load(0, block_id).await;
+        cache.load(0, block_id).await.unwrap();
     }
 
     // Clear the backend
-    backend.remove(0).await;
+    backend.remove(0).await.unwrap();
 
     (backend, cache)
 }
@@ -157,8 +157,8 @@ async fn test_evict() {
     // Insert a block, and (0, 0) will be evicted
     assert!(!backend.contains(0, 0));
     let block = Block::from_slice(BLOCK_SIZE_IN_BYTES, BLOCK_CONTENT);
-    cache.store(1, 0, block).await;
-    let loaded = backend.load(0, 0).await.unwrap();
+    cache.store(1, 0, block).await.unwrap();
+    let loaded = backend.load(0, 0).await.unwrap().unwrap();
     assert_eq!(loaded.as_slice(), BLOCK_CONTENT);
 }
 
@@ -168,14 +168,14 @@ async fn test_touch_by_load() {
 
     // LRU in cache: (0, 0) -> (0, 1) -> (0, 2) -> (0, 3)
     // Touch (0, 0) by loading
-    let _: Option<Block> = cache.load(0, 0).await;
+    let _: Option<Block> = cache.load(0, 0).await.unwrap();
 
     // LRU in cache: (0, 1) -> (0, 2) -> (0, 3) -> (0, 0)
     // Insert a block, and (0, 1) will be evicted
     assert!(!backend.contains(0, 1));
     let block = Block::from_slice(BLOCK_SIZE_IN_BYTES, BLOCK_CONTENT);
-    cache.store(1, 0, block).await;
-    let loaded = backend.load(0, 1).await.unwrap();
+    cache.store(1, 0, block).await.unwrap();
+    let loaded = backend.load(0, 1).await.unwrap().unwrap();
     assert_eq!(loaded.as_slice(), BLOCK_CONTENT);
 }
 
@@ -186,14 +186,14 @@ async fn test_touch_by_store() {
     // LRU in cache: (0, 0) -> (0, 1) -> (0, 2) -> (0, 3)
     // Touch (0, 0) by storing
     let block = Block::from_slice(BLOCK_SIZE_IN_BYTES, BLOCK_CONTENT);
-    cache.store(0, 0, block).await;
+    cache.store(0, 0, block).await.unwrap();
 
     // LRU in cache: (0, 1) -> (0, 2) -> (0, 3) -> (0, 0)
     // Insert a block, and (0, 1) will be evicted
     assert!(!backend.contains(0, 1));
     let block = Block::from_slice(BLOCK_SIZE_IN_BYTES, BLOCK_CONTENT);
-    cache.store(1, 0, block).await;
-    let loaded = backend.load(0, 1).await.unwrap();
+    cache.store(1, 0, block).await.unwrap();
+    let loaded = backend.load(0, 1).await.unwrap().unwrap();
     assert_eq!(loaded.as_slice(), BLOCK_CONTENT);
 }
 
@@ -205,18 +205,18 @@ async fn test_evict_dirty_block() {
     for block_id in 0..CACHE_CAPACITY_IN_BLOCKS {
         let mut block = Block::from_slice(BLOCK_SIZE_IN_BYTES, BLOCK_CONTENT);
         block.set_dirty(true); // This will be done by `StorageManager` in productive env
-        cache.store(0, block_id, block).await;
+        cache.store(0, block_id, block).await.unwrap();
     }
 
     // Clear the backend
-    backend.remove(0).await;
+    backend.remove(0).await.unwrap();
 
     // LRU in cache: (0, 0) -> (0, 1) -> (0, 2) -> (0, 3)
     // All of them are dirty
     // Insert a block, and (0, 0) will be evicted.
     // Because it's dirty, it will be dropped directly
     let block = Block::from_slice(BLOCK_SIZE_IN_BYTES, BLOCK_CONTENT);
-    cache.store(1, 0, block).await;
+    cache.store(1, 0, block).await.unwrap();
     assert!(!backend.contains(0, 0));
 }
 
@@ -228,12 +228,12 @@ async fn test_flush() {
     let (backend, cache) = prepare_empty_storage();
 
     let block = Block::from_slice(BLOCK_SIZE_IN_BYTES, BLOCK_CONTENT);
-    cache.store(ino, block_id, block).await;
+    cache.store(ino, block_id, block).await.unwrap();
 
-    cache.flush(ino).await;
+    cache.flush(ino).await.unwrap();
     assert!(backend.flushed(ino));
 
-    cache.flush_all().await;
+    cache.flush_all().await.unwrap();
     assert!(backend.flushed(ino));
 }
 
@@ -245,13 +245,13 @@ async fn test_load_from_backend() {
     let (_, cache) = prepare_empty_storage();
 
     let block = Block::from_slice(BLOCK_SIZE_IN_BYTES, BLOCK_CONTENT);
-    cache.store(ino, block_id, block).await;
+    cache.store(ino, block_id, block).await.unwrap();
 
-    cache.invalidate(ino).await;
+    cache.invalidate(ino).await.unwrap();
     let loaded_from_cache = cache.get_block_from_cache(ino, block_id).await;
     assert!(loaded_from_cache.is_none());
 
-    let loaded = cache.load(ino, block_id).await.unwrap();
+    let loaded = cache.load(ino, block_id).await.unwrap().unwrap();
     assert_eq!(loaded.as_slice(), BLOCK_CONTENT);
 }
 
@@ -260,9 +260,9 @@ async fn test_write_missing_block_in_middle() {
     let (_, cache) = prepare_empty_storage();
 
     let block = Block::from_slice_with_range(BLOCK_SIZE_IN_BYTES, 4, 7, &BLOCK_CONTENT[4..7]);
-    cache.store(0, 0, block).await;
+    cache.store(0, 0, block).await.unwrap();
     let block = Block::from_slice(BLOCK_SIZE_IN_BYTES, b"\0\0\0\0bar\0");
-    let loaded = cache.load(0, 0).await.unwrap();
+    let loaded = cache.load(0, 0).await.unwrap().unwrap();
     assert_eq!(loaded.as_slice(), block.as_slice());
 }
 
@@ -277,12 +277,14 @@ async fn test_truncate() {
     for block_id in 0..from_block {
         cache
             .store(ino, block_id, Block::new_zeroed(BLOCK_SIZE_IN_BYTES))
-            .await;
+            .await
+            .unwrap();
     }
 
     cache
         .truncate(ino, from_block, to_block, BLOCK_SIZE_IN_BYTES)
-        .await;
+        .await
+        .unwrap();
     for block_id in to_block..from_block {
         assert!(!backend.contains(0, block_id));
         let block = cache.get_block_from_cache(ino, block_id).await;
@@ -301,15 +303,16 @@ async fn test_truncate_may_fill() {
     for block_id in 0..from_block {
         cache
             .store(0, block_id, Block::new_zeroed(BLOCK_SIZE_IN_BYTES))
-            .await;
+            .await
+            .unwrap();
     }
 
     let block = Block::from_slice(BLOCK_SIZE_IN_BYTES, BLOCK_CONTENT);
 
-    cache.store(ino, 3, block).await;
-    cache.truncate(ino, from_block, to_block, 4).await;
+    cache.store(ino, 3, block).await.unwrap();
+    cache.truncate(ino, from_block, to_block, 4).await.unwrap();
 
-    let loaded = cache.load(ino, 3).await.unwrap();
+    let loaded = cache.load(ino, 3).await.unwrap().unwrap();
     assert_eq!(loaded.as_slice(), b"foo \0\0\0\0");
 }
 
@@ -319,10 +322,10 @@ async fn test_truncate_in_the_same_block() {
 
     let block = Block::from_slice(BLOCK_SIZE_IN_BYTES, BLOCK_CONTENT);
 
-    cache.store(0, 0, block).await;
-    cache.truncate(0, 1, 1, 4).await;
+    cache.store(0, 0, block).await.unwrap();
+    cache.truncate(0, 1, 1, 4).await.unwrap();
 
-    let loaded = cache.load(0, 0).await.unwrap();
+    let loaded = cache.load(0, 0).await.unwrap().unwrap();
     assert_eq!(loaded.as_slice(), b"foo \0\0\0\0");
 }
 
@@ -332,7 +335,7 @@ async fn test_write_out_of_range() {
     let (_, cache) = prepare_empty_storage();
 
     let block = Block::new_zeroed(16);
-    cache.store(0, 0, block).await;
+    cache.store(0, 0, block).await.unwrap();
 }
 
 fn prepare_empty_storage_with_write_back() -> (Arc<MemoryStorage>, Arc<MemoryCacheType>) {
@@ -354,17 +357,17 @@ async fn test_store_write_back() {
 
     let mut block = Block::new_zeroed(BLOCK_SIZE_IN_BYTES);
     block.set_dirty(true);
-    cache.store(0, 0, block).await;
-    let loaded = cache.load(0, 0).await;
+    cache.store(0, 0, block).await.unwrap();
+    let loaded = cache.load(0, 0).await.unwrap();
     assert!(loaded.is_some());
 
-    cache.flush(0).await;
+    cache.flush(0).await.unwrap();
     assert!(backend.contains(0, 0));
 
     let mut block = Block::new_zeroed(BLOCK_SIZE_IN_BYTES);
     block.set_dirty(true);
-    cache.store(0, 1, block).await;
-    cache.flush_all().await;
+    cache.store(0, 1, block).await.unwrap();
+    cache.flush_all().await.unwrap();
     assert!(backend.contains(0, 1));
 }
 
@@ -376,18 +379,18 @@ async fn test_evict_dirty_block_with_write_back() {
     for block_id in 0..CACHE_CAPACITY_IN_BLOCKS {
         let mut block = Block::from_slice(BLOCK_SIZE_IN_BYTES, BLOCK_CONTENT);
         block.set_dirty(true); // This will be done by `StorageManager` in productive env
-        cache.store(0, block_id, block).await;
+        cache.store(0, block_id, block).await.unwrap();
     }
 
     // Clear the backend
-    backend.remove(0).await;
+    backend.remove(0).await.unwrap();
 
     // LRU in cache: (0, 0) -> (0, 1) -> (0, 2) -> (0, 3)
     // All of them are dirty
     // Insert a block, and (0, 0) will be evicted.
     // Because it's dirty, it will be dropped directly
     let block = Block::from_slice(BLOCK_SIZE_IN_BYTES, BLOCK_CONTENT);
-    cache.store(1, 0, block).await;
+    cache.store(1, 0, block).await.unwrap();
     assert!(backend.contains(0, 0));
 }
 
@@ -398,17 +401,17 @@ async fn test_truncate_write_back() {
     for block_id in 0..4 {
         let mut block = Block::from_slice(BLOCK_SIZE_IN_BYTES, BLOCK_CONTENT);
         block.set_dirty(true);
-        cache.store(0, block_id, block).await;
+        cache.store(0, block_id, block).await.unwrap();
     }
 
-    cache.flush(0).await;
+    cache.flush(0).await.unwrap();
 
-    cache.truncate(0, 4, 2, BLOCK_SIZE_IN_BYTES).await;
+    cache.truncate(0, 4, 2, BLOCK_SIZE_IN_BYTES).await.unwrap();
 
     assert!(backend.contains(0, 2));
     assert!(backend.contains(0, 3));
 
-    cache.flush(0).await;
+    cache.flush(0).await.unwrap();
     assert!(!backend.contains(0, 2));
     assert!(!backend.contains(0, 3));
 }
@@ -420,27 +423,27 @@ async fn test_truncate_in_middle_write_back() {
     for block_id in 0..8 {
         let mut block = Block::from_slice(BLOCK_SIZE_IN_BYTES, BLOCK_CONTENT);
         block.set_dirty(true);
-        cache.store(0, block_id, block).await;
+        cache.store(0, block_id, block).await.unwrap();
     }
 
-    cache.flush(0).await;
+    cache.flush(0).await.unwrap();
 
-    cache.truncate(0, 8, 2, BLOCK_SIZE_IN_BYTES).await;
-
-    let mut block = Block::from_slice(BLOCK_SIZE_IN_BYTES, BLOCK_CONTENT);
-    block.set_dirty(true);
-    cache.store(0, 4, block).await;
+    cache.truncate(0, 8, 2, BLOCK_SIZE_IN_BYTES).await.unwrap();
 
     let mut block = Block::from_slice(BLOCK_SIZE_IN_BYTES, BLOCK_CONTENT);
     block.set_dirty(true);
-    cache.store(0, 6, block).await;
+    cache.store(0, 4, block).await.unwrap();
 
-    let loaded = cache.load(0, 4).await.unwrap();
+    let mut block = Block::from_slice(BLOCK_SIZE_IN_BYTES, BLOCK_CONTENT);
+    block.set_dirty(true);
+    cache.store(0, 6, block).await.unwrap();
+
+    let loaded = cache.load(0, 4).await.unwrap().unwrap();
     assert_eq!(loaded.as_slice(), BLOCK_CONTENT);
-    let loaded = cache.load(0, 6).await.unwrap();
+    let loaded = cache.load(0, 6).await.unwrap().unwrap();
     assert_eq!(loaded.as_slice(), BLOCK_CONTENT);
 
-    cache.flush(0).await;
+    cache.flush(0).await.unwrap();
     assert!(!backend.contains(0, 2));
     assert!(!backend.contains(0, 3));
     assert!(backend.contains(0, 4));
@@ -456,18 +459,18 @@ async fn test_truncate_fill_write_back() {
     for block_id in 0..8 {
         let mut block = Block::from_slice(BLOCK_SIZE_IN_BYTES, BLOCK_CONTENT);
         block.set_dirty(true);
-        cache.store(0, block_id, block).await;
+        cache.store(0, block_id, block).await.unwrap();
     }
-    cache.flush(0).await;
+    cache.flush(0).await.unwrap();
 
-    cache.truncate(0, 8, 2, 4).await;
+    cache.truncate(0, 8, 2, 4).await.unwrap();
 
-    let loaded = backend.load(0, 1).await.unwrap();
+    let loaded = backend.load(0, 1).await.unwrap().unwrap();
     assert_eq!(loaded.as_slice(), BLOCK_CONTENT);
 
-    cache.flush(0).await;
+    cache.flush(0).await.unwrap();
 
-    let loaded = backend.load(0, 1).await.unwrap();
+    let loaded = backend.load(0, 1).await.unwrap().unwrap();
     assert_eq!(loaded.as_slice(), b"foo \0\0\0\0");
 }
 
@@ -478,7 +481,8 @@ async fn test_write_back_task() {
     for block_id in 0..CACHE_CAPACITY_IN_BLOCKS {
         cache
             .store(0, block_id, Block::new_zeroed(BLOCK_SIZE_IN_BYTES))
-            .await;
+            .await
+            .unwrap();
     }
 
     // The first tow blocks should be evicted.

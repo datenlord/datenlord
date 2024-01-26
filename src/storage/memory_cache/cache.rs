@@ -11,6 +11,7 @@ use tracing::warn;
 
 use super::write_back_task::Command;
 use crate::async_fuse::fuse::protocol::INum;
+use crate::storage::error::StorageResult;
 use crate::storage::policy::EvictPolicy;
 use crate::storage::{Block, BlockCoordinate, BlockId, Storage};
 
@@ -25,6 +26,9 @@ type FileCache = Arc<RwLock<StdHashMap<BlockId, Block>>>;
 
 /// The file-level truncate record.
 type TruncateRecord = Arc<RwLock<BTreeSet<BlockId>>>;
+
+/// A receiver for storage result, used for write back task.
+type StorageResultReceiver = oneshot::Receiver<StorageResult<()>>;
 
 /// The in-memory cache, implemented with lockfree hashmaps.
 #[derive(Debug)]
@@ -41,7 +45,7 @@ pub struct MemoryCache<P, S> {
     write_through: bool,
     /// The pending written-back blocks.
     /// TODO: receive a `Result` to handle the error
-    pending_write_back: RwLock<StdHashMap<INum, Vec<oneshot::Receiver<()>>>>,
+    pending_write_back: RwLock<StdHashMap<INum, Vec<StorageResultReceiver>>>,
     /// A command sender for write back task
     command_sender: mpsc::Sender<Command>,
     /// A set of blocks to be removed, when a file is truncated.
@@ -153,7 +157,7 @@ impl<P, S> MemoryCache<P, S> {
     }
 
     /// Try to evict a block from the cache to backend, if needed.
-    pub(super) async fn evict(&self)
+    pub(super) async fn evict(&self) -> StorageResult<()>
     where
         P: EvictPolicy<BlockCoordinate> + Send + Sync,
         S: Storage + Send + Sync,
@@ -178,7 +182,7 @@ impl<P, S> MemoryCache<P, S> {
                     // enabled, it must have been shown in the backend.
                     // Therefore, we can just drop it when evicting.
                     if !self.write_through || !evicted.dirty() {
-                        self.backend.store(ino, block_id, evicted).await;
+                        self.backend.store(ino, block_id, evicted).await?;
                     }
                 }
 
@@ -187,12 +191,19 @@ impl<P, S> MemoryCache<P, S> {
                 }
             }
         }
+
+        Ok(())
     }
 
     /// Write a block into the cache without writing through.
     ///
     /// A block may be evicted to the backend.
-    async fn write_block_into_cache(&self, ino: INum, block_id: usize, block: Block)
+    async fn write_block_into_cache(
+        &self,
+        ino: INum,
+        block_id: usize,
+        block: Block,
+    ) -> StorageResult<()>
     where
         P: EvictPolicy<BlockCoordinate> + Send + Sync,
         S: Storage + Send + Sync,
@@ -218,7 +229,7 @@ impl<P, S> MemoryCache<P, S> {
                 break file_cache;
             }
             drop(file_cache);
-            self.evict().await;
+            self.evict().await?;
             retry_times = retry_times.overflow_add(1);
         };
 
@@ -233,6 +244,8 @@ impl<P, S> MemoryCache<P, S> {
                 truncate_record.remove(&block_id);
             }
         }
+
+        Ok(())
     }
 }
 
@@ -242,23 +255,29 @@ where
     P: EvictPolicy<BlockCoordinate> + Send + Sync,
     S: Storage + Send + Sync,
 {
-    async fn load_from_self(&self, ino: INum, block_id: usize) -> Option<Block> {
+    async fn load_from_self(&self, ino: INum, block_id: usize) -> StorageResult<Option<Block>> {
         let res = self.get_block_from_cache(ino, block_id).await;
         if res.is_some() {
             self.policy.touch(&BlockCoordinate(ino, block_id));
         }
-        res
+        Ok(res)
     }
 
-    async fn load_from_backend(&self, ino: INum, block_id: usize) -> Option<Block> {
+    async fn load_from_backend(&self, ino: INum, block_id: usize) -> StorageResult<Option<Block>> {
         self.backend.load(ino, block_id).await
     }
 
-    async fn cache_block_from_backend(&self, ino: INum, block_id: usize, block: Block) {
-        self.write_block_into_cache(ino, block_id, block).await;
+    async fn cache_block_from_backend(
+        &self,
+        ino: INum,
+        block_id: usize,
+        block: Block,
+    ) -> StorageResult<()> {
+        self.write_block_into_cache(ino, block_id, block).await?;
+        Ok(())
     }
 
-    async fn store(&self, ino: INum, block_id: usize, input: Block) {
+    async fn store(&self, ino: INum, block_id: usize, input: Block) -> StorageResult<()> {
         let start_offset = input.start();
         let end_offset = input.end();
 
@@ -270,42 +289,44 @@ where
         // overwritten directly.
         if start_offset == 0 && end_offset == self.block_size {
             self.write_block_into_cache(ino, block_id, input.clone())
-                .await;
+                .await?;
 
             if self.write_through {
-                self.backend.store(ino, block_id, input).await;
+                self.backend.store(ino, block_id, input).await?;
             } else {
                 self.send_block_to_write_back_task(ino, block_id, input)
                     .await;
             }
 
-            return;
+            return Ok(());
         }
 
         let dirty_block = if let Some(inserted) = self.update_block(ino, block_id, &input).await {
             self.policy.touch(&BlockCoordinate(ino, block_id));
             inserted
         } else {
-            let mut to_be_inserted = self.backend.load(ino, block_id).await.unwrap_or_else(|| {
+            let mut to_be_inserted = self.backend.load(ino, block_id).await?.unwrap_or_else(|| {
                 // Create a new block for write, despite the offset is larger than file size.
                 Block::new_zeroed(self.block_size)
             });
             merge_two_blocks(&input, &mut to_be_inserted);
             self.write_block_into_cache(ino, block_id, to_be_inserted.clone())
-                .await;
+                .await?;
 
             to_be_inserted
         };
 
         if self.write_through {
-            self.backend.store(ino, block_id, dirty_block).await;
+            self.backend.store(ino, block_id, dirty_block).await?;
         } else {
             self.send_block_to_write_back_task(ino, block_id, dirty_block)
                 .await;
         }
+
+        Ok(())
     }
 
-    async fn remove(&self, ino: INum) {
+    async fn remove(&self, ino: INum) -> StorageResult<()> {
         if !self.write_through {
             let mut pending_write_back = self.pending_write_back.write().await;
             if self
@@ -319,15 +340,19 @@ where
             pending_write_back.remove(&ino);
         }
         self.map.remove(&ino);
-        self.backend.remove(ino).await;
+        self.backend.remove(ino).await?;
+
+        Ok(())
     }
 
-    async fn invalidate(&self, ino: INum) {
+    async fn invalidate(&self, ino: INum) -> StorageResult<()> {
         self.map.remove(&ino);
-        self.backend.invalidate(ino).await;
+        self.backend.invalidate(ino).await?;
+
+        Ok(())
     }
 
-    async fn flush(&self, ino: INum) {
+    async fn flush(&self, ino: INum) -> StorageResult<()> {
         if !self.write_through {
             {
                 let mut pending_write_back = self.pending_write_back.write().await;
@@ -338,7 +363,9 @@ where
                         #[allow(clippy::let_underscore_must_use)]
                         for receiver in file_level_pending {
                             // It's not a big deal that the oneshot sender is closed.
-                            let _: Result<(), oneshot::error::RecvError> = receiver.await;
+                            if let Ok(Err(e)) = receiver.await {
+                                return Err(e);
+                            }
                         }
                     }
                 } else {
@@ -355,8 +382,8 @@ where
                 let mut truncate_record = truncate_record.write_owned().await;
 
                 if truncate_record.is_empty() {
-                    self.backend.flush(ino).await;
-                    return;
+                    self.backend.flush(ino).await?;
+                    return Ok(());
                 }
 
                 let mut truncate_record_iter = truncate_record.iter().copied();
@@ -370,7 +397,7 @@ where
                     if block_id != truncate_from {
                         self.backend
                             .truncate(ino, truncate_from, truncate_to, self.block_size)
-                            .await;
+                            .await?;
                         truncate_to = block_id;
                     }
 
@@ -379,15 +406,17 @@ where
                 let truncate_from = last_block.overflow_add(1);
                 self.backend
                     .truncate(ino, truncate_from, truncate_to, self.block_size)
-                    .await;
+                    .await?;
                 truncate_record.clear();
             }
         }
 
-        self.backend.flush(ino).await;
+        self.backend.flush(ino).await?;
+
+        Ok(())
     }
 
-    async fn flush_all(&self) {
+    async fn flush_all(&self) -> StorageResult<()> {
         if !self.write_through {
             let mut pending_write_back = self.pending_write_back.write().await;
             let (sender, receiver) = oneshot::channel();
@@ -402,10 +431,18 @@ where
             }
         }
 
-        self.backend.flush_all().await;
+        self.backend.flush_all().await?;
+
+        Ok(())
     }
 
-    async fn truncate(&self, ino: INum, from_block: usize, to_block: usize, fill_start: usize) {
+    async fn truncate(
+        &self,
+        ino: INum,
+        from_block: usize,
+        to_block: usize,
+        fill_start: usize,
+    ) -> StorageResult<()> {
         debug_assert!(from_block >= to_block);
 
         let fill_block_with_zeros = |block: &mut Block| {
@@ -445,11 +482,11 @@ where
                         drop(file_cache);
                         let mut block = self
                             .load_from_backend(ino, fill_block_id)
-                            .await
+                            .await?
                             .unwrap_or_else(|| Block::new_zeroed(self.block_size));
                         fill_block_with_zeros(&mut block);
                         self.write_block_into_cache(ino, fill_block_id, block.clone())
-                            .await;
+                            .await?;
                         self.send_block_to_write_back_task(ino, fill_block_id, block)
                             .await;
                     } else {
@@ -463,7 +500,7 @@ where
         if self.write_through {
             self.backend
                 .truncate(ino, from_block, to_block, fill_start)
-                .await;
+                .await?;
         } else {
             let mut truncate_record = {
                 let guard = &pin();
@@ -478,5 +515,7 @@ where
 
             truncate_record.extend(to_block..from_block);
         }
+
+        Ok(())
     }
 }
