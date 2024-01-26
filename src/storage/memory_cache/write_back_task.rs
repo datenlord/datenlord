@@ -10,11 +10,15 @@ use datenlord::config::SoftLimit;
 use hashlink::LinkedHashSet;
 use tokio::select;
 use tokio::sync::{mpsc, oneshot};
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 use crate::async_fuse::fuse::protocol::INum;
+use crate::storage::error::StorageResult;
 use crate::storage::policy::EvictPolicy;
 use crate::storage::{Block, BlockCoordinate, BlockId, MemoryCache, Storage};
+
+/// A sender to send the storage result back to the caller.
+type StorageResultSender = oneshot::Sender<StorageResult<()>>;
 
 /// A command sent from `MemoryCache` to the write back task.
 pub enum Command {
@@ -26,7 +30,7 @@ pub enum Command {
         block: Block,
         /// A sender to notify the `MemoryCache` that the block has been flushed
         /// to the backend
-        sender: oneshot::Sender<()>,
+        sender: StorageResultSender,
     },
     /// Flush the file specified immediately.
     Flush(INum),
@@ -59,7 +63,7 @@ fn calculate_period(
 /// Flush a pending block to the backend
 async fn flush_a_block<P, S>(
     lru_queue: &mut LinkedHashSet<BlockCoordinate>,
-    pending_blocks: &mut HashMap<INum, HashMap<BlockId, (Block, oneshot::Sender<()>)>>,
+    pending_blocks: &mut HashMap<INum, HashMap<BlockId, (Block, StorageResultSender)>>,
     cache: Arc<MemoryCache<P, S>>,
 ) where
     P: EvictPolicy<BlockCoordinate> + Send + Sync,
@@ -70,9 +74,9 @@ async fn flush_a_block<P, S>(
             .get_mut(&ino)
             .and_then(|file_level_pending_blocks| file_level_pending_blocks.remove(&block_id))
         {
-            cache.backend().store(ino, block_id, block).await;
-            sender.send(()).unwrap_or_else(|()| {
-                warn!("The receiver of pending block is closed unexpectedly.");
+            let res = cache.backend().store(ino, block_id, block).await;
+            sender.send(res).unwrap_or_else(|res| {
+                error!("The receiver is closed unexpectedly, with storage result: {res:?}");
             });
         }
     }
@@ -81,7 +85,7 @@ async fn flush_a_block<P, S>(
 /// Flush a file, write blocks of it to backend immediately.
 async fn flush_file<P, S>(
     lru_queue: &mut LinkedHashSet<BlockCoordinate>,
-    pending_blocks: &mut HashMap<INum, HashMap<BlockId, (Block, oneshot::Sender<()>)>>,
+    pending_blocks: &mut HashMap<INum, HashMap<BlockId, (Block, StorageResultSender)>>,
     cache: Arc<MemoryCache<P, S>>,
     ino: INum,
 ) where
@@ -93,9 +97,9 @@ async fn flush_file<P, S>(
 
     if let Some(file_level_pending_blocks) = file_level_pending_blocks {
         for (block_id, (block, sender)) in file_level_pending_blocks {
-            cache.backend().store(ino, block_id, block).await;
-            sender.send(()).unwrap_or_else(|()| {
-                warn!("The receiver of pending block is closed unexpectedly.");
+            let res = cache.backend().store(ino, block_id, block).await;
+            sender.send(res).unwrap_or_else(|res| {
+                error!("The receiver is closed unexpectedly, with storage result: {res:?}");
             });
         }
     }
@@ -104,7 +108,7 @@ async fn flush_file<P, S>(
 /// Flush all files, write blocks of them to backend immediately.
 async fn flush_all<P, S>(
     lru_queue: &mut LinkedHashSet<BlockCoordinate>,
-    pending_blocks: &mut HashMap<INum, HashMap<BlockId, (Block, oneshot::Sender<()>)>>,
+    pending_blocks: &mut HashMap<INum, HashMap<BlockId, (Block, StorageResultSender)>>,
     cache: Arc<MemoryCache<P, S>>,
     sender: oneshot::Sender<()>,
 ) where
@@ -117,9 +121,9 @@ async fn flush_all<P, S>(
 
     for (ino, file_level_pending_blocks) in blocks {
         for (block_id, (block, block_sender)) in file_level_pending_blocks {
-            cache.backend().store(ino, block_id, block).await;
-            block_sender.send(()).unwrap_or_else(|()| {
-                warn!("The receiver of pending block is closed unexpectedly.");
+            let res = cache.backend().store(ino, block_id, block).await;
+            block_sender.send(res).unwrap_or_else(|res| {
+                error!("The receiver is closed unexpectedly, with storage result: {res:?}");
             });
         }
     }
@@ -148,7 +152,9 @@ where
 
         // Soft limitation is hit, do evict.
         if size.overflow_mul(b).overflow_div(a) > capacity {
-            cache.evict().await;
+            if let Err(e) = cache.evict().await {
+                error!("Failed to evict a block: {e}");
+            }
         } else {
             break;
         }
@@ -176,7 +182,7 @@ pub(super) async fn run_write_back_task<P, S>(
     let mut interval = tokio::time::interval(period);
 
     let mut lru_queue = LinkedHashSet::new();
-    let mut pending_blocks: HashMap<INum, HashMap<BlockId, (Block, oneshot::Sender<()>)>> =
+    let mut pending_blocks: HashMap<INum, HashMap<BlockId, (Block, StorageResultSender)>> =
         HashMap::new();
 
     loop {

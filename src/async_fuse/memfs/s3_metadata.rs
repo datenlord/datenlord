@@ -202,7 +202,7 @@ impl MetaData for S3MetaData {
             }
 
             // Flush the storage cache
-            self.storage.flush(ino).await;
+            self.storage.flush(ino).await?;
 
             let mut file_attr = inode.get_attr();
 
@@ -278,7 +278,7 @@ impl MetaData for S3MetaData {
         let data = self
             .storage
             .load(ino, offset.cast(), read_size.cast(), mtime)
-            .await;
+            .await?;
 
         Ok(data)
     }
@@ -395,7 +395,7 @@ impl MetaData for S3MetaData {
                                     dirty_attr.size.cast(),
                                     applied_attr.mtime,
                                 )
-                                .await;
+                                .await?;
                             self.local_mtime_and_size
                                 .insert(ino, (new_mtime, dirty_attr.size));
                             dirty_attr.mtime = new_mtime;
@@ -494,7 +494,7 @@ impl MetaData for S3MetaData {
             } else {
                 if let SFlag::S_IFREG = child_node.get_type() {
                     self.local_mtime_and_size.remove(&child_ino);
-                    self.storage.remove(child_ino).await;
+                    self.storage.remove(child_ino).await?;
                 }
                 txn.delete(&KeyType::INum2Node(child_ino));
             }
@@ -563,7 +563,7 @@ impl MetaData for S3MetaData {
         let is_deleted = if node.get_open_count() == 0 && node.get_lookup_count() == 0 {
             if let SFlag::S_IFREG = node.get_type() {
                 let ino = node.get_ino();
-                self.storage.remove(ino).await;
+                self.storage.remove(ino).await?;
                 self.local_mtime_and_size.remove(&ino);
             }
             true
@@ -863,7 +863,7 @@ impl MetaData for S3MetaData {
             local_mtime_and_size.unwrap_or((file_attr.mtime, file_attr.size))
         };
 
-        let new_mtime = self.storage.store(ino, offset.cast(), &data, mtime).await;
+        let new_mtime = self.storage.store(ino, offset.cast(), &data, mtime).await?;
         let written_size = data.len();
         let new_size = file_size.max(offset.cast::<u64>().overflow_add(written_size.cast()));
 

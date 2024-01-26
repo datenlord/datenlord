@@ -7,6 +7,7 @@ use async_trait::async_trait;
 use clippy_utilities::OverflowArithmetic;
 use parking_lot::Mutex;
 
+use super::error::StorageResult;
 use super::{Block, Storage};
 use crate::async_fuse::fuse::protocol::INum;
 
@@ -59,23 +60,24 @@ impl MemoryStorage {
 
 #[async_trait]
 impl Storage for MemoryStorage {
-    async fn load_from_self(&self, ino: INum, block_id: usize) -> Option<Block> {
+    async fn load_from_self(&self, ino: INum, block_id: usize) -> StorageResult<Option<Block>> {
         self.sleep().await;
-        self.inner
+        Ok(self
+            .inner
             .lock()
             .get(&ino)
-            .and_then(|file| file.get(&block_id).cloned())
+            .and_then(|file| file.get(&block_id).cloned()))
     }
 
-    async fn load_from_backend(&self, _: INum, _: usize) -> Option<Block> {
-        None
+    async fn load_from_backend(&self, _: INum, _: usize) -> StorageResult<Option<Block>> {
+        Ok(None)
     }
 
-    async fn cache_block_from_backend(&self, _: INum, _: usize, _: Block) {
+    async fn cache_block_from_backend(&self, _: INum, _: usize, _: Block) -> StorageResult<()> {
         unreachable!("`MemoryStorage` does not have a backend.");
     }
 
-    async fn store(&self, ino: INum, block_id: usize, block: Block) {
+    async fn store(&self, ino: INum, block_id: usize, block: Block) -> StorageResult<()> {
         self.sleep().await;
         self.inner
             .lock()
@@ -84,25 +86,37 @@ impl Storage for MemoryStorage {
             .entry(block_id)
             .or_insert_with(|| Block::new_zeroed(self.block_size))
             .update(&block);
+        Ok(())
     }
 
-    async fn remove(&self, ino: INum) {
+    async fn remove(&self, ino: INum) -> StorageResult<()> {
         self.sleep().await;
         self.inner.lock().remove(&ino);
+        Ok(())
     }
 
-    async fn invalidate(&self, _: INum) {}
+    async fn invalidate(&self, _: INum) -> StorageResult<()> {
+        Ok(())
+    }
 
-    async fn flush(&self, ino: INum) {
+    async fn flush(&self, ino: INum) -> StorageResult<()> {
         self.flushed.lock().insert(ino);
+        Ok(())
     }
 
-    async fn flush_all(&self) {
+    async fn flush_all(&self) -> StorageResult<()> {
         let inner = self.inner.lock();
         self.flushed.lock().extend(inner.keys());
+        Ok(())
     }
 
-    async fn truncate(&self, ino: INum, from_block: usize, to_block: usize, fill_start: usize) {
+    async fn truncate(
+        &self,
+        ino: INum,
+        from_block: usize,
+        to_block: usize,
+        fill_start: usize,
+    ) -> StorageResult<()> {
         debug_assert!(from_block >= to_block);
 
         self.sleep().await;
@@ -115,7 +129,7 @@ impl Storage for MemoryStorage {
                 let fill_block_id = to_block.overflow_sub(1);
                 if let Some(block) = file_cache.get_mut(&fill_block_id) {
                     if fill_start >= block.end() {
-                        return;
+                        return Ok(());
                     }
 
                     block.set_start(block.start().min(fill_start));
@@ -135,6 +149,8 @@ impl Storage for MemoryStorage {
                 }
             }
         }
+
+        Ok(())
     }
 }
 
@@ -155,37 +171,38 @@ mod tests {
         let block = Block::from_slice(BLOCK_SIZE_IN_BYTES, BLOCK_CONTENT);
 
         let storage = MemoryStorage::new(BLOCK_SIZE_IN_BYTES, Duration::from_millis(0));
-        storage.store(ino, block_id, block).await;
+        storage.store(ino, block_id, block).await.unwrap();
         assert!(storage.contains(ino, block_id));
 
-        let block = storage.load(ino, block_id).await.unwrap();
+        let block = storage.load(ino, block_id).await.unwrap().unwrap();
         assert_eq!(block.as_slice(), BLOCK_CONTENT);
 
         assert!(!storage.contains(ino, 1));
-        let block = storage.load(ino, 1).await;
+        let block = storage.load(ino, 1).await.unwrap();
         assert!(block.is_none());
 
         assert!(!storage.contains(1, 1));
-        let block = storage.load(1, 1).await;
+        let block = storage.load(1, 1).await.unwrap();
         assert!(block.is_none());
 
-        storage.remove(ino).await;
+        storage.remove(ino).await.unwrap();
         assert!(!storage.contains(ino, block_id));
-        let block = storage.load(ino, block_id).await;
+        let block = storage.load(ino, block_id).await.unwrap();
         assert!(block.is_none());
     }
 
     #[tokio::test]
     async fn test_flush() {
         let storage = MemoryStorage::new(BLOCK_SIZE_IN_BYTES, Duration::from_millis(0));
-        storage.flush(0).await;
+        storage.flush(0).await.unwrap();
         assert!(storage.flushed(0));
         assert!(!storage.flushed(0));
 
         storage
             .store(0, 0, Block::new_zeroed(BLOCK_SIZE_IN_BYTES))
-            .await;
-        storage.flush_all().await;
+            .await
+            .unwrap();
+        storage.flush_all().await.unwrap();
         assert!(storage.flushed(0));
         assert!(!storage.flushed(0));
     }
@@ -193,7 +210,7 @@ mod tests {
     #[tokio::test]
     async fn test_invalid() {
         let storage = MemoryStorage::new(BLOCK_SIZE_IN_BYTES, Duration::from_millis(0));
-        storage.invalidate(0).await;
+        storage.invalidate(0).await.unwrap();
     }
 
     #[tokio::test]
@@ -202,11 +219,15 @@ mod tests {
         for block_id in 0..8 {
             storage
                 .store(0, block_id, Block::new_zeroed(BLOCK_SIZE_IN_BYTES))
-                .await;
+                .await
+                .unwrap();
             assert!(storage.contains(0, block_id));
         }
 
-        storage.truncate(0, 8, 4, BLOCK_SIZE_IN_BYTES).await;
+        storage
+            .truncate(0, 8, 4, BLOCK_SIZE_IN_BYTES)
+            .await
+            .unwrap();
         for block_id in 0..4 {
             assert!(storage.contains(0, block_id));
         }
@@ -221,16 +242,17 @@ mod tests {
         for block_id in 0..8 {
             storage
                 .store(0, block_id, Block::new_zeroed(BLOCK_SIZE_IN_BYTES))
-                .await;
+                .await
+                .unwrap();
             assert!(storage.contains(0, block_id));
         }
 
         let block = Block::from_slice(BLOCK_SIZE_IN_BYTES, BLOCK_CONTENT);
 
-        storage.store(0, 3, block).await;
-        storage.truncate(0, 8, 4, 4).await;
+        storage.store(0, 3, block).await.unwrap();
+        storage.truncate(0, 8, 4, 4).await.unwrap();
 
-        let loaded = storage.load(0, 3).await.unwrap();
+        let loaded = storage.load(0, 3).await.unwrap().unwrap();
         assert_eq!(loaded.as_slice(), b"foo \0\0\0\0");
     }
 
@@ -240,10 +262,10 @@ mod tests {
 
         let block = Block::from_slice(BLOCK_SIZE_IN_BYTES, BLOCK_CONTENT);
 
-        storage.store(0, 0, block).await;
-        storage.truncate(0, 1, 1, 4).await;
+        storage.store(0, 0, block).await.unwrap();
+        storage.truncate(0, 1, 1, 4).await.unwrap();
 
-        let loaded = storage.load(0, 0).await.unwrap();
+        let loaded = storage.load(0, 0).await.unwrap().unwrap();
         assert_eq!(loaded.as_slice(), b"foo \0\0\0\0");
     }
 
@@ -254,7 +276,7 @@ mod tests {
         let block = Block::from_slice(BLOCK_SIZE_IN_BYTES, BLOCK_CONTENT);
 
         let now = Instant::now();
-        storage.store(0, 0, block).await;
+        storage.store(0, 0, block).await.unwrap();
         let duration = now.elapsed();
 
         assert!(duration.as_millis() >= 50);
@@ -265,7 +287,7 @@ mod tests {
         let storage = MemoryStorage::new(BLOCK_SIZE_IN_BYTES, Duration::from_millis(50));
 
         let now = Instant::now();
-        let _loaded = storage.load(0, 0).await;
+        let _loaded = storage.load(0, 0).await.unwrap();
         let duration = now.elapsed();
 
         assert!(duration.as_millis() >= 50);
@@ -276,7 +298,7 @@ mod tests {
         let storage = MemoryStorage::new(BLOCK_SIZE_IN_BYTES, Duration::from_millis(50));
 
         let now = Instant::now();
-        storage.remove(0).await;
+        storage.remove(0).await.unwrap();
         let duration = now.elapsed();
 
         assert!(duration.as_millis() >= 50);
@@ -287,7 +309,7 @@ mod tests {
         let storage = MemoryStorage::new(BLOCK_SIZE_IN_BYTES, Duration::from_millis(50));
 
         let now = Instant::now();
-        storage.truncate(0, 1, 1, 4).await;
+        storage.truncate(0, 1, 1, 4).await.unwrap();
         let duration = now.elapsed();
 
         assert!(duration.as_millis() >= 50);
