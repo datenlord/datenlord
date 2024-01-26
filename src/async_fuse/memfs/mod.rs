@@ -8,7 +8,6 @@ mod id_alloc_used;
 #[macro_use]
 pub mod kv_engine;
 /// Dir entry module
-#[allow(dead_code)]
 pub mod direntry;
 /// fs metadata module
 mod metadata;
@@ -27,7 +26,6 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use async_trait::async_trait;
-use cache::IoMemBlock;
 use clippy_utilities::Cast;
 use datenlord::config::StorageConfig;
 use dist::server::CacheServer;
@@ -38,6 +36,7 @@ pub use s3_metadata::S3MetaData;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, error, info, warn};
 
+use self::cache::StorageManager;
 use self::kv_engine::KVEngineType;
 use crate::async_fuse::fuse::file_system::FileSystem;
 use crate::async_fuse::fuse::fuse_reply::{
@@ -178,26 +177,35 @@ impl<M: MetaData + Send + Sync + 'static> MemFs<M> {
         kv_engine: Arc<KVEngineType>,
         node_id: &str,
         storage_config: &StorageConfig,
+        storage: StorageManager<<M as MetaData>::St>,
     ) -> anyhow::Result<Self> {
         // print the args
         debug!(
             "mount_point: ${}$, capacity: ${}$, ip: ${}$, port: ${}$, node_id: {}, storage_config: {:?}",
             mount_point, capacity, ip, port, node_id, storage_config
         );
-        let (metadata, server) =
-            M::new(capacity, ip, port, kv_engine, node_id, storage_config).await?;
+        let (metadata, server) = M::new(
+            capacity,
+            ip,
+            port,
+            kv_engine,
+            node_id,
+            storage_config,
+            storage,
+        )
+        .await?;
         Ok(Self { metadata, server })
     }
 
     /// Read content check
-    fn read_helper(content: Vec<IoMemBlock>, size: usize) -> DatenLordResult<Vec<IoMemBlock>> {
+    fn read_helper<A: AsIoVec>(content: Vec<A>, size: usize) -> DatenLordResult<Vec<A>> {
         if content.iter().filter(|c| !c.can_convert()).count() > 0 {
             return build_error_result_from_errno(
                 Errno::EIO,
                 "The content is out of scope".to_owned(),
             );
         }
-        let content_total_len: usize = content.iter().map(IoMemBlock::len).sum();
+        let content_total_len: usize = content.iter().map(<A as AsIoVec>::len).sum();
         debug!("read {} data, expected size {}", content_total_len, size);
         Ok(content)
     }
