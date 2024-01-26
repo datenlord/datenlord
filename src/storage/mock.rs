@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use clippy_utilities::OverflowArithmetic;
 use parking_lot::Mutex;
 
-use super::error::StorageResult;
+use super::error::{StorageError, StorageOperation, StorageResult};
 use super::{Block, Storage};
 use crate::async_fuse::fuse::protocol::INum;
 
@@ -85,7 +85,11 @@ impl Storage for MemoryStorage {
             .or_default()
             .entry(block_id)
             .or_insert_with(|| Block::new_zeroed(self.block_size))
-            .update(&block);
+            .update(&block)
+            .map_err(|e| StorageError {
+                operation: StorageOperation::Store { ino, block_id },
+                inner: e,
+            })?;
         Ok(())
     }
 
@@ -157,9 +161,11 @@ impl Storage for MemoryStorage {
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
+    use clippy_utilities::OverflowArithmetic;
     use tokio::time::Instant;
 
     use super::{Block, Duration, MemoryStorage, Storage};
+    use crate::storage::{StorageError, StorageErrorInner, StorageOperation};
 
     const BLOCK_SIZE_IN_BYTES: usize = 8;
     const BLOCK_CONTENT: &[u8; BLOCK_SIZE_IN_BYTES] = b"foo bar ";
@@ -313,5 +319,28 @@ mod tests {
         let duration = now.elapsed();
 
         assert!(duration.as_millis() >= 50);
+    }
+
+    #[tokio::test]
+    async fn test_out_of_range() {
+        let storage = MemoryStorage::new(BLOCK_SIZE_IN_BYTES, Duration::from_millis(50));
+
+        storage
+            .store(0, 0, Block::new_zeroed(BLOCK_SIZE_IN_BYTES))
+            .await
+            .unwrap();
+        let err = storage
+            .store(0, 0, Block::new_zeroed(BLOCK_SIZE_IN_BYTES.overflow_mul(2)))
+            .await
+            .unwrap_err();
+
+        assert!(matches!(
+            err,
+            StorageError {
+                operation: StorageOperation::Store { ino: 0, block_id: 0 },
+                inner: StorageErrorInner::OutOfRange { maximum, found }
+            }
+            if maximum == BLOCK_SIZE_IN_BYTES && found == BLOCK_SIZE_IN_BYTES.overflow_mul(2)
+        ));
     }
 }

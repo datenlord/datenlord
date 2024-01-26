@@ -13,12 +13,14 @@ use super::write_back_task::Command;
 use crate::async_fuse::fuse::protocol::INum;
 use crate::storage::error::StorageResult;
 use crate::storage::policy::EvictPolicy;
-use crate::storage::{Block, BlockCoordinate, BlockId, Storage};
+use crate::storage::{
+    Block, BlockCoordinate, BlockId, Storage, StorageError, StorageErrorInner, StorageOperation,
+};
 
 /// Merge the content from `src` to `dst`. This will set `dst` to be dirty.
-fn merge_two_blocks(src: &Block, dst: &mut Block) {
+fn merge_two_blocks(src: &Block, dst: &mut Block) -> Result<(), StorageErrorInner> {
     dst.set_dirty(true);
-    dst.update(src);
+    dst.update(src)
 }
 
 /// The file-level cache.
@@ -44,7 +46,6 @@ pub struct MemoryCache<P, S> {
     /// A flag that if the `MemoryCache` runs in writing-through policy
     write_through: bool,
     /// The pending written-back blocks.
-    /// TODO: receive a `Result` to handle the error
     pending_write_back: RwLock<StdHashMap<INum, Vec<StorageResultReceiver>>>,
     /// A command sender for write back task
     command_sender: mpsc::Sender<Command>,
@@ -132,11 +133,19 @@ impl<P, S> MemoryCache<P, S> {
     /// Update a block into cache in place.
     /// Return the block if success (the destination existing in cache),
     /// otherwise returns `None`.
-    async fn update_block(&self, ino: INum, block_id: usize, src: &Block) -> Option<Block> {
+    async fn update_block(
+        &self,
+        ino: INum,
+        block_id: usize,
+        src: &Block,
+    ) -> StorageResult<Option<Block>> {
         let res = if let Some(file_cache) = self.get_file_cache(ino) {
             let mut file_cache = file_cache.write().await;
             if let Some(block) = file_cache.get_mut(&block_id) {
-                merge_two_blocks(src, block);
+                merge_two_blocks(src, block).map_err(|e| StorageError {
+                    operation: StorageOperation::Store { ino, block_id },
+                    inner: e,
+                })?;
                 if !self.write_through {
                     if let Some(truncate_record) = {
                         let guard = pin();
@@ -153,7 +162,7 @@ impl<P, S> MemoryCache<P, S> {
         } else {
             None
         };
-        res
+        Ok(res)
     }
 
     /// Try to evict a block from the cache to backend, if needed.
@@ -281,8 +290,15 @@ where
         let start_offset = input.start();
         let end_offset = input.end();
 
-        // TODO: Return error instead of panic.
-        assert!(end_offset <= self.block_size, "out of range");
+        if end_offset > self.block_size {
+            return Err(StorageError {
+                operation: StorageOperation::Store { ino, block_id },
+                inner: StorageErrorInner::OutOfRange {
+                    maximum: self.block_size,
+                    found: end_offset,
+                },
+            });
+        }
 
         // If the writing block is the whole block, then there is no need to fetch a
         // block from cache or backend, as the block in storage will be
@@ -301,7 +317,7 @@ where
             return Ok(());
         }
 
-        let dirty_block = if let Some(inserted) = self.update_block(ino, block_id, &input).await {
+        let dirty_block = if let Some(inserted) = self.update_block(ino, block_id, &input).await? {
             self.policy.touch(&BlockCoordinate(ino, block_id));
             inserted
         } else {
@@ -309,7 +325,10 @@ where
                 // Create a new block for write, despite the offset is larger than file size.
                 Block::new_zeroed(self.block_size)
             });
-            merge_two_blocks(&input, &mut to_be_inserted);
+            merge_two_blocks(&input, &mut to_be_inserted).map_err(|e| StorageError {
+                operation: StorageOperation::Store { ino, block_id },
+                inner: e,
+            })?;
             self.write_block_into_cache(ino, block_id, to_be_inserted.clone())
                 .await?;
 

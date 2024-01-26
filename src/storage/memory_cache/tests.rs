@@ -9,7 +9,9 @@ use datenlord::config::SoftLimit;
 use super::{MemoryCache, MemoryCacheBuilder};
 use crate::storage::mock::MemoryStorage;
 use crate::storage::policy::LruPolicy;
-use crate::storage::{Block, BlockCoordinate, Storage};
+use crate::storage::{
+    Block, BlockCoordinate, Storage, StorageError, StorageErrorInner, StorageOperation,
+};
 
 const BLOCK_SIZE_IN_BYTES: usize = 8;
 const BLOCK_CONTENT: &[u8; BLOCK_SIZE_IN_BYTES] = b"foo bar ";
@@ -330,12 +332,28 @@ async fn test_truncate_in_the_same_block() {
 }
 
 #[tokio::test]
-#[should_panic(expected = "out of range")]
 async fn test_write_out_of_range() {
     let (_, cache) = prepare_empty_storage();
 
     let block = Block::new_zeroed(16);
-    cache.store(0, 0, block).await.unwrap();
+    let res = cache.store(0, 0, block).await.unwrap_err();
+
+    assert!(
+        matches!(
+            res,
+            StorageError {
+                operation: StorageOperation::Store {
+                    ino: 0,
+                    block_id: 0
+                },
+                inner: StorageErrorInner::OutOfRange {
+                    maximum: 8,
+                    found: 16
+                },
+            }
+        ),
+        "Mismatched: res={res:?}"
+    );
 }
 
 fn prepare_empty_storage_with_write_back() -> (Arc<MemoryStorage>, Arc<MemoryCacheType>) {

@@ -7,6 +7,7 @@ use aligned_utils::bytes::AlignedBytes;
 use clippy_utilities::OverflowArithmetic;
 use nix::sys::uio::IoVec;
 
+use super::StorageErrorInner;
 use crate::async_fuse::fuse::fuse_reply::{AsIoVec, CouldBeAsIoVecList};
 use crate::async_fuse::fuse::protocol::INum;
 
@@ -204,9 +205,13 @@ impl Block {
     /// range of `self` will be extended.
     ///
     /// This method calls `make_mut_slice` internal.
-    pub fn update(&mut self, other: &Block) {
-        // TODO: Return error instead of panic.
-        assert!(self.inner.len() >= other.end, "out of range");
+    pub fn update(&mut self, other: &Block) -> Result<(), StorageErrorInner> {
+        if self.inner.len() < other.end {
+            return Err(StorageErrorInner::OutOfRange {
+                maximum: self.inner.len(),
+                found: other.end,
+            });
+        }
 
         self.start = other.start.min(self.start);
         self.end = other.end.max(self.end);
@@ -218,6 +223,8 @@ impl Block {
             .get_mut(write_start..write_end)
             .unwrap_or_else(|| unreachable!("Write range is checked not to be out of range."))
             .copy_from_slice(other.as_slice());
+
+        Ok(())
     }
 
     /// Checks if the block is dirty.
@@ -253,6 +260,7 @@ impl AsIoVec for Block {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use clippy_utilities::OverflowArithmetic;
 
@@ -362,7 +370,7 @@ mod tests {
 
     #[test]
     #[should_panic(expected = "out of range")]
-    fn test_io_block_out_of_range() {
+    fn test_block_out_of_range() {
         let _block = Block::from_slice_with_range(4, 0, 8, b"abcd");
     }
 
@@ -379,7 +387,7 @@ mod tests {
         let mut block_dest = Block::new_zeroed(BLOCK_SIZE_IN_BYTES);
         let block_src = Block::from_slice_with_range(BLOCK_SIZE_IN_BYTES, 0, 4, BLOCK_CONTENT);
 
-        block_dest.update(&block_src);
+        block_dest.update(&block_src).unwrap();
 
         assert_eq!(block_dest.as_slice(), b"foo \0\0\0\0");
     }
@@ -389,7 +397,7 @@ mod tests {
         let mut block_dest = Block::new_zeroed_with_range(BLOCK_SIZE_IN_BYTES, 4, 4);
         let block_src = Block::from_slice_with_range(BLOCK_SIZE_IN_BYTES, 0, 4, BLOCK_CONTENT);
 
-        block_dest.update(&block_src);
+        block_dest.update(&block_src).unwrap();
 
         assert_eq!(block_dest.start(), 0);
         assert_eq!(block_dest.end(), 4);
@@ -401,7 +409,7 @@ mod tests {
         let mut block_dest = Block::new_zeroed_with_range(BLOCK_SIZE_IN_BYTES, 4, 4);
         let block_src = Block::from_slice_with_range(BLOCK_SIZE_IN_BYTES, 4, 7, BLOCK_CONTENT);
 
-        block_dest.update(&block_src);
+        block_dest.update(&block_src).unwrap();
 
         assert_eq!(block_dest.start(), 4);
         assert_eq!(block_dest.end(), 7);
@@ -413,7 +421,7 @@ mod tests {
         let mut block_dest = Block::new_zeroed_with_range(BLOCK_SIZE_IN_BYTES, 4, 4);
         let block_src = Block::from_slice_with_range(BLOCK_SIZE_IN_BYTES, 0, 7, BLOCK_CONTENT);
 
-        block_dest.update(&block_src);
+        block_dest.update(&block_src).unwrap();
 
         assert_eq!(block_dest.start(), 0);
         assert_eq!(block_dest.end(), 7);
