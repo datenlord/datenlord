@@ -9,7 +9,6 @@ use std::time::SystemTime;
 use async_trait::async_trait;
 use clippy_utilities::{Cast, OverflowArithmetic};
 use datenlord::config::StorageConfig;
-use futures::future::{BoxFuture, FutureExt};
 use nix::errno::Errno;
 use nix::fcntl::OFlag;
 use nix::sys::stat::{Mode, SFlag};
@@ -116,50 +115,31 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
         }
     }
 
-    #[allow(dead_code)]
     /// Deserialize `S3Node` from `SerialNode`
-    // This function returns a `BoxFuture due` to its potential for recursive calls
-    // (`get_node_from_kv_engine()`). Recursive async functions in Rust can lead
-    // to 'infinite type' compilation errors because each async function
-    // is compiled into a unique type that must know its size at compile time. When
-    // the function is recursive, it embeds its own type within it for every
-    // recursive call, leading to an 'infinite' type size.
-    //
-    // By using a BoxFuture, we can heap-allocate the future, which avoids these
-    // issues and provides a type of a known size (the size of a pointer),
-    // regardless of the depth or complexity of the recursion within the future.
-    // This is crucial in enabling recursive async behavior in Rust.
-    // For more information, see https://rust-lang.github.io/async-book/07_workarounds/04_recursion.html
-    pub fn from_serial_node(
-        serial_node: SerialNode,
-        meta: &S3MetaData<S>,
-    ) -> BoxFuture<'_, DatenLordResult<S3Node<S>>> {
-        async move {
-            let dir_data = serial_node
-                .data
-                .into_s3_nodedata(Arc::clone(&meta.data_cache));
-            info!(
-                "ino={}, open_count={}, lookup_count={},attr={:?}",
-                serial_node.attr.get_ino(),
-                serial_node.open_count,
-                serial_node.lookup_count,
-                serial_node.attr
-            );
-            Ok(Self {
-                s3_backend: Arc::clone(&meta.s3_backend),
-                parent: serial_node.parent,
-                name: serial_node.name,
-                attr: Arc::new(RwLock::new(serial_to_file_attr(&serial_node.attr))),
-                data: dir_data,
-                open_count: AtomicI64::new(serial_node.open_count),
-                lookup_count: AtomicI64::new(serial_node.lookup_count),
-                deferred_deletion: AtomicBool::new(serial_node.deferred_deletion),
-                kv_engine: Arc::clone(&meta.kv_engine),
-                k8s_node_id: Arc::clone(&meta.node_id),
-                storage_config: Arc::clone(&meta.storage_config),
-            })
+    pub fn from_serial_node(serial_node: SerialNode, meta: &S3MetaData<S>) -> S3Node<S> {
+        let dir_data = serial_node
+            .data
+            .into_s3_nodedata(Arc::clone(&meta.data_cache));
+        info!(
+            "ino={}, open_count={}, lookup_count={},attr={:?}",
+            serial_node.attr.get_ino(),
+            serial_node.open_count,
+            serial_node.lookup_count,
+            serial_node.attr
+        );
+        Self {
+            s3_backend: Arc::clone(&meta.s3_backend),
+            parent: serial_node.parent,
+            name: serial_node.name,
+            attr: Arc::new(RwLock::new(serial_to_file_attr(&serial_node.attr))),
+            data: dir_data,
+            open_count: AtomicI64::new(serial_node.open_count),
+            lookup_count: AtomicI64::new(serial_node.lookup_count),
+            deferred_deletion: AtomicBool::new(serial_node.deferred_deletion),
+            kv_engine: Arc::clone(&meta.kv_engine),
+            k8s_node_id: Arc::clone(&meta.node_id),
+            storage_config: Arc::clone(&meta.storage_config),
         }
-        .boxed()
     }
 
     /// This function is used to create a new `SerialNode` by `S3Node`
@@ -210,19 +190,6 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3Node<S> {
             k8s_node_id: Arc::clone(&parent.k8s_node_id),
             storage_config: Arc::clone(&parent.storage_config),
         }
-    }
-
-    /// Set node attribute
-    pub(crate) fn _set_attr(&mut self, new_attr: FileAttr, _broadcast: bool) -> FileAttr {
-        let old_attr = self.get_attr();
-        match self.data {
-            S3NodeData::Directory => debug_assert_eq!(new_attr.kind, SFlag::S_IFDIR),
-            S3NodeData::RegFile(..) => debug_assert_eq!(new_attr.kind, SFlag::S_IFREG),
-            S3NodeData::SymLink(..) => debug_assert_eq!(new_attr.kind, SFlag::S_IFLNK),
-        }
-
-        self.attr.write().clone_from(&new_attr);
-        old_attr
     }
 
     #[allow(clippy::unused_self)]

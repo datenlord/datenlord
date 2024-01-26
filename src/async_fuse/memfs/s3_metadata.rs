@@ -958,10 +958,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
         ))?;
 
         // deserialize node
-        Ok(match raw_data {
-            Some(r) => Some(r.into_s3_node(self).await?),
-            None => None,
-        })
+        Ok(raw_data.map(|value| value.into_s3_node(self)))
     }
 
     /// Get the local cache of `mtime` and `size` of a file.
@@ -1036,7 +1033,7 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
                 function_name!()
             ))?;
         match inode {
-            Some(inode) => Ok(Some(inode.into_s3_node(self).await?)),
+            Some(inode) => Ok(Some(inode.into_s3_node(self))),
             None => Ok(None),
         }
     }
@@ -1047,15 +1044,15 @@ impl<S: S3BackEnd + Send + Sync + 'static> S3MetaData<S> {
         txn: &mut T,
         ino: INum,
     ) -> DatenLordResult<S3Node<S>> {
-        txn.get(&KeyType::INum2Node(ino))
+        Ok(txn
+            .get(&KeyType::INum2Node(ino))
             .await
             .add_context(format!(
                 "{}() failed to get i-node of ino={ino} from kv engine",
                 function_name!()
             ))?
             .ok_or_else(|| build_inconsistent_fs!(ino))? // inode must exist
-            .into_s3_node(self)
-            .await
+            .into_s3_node(self))
     }
 
     /// Helper function to get dir entry from `MetaTxn`
