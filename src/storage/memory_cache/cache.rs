@@ -3,6 +3,7 @@
 use std::collections::{BTreeSet, HashMap as StdHashMap};
 use std::sync::Arc;
 
+use anyhow::anyhow;
 use async_trait::async_trait;
 use clippy_utilities::OverflowArithmetic;
 use lockfree_cuckoohash::{pin, LockFreeCuckooHash as HashMap};
@@ -220,11 +221,14 @@ impl<P, S> MemoryCache<P, S> {
         let mut retry_times = 0;
 
         let mut file_cache = loop {
-            // TODO: returns error instead of `panic`.
-            assert!(
-                retry_times < Self::INSERT_RETRY_LIMMIT,
-                "Gave up retrying to insert a block into the cache."
-            );
+            if retry_times >= Self::INSERT_RETRY_LIMMIT {
+                let inner = anyhow!("Gave up retrying to insert a block into the cache.").into();
+                let err = StorageError {
+                    operation: StorageOperation::Store { ino, block_id },
+                    inner,
+                };
+                return Err(err);
+            }
 
             let file_cache = {
                 let guard = pin();

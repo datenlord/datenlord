@@ -68,4 +68,7 @@ pub enum StorageErrorInner {
     /// An error caused by [`opendal::Error`]
     #[error("{0}")]
     OpenDalError(#[from] opendal::Error),
+    /// A internal storage error.
+    #[error("{0}")]
+    Internal(#[from] anyhow::Error),
 }
