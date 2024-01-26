@@ -271,18 +271,11 @@ impl MetaTxn for EtcdTxn {
         // This unwrap will not panic.
         let value = serde_json::to_vec(value)
             .unwrap_or_else(|value| panic!("failed to serialize value to json,value = {value:?}"));
-        #[cfg(debug)]
-        {
-            let prev_value = self.buffer.get(&key);
-            if let Some(prev_value) = prev_value {
-                // If the value is None, it means that the key is deleted in the same
-                // transaction.
-                assert!(
-                    prev_value.is_none(),
-                    "set the key={key:?} after delete in the same transaction"
-                );
-            }
-        }
+        // Set same key twice in the same transaction is not allowed.
+        debug_assert!(
+            self.buffer.get(&key).is_none(),
+            "set the key={key:?} twice in the same transaction"
+        );
         self.buffer.insert(key, Some(value));
     }
 

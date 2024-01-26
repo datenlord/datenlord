@@ -754,12 +754,12 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
             return Ok(());
         }
 
-        let build_enoent = |name: &str, parent: INum, child_name: &str| {
+        let build_enoent = |name: &str, parent: INum| {
             build_error_result_from_errno(
                 Errno::ENOENT,
                 format!(
                     "exchange_pre_check() failed to find child entry of name={name:?} \
-                        under parent directory ino={parent} and name={child_name:?}"
+                        under parent directory ino={parent}"
                 ),
             )
         };
@@ -776,7 +776,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
                     .await?
                 {
                     None => {
-                        return build_enoent(old_name, old_parent, old_name);
+                        return build_enoent(old_name, old_parent);
                     }
                     Some(old_entry) => {
                         self.check_sticky_bit(&context, &old_parent_node, &old_entry, txn.as_mut())
@@ -802,11 +802,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
                     // new_name does not exist under new_parent
                     if exchange {
                         // exchange is true, new name must exist
-                        return build_enoent(
-                            new_name,
-                            new_parent,
-                            new_parent_node.lock().await.get_name(),
-                        );
+                        return build_enoent(new_name, new_parent);
                     }
                     // exchange is false, so we can do rename directly
                     // Remove from old_parent and insert into new_parent
@@ -823,17 +819,13 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
                 Some(new_entry) => {
                     // new_name exists under new_parent
                     if exchange {
-                        // exchange is true, so we can do exchange
-                        txn.delete(&KeyType::DirEntryKey((old_parent, old_name.into())));
-                        txn.delete(&KeyType::DirEntryKey((new_parent, new_name.into())));
-
                         // old_name -> new_entry
                         // new_name -> old_entry
                         txn.set(
                             &KeyType::DirEntryKey((old_parent, old_name.into())),
                             &ValueType::DirEntry(DirEntry::new(
                                 new_entry.ino(),
-                                new_name.into(),
+                                old_name.into(),
                                 new_entry.file_type(),
                             )),
                         );
@@ -841,7 +833,7 @@ impl<S: S3BackEnd + Sync + Send + 'static> MetaData for S3MetaData<S> {
                             &KeyType::DirEntryKey((new_parent, new_name.into())),
                             &ValueType::DirEntry(DirEntry::new(
                                 old_entry.ino(),
-                                old_name.into(),
+                                new_name.into(),
                                 old_entry.file_type(),
                             )),
                         );
