@@ -69,7 +69,6 @@ impl OpenFiles {
     /// Retrieves an `OpenFile` by its inode number.
     ///
     /// Panics if the file is not found.
-    #[allow(clippy::unwrap_used)] // We should panic here
     pub fn get(&self, inum: INum) -> OpenFile {
         self.try_get(inum)
             .unwrap_or_else(|| panic!("Couldn't find the open file with inum={inum}"))
@@ -80,9 +79,15 @@ impl OpenFiles {
     /// Returns a reference to the newly opened file.
     pub fn open(&self, inum: INum, attr: FileAttr) -> OpenFile {
         let mut inner = self.inner.lock();
-        let open_file = Arc::new(RwLock::new(RawOpenFile { attr, open_cnt: 1 }));
-        inner.open_files.insert(inum, Arc::clone(&open_file));
-        open_file
+        let open_file = inner
+            .open_files
+            .entry(inum)
+            .or_insert_with(|| Arc::new(RwLock::new(RawOpenFile { attr, open_cnt: 0 })));
+        {
+            let mut open_file = open_file.write();
+            open_file.open_cnt += 1;
+        }
+        Arc::clone(open_file)
     }
 
     /// Tries to open a file if it is already in the collection.
@@ -105,7 +110,6 @@ impl OpenFiles {
     /// if its open count reaches zero. Returns the `OpenFile` if it was
     /// removed, or `None` if it remains open.
     #[allow(clippy::unwrap_in_result)]
-    #[allow(clippy::unwrap_used)]
     pub fn close(&self, inum: INum) -> Option<OpenFile> {
         let mut inner = self.inner.lock();
         let open_count = {
