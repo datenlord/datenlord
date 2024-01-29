@@ -41,10 +41,6 @@ pub trait Node: Sized {
     fn set_attr(&mut self, new_attr: FileAttr) -> FileAttr;
     /// Get node attr and increase lookup count
     fn lookup_attr(&self) -> FileAttr;
-    /// Get node open count
-    fn get_open_count(&self) -> i64;
-    /// Decrease node open count
-    fn dec_open_count(&self) -> i64;
     /// Get node lookup count
     fn get_lookup_count(&self) -> i64;
     /// Decrease node lookup count
@@ -92,10 +88,6 @@ pub trait Node: Sized {
     fn get_symlink_target(&self) -> &Path;
     /// Get fs stat
     async fn statefs(&self) -> DatenLordResult<StatFsParam>;
-    /// Close file
-    async fn close(&mut self);
-    /// Close dir
-    async fn closedir(&self);
     /// Mark as deferred deletion
     fn mark_deferred_deletion(&self);
     /// If node is marked as deferred deletion

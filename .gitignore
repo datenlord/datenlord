@@ -19,3 +19,5 @@ bench.log
 .vscode/*
 localtest.sh
 *.log
+
+tests/fstest_dir/fstest

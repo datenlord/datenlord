@@ -104,14 +104,14 @@ fn test_directory_manipulation_rust_way(mount_dir: &Path) -> anyhow::Result<()> 
     info!("test Directory manipulation Rust style");
 
     // Fixed directory name
-    let dir_name = "test_dir";
+    let dir_name = "dir_manipulation_test_dir";
     let dir_path = Path::new(mount_dir).join(dir_name);
 
     // Create directory
     fs::create_dir_all(&dir_path)?;
 
     // Fixed file name
-    let file_name = "tmp.txt";
+    let file_name = "dir_manipulation_tmp.txt";
     let file_path = dir_path.join(file_name);
 
     // Write to file

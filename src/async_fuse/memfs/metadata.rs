@@ -78,9 +78,6 @@ pub trait MetaData {
     /// Helper function of fsync
     async fn fsync_helper(&self, ino: u64, fh: u64, datasync: bool) -> DatenLordResult<()>;
 
-    /// Try to delete node that is marked as deferred deletion
-    async fn delete_check(&self, node: &Self::N) -> DatenLordResult<bool>;
-
     /// Helper function to write data
     async fn write_helper(
         &self,
