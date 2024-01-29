@@ -1,16 +1,19 @@
 use std::fs::Permissions;
+use std::io::ErrorKind as StdErrorKind;
 use std::path::Path;
 
+use opendal::ErrorKind as OpenDalErrorKind;
 use smol::fs::unix::PermissionsExt;
 use tokio::fs;
 
 use super::{prepare_backend, BACKEND_ROOT, BLOCK_CONTENT, BLOCK_SIZE_IN_BYTES};
-use crate::storage::{Block, Storage};
+use crate::storage::{Block, Storage, StorageError, StorageErrorInner, StorageOperation};
 
-async fn cleanup(backend_root: &str) {
-    if fs::try_exists(backend_root).await.unwrap() {
+async fn cleanup(backend_root: impl AsRef<Path>) {
+    if fs::try_exists(&backend_root).await.unwrap() {
+        let root = backend_root.as_ref().to_str().unwrap();
         std::process::Command::new("chmod")
-            .args(["-R", "755", backend_root])
+            .args(["-R", "755", root])
             .output()
             .unwrap();
         fs::remove_dir_all(backend_root).await.unwrap();
@@ -18,7 +21,6 @@ async fn cleanup(backend_root: &str) {
 }
 
 #[tokio::test]
-#[should_panic(expected = "backend")]
 async fn test_failed_load() {
     let backend_root = format!("{BACKEND_ROOT}/failed_load");
     cleanup(&backend_root).await;
@@ -39,11 +41,23 @@ async fn test_failed_load() {
         .unwrap();
 
     // Permission Denied
-    let _: Option<Block> = backend.load(0, 0).await.unwrap();
+    let err = backend.load(0, 0).await.unwrap_err();
+
+    cleanup(&backend_root).await;
+    assert!(
+        matches!(
+            err,
+            StorageError {
+                operation: StorageOperation::Load { ino: 0, block_id: 0 },
+                inner: StorageErrorInner::StdIoError(ref e),
+            }
+            if e.kind() == StdErrorKind::PermissionDenied
+        ),
+        "Mismatched: error={err:?}"
+    );
 }
 
 #[tokio::test]
-#[should_panic(expected = "backend")]
 async fn test_failed_store() {
     let backend_root = format!("{BACKEND_ROOT}/failed_store");
     cleanup(&backend_root).await;
@@ -59,14 +73,26 @@ async fn test_failed_store() {
         .unwrap();
 
     // Permission Denied
-    backend
+    let err = backend
         .store(0, 0, Block::new_zeroed(BLOCK_SIZE_IN_BYTES))
         .await
-        .unwrap();
+        .unwrap_err();
+
+    cleanup(&backend_root).await;
+    assert!(
+        matches!(
+            err,
+            StorageError {
+                operation: StorageOperation::Store { ino: 0, block_id: 0 },
+                inner: StorageErrorInner::OpenDalError(ref e),
+            }
+            if e.kind() == OpenDalErrorKind::PermissionDenied
+        ),
+        "Mismatched: error={err:?}"
+    );
 }
 
 #[tokio::test]
-#[should_panic(expected = "backend")]
 async fn test_failed_remove() {
     let backend_root = format!("{BACKEND_ROOT}/failed_remove");
     cleanup(&backend_root).await;
@@ -87,11 +113,23 @@ async fn test_failed_remove() {
         .unwrap();
 
     // Permission Denied
-    backend.remove(0).await.unwrap();
+    let err = backend.remove(0).await.unwrap_err();
+
+    cleanup(&backend_root).await;
+    assert!(
+        matches!(
+            err,
+            StorageError {
+                operation: StorageOperation::Remove { ino: 0 },
+                inner: StorageErrorInner::OpenDalError(ref e),
+            }
+            if e.kind() == OpenDalErrorKind::PermissionDenied
+        ),
+        "Mismatched: error={err:?}"
+    );
 }
 
 #[tokio::test]
-#[should_panic(expected = "truncate")]
 async fn test_failed_truncate() {
     let backend_root = format!("{BACKEND_ROOT}/failed_truncate");
     cleanup(&backend_root).await;
@@ -114,5 +152,18 @@ async fn test_failed_truncate() {
         .unwrap();
 
     // Permission Denied
-    backend.truncate(0, 8, 4, 4).await.unwrap();
+    let err = backend.truncate(0, 8, 4, 4).await.unwrap_err();
+
+    cleanup(&backend_root).await;
+    assert!(
+        matches!(
+            err,
+            StorageError {
+                operation: StorageOperation::Truncate { ino: 0, from: 8, to: 4 },
+                inner: StorageErrorInner::OpenDalError(ref e),
+            }
+            if e.kind() == OpenDalErrorKind::PermissionDenied
+        ),
+        "Mismatched: error={err:?}"
+    );
 }
