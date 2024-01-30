@@ -34,11 +34,8 @@ jobs:
     - uses: rustsec/audit-check@v1.4.1
       with:
         token: ${{ secrets.GITHUB_TOKEN }}
-        # `RUSTSEC-2020-0071`: Temporarily ignore the time/chrono segfault since there are no known
-        # good wordarounds and they are used by dependent libraries also.
-        #
         # `RUSTSEC-2023-0071`: `rsa` crate depended by `opendal`. There are no better solutions now.
-        ignore: RUSTSEC-2020-0071,RUSTSEC-2023-0052,RUSTSEC-2023-0071
+        ignore: RUSTSEC-2023-0071
 
   check:
     name: Check

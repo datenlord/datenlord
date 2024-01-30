@@ -1,15 +1,11 @@
 //! The implementation of user space file system
-pub mod cache;
-mod dir;
-/// distributed communication module
-pub mod dist;
 mod fs_util;
+pub mod id_alloc;
 mod id_alloc_used;
 /// The KV engine module
 #[macro_use]
 pub mod kv_engine;
 /// Dir entry module
-#[allow(dead_code)]
 pub mod direntry;
 /// fs metadata module
 mod metadata;
@@ -17,8 +13,7 @@ mod node;
 /// fs metadata with S3 backend module
 mod s3_metadata;
 mod s3_node;
-/// S3 backend wrapper module
-pub mod s3_wrapper;
+
 /// Serializable types module
 pub mod serial;
 
@@ -28,10 +23,8 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use async_trait::async_trait;
-use cache::IoMemBlock;
 use clippy_utilities::Cast;
 use datenlord::config::StorageConfig;
-use dist::server::CacheServer;
 pub use metadata::MetaData;
 use nix::errno::Errno;
 use nix::sys::stat::SFlag;
@@ -50,15 +43,13 @@ use crate::async_fuse::fuse::protocol::{INum, FUSE_ROOT_ID};
 use crate::async_fuse::memfs::metadata::ReqContext;
 use crate::async_fuse::util::build_error_result_from_errno;
 use crate::common::error::{Context, DatenLordResult};
+use crate::storage::StorageManager;
 
 /// In-memory file system
 #[derive(Debug)]
 pub struct MemFs<M: MetaData + Send + Sync + 'static> {
     /// Fs metadata
     metadata: Arc<M>,
-    #[allow(dead_code)]
-    /// Cache server
-    server: Option<CacheServer>,
 }
 
 /// Set attribute parameters
@@ -174,31 +165,29 @@ impl<M: MetaData + Send + Sync + 'static> MemFs<M> {
     pub async fn new(
         mount_point: &str,
         capacity: usize,
-        ip: &str,
-        port: u16,
         kv_engine: Arc<KVEngineType>,
         node_id: &str,
         storage_config: &StorageConfig,
+        storage: StorageManager<<M as MetaData>::S>,
     ) -> anyhow::Result<Self> {
         // print the args
         debug!(
-            "mount_point: ${}$, capacity: ${}$, ip: ${}$, port: ${}$, node_id: {}, storage_config: {:?}",
-            mount_point, capacity, ip, port, node_id, storage_config
+            "mount_point: ${}$, capacity: ${}$, node_id: {}, storage_config: {:?}",
+            mount_point, capacity, node_id, storage_config
         );
-        let (metadata, server) =
-            M::new(capacity, ip, port, kv_engine, node_id, storage_config).await?;
-        Ok(Self { metadata, server })
+        let metadata = M::new(kv_engine, node_id, storage).await?;
+        Ok(Self { metadata })
     }
 
     /// Read content check
-    fn read_helper(content: Vec<IoMemBlock>, size: usize) -> DatenLordResult<Vec<IoMemBlock>> {
+    fn read_helper<A: AsIoVec>(content: Vec<A>, size: usize) -> DatenLordResult<Vec<A>> {
         if content.iter().filter(|c| !c.can_convert()).count() > 0 {
             return build_error_result_from_errno(
                 Errno::EIO,
                 "The content is out of scope".to_owned(),
             );
         }
-        let content_total_len: usize = content.iter().map(IoMemBlock::len).sum();
+        let content_total_len: usize = content.iter().map(<A as AsIoVec>::len).sum();
         debug!("read {} data, expected size {}", content_total_len, size);
         Ok(content)
     }

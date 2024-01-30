@@ -11,8 +11,8 @@ use tracing::warn;
 
 use super::write_back_task::Command;
 use crate::async_fuse::fuse::protocol::INum;
-use crate::async_fuse::memfs::cache::policy::EvictPolicy;
-use crate::async_fuse::memfs::cache::{Block, BlockCoordinate, BlockId, Storage};
+use crate::storage::policy::EvictPolicy;
+use crate::storage::{Block, BlockCoordinate, BlockId, Storage};
 
 /// Merge the content from `src` to `dst`. This will set `dst` to be dirty.
 fn merge_two_blocks(src: &Block, dst: &mut Block) {
@@ -306,6 +306,18 @@ where
     }
 
     async fn remove(&self, ino: INum) {
+        if !self.write_through {
+            let mut pending_write_back = self.pending_write_back.write().await;
+            if self
+                .command_sender
+                .send(Command::Cancel(ino))
+                .await
+                .is_err()
+            {
+                warn!("Write back task is closed unexpectedly.");
+            }
+            pending_write_back.remove(&ino);
+        }
         self.map.remove(&ino);
         self.backend.remove(ino).await;
     }

@@ -233,16 +233,16 @@ impl EtcdTxn {
 
 #[async_trait]
 impl MetaTxn for EtcdTxn {
-    async fn get(&mut self, key: &KeyType) -> DatenLordResult<Option<ValueType>> {
+    async fn get(&mut self, key_arg: &KeyType) -> DatenLordResult<Option<ValueType>> {
         // first check if the key is in buffer (write op)
-        let key = key.to_string_key().into_bytes();
+        let key = key_arg.to_string_key().into_bytes();
         assert!(
             self.buffer.get(&key).is_none(),
-            "get the key after write in the same transaction"
+            "get the key={key_arg:?} after write in the same transaction"
         );
         assert!(
             self.version_map.get(&key).is_none(),
-            "get the key twice in the same transaction"
+            "get the key={key_arg:?} twice in the same transaction"
         );
         // Fetch the value from `etcd`
         let resp = self
@@ -271,6 +271,11 @@ impl MetaTxn for EtcdTxn {
         // This unwrap will not panic.
         let value = serde_json::to_vec(value)
             .unwrap_or_else(|value| panic!("failed to serialize value to json,value = {value:?}"));
+        // Set same key twice in the same transaction is not allowed.
+        debug_assert!(
+            self.buffer.get(&key).is_none(),
+            "set the key={key:?} twice in the same transaction"
+        );
         self.buffer.insert(key, Some(value));
     }
 
@@ -499,7 +504,7 @@ mod test {
         assert_eq!(result.len(), 3);
         for value in result {
             let dir_entry = value.into_dir_entry();
-            assert_eq!(dir_entry.inum(), 1);
+            assert_eq!(dir_entry.ino(), 1);
             assert!(child_names.contains(&dir_entry.name()));
             assert_eq!(dir_entry.file_type(), FileType::Dir);
         }
@@ -509,7 +514,7 @@ mod test {
         assert_eq!(result.len(), 3);
         for value in result {
             let dir_entry = value.into_dir_entry();
-            assert_eq!(dir_entry.inum(), 2);
+            assert_eq!(dir_entry.ino(), 2);
             assert!(child_names.contains(&dir_entry.name()));
             assert_eq!(dir_entry.file_type(), FileType::Dir);
         }

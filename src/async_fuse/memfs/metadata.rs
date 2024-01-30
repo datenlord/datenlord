@@ -3,19 +3,19 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use datenlord::config::StorageConfig;
 
-use super::cache::IoMemBlock;
-use super::dist::server::CacheServer;
 use super::kv_engine::KVEngineType;
 use super::node::Node;
 use super::{CreateParam, RenameParam, SetAttrParam};
 use crate::async_fuse::fuse::fuse_reply::{ReplyDirectory, StatFsParam};
 use crate::async_fuse::fuse::protocol::{FuseAttr, INum};
 use crate::common::error::DatenLordResult;
+use crate::storage::{Block, Storage, StorageManager};
 
 pub(crate) mod error {
     //! A module containing helper functions to build errors.
+
+    use tracing::error;
 
     use super::INum;
     use crate::common::error::DatenLordError;
@@ -23,6 +23,10 @@ pub(crate) mod error {
     /// A helper function to build [`DatenLordError::InconsistentFS`] with
     /// default context.
     pub(crate) fn build_inconsistent_fs(ino: INum, fn_name: &str) -> DatenLordError {
+        error!(
+            "{}() found fs is inconsistent, the inode ino={} is not in cache.",
+            fn_name, ino
+        );
         DatenLordError::InconsistentFS {
             context: vec![format!(
                 "{ino}() found fs is inconsistent, the inode ino={fn_name} is not in cache.",
@@ -46,16 +50,16 @@ pub trait MetaData {
     /// Node type
     type N: Node + Send + Sync + 'static;
 
+    /// Storage type
+    type S: Storage + Send + Sync + 'static;
+
     /// Create `MetaData`
     #[allow(clippy::too_many_arguments)]
     async fn new(
-        capacity: usize,
-        ip: &str,
-        port: u16,
         kv_engine: Arc<KVEngineType>,
         node_id: &str,
-        storage_config: &StorageConfig,
-    ) -> DatenLordResult<(Arc<Self>, Option<CacheServer>)>;
+        storage: StorageManager<Self::S>,
+    ) -> DatenLordResult<Arc<Self>>;
 
     /// Helper function to create node
     async fn mknod(&self, param: CreateParam) -> DatenLordResult<(Duration, FuseAttr, u64)>;
@@ -117,7 +121,7 @@ pub trait MetaData {
         fh: u64,
         offset: i64,
         size: u32,
-    ) -> DatenLordResult<Vec<IoMemBlock>>;
+    ) -> DatenLordResult<Vec<Block>>;
 
     /// Helper function to flush node by ino
     async fn flush(&self, ino: u64, fh: u64) -> DatenLordResult<()>;

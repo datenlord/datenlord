@@ -46,11 +46,30 @@ impl TryFrom<SFlag> for FileType {
     }
 }
 
+impl From<FileType> for SFlag {
+    /// Converts a `FileType` value into an `SFlag`.
+    ///
+    /// # Arguments
+    ///
+    /// * `value` - The `FileType` value representing file type at the OS level.
+    ///
+    /// # Returns
+    ///
+    /// * `SFlag` - The `SFlag` value corresponding to the `FileType`.
+    fn from(value: FileType) -> Self {
+        match value {
+            FileType::Dir => SFlag::S_IFDIR,
+            FileType::File => SFlag::S_IFREG,
+            FileType::Symlink => SFlag::S_IFLNK,
+        }
+    }
+}
+
 /// Represents a directory entry in a filesystem.
 #[derive(Debug, Serialize, Deserialize, Eq, PartialEq)]
 pub struct DirEntry {
     /// The inode number of the child
-    inum: INum,
+    ino: INum,
     /// The name of the child
     name: String,
     /// The type of the child
@@ -72,7 +91,7 @@ impl DirEntry {
     #[must_use]
     pub fn new(inum: INum, name: String, file_type: FileType) -> Self {
         Self {
-            inum,
+            ino: inum,
             name,
             file_type,
         }
@@ -80,8 +99,8 @@ impl DirEntry {
 
     /// Returns the inode number of the file or directory.
     #[must_use]
-    pub fn inum(&self) -> INum {
-        self.inum
+    pub fn ino(&self) -> INum {
+        self.ino
     }
 
     /// Returns the name of the file or directory.

@@ -8,8 +8,8 @@ use datenlord::config::SoftLimit;
 use tokio::sync::mpsc;
 
 use super::{write_back_task, MemoryCache};
-use crate::async_fuse::memfs::cache::policy::EvictPolicy;
-use crate::async_fuse::memfs::cache::{BlockCoordinate, Storage};
+use crate::storage::policy::EvictPolicy;
+use crate::storage::{BlockCoordinate, Storage};
 
 /// The default limitation of the command queue of write back task.
 const DEFAULT_COMMAND_QUEUE_LIMIT: usize = 1000;

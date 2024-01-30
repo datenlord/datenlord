@@ -8,6 +8,7 @@ use nix::fcntl::OFlag;
 use nix::sys::stat::{Mode, SFlag};
 use tracing::debug;
 
+use super::SetAttrParam;
 use crate::async_fuse::fuse::protocol::{FuseAttr, INum};
 use crate::async_fuse::util::build_error_result_from_errno;
 use crate::common::error::DatenLordResult;
@@ -66,6 +67,123 @@ impl FileAttr {
             gid: 0,
             rdev: 0,
         }
+    }
+
+    /// Precheck before set attr
+    pub(crate) fn setattr_precheck(
+        &self,
+        param: &SetAttrParam,
+        user_id: u32,
+        group_id: u32,
+    ) -> DatenLordResult<Option<FileAttr>> {
+        let cur_attr = *self;
+        let mut dirty_attr = cur_attr;
+
+        let st_now = SystemTime::now();
+        let mut attr_changed = false;
+
+        let check_permission = || -> DatenLordResult<()> {
+            if NEED_CHECK_PERM {
+                //  owner is root check the user_id
+                if cur_attr.uid == 0 && user_id != 0 {
+                    return build_error_result_from_errno(
+                        Errno::EPERM,
+                        "setattr() cannot change atime".to_owned(),
+                    );
+                }
+                cur_attr.check_perm(user_id, group_id, 2)?;
+                if user_id != cur_attr.uid {
+                    return build_error_result_from_errno(
+                        Errno::EACCES,
+                        "setattr() cannot change atime".to_owned(),
+                    );
+                }
+                Ok(())
+            } else {
+                // We don't need to check permission
+                Ok(())
+            }
+        };
+
+        if let Some(gid) = param.g_id {
+            if user_id != 0 && cur_attr.uid != user_id {
+                return build_error_result_from_errno(
+                    Errno::EPERM,
+                    "setattr() cannot change gid".to_owned(),
+                );
+            }
+
+            if cur_attr.gid != gid {
+                dirty_attr.gid = gid;
+                attr_changed = true;
+            }
+        }
+
+        if let Some(uid) = param.u_id {
+            if cur_attr.uid != uid {
+                if user_id != 0 {
+                    return build_error_result_from_errno(
+                        Errno::EPERM,
+                        "setattr() cannot change uid".to_owned(),
+                    );
+                }
+                dirty_attr.uid = uid;
+                attr_changed = true;
+            }
+        }
+
+        if let Some(mode) = param.mode {
+            let mode: u16 = mode.cast();
+            if mode != cur_attr.perm {
+                if user_id != 0 && user_id != cur_attr.uid {
+                    return build_error_result_from_errno(
+                        Errno::EPERM,
+                        "setattr() cannot change mode".to_owned(),
+                    );
+                }
+                dirty_attr.perm = mode;
+                attr_changed = true;
+            }
+        }
+
+        if let Some(atime) = param.a_time {
+            check_permission()?;
+            if atime != cur_attr.atime {
+                dirty_attr.atime = atime;
+                attr_changed = true;
+            }
+        }
+
+        if let Some(mtime) = param.m_time {
+            check_permission()?;
+            if mtime != cur_attr.mtime {
+                dirty_attr.mtime = mtime;
+                attr_changed = true;
+            }
+        }
+
+        if let Some(file_size) = param.size {
+            dirty_attr.size = file_size;
+            dirty_attr.mtime = st_now;
+            attr_changed = true;
+        }
+
+        if attr_changed {
+            dirty_attr.ctime = st_now;
+        }
+
+        // The `ctime` can be changed implicitly, but if it's specified, just use the
+        // specified one.
+        #[cfg(feature = "abi-7-23")]
+        if let Some(ctime) = param.c_time {
+            check_permission()?;
+            if ctime != cur_attr.ctime {
+                dirty_attr.ctime = ctime;
+                attr_changed = true;
+            }
+        }
+
+        Ok(attr_changed.then_some(dirty_attr))
     }
 
     /// ```

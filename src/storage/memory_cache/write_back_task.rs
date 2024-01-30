@@ -13,8 +13,8 @@ use tokio::sync::{mpsc, oneshot};
 use tracing::{info, warn};
 
 use crate::async_fuse::fuse::protocol::INum;
-use crate::async_fuse::memfs::cache::policy::EvictPolicy;
-use crate::async_fuse::memfs::cache::{Block, BlockCoordinate, BlockId, MemoryCache, Storage};
+use crate::storage::policy::EvictPolicy;
+use crate::storage::{Block, BlockCoordinate, BlockId, MemoryCache, Storage};
 
 /// A command sent from `MemoryCache` to the write back task.
 pub enum Command {
@@ -32,6 +32,8 @@ pub enum Command {
     Flush(INum),
     /// Flush all the files
     FlushAll(oneshot::Sender<()>),
+    /// Cancel the writing back of a file
+    Cancel(INum),
 }
 
 /// Calculate a new period for write back task's interval.
@@ -206,6 +208,10 @@ pub(super) async fn run_write_back_task<P, S>(
                         } else {
                             panic!("Memory cache is dropped before being flushed.");
                         }
+                    },
+                    Some(Command::Cancel(ino)) => {
+                        pending_blocks.remove(&ino);
+                        lru_queue.retain_with_order(|&BlockCoordinate(i, _)| i != ino);
                     }
                     None => {
                         // The command sender is closed, meaning that the `Storage` is also dropped.

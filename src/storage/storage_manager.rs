@@ -326,9 +326,9 @@ mod tests {
 
     use clippy_utilities::OverflowArithmetic;
 
-    use crate::async_fuse::memfs::cache::mock::MemoryStorage;
-    use crate::async_fuse::memfs::cache::policy::LruPolicy;
-    use crate::async_fuse::memfs::cache::{
+    use crate::storage::mock::MemoryStorage;
+    use crate::storage::policy::LruPolicy;
+    use crate::storage::{
         Block, BlockCoordinate, MemoryCache, MemoryCacheBuilder, Storage, StorageManager,
     };
 
