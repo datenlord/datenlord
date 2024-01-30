@@ -137,20 +137,19 @@ impl MetaData for S3MetaData {
 
     #[instrument(skip(self), err, ret)]
     async fn opendir(&self, context: ReqContext, ino: u64, flags: u32) -> DatenLordResult<RawFd> {
-        let result = retry_txn!(TXN_RETRY_LIMIT, {
-            let mut txn = self.kv_engine.new_meta_txn().await;
-            let node = self.get_inode_from_txn(txn.as_mut(), ino).await?;
-            let o_flags = fs_util::parse_oflag(flags);
-            node.open_pre_check(o_flags, context.user_id, context.group_id)?;
-
-            let result = node.dup_fd(o_flags).await?;
-            txn.set(
-                &KeyType::INum2Node(ino),
-                &ValueType::Node(node.to_serial_node()),
-            );
-            (txn.commit().await, result)
-        })?;
-        Ok(result)
+        match self.get_node_from_kv_engine(ino).await? {
+            None => {
+                return build_error_result_from_errno(
+                    Errno::ENOENT,
+                    format!("opendir() failed to find ino={ino}"),
+                );
+            }
+            Some(node) => {
+                let o_flags = fs_util::parse_oflag(flags);
+                node.open_pre_check(o_flags, context.user_id, context.group_id)?;
+                return Ok(GLOBAL_S3_FD_CNT.fetch_add(1, Ordering::SeqCst).cast());
+            }
+        }
     }
 
     #[instrument(skip(self))]
@@ -271,22 +270,21 @@ impl MetaData for S3MetaData {
         }
 
         // The file doesn't open by any process, so we need to open it
-        let (result, attr) = retry_txn!(TXN_RETRY_LIMIT, {
-            let mut txn = self.kv_engine.new_meta_txn().await;
-            let node = self.get_inode_from_txn(txn.as_mut(), ino).await?;
-            let attr = node.get_attr();
-            attr.check_perm(context.user_id, context.group_id, access_mode)?;
-            let result = node.dup_fd(o_flags).await;
-            txn.set(
-                &KeyType::INum2Node(ino),
-                &ValueType::Node(node.to_serial_node()),
-            );
-            (txn.commit().await, (result, attr))
-        })?;
-
-        // Add the file to `open_files`
-        self.open_files.open(ino, attr);
-        result
+        match self.get_node_from_kv_engine(ino).await? {
+            None => {
+                return build_error_result_from_errno(
+                    Errno::ENOENT,
+                    format!("open() failed to find ino={ino}"),
+                );
+            }
+            Some(node) => {
+                let attr = node.get_attr();
+                attr.check_perm(context.user_id, context.group_id, access_mode)?;
+                // Add the file to `open_files`
+                self.open_files.open(ino, attr);
+                return Ok(GLOBAL_S3_FD_CNT.fetch_add(1, Ordering::SeqCst).cast());
+            }
+        }
     }
 
     #[instrument(skip(self), err, ret)]
@@ -323,6 +321,7 @@ impl MetaData for S3MetaData {
                     inode.get_name().to_owned(),
                 )));
                 txn.delete(&KeyType::INum2Node(ino));
+                self.storage.remove(ino).await?;
             } else {
                 txn.set(
                     &KeyType::INum2Node(ino),
