@@ -358,6 +358,14 @@ impl MetaData for S3MetaData {
                                     inode.get_attr().mtime,
                                 )
                                 .await?;
+                            if param.fh.is_some() {
+                                // The file is open, update the attr in `open_files`
+                                let raw_open_file = self.open_files.get(ino);
+                                let mut open_file = raw_open_file.write();
+                                open_file.attr.size = dirty_attr.size;
+                                open_file.attr.mtime = inode.get_attr().mtime;
+                                open_file.attr.ctime = inode.get_attr().ctime;
+                            }
                         }
                         inode.set_attr(dirty_attr);
                         dirty_attr
