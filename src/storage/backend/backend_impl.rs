@@ -8,8 +8,8 @@ use opendal::services::{Fs, S3};
 use opendal::{ErrorKind, Operator};
 
 use crate::async_fuse::fuse::protocol::INum;
-use crate::storage::error::{StorageError, StorageOperation, StorageResult};
-use crate::storage::{Block, Storage};
+use crate::storage::error::StorageResult;
+use crate::storage::{Block, Storage, StorageError, StorageOperation};
 
 /// Get file path by `ino`
 fn get_file_path(ino: INum) -> String {
