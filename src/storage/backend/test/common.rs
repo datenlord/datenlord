@@ -10,7 +10,7 @@ async fn test_backend_read() {
     let backend_root = format!("{BACKEND_ROOT}/read");
     fs::create_dir_all(&backend_root).await.unwrap();
 
-    let backend = prepare_backend(&backend_root);
+    let (backend, _) = prepare_backend(&backend_root);
 
     let backend_root = Path::new(&backend_root);
 
@@ -32,7 +32,7 @@ async fn test_backend_read() {
 async fn test_write_whole_block() {
     let backend_root = format!("{BACKEND_ROOT}/write_whole_block");
     fs::create_dir_all(&backend_root).await.unwrap();
-    let backend = prepare_backend(&backend_root);
+    let (backend, _) = prepare_backend(&backend_root);
 
     let backend_root = Path::new(&backend_root);
 
@@ -54,7 +54,7 @@ async fn test_write_whole_block() {
 async fn test_write_in_middle() {
     let backend_root = format!("{BACKEND_ROOT}/write_in_middle");
     fs::create_dir_all(&backend_root).await.unwrap();
-    let backend = prepare_backend(&backend_root);
+    let (backend, _) = prepare_backend(&backend_root);
 
     let backend_root = Path::new(&backend_root);
 
@@ -72,7 +72,7 @@ async fn test_write_in_middle() {
 async fn test_write_append() {
     let backend_root = format!("{BACKEND_ROOT}/write_append");
     fs::create_dir_all(&backend_root).await.unwrap();
-    let backend = prepare_backend(&backend_root);
+    let (backend, _) = prepare_backend(&backend_root);
 
     let backend_root = Path::new(&backend_root);
 
@@ -97,7 +97,7 @@ async fn test_write_append() {
 async fn test_overwrite() {
     let backend_root = format!("{BACKEND_ROOT}/overwrite");
     fs::create_dir_all(&backend_root).await.unwrap();
-    let backend = prepare_backend(&backend_root);
+    let (backend, _) = prepare_backend(&backend_root);
 
     let backend_root = Path::new(&backend_root);
 
@@ -118,7 +118,7 @@ async fn test_overwrite() {
 async fn test_truncate() {
     let backend_root = format!("{BACKEND_ROOT}/truncate");
     fs::create_dir_all(&backend_root).await.unwrap();
-    let backend = prepare_backend(&backend_root);
+    let (backend, _) = prepare_backend(&backend_root);
 
     let backend_root = Path::new(&backend_root);
 
@@ -163,7 +163,7 @@ async fn test_truncate() {
 async fn test_truncate_block() {
     let backend_root = format!("{BACKEND_ROOT}/truncate_block");
     fs::create_dir_all(&backend_root).await.unwrap();
-    let backend = prepare_backend(&backend_root);
+    let (backend, _) = prepare_backend(&backend_root);
 
     let backend_root = Path::new(&backend_root);
 
@@ -189,7 +189,7 @@ async fn test_truncate_block() {
 async fn test_truncate_not_found() {
     let backend_root = format!("{BACKEND_ROOT}/truncate_not_found");
     fs::create_dir_all(&backend_root).await.unwrap();
-    let backend = prepare_backend(&backend_root);
+    let (backend, _) = prepare_backend(&backend_root);
 
     let backend_root = Path::new(&backend_root);
 
@@ -212,7 +212,7 @@ async fn test_truncate_not_found() {
 async fn test_remove() {
     let backend_root = format!("{BACKEND_ROOT}/remove");
     fs::create_dir_all(&backend_root).await.unwrap();
-    let backend = prepare_backend(&backend_root);
+    let (backend, _) = prepare_backend(&backend_root);
 
     let backend_root = Path::new(&backend_root);
 
@@ -231,7 +231,7 @@ async fn test_remove() {
 async fn test_unused() {
     let backend_root = format!("{BACKEND_ROOT}/unused");
     fs::create_dir_all(&backend_root).await.unwrap();
-    let backend = prepare_backend(&backend_root);
+    let (backend, _) = prepare_backend(&backend_root);
 
     // Do nothing, and should not panic.
     backend.flush(0).await.unwrap();
