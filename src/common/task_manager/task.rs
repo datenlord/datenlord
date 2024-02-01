@@ -5,8 +5,12 @@ use std::sync::Arc;
 
 use clippy_utilities::OverflowArithmetic;
 use futures::Future;
-use tokio::task::{AbortHandle, JoinError, JoinHandle};
+use tokio::sync::mpsc;
+use tokio::task::{JoinError, JoinHandle};
 use tokio_util::sync::CancellationToken;
+
+use super::gc::{GcHandle, GcTask, DEFAULT_HANDLE_QUEUE_LIMIT, DEFAULT_TIMEOUT};
+use super::SpawnError;
 
 /// Name of the tasks
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -30,6 +34,22 @@ pub enum TaskName {
     SchedulerExtender,
 }
 
+/// The task handle(s) of the current task node.
+#[derive(Debug)]
+enum TaskHandle {
+    /// Regular task(s).
+    Regular(Vec<JoinHandle<()>>),
+    /// GC task that runs in the background.
+    /// A `GcHandle` is to spawn tasks into GC task.
+    Gc(GcHandle, JoinHandle<GcTask>),
+}
+
+impl Default for TaskHandle {
+    fn default() -> Self {
+        Self::Regular(vec![])
+    }
+}
+
 /// A task node in task manager.
 #[derive(Debug)]
 pub(super) struct Task {
@@ -40,7 +60,7 @@ pub(super) struct Task {
     /// The status of task manager, `true` for shutting down.
     status: Arc<AtomicBool>,
     /// Handles of tasks in this node.
-    handles: Vec<JoinHandle<()>>,
+    handles: TaskHandle,
     /// Dependencies of this node.
     depends_on: Vec<TaskName>,
     /// The count of predecessors.
@@ -54,9 +74,49 @@ impl Task {
             name,
             token: CancellationToken::new(),
             status,
-            handles: vec![],
+            handles: TaskHandle::default(),
             depends_on: vec![],
             predecessor_count: 0,
+        }
+    }
+
+    /// Convert this task into GC task.
+    ///
+    /// # Panic
+    /// This method will panic, if:
+    ///
+    /// - This method is not called in the context of a tokio runtime.
+    /// - This task node is already a GC task.
+    /// - This task node is regular task, but there are already tasks spawned in
+    ///   this node.
+    pub fn convert_to_gc_task(&mut self) {
+        if let TaskHandle::Regular(ref handles) = self.handles {
+            assert!(
+                handles.is_empty(),
+                "Convert a regular task to GC task, when its inner handles are not empty."
+            );
+        } else {
+            panic!("Try to convert a task to GC task, when it's already a GC task.");
+        }
+
+        let token = self.token();
+        let (tx, rx) = mpsc::channel(DEFAULT_HANDLE_QUEUE_LIMIT);
+        let gc_task = GcTask::new(self.name, rx, DEFAULT_TIMEOUT);
+
+        let task_handle = tokio::spawn(gc_task.run(token.clone()));
+        let gc_handle = GcHandle::new(self.name, Arc::clone(&self.status), token, tx);
+
+        self.handles = TaskHandle::Gc(gc_handle, task_handle);
+    }
+
+    /// Get the GC handle of this task.
+    ///
+    /// Returns `None` if this task is not a GC task.
+    pub fn gc_handle(&self) -> Option<GcHandle> {
+        if let TaskHandle::Gc(ref gc_handle, _) = self.handles {
+            Some(gc_handle.clone())
+        } else {
+            None
         }
     }
 
@@ -88,7 +148,12 @@ impl Task {
     /// Await all tasks in this node.
     pub async fn join_all(&mut self) -> Vec<Result<(), JoinError>> {
         let handles = std::mem::take(&mut self.handles);
-        futures::future::join_all(handles).await
+        match handles {
+            TaskHandle::Regular(handles) => futures::future::join_all(handles).await,
+            TaskHandle::Gc(_, handle) => {
+                vec![handle.await.map(|_| ())]
+            }
+        }
     }
 
     /// Returns the dependencies of this node.
@@ -97,20 +162,21 @@ impl Task {
     }
 
     /// Spawn an async task in this task node.
-    ///
-    /// # Panics
-    /// Panics if this method is called from the outside of a tokio runtime.
-    pub fn spawn<F, Fu>(&mut self, f: F) -> AbortHandle
+    pub async fn spawn<F, Fu>(&mut self, f: F) -> Result<(), SpawnError>
     where
         F: FnOnce(CancellationToken) -> Fu,
         Fu: Future<Output = ()> + Send + 'static,
     {
         let token = self.token.clone();
 
-        let handle = tokio::spawn(f(token));
-        let abort_handle = handle.abort_handle();
-        self.handles.push(handle);
-        abort_handle
+        match self.handles {
+            TaskHandle::Regular(ref mut handles) => {
+                let handle = tokio::spawn(f(token));
+                handles.push(handle);
+                Ok(())
+            }
+            TaskHandle::Gc(ref gc_handle, _) => gc_handle.spawn(f).await,
+        }
     }
 }
 
@@ -126,3 +192,6 @@ pub(super) const EDGES: [(TaskName, TaskName); 9] = [
     (TaskName::AsyncFuse, TaskName::Rpc),
     (TaskName::AsyncFuse, TaskName::WriteBack),
 ];
+
+/// Nodes of GC tasks.
+pub(super) const GC_TASKS: [TaskName; 2] = [TaskName::BlockFlush, TaskName::FuseRequest];

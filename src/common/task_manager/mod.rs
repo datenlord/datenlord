@@ -3,6 +3,7 @@
 // TODO: Remove this when the task manager is completed.
 #![allow(dead_code)]
 
+mod gc;
 mod manager;
 mod task;
 
