@@ -6,14 +6,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use futures::{Future, StreamExt};
-use parking_lot::Mutex;
 use signal_hook_tokio::Signals;
 use thiserror::Error;
-use tokio::task::AbortHandle;
+use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, instrument};
 
-use super::task::{Task, TaskName, EDGES};
+use super::gc::GcHandle;
+use super::task::{Task, TaskName, EDGES, GC_TASKS};
 
 /// Spawn error, occurs when spawnint a task after shutdown.
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -32,6 +32,10 @@ pub struct TaskManager {
 impl TaskManager {
     /// Create a new task manager. The relationships between task nodes are
     /// defined in [`EDGES`] and will be initialized immediately.
+    ///
+    /// # Panic
+    ///
+    /// This method panics when it's not called in the context of tokio runtime.
     #[inline]
     #[must_use]
     pub fn new() -> Self {
@@ -48,6 +52,14 @@ impl TaskManager {
                 .inc_predecessor_count();
         }
 
+        // Start GC task
+        for gc_task_name in GC_TASKS {
+            tasks
+                .entry(gc_task_name)
+                .or_insert_with(|| Task::new(gc_task_name, Arc::clone(&status)))
+                .convert_to_gc_task();
+        }
+
         Self {
             tasks: Mutex::new(tasks),
             status,
@@ -56,9 +68,9 @@ impl TaskManager {
 
     /// Dumps all edges of the dependency graph.
     #[cfg(test)]
-    pub(super) fn edges(&self) -> Vec<(TaskName, TaskName)> {
+    pub(super) async fn edges(&self) -> Vec<(TaskName, TaskName)> {
         let mut result = vec![];
-        let tasks = self.tasks.lock();
+        let tasks = self.tasks.lock().await;
 
         for (&task_name, task_node) in tasks.iter() {
             result.extend(
@@ -72,8 +84,8 @@ impl TaskManager {
     }
 
     #[cfg(test)]
-    pub(super) fn predecessor_counts(&self) -> HashMap<TaskName, usize> {
-        let tasks = self.tasks.lock();
+    pub(super) async fn predecessor_counts(&self) -> HashMap<TaskName, usize> {
+        let tasks = self.tasks.lock().await;
 
         tasks
             .iter()
@@ -81,21 +93,28 @@ impl TaskManager {
             .collect()
     }
 
+    /// Get a GC handle of the specified task.
+    ///
+    /// Returns `None`, if the task doesn't exist, or it's not a GC task.
+    #[inline]
+    #[must_use]
+    pub async fn get_gc_handle(&self, name: TaskName) -> Option<GcHandle> {
+        let tasks = self.tasks.lock().await;
+        tasks.get(&name).and_then(Task::gc_handle)
+    }
+
     /// Spawn a new task with task name. The task will be managed in the task
     /// manager.
     ///
     /// # Errors
     /// Returns `Err` if the task manager is shutting down.
-    ///
-    /// # Panics
-    /// Panics if this method is called from the outside of a tokio runtime.
     #[inline]
-    pub fn spawn<F, Fu>(&self, name: TaskName, f: F) -> Result<AbortHandle, SpawnError>
+    pub async fn spawn<F, Fu>(&self, name: TaskName, f: F) -> Result<(), SpawnError>
     where
         F: FnOnce(CancellationToken) -> Fu,
         Fu: Future<Output = ()> + Send + 'static,
     {
-        let mut tasks = self.tasks.lock();
+        let mut tasks = self.tasks.lock().await;
         if self.is_shutdown() {
             return Err(SpawnError(name));
         }
@@ -103,9 +122,7 @@ impl TaskManager {
             .get_mut(&name)
             .unwrap_or_else(|| unreachable!("Task {name:?} is not in the manager."));
 
-        let handle = node.spawn(f);
-
-        Ok(handle)
+        node.spawn(f).await
     }
 
     /// The status of task manager, `true` for shutting down.
@@ -125,7 +142,7 @@ impl TaskManager {
 
         self.status.store(true, Ordering::Release);
 
-        let mut tasks = std::mem::take(&mut *self.tasks.lock());
+        let mut tasks = std::mem::take(&mut *self.tasks.lock().await);
 
         while let Some(task_name) = queue.pop_front() {
             let Some(mut task_node) = tasks.remove(&task_name) else {
@@ -175,7 +192,7 @@ pub fn wait_for_shutdown(
 
     let future = async move {
         if let Some(signal) = signals.next().await {
-            assert!(
+            debug_assert!(
                 TERM_SIGNALS.contains(&signal),
                 "The signal hook is not to handle signal {signal}."
             );
