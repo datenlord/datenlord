@@ -3,6 +3,7 @@ use std::fmt::Debug;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use datenlord::metrics::KV_METRICS;
 use etcd_client::{
     Compare, CompareOp, DeleteOptions, GetOptions, LockOptions, PutOptions, Txn, TxnOp,
 };
@@ -85,6 +86,7 @@ impl KVEngine for EtcdKVEngine {
     /// - `timeout_sec` should be >=1s
     /// - `timeout_sec` should be >=1s
     async fn lock(&self, key: &LockKeyType, timeout_sec: Duration) -> DatenLordResult<Vec<u8>> {
+        let _timer = KV_METRICS.start_kv_lock_timer();
         let mut client = self.client.clone();
         let timeout_sec = check_ttl(conv_u64_sec_2_i64(timeout_sec.as_secs()))
             .with_context(|| "timeout_sec should be >=1s, please fix the call".to_owned())?;
@@ -119,6 +121,7 @@ impl KVEngine for EtcdKVEngine {
 
     /// Get the value by the key.
     async fn get(&self, key: &KeyType) -> DatenLordResult<Option<ValueType>> {
+        let _timer = KV_METRICS.start_kv_operation_timer("get");
         let mut client = self.client.clone();
         let resp = client
             .get(key.to_string_key(), None)
@@ -141,6 +144,7 @@ impl KVEngine for EtcdKVEngine {
         value: &ValueType,
         option: Option<SetOption>,
     ) -> DatenLordResult<Option<ValueType>> {
+        let _timer = KV_METRICS.start_kv_operation_timer("set");
         let option = match option {
             Some(option) => {
                 let mut set_option = PutOptions::new();
@@ -175,6 +179,7 @@ impl KVEngine for EtcdKVEngine {
         key: &KeyType,
         option: Option<DeleteOption>,
     ) -> DatenLordResult<Option<ValueType>> {
+        let _timer = KV_METRICS.start_kv_operation_timer("delete");
         let option = match option {
             Some(option) => {
                 let mut delete_option = DeleteOptions::new();
@@ -203,6 +208,7 @@ impl KVEngine for EtcdKVEngine {
     }
 
     async fn range(&self, prefix: &KeyType) -> DatenLordResult<Vec<ValueType>> {
+        let _timer = KV_METRICS.start_kv_operation_timer("range");
         let result = self.range_raw_key(prefix.to_string_key()).await?;
         Ok(result)
     }
@@ -234,6 +240,8 @@ impl EtcdTxn {
 #[async_trait]
 impl MetaTxn for EtcdTxn {
     async fn get(&mut self, key_arg: &KeyType) -> DatenLordResult<Option<ValueType>> {
+        let _timer = KV_METRICS.start_kv_operation_timer("get");
+
         // first check if the key is in buffer (write op)
         let key = key_arg.to_string_key().into_bytes();
         assert!(
@@ -285,6 +293,8 @@ impl MetaTxn for EtcdTxn {
     }
 
     async fn commit(&mut self) -> DatenLordResult<bool> {
+        let _timer = KV_METRICS.start_kv_operation_timer("txn");
+
         if self.version_map.is_empty() && self.buffer.is_empty() {
             return Ok(true);
         }
