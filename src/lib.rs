@@ -66,3 +66,4 @@
 pub mod common;
 /// Configurations
 pub mod config;
+pub mod metrics;

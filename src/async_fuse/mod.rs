@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 use clippy_utilities::OverflowArithmetic;
+use datenlord::metrics;
 
 use self::memfs::kv_engine::KVEngineType;
 use crate::async_fuse::fuse::session;
@@ -12,10 +13,6 @@ use crate::AsyncFuseArgs;
 
 pub mod fuse;
 pub mod memfs;
-/// Datenlord metrics
-// Caused by prometheus macros
-#[allow(clippy::ignored_unit_patterns)]
-pub mod metrics;
 pub mod proactor;
 pub mod util;
 
