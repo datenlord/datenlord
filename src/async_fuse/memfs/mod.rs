@@ -26,6 +26,7 @@ use std::time::SystemTime;
 use async_trait::async_trait;
 use clippy_utilities::Cast;
 use datenlord::config::StorageConfig;
+use datenlord::metrics::FILESYSTEM_METRICS;
 pub use metadata::MetaData;
 use nix::errno::Errno;
 use nix::sys::stat::SFlag;
@@ -219,6 +220,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         name: &str,
         reply: ReplyEntry,
     ) -> nix::Result<usize> {
+        let _timer = FILESYSTEM_METRICS.start_storage_operation_timer("lookup");
         debug!("lookup(parent={}, name={:?}, req={:?})", parent, name, req,);
         // check the dir_name is valid
         if let Err(e) = check_name_length(name) {
@@ -237,6 +239,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
 
     /// Get file attributes.
     async fn getattr(&self, req: &Request<'_>, reply: ReplyAttr) -> nix::Result<usize> {
+        let _timer = FILESYSTEM_METRICS.start_storage_operation_timer("getattr");
         let ino = req.nodeid();
         debug!("getattr(ino={}, req={:?})", ino, req);
         match self.metadata.getattr(ino).await {
@@ -265,6 +268,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
     /// which the filesystem may set, to change the way the file is opened.
     /// See `fuse_file_info` structure in `fuse_common.h` for more details.
     async fn open(&self, req: &Request<'_>, flags: u32, reply: ReplyOpen) -> nix::Result<usize> {
+        let _timer = FILESYSTEM_METRICS.start_storage_operation_timer("open");
         let ino = req.nodeid();
         debug!("open(ino={}, flags={}, req={:?})", ino, flags, req);
 
@@ -297,6 +301,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
     /// a limited lifetime. On unmount it is not guaranteed, that all referenced
     /// inodes will receive a forget message.
     async fn forget(&self, req: &Request<'_>, nlookup: u64) {
+        let _timer = FILESYSTEM_METRICS.start_storage_operation_timer("forget");
         let ino = req.nodeid();
         self.metadata
             .forget(ino, nlookup)
@@ -311,6 +316,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         param: SetAttrParam,
         reply: ReplyAttr,
     ) -> nix::Result<usize> {
+        let _timer = FILESYSTEM_METRICS.start_storage_operation_timer("setattr");
         let ino = req.nodeid();
         let valid = param.valid;
         let fh = param.fh;
@@ -361,6 +367,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         param: CreateParam,
         reply: ReplyEntry,
     ) -> nix::Result<usize> {
+        let _timer = FILESYSTEM_METRICS.start_storage_operation_timer("mknod");
         debug!("mknod param = {:?}, req = {:?}", param, req);
         let mknod_res = self.metadata.mknod(param).await;
         match mknod_res {
@@ -381,6 +388,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         mode: u32,
         reply: ReplyEntry,
     ) -> nix::Result<usize> {
+        let _timer = FILESYSTEM_METRICS.start_storage_operation_timer("mkdir");
         debug!(
             "mkdir(parent={}, name={:?}, mode={}, req={:?})",
             parent, name, mode, req,
@@ -426,6 +434,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         name: &str,
         reply: ReplyEmpty,
     ) -> nix::Result<usize> {
+        let _timer = FILESYSTEM_METRICS.start_storage_operation_timer("unlink");
         debug!("unlink(parent={}, name={:?}, req={:?}", parent, name, req,);
         // check the dir_name is valid
         if let Err(e) = check_name_length(name) {
@@ -458,6 +467,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         dir_name: &str,
         reply: ReplyEmpty,
     ) -> nix::Result<usize> {
+        let _timer = FILESYSTEM_METRICS.start_storage_operation_timer("rmdir");
         debug!(
             "rmdir(parent={}, name={:?}, req={:?})",
             parent, dir_name, req,
@@ -512,6 +522,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         param: RenameParam,
         reply: ReplyEmpty,
     ) -> nix::Result<usize> {
+        let _timer = FILESYSTEM_METRICS.start_storage_operation_timer("rename");
         let context = ReqContext {
             user_id: req.uid(),
             group_id: req.gid(),
@@ -541,6 +552,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         size: u32,
         reply: ReplyData,
     ) -> nix::Result<usize> {
+        let _timer = FILESYSTEM_METRICS.start_storage_operation_timer("read");
         let ino = req.nodeid();
         debug_assert!(!offset.is_negative(), "offset={offset} cannot be negative");
         let file_data = match self.metadata.read_helper(ino, fh, offset, size).await {
@@ -585,6 +597,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         flags: u32,
         reply: ReplyWrite,
     ) -> nix::Result<usize> {
+        let _timer = FILESYSTEM_METRICS.start_storage_operation_timer("write");
         let ino = req.nodeid();
         debug!(
             "write(ino={}, fh={}, offset={}, data-size={}, flags={})",
@@ -640,6 +653,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         lock_owner: u64,
         reply: ReplyEmpty,
     ) -> nix::Result<usize> {
+        let _timer = FILESYSTEM_METRICS.start_storage_operation_timer("flush");
         let ino = req.nodeid();
         debug!(
             "flush(ino={}, fh={}, lock_owner={}, req={:?})",
@@ -675,6 +689,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         flush: bool,
         reply: ReplyEmpty,
     ) -> nix::Result<usize> {
+        let _timer = FILESYSTEM_METRICS.start_storage_operation_timer("release");
         let ino = req.nodeid();
         debug!(
             "release(ino={}, fh={}, flags={}, lock_owner={}, flush={}, req={:?})",
@@ -697,6 +712,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         datasync: bool,
         reply: ReplyEmpty,
     ) -> nix::Result<usize> {
+        let _timer = FILESYSTEM_METRICS.start_storage_operation_timer("fsync");
         let ino = req.nodeid();
 
         debug!(
@@ -721,6 +737,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
     /// directory stream operations in case the contents of the directory can
     /// change between opendir and releasedir.
     async fn opendir(&self, req: &Request<'_>, flags: u32, reply: ReplyOpen) -> nix::Result<usize> {
+        let _timer = FILESYSTEM_METRICS.start_storage_operation_timer("opendir");
         let ino = req.nodeid();
         debug!("opendir(ino={}, flags={}, req={:?})", ino, flags, req,);
         let context = ReqContext {
@@ -760,6 +777,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         offset: i64,
         mut reply: ReplyDirectory,
     ) -> nix::Result<usize> {
+        let _timer = FILESYSTEM_METRICS.start_storage_operation_timer("readdir");
         let ino = req.nodeid();
         debug!(
             "readdir(ino={}, fh={}, offset={}, req={:?})",
@@ -794,6 +812,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         flags: u32,
         reply: ReplyEmpty,
     ) -> nix::Result<usize> {
+        let _timer = FILESYSTEM_METRICS.start_storage_operation_timer("releasedir");
         let ino = req.nodeid();
         debug!(
             "releasedir(ino={}, fh={}, flags={}, req={:?})",
@@ -819,6 +838,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         datasync: bool,
         reply: ReplyEmpty,
     ) -> nix::Result<usize> {
+        let _timer = FILESYSTEM_METRICS.start_storage_operation_timer("fsyncdir");
         let ino = req.nodeid();
         debug!(
             "fsyncdir(ino={}, fh={}, datasync={}, req={:?})",
@@ -867,6 +887,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
 
     /// Read symbolic link.
     async fn readlink(&self, req: &Request<'_>, reply: ReplyData) -> nix::Result<usize> {
+        let _timer = FILESYSTEM_METRICS.start_storage_operation_timer("readlink");
         let ino = req.nodeid();
         debug!("readlink(ino={}, req={:?})", ino, req,);
         reply
@@ -888,6 +909,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         target_path: &Path,
         reply: ReplyEntry,
     ) -> nix::Result<usize> {
+        let _timer = FILESYSTEM_METRICS.start_storage_operation_timer("symlink");
         debug!(
             "symlink(parent={}, name={:?}, target_path={:?}, req={:?})",
             parent, name, target_path, req

@@ -6,6 +6,7 @@ use std::sync::Arc;
 use anyhow::anyhow;
 use async_trait::async_trait;
 use clippy_utilities::OverflowArithmetic;
+use datenlord::metrics::CACHE_METRICS;
 use lockfree_cuckoohash::{pin, LockFreeCuckooHash as HashMap};
 use tokio::sync::{mpsc, oneshot, RwLock};
 use tracing::warn;
@@ -261,13 +262,21 @@ where
     async fn load_from_self(&self, ino: INum, block_id: usize) -> StorageResult<Option<Block>> {
         let res = self.get_block_from_cache(ino, block_id).await;
         if res.is_some() {
+            CACHE_METRICS.cache_hit_count_inc("memory");
             self.policy.touch(&BlockCoordinate(ino, block_id));
         }
         Ok(res)
     }
 
     async fn load_from_backend(&self, ino: INum, block_id: usize) -> StorageResult<Option<Block>> {
-        self.backend.load(ino, block_id).await
+        let res = self.backend.load(ino, block_id).await;
+
+        if let Ok(Some(_)) = res {
+            // The cache is considered missed, only if the block exists in the backend.
+            CACHE_METRICS.cache_miss_count_inc("memory");
+        }
+
+        res
     }
 
     async fn cache_block_from_backend(
@@ -309,9 +318,11 @@ where
         }
 
         let dirty_block = if let Some(inserted) = self.update_block(ino, block_id, &input).await? {
+            CACHE_METRICS.cache_hit_count_inc("memory");
             self.policy.touch(&BlockCoordinate(ino, block_id));
             inserted
         } else {
+            CACHE_METRICS.cache_miss_count_inc("memory");
             let mut to_be_inserted = self.backend.load(ino, block_id).await?.unwrap_or_else(|| {
                 // Create a new block for write, despite the offset is larger than file size.
                 Block::new_zeroed(self.block_size)
@@ -484,9 +495,11 @@ where
                 if to_block > 0 && fill_start < self.block_size {
                     let fill_block_id = to_block.overflow_sub(1);
                     if let Some(block) = file_cache.get_mut(&fill_block_id) {
+                        CACHE_METRICS.cache_hit_count_inc("memory");
                         fill_block_with_zeros(block);
                     } else if !self.write_through {
                         drop(file_cache);
+                        CACHE_METRICS.cache_miss_count_inc("memory");
                         let mut block = self
                             .load_from_backend(ino, fill_block_id)
                             .await?
