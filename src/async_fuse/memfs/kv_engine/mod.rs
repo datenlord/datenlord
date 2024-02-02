@@ -253,14 +253,15 @@ fn check_ttl(sec: i64) -> DatenLordResult<i64> {
 /// break `retry_txn` result
 pub const RETRY_TXN_BREAK: DatenLordResult<bool> = Ok(true);
 
-#[allow(unused_macros, clippy::crate_in_macro_def)]
 #[macro_export]
 /// the logic should return a tuple (txn commit/cancel result, res)
 /// For example: `Ok((txn.commit().await,...))`
 /// For example: `Ok((BREAK_RETRY_TXN,...))`
+///
+/// Returns the result and transaction retry times.
 macro_rules! retry_txn {
     ($retry_num:expr, $logic:block) => {{
-        use crate::common::error::DatenLordError;
+        use $crate::common::error::DatenLordError;
 
         let mut result = Err(DatenLordError::TransactionRetryLimitExceededErr {
             context: vec!["Transaction retry failed due to exceeding the retry limit".to_owned()],
@@ -268,11 +269,10 @@ macro_rules! retry_txn {
         let mut attempts: u32 = 0;
 
         while attempts < $retry_num {
-            attempts = attempts.wrapping_add(1);
             let (commit_res, res) = { $logic };
             match commit_res {
-                Ok(commit_res) => {
-                    if commit_res {
+                Ok(commit_success) => {
+                    if commit_success {
                         result = Ok(res);
                         break;
                     }
@@ -282,7 +282,8 @@ macro_rules! retry_txn {
                     break;
                 }
             }
+            attempts = attempts.wrapping_add(1);
         }
-        result
+        (result, attempts)
     }};
 }
