@@ -408,7 +408,7 @@ mod test {
         let (first_step_tx, mut first_step_rx) = tokio::sync::mpsc::channel(1);
         let (second_step_tx, mut second_step_rx) = tokio::sync::mpsc::channel(1);
         let second_handle = tokio::spawn(async move {
-            let result = retry_txn!(1, {
+            let (result, retry) = retry_txn!(1, {
                 let client = EtcdKVEngine::new_for_local_test(vec![ETCD_ADDRESS.to_owned()])
                     .await
                     .unwrap();
@@ -435,12 +435,11 @@ mod test {
                 }
                 (second_txn.commit().await, ())
             });
-            assert!(result.is_err());
-            // check if the err is TransactionRetryLimitExceededErr
-            if let Err(DatenLordError::TransactionRetryLimitExceededErr { .. }) = result {
-            } else {
-                panic!("wrong error type");
-            }
+            assert!(matches!(
+                result,
+                Err(DatenLordError::TransactionRetryLimitExceededErr { .. })
+            ));
+            assert_eq!(retry, 1);
         });
         let third_handle = tokio::spawn(async move {
             let client = EtcdKVEngine::new_for_local_test(vec![ETCD_ADDRESS.to_owned()])
@@ -462,7 +461,7 @@ mod test {
 
     #[tokio::test]
     async fn test_txn_retry() {
-        let result = retry_txn!(3, {
+        let (result, retry) = retry_txn!(3, {
             let client = EtcdKVEngine::new_for_local_test(vec![ETCD_ADDRESS.to_owned()])
                 .await
                 .unwrap();
@@ -472,6 +471,7 @@ mod test {
             (txn.commit().await, ())
         });
         result.unwrap();
+        assert_eq!(retry, 0);
     }
 
     #[tokio::test]
