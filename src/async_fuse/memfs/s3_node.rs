@@ -13,7 +13,7 @@ use nix::fcntl::OFlag;
 use nix::sys::stat::{Mode, SFlag};
 use nix::unistd;
 use parking_lot::RwLock;
-use tracing::{info, warn};
+use tracing::info;
 
 use super::direntry::{DirEntry, FileType};
 use super::fs_util::{self, FileAttr};
@@ -28,7 +28,7 @@ use crate::async_fuse::util::build_error_result_from_errno;
 use crate::common::error::DatenLordResult;
 
 /// S3's available fd count
-static GLOBAL_S3_FD_CNT: AtomicU32 = AtomicU32::new(4);
+pub static GLOBAL_S3_FD_CNT: AtomicU32 = AtomicU32::new(4);
 
 /// A file node data or a directory node data
 #[derive(Debug)]
@@ -64,8 +64,6 @@ pub struct S3Node {
     attr: Arc<RwLock<FileAttr>>,
     /// S3Node data
     data: S3NodeData,
-    /// S3Node open counter
-    open_count: AtomicI64,
     /// S3Node lookup counter
     lookup_count: AtomicI64,
     /// If S3Node has been marked as deferred deletion
@@ -92,8 +90,6 @@ impl S3Node {
             name: name.to_owned(),
             attr,
             data,
-            // open count set to 0 by creation
-            open_count: AtomicI64::new(0),
             // lookup count set to 1 by creation
             lookup_count: AtomicI64::new(1),
             deferred_deletion: AtomicBool::new(false),
@@ -106,9 +102,8 @@ impl S3Node {
     pub fn from_serial_node(serial_node: SerialNode, meta: &S3MetaData) -> S3Node {
         let dir_data = serial_node.data.into_s3_nodedata();
         info!(
-            "ino={}, open_count={}, lookup_count={},attr={:?}",
+            "ino={},lookup_count={},attr={:?}",
             serial_node.attr.get_ino(),
-            serial_node.open_count,
             serial_node.lookup_count,
             serial_node.attr
         );
@@ -117,7 +112,6 @@ impl S3Node {
             name: serial_node.name,
             attr: Arc::new(RwLock::new(serial_to_file_attr(&serial_node.attr))),
             data: dir_data,
-            open_count: AtomicI64::new(serial_node.open_count),
             lookup_count: AtomicI64::new(serial_node.lookup_count),
             deferred_deletion: AtomicBool::new(serial_node.deferred_deletion),
             kv_engine: Arc::clone(&meta.kv_engine),
@@ -132,7 +126,6 @@ impl S3Node {
             name: self.name.clone(),
             attr: file_attr_to_serial(&self.attr.read().clone()),
             data: self.data.serial(),
-            open_count: self.open_count.load(Ordering::SeqCst),
             lookup_count: self.lookup_count.load(Ordering::SeqCst),
             deferred_deletion: self.deferred_deletion.load(Ordering::SeqCst),
         }
@@ -163,8 +156,6 @@ impl S3Node {
             attr: child_attr,
             data,
             // lookup count set to 0 for sync
-            open_count: AtomicI64::new(0),
-            // open count set to 0 for sync
             lookup_count: AtomicI64::new(0),
             deferred_deletion: AtomicBool::new(false),
             kv_engine: Arc::clone(&parent.kv_engine),
@@ -191,12 +182,6 @@ impl S3Node {
     /// Increase node lookup count
     fn inc_lookup_count(&self) -> i64 {
         self.lookup_count.fetch_add(1, Ordering::AcqRel)
-    }
-
-    /// Increase node open count
-    fn inc_open_count(&self) -> i64 {
-        // TODO: add the usage
-        self.open_count.fetch_add(1, Ordering::AcqRel)
     }
 
     /// Open root node
@@ -341,24 +326,6 @@ impl Node for S3Node {
         attr
     }
 
-    /// Get node open count
-    fn get_open_count(&self) -> i64 {
-        self.open_count.load(Ordering::Acquire)
-    }
-
-    /// Decrease node open count
-    fn dec_open_count(&self) -> i64 {
-        if self.open_count.load(Ordering::Acquire) == 0 {
-            warn!(
-                "dec_open_count() found open_count is 0, ino={}, name={}",
-                self.get_ino(),
-                self.get_name()
-            );
-        }
-        debug_assert!(self.open_count.load(Ordering::Acquire) > 0);
-        self.open_count.fetch_sub(1, Ordering::AcqRel)
-    }
-
     /// Get node lookup count
     fn get_lookup_count(&self) -> i64 {
         self.lookup_count.load(Ordering::Acquire)
@@ -392,7 +359,6 @@ impl Node for S3Node {
 
     /// Duplicate fd
     async fn dup_fd(&self, _oflags: OFlag) -> DatenLordResult<RawFd> {
-        self.inc_open_count();
         Ok(self.new_fd().cast())
     }
 
@@ -562,14 +528,6 @@ impl Node for S3Node {
             namelen: 1024,
             frsize: 4096,
         })
-    }
-
-    async fn close(&mut self) {
-        self.dec_open_count();
-    }
-
-    async fn closedir(&self) {
-        self.dec_open_count();
     }
 
     /// Create child node

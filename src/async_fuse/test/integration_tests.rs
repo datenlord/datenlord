@@ -104,14 +104,14 @@ fn test_directory_manipulation_rust_way(mount_dir: &Path) -> anyhow::Result<()> 
     info!("test Directory manipulation Rust style");
 
     // Fixed directory name
-    let dir_name = "test_dir";
+    let dir_name = "dir_manipulation_test_dir";
     let dir_path = Path::new(mount_dir).join(dir_name);
 
     // Create directory
     fs::create_dir_all(&dir_path)?;
 
     // Fixed file name
-    let file_name = "tmp.txt";
+    let file_name = "dir_manipulation_tmp.txt";
     let file_path = dir_path.join(file_name);
 
     // Write to file
@@ -225,75 +225,27 @@ fn test_rename_file(mount_dir: &Path) -> anyhow::Result<()> {
 
 #[cfg(test)]
 fn test_rename_file_replace(mount_dir: &Path) -> anyhow::Result<()> {
-    info!("test rename file no replace");
-    let oflags = OFlag::O_CREAT | OFlag::O_EXCL | OFlag::O_RDWR;
-    let file_mode = Mode::from_bits_truncate(0o644);
+    info!("test rename file replace");
+    let old_file = Path::new(mount_dir).join("test_rename_file_replace_old.txt");
+    let new_file = Path::new(mount_dir).join("test_rename_file_replace_new.txt");
 
-    let old_file = Path::new(mount_dir).join("old.txt");
-    let old_fd = fcntl::open(&old_file, oflags, file_mode)?;
-    let old_file_write_size = unistd::write(old_fd, FILE_CONTENT.as_bytes())?;
-    assert_eq!(
-        old_file_write_size,
-        FILE_CONTENT.len(),
-        "the file write size {} is not the same as the expected size {}",
-        old_file_write_size,
-        FILE_CONTENT.len(),
-    );
+    let old_content = "old content";
+    let new_content = "new content";
 
-    let new_file = Path::new(&mount_dir).join("new.txt");
-    let new_fd = fcntl::open(&new_file, oflags, file_mode)?;
-    let new_file_write_size = unistd::write(new_fd, FILE_CONTENT.as_bytes())?;
-    assert_eq!(
-        new_file_write_size,
-        FILE_CONTENT.len(),
-        "the file write size {} is not the same as the expected size {}",
-        new_file_write_size,
-        FILE_CONTENT.len(),
-    );
+    fs::write(&old_file, old_content)?;
+    fs::write(&new_file, new_content)?;
 
-    fs::rename(&old_file, &new_file).context("rename replace should not fail")?;
-
-    let mut buffer: Vec<u8> = iter::repeat(0_u8).take(FILE_CONTENT.len()).collect();
-    unistd::lseek(old_fd, 0, Whence::SeekSet)?;
-    let old_file_read_size = unistd::read(old_fd, &mut buffer)?;
-    let content = String::from_utf8(buffer)?;
-    unistd::close(old_fd)?;
-    assert_eq!(
-        old_file_read_size,
-        FILE_CONTENT.len(),
-        "the file read size {} is not the same as the expected size {}",
-        old_file_read_size,
-        FILE_CONTENT.len(),
-    );
-    assert_eq!(
-        content, FILE_CONTENT,
-        "the file read result is not the same as the expected content",
-    );
-
-    let mut buffer: Vec<u8> = iter::repeat(0_u8).take(FILE_CONTENT.len()).collect();
-    unistd::lseek(new_fd, 0, Whence::SeekSet)?;
-    let new_file_read_size = unistd::read(new_fd, &mut buffer)?;
-    let content = String::from_utf8(buffer)?;
-    unistd::close(new_fd)?;
-    assert_eq!(
-        new_file_read_size,
-        FILE_CONTENT.len(),
-        "the file read size {} is not the same as the expected size {}",
-        new_file_read_size,
-        FILE_CONTENT.len(),
-    );
-    assert_eq!(
-        content, FILE_CONTENT,
-        "the file read result is not the same as the expected content",
-    );
+    fs::rename(&old_file, &new_file)?;
 
     assert!(
         !old_file.exists(),
-        "the old file {new_file:?} should not exist",
+        "the old file {old_file:?} should have been removed",
     );
     assert!(new_file.exists(), "the new file {new_file:?} should exist",);
+    let bytes = fs::read(&new_file)?;
+    let content = String::from_utf8(bytes)?;
+    assert_eq!(content, old_content);
 
-    // Clean up
     fs::remove_file(&new_file)?;
     Ok(())
 }

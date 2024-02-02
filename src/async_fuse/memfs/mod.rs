@@ -10,13 +10,14 @@ pub mod direntry;
 /// fs metadata module
 mod metadata;
 mod node;
+/// Opened files
+mod open_file;
 /// fs metadata with S3 backend module
 mod s3_metadata;
 mod s3_node;
 
 /// Serializable types module
 pub mod serial;
-
 use std::os::unix::prelude::RawFd;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -541,10 +542,6 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         reply: ReplyData,
     ) -> nix::Result<usize> {
         let ino = req.nodeid();
-        debug!(
-            "read(ino={}, fh={}, offset={}, size={}, req={:?})",
-            ino, fh, offset, size, req,
-        );
         debug_assert!(!offset.is_negative(), "offset={offset} cannot be negative");
         let file_data = match self.metadata.read_helper(ino, fh, offset, size).await {
             Ok(file_data) => file_data,
@@ -552,7 +549,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
                 return reply.error(e).await;
             }
         };
-        debug!("file_data is {:?}", file_data);
+        // Check the read data
         match Self::read_helper(file_data, size.cast()) {
             Ok(content) => {
                 debug!(

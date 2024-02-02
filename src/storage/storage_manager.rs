@@ -3,12 +3,14 @@
 use std::sync::Arc;
 use std::time::SystemTime;
 
+use anyhow::Context;
 use clippy_utilities::OverflowArithmetic;
 use lockfree_cuckoohash::{pin, LockFreeCuckooHash as HashMap};
 use tokio::task;
 
 use super::{Block, Storage};
 use crate::async_fuse::fuse::protocol::INum;
+use crate::common::error::DatenLordResult;
 
 /// The storage manager, which exposes the interfaces to `FileSystem` for
 /// interacting with the storage layers.
@@ -43,7 +45,12 @@ where
     }
 
     /// Load blocks from the storage concurrently.
-    async fn load_blocks(&self, ino: INum, start_block: usize, end_block: usize) -> Vec<Block> {
+    async fn load_blocks(
+        &self,
+        ino: INum,
+        start_block: usize,
+        end_block: usize,
+    ) -> DatenLordResult<Vec<Block>> {
         let mut handles = vec![];
 
         for block_id in start_block..end_block {
@@ -56,19 +63,22 @@ where
 
         for (handle, block_id) in handles.into_iter().zip(start_block..end_block) {
             let block = handle
-                .await
-                .unwrap_or_else(|e| panic!("Fails when awaiting on loading: {e}"));
+                .await?
+                .context("Storage manager failed to load blocks.")?;
             if let Some(block) = block {
                 blocks.push(block);
             } else {
                 let mut zero_filled = Block::new_zeroed(self.block_size);
                 zero_filled.set_dirty(true);
-                self.storage.store(ino, block_id, zero_filled.clone()).await;
+                self.storage
+                    .store(ino, block_id, zero_filled.clone())
+                    .await
+                    .context("Storage Manager failed to store blocks")?;
                 blocks.push(zero_filled);
             }
         }
 
-        blocks
+        Ok(blocks)
     }
 
     /// Store blocks into the storage concurrently.
@@ -77,7 +87,7 @@ where
         ino: INum,
         start_block: usize,
         io_blocks: impl Iterator<Item = Block>,
-    ) {
+    ) -> DatenLordResult<()> {
         let mut handles = vec![];
 
         for (mut io_block, block_id) in io_blocks.zip(start_block..) {
@@ -89,9 +99,11 @@ where
 
         for handle in handles {
             handle
-                .await
-                .unwrap_or_else(|e| panic!("Fails when awaiting on storing: {e}"));
+                .await?
+                .context("Storage manager failed to store blocks")?;
         }
+
+        Ok(())
     }
 
     /// Convert slice to `Block`s.
@@ -150,7 +162,7 @@ where
         offset: usize,
         len: usize,
         mtime: SystemTime,
-    ) -> Vec<Block> {
+    ) -> DatenLordResult<Vec<Block>> {
         // Check if the cache is valid.
         let invalid = {
             let guard = pin();
@@ -159,11 +171,14 @@ where
         };
 
         if invalid {
-            self.storage.invalidate(ino).await;
+            self.storage
+                .invalidate(ino)
+                .await
+                .context("Storage manager failed to invalidate the cache of a file")?;
         }
 
         if len == 0 {
-            return vec![];
+            return Ok(vec![]);
         }
 
         // Calculate the `[start_block, end_block)` range.
@@ -172,7 +187,7 @@ where
             .offset_to_block_id(offset.overflow_add(len).overflow_sub(1))
             .overflow_add(1);
 
-        let mut blocks = self.load_blocks(ino, start_block, end_block).await;
+        let mut blocks = self.load_blocks(ino, start_block, end_block).await?;
 
         // If the cache is invalidated, it must be re-fetched from backend.
         // So the mtime of the cache should be updated to the passed-in one.
@@ -194,7 +209,7 @@ where
             );
         }
 
-        blocks
+        Ok(blocks)
     }
 
     /// Store data into storage.
@@ -204,7 +219,7 @@ where
         offset: usize,
         data: &[u8],
         mtime: SystemTime,
-    ) -> SystemTime {
+    ) -> DatenLordResult<SystemTime> {
         // Check if the cache is valid.
         let invalid = {
             let guard = pin();
@@ -213,7 +228,10 @@ where
         };
 
         if invalid {
-            self.storage.invalidate(ino).await;
+            self.storage
+                .invalidate(ino)
+                .await
+                .context("Storage manager failed to invalidate the cache of a file")?;
         }
 
         if data.is_empty() {
@@ -224,7 +242,7 @@ where
             }
             // No data will be written, so the passed-in mtime will be passed-out
             // changelessly.
-            return mtime;
+            return Ok(mtime);
         }
 
         let start_block = self.offset_to_block_id(offset);
@@ -232,29 +250,41 @@ where
         let io_blocks = self.make_blocks_from_slice(offset, data);
 
         self.store_blocks(ino, start_block, io_blocks.into_iter())
-            .await;
+            .await?;
 
         // As the cache is overwritten, the cache mtime should be set to now.
         let new_mtime = SystemTime::now();
         self.mtimes.insert(ino, new_mtime);
 
-        new_mtime
+        Ok(new_mtime)
     }
 
     /// Remove a file from the storage.
-    pub async fn remove(&self, ino: INum) {
+    pub async fn remove(&self, ino: INum) -> DatenLordResult<()> {
         self.mtimes.remove(&ino);
-        self.storage.remove(ino).await;
+        self.storage
+            .remove(ino)
+            .await
+            .context("Storage manager failed to remove a file")?;
+        Ok(())
     }
 
     /// Flush the cache to the persistent layer.
-    pub async fn flush(&self, ino: INum) {
-        self.storage.flush(ino).await;
+    pub async fn flush(&self, ino: INum) -> DatenLordResult<()> {
+        self.storage
+            .flush(ino)
+            .await
+            .context("Storage manager failed to flush a file")?;
+        Ok(())
     }
 
     /// Flush all file in the cache to persistent layer.
-    pub async fn flush_all(&self) {
-        self.storage.flush_all().await;
+    pub async fn flush_all(&self) -> DatenLordResult<()> {
+        self.storage
+            .flush_all()
+            .await
+            .context("Storage manager failed to flush all files")?;
+        Ok(())
     }
 
     /// Truncate a file, from size of `from` to size of `to`.
@@ -270,7 +300,7 @@ where
         from: usize,
         to: usize,
         mtime: SystemTime,
-    ) -> SystemTime {
+    ) -> DatenLordResult<SystemTime> {
         let invalid = {
             let guard = pin();
             let cache_mtime = self.mtimes.get(&ino, &guard);
@@ -278,7 +308,10 @@ where
         };
 
         if invalid {
-            self.storage.invalidate(ino).await;
+            self.storage
+                .invalidate(ino)
+                .await
+                .context("Storage manager failed to invalidate the cache of a file")?;
         }
 
         if from <= to {
@@ -286,7 +319,7 @@ where
                 self.mtimes.remove(&ino);
             }
 
-            return mtime;
+            return Ok(mtime);
         }
 
         let from_block = self
@@ -309,17 +342,18 @@ where
 
         self.storage
             .truncate(ino, from_block, to_block, fill_start)
-            .await;
+            .await
+            .context("Storage manager failed to truncate a file")?;
 
         let new_mtime = SystemTime::now();
         self.mtimes.insert(ino, new_mtime);
 
-        new_mtime
+        Ok(new_mtime)
     }
 }
 
 #[cfg(test)]
-#[allow(clippy::indexing_slicing)]
+#[allow(clippy::indexing_slicing, clippy::unwrap_used)]
 mod tests {
     use std::sync::Arc;
     use std::time::{Duration, SystemTime};
@@ -358,13 +392,19 @@ mod tests {
 
         let (_, storage) = create_storage();
 
-        let new_mtime = storage.store(ino, offset, BLOCK_CONTENT, mtime).await;
+        let new_mtime = storage
+            .store(ino, offset, BLOCK_CONTENT, mtime)
+            .await
+            .unwrap();
 
-        let loaded = storage.load(ino, 4, 4, new_mtime).await;
+        let loaded = storage.load(ino, 4, 4, new_mtime).await.unwrap();
         assert_eq!(loaded.len(), 1);
         assert_eq!(loaded[0].as_slice(), b"bar ");
 
-        let loaded = storage.load(ino, 0, BLOCK_SIZE_IN_BYTES, new_mtime).await;
+        let loaded = storage
+            .load(ino, 0, BLOCK_SIZE_IN_BYTES, new_mtime)
+            .await
+            .unwrap();
         assert_eq!(loaded.len(), 1);
         assert_eq!(loaded[0].as_slice(), BLOCK_CONTENT);
     }
@@ -378,11 +418,15 @@ mod tests {
         let (_, storage) = create_storage();
 
         let content = BLOCK_CONTENT.repeat(3);
-        mtime = storage.store(ino, offset, content.as_slice(), mtime).await;
+        mtime = storage
+            .store(ino, offset, content.as_slice(), mtime)
+            .await
+            .unwrap();
 
         let loaded = storage
             .load(ino, 0, BLOCK_SIZE_IN_BYTES.overflow_mul(3), mtime)
-            .await;
+            .await
+            .unwrap();
         assert_eq!(loaded.len(), 3);
         assert_eq!(loaded[0].as_slice(), b"foo bar ");
         assert_eq!(loaded[1].as_slice(), b"foo bar ");
@@ -398,21 +442,28 @@ mod tests {
         let (_, storage) = create_storage();
 
         let content = BLOCK_CONTENT.repeat(3);
-        mtime = storage.store(ino, offset, content.as_slice(), mtime).await;
+        mtime = storage
+            .store(ino, offset, content.as_slice(), mtime)
+            .await
+            .unwrap();
 
         // ori: b"foo bar foo bar foo bar "
         //                   "foo bar "
         // res: b"foo bar foo foo bar bar "
-        mtime = storage.store(ino, 12, BLOCK_CONTENT, mtime).await;
+        mtime = storage.store(ino, 12, BLOCK_CONTENT, mtime).await.unwrap();
 
         let loaded = storage
             .load(ino, 8, BLOCK_SIZE_IN_BYTES.overflow_mul(2), mtime)
-            .await;
+            .await
+            .unwrap();
         assert_eq!(loaded.len(), 2);
         assert_eq!(loaded[0].as_slice(), b"foo foo ");
         assert_eq!(loaded[1].as_slice(), b"bar bar ");
 
-        let loaded = storage.load(ino, 12, BLOCK_SIZE_IN_BYTES, mtime).await;
+        let loaded = storage
+            .load(ino, 12, BLOCK_SIZE_IN_BYTES, mtime)
+            .await
+            .unwrap();
         assert_eq!(loaded.len(), 2);
         assert_eq!(loaded[0].as_slice(), b"foo ");
         assert_eq!(loaded[1].as_slice(), b"bar ");
@@ -427,15 +478,19 @@ mod tests {
         let (_, storage) = create_storage();
 
         let content = BLOCK_CONTENT.repeat(3);
-        mtime = storage.store(ino, offset, content.as_slice(), mtime).await;
+        mtime = storage
+            .store(ino, offset, content.as_slice(), mtime)
+            .await
+            .unwrap();
 
         // ori: b"foo bar foo bar foo bar "
         //               "2000"
         // res: b"foo bar 2000bar foo bar "
-        let new_mtime = storage.store(ino, 8, b"2000", mtime).await;
+        let new_mtime = storage.store(ino, 8, b"2000", mtime).await.unwrap();
         let loaded = storage
             .load(ino, 0, BLOCK_SIZE_IN_BYTES.overflow_add(4), new_mtime)
-            .await;
+            .await
+            .unwrap();
         assert_eq!(loaded.len(), 2);
         assert_eq!(loaded[0].as_slice(), b"foo bar ");
         assert_eq!(loaded[1].as_slice(), b"2000");
@@ -451,7 +506,10 @@ mod tests {
 
         let (_, storage) = create_storage();
 
-        let loaded = storage.load(ino, offset, BLOCK_SIZE_IN_BYTES, mtime).await;
+        let loaded = storage
+            .load(ino, offset, BLOCK_SIZE_IN_BYTES, mtime)
+            .await
+            .unwrap();
 
         assert_eq!(loaded.len(), 1);
         assert_eq!(loaded[0].as_slice(), ZEROED_BLOCK);
@@ -463,7 +521,8 @@ mod tests {
                 BLOCK_SIZE_IN_BYTES.overflow_mul(2),
                 mtime,
             )
-            .await;
+            .await
+            .unwrap();
         assert_eq!(loaded.len(), 2);
         assert_eq!(loaded[0].as_slice(), ZEROED_BLOCK);
         assert_eq!(loaded[0].as_slice(), ZEROED_BLOCK);
@@ -477,14 +536,17 @@ mod tests {
 
         let (_, storage) = create_storage();
 
-        let new_mtime = storage.store(ino, offset, BLOCK_CONTENT, mtime).await;
+        let new_mtime = storage
+            .store(ino, offset, BLOCK_CONTENT, mtime)
+            .await
+            .unwrap();
         assert_ne!(mtime, new_mtime);
 
-        let loaded = storage.load(ino, offset, 0, new_mtime).await;
+        let loaded = storage.load(ino, offset, 0, new_mtime).await.unwrap();
         assert!(loaded.is_empty());
 
         let just_now = SystemTime::now();
-        let mtime_from_store = storage.store(ino, offset, b"", just_now).await;
+        let mtime_from_store = storage.store(ino, offset, b"", just_now).await.unwrap();
         assert_eq!(just_now, mtime_from_store);
     }
 
@@ -492,11 +554,14 @@ mod tests {
     async fn test_flush() {
         let (backend, storage) = create_storage();
 
-        storage.flush(0).await;
+        storage.flush(0).await.unwrap();
         assert!(backend.flushed(0));
 
-        storage.store(0, 0, b"foo bar ", SystemTime::now()).await;
-        storage.flush_all().await;
+        storage
+            .store(0, 0, b"foo bar ", SystemTime::now())
+            .await
+            .unwrap();
+        storage.flush_all().await.unwrap();
         assert!(backend.flushed(0));
     }
 
@@ -509,24 +574,32 @@ mod tests {
 
         let mtime = storage
             .store(ino, offset, BLOCK_CONTENT, SystemTime::now())
-            .await;
-        let loaded = storage.load(ino, offset, BLOCK_SIZE_IN_BYTES, mtime).await;
+            .await
+            .unwrap();
+        let loaded = storage
+            .load(ino, offset, BLOCK_SIZE_IN_BYTES, mtime)
+            .await
+            .unwrap();
         assert_eq!(loaded.len(), 1);
         assert_eq!(loaded[0].as_slice(), b"foo bar ");
 
         let block = Block::from_slice(BLOCK_SIZE_IN_BYTES, b"bar foo ");
 
         // Simulating a modify on another node
-        backend.store(ino, 0, block).await;
+        backend.store(ino, 0, block).await.unwrap();
         // If we use the old mtime for loading, this node won't load the newest data
-        let loaded = storage.load(ino, 0, BLOCK_SIZE_IN_BYTES, mtime).await;
+        let loaded = storage
+            .load(ino, 0, BLOCK_SIZE_IN_BYTES, mtime)
+            .await
+            .unwrap();
         assert_eq!(loaded.len(), 1);
         assert_eq!(loaded[0].as_slice(), b"foo bar ");
 
         // Then we can use a new mtime to invalidate the cache
         let loaded = storage
             .load(ino, 0, BLOCK_SIZE_IN_BYTES, mtime + Duration::from_secs(10))
-            .await;
+            .await
+            .unwrap();
         assert_eq!(loaded.len(), 1);
         assert_eq!(loaded[0].as_slice(), b"bar foo ");
     }
@@ -540,18 +613,28 @@ mod tests {
 
         let mtime = storage
             .store(ino, offset, BLOCK_CONTENT, SystemTime::now())
-            .await;
-        let loaded = storage.load(ino, offset, BLOCK_SIZE_IN_BYTES, mtime).await;
+            .await
+            .unwrap();
+        let loaded = storage
+            .load(ino, offset, BLOCK_SIZE_IN_BYTES, mtime)
+            .await
+            .unwrap();
         assert_eq!(loaded.len(), 1);
         assert_eq!(loaded[0].as_slice(), b"foo bar ");
 
         let block = Block::from_slice(BLOCK_SIZE_IN_BYTES, b"bar foo ");
 
         // Simulating a modify on another node
-        backend.store(ino, 0, block).await;
+        backend.store(ino, 0, block).await.unwrap();
         // Use a new mtime to invalidate the cache
-        let mtime = storage.store(ino, 0, b"foo ", SystemTime::now()).await;
-        let loaded = storage.load(ino, offset, BLOCK_SIZE_IN_BYTES, mtime).await;
+        let mtime = storage
+            .store(ino, 0, b"foo ", SystemTime::now())
+            .await
+            .unwrap();
+        let loaded = storage
+            .load(ino, offset, BLOCK_SIZE_IN_BYTES, mtime)
+            .await
+            .unwrap();
         assert_eq!(loaded.len(), 1);
         assert_eq!(loaded[0].as_slice(), b"foo foo ");
     }
@@ -565,14 +648,21 @@ mod tests {
 
         let mtime = storage
             .store(ino, offset, BLOCK_CONTENT, SystemTime::now())
-            .await;
-        let loaded = storage.load(ino, offset, BLOCK_SIZE_IN_BYTES, mtime).await;
+            .await
+            .unwrap();
+        let loaded = storage
+            .load(ino, offset, BLOCK_SIZE_IN_BYTES, mtime)
+            .await
+            .unwrap();
         assert_eq!(loaded.len(), 1);
         assert_eq!(loaded[0].as_slice(), b"foo bar ");
 
         let zeroed_block = Block::new_zeroed(storage.block_size);
-        storage.remove(ino).await;
-        let loaded = storage.load(ino, offset, BLOCK_SIZE_IN_BYTES, mtime).await;
+        storage.remove(ino).await.unwrap();
+        let loaded = storage
+            .load(ino, offset, BLOCK_SIZE_IN_BYTES, mtime)
+            .await
+            .unwrap();
         assert_eq!(loaded.len(), 1);
         assert_eq!(loaded[0].as_slice(), zeroed_block.as_slice());
     }
@@ -589,11 +679,13 @@ mod tests {
 
         let mtime = storage
             .store(ino, offset, &content, SystemTime::now())
-            .await;
+            .await
+            .unwrap();
 
         let mtime = storage
             .truncate(ino, truncate_from, truncate_to, mtime)
-            .await;
+            .await
+            .unwrap();
         assert!(backend.contains(ino, 3));
 
         for block_id in 4..8 {
@@ -601,11 +693,14 @@ mod tests {
         }
 
         // Zeros are filled in the last block.
-        let loaded = storage.load(ino, truncate_to, 2, mtime).await;
+        let loaded = storage.load(ino, truncate_to, 2, mtime).await.unwrap();
         assert_eq!(loaded.len(), 1);
         assert_eq!(loaded[0].as_slice(), b"\0\0");
 
-        let epoch = storage.truncate(ino, 0, 4, SystemTime::UNIX_EPOCH).await;
+        let epoch = storage
+            .truncate(ino, 0, 4, SystemTime::UNIX_EPOCH)
+            .await
+            .unwrap();
         assert_eq!(epoch, SystemTime::UNIX_EPOCH);
     }
 
@@ -613,9 +708,15 @@ mod tests {
     async fn test_truncate_remove() {
         let (backend, storage) = create_storage();
 
-        let mtime = storage.store(0, 0, BLOCK_CONTENT, SystemTime::now()).await;
+        let mtime = storage
+            .store(0, 0, BLOCK_CONTENT, SystemTime::now())
+            .await
+            .unwrap();
 
-        let _: SystemTime = storage.truncate(0, BLOCK_SIZE_IN_BYTES, 0, mtime).await;
+        let _: SystemTime = storage
+            .truncate(0, BLOCK_SIZE_IN_BYTES, 0, mtime)
+            .await
+            .unwrap();
 
         assert!(!backend.contains(0, 0));
     }
@@ -654,7 +755,10 @@ mod tests {
                 let write_offset = request_id
                     .overflow_mul(REQUEST_SIZE)
                     .overflow_add(byte_offset);
-                let n_mtime = storage.store(0, write_offset, CONTENT, mtime.load()).await;
+                let n_mtime = storage
+                    .store(0, write_offset, CONTENT, mtime.load())
+                    .await
+                    .unwrap();
                 mtime.store(n_mtime);
                 write_pointer.store(request_id.overflow_add(1), Ordering::Release);
             }
@@ -682,7 +786,8 @@ mod tests {
 
                 let loaded = storage
                     .load(0, read_offset, REQUEST_SIZE, mtime.load())
-                    .await;
+                    .await
+                    .unwrap();
                 assert!(!loaded.is_empty());
                 let read_size: usize = loaded.iter().map(Block::len).sum();
                 assert_eq!(read_size, REQUEST_SIZE);
@@ -847,37 +952,47 @@ mod tests {
         async fn test_write_through_latency() {
             let storage = create_storage_with_latency(true);
 
-            let (latency, mtime) =
-                elapsed!(storage.store(0, 0, BLOCK_CONTENT, SystemTime::now()).await);
+            let (latency, mtime) = elapsed!(storage
+                .store(0, 0, BLOCK_CONTENT, SystemTime::now())
+                .await
+                .unwrap());
             assert!(latency.as_millis() >= 100, "latency = {latency:?}");
 
-            let (latency, _) = elapsed!(storage.load(0, 0, BLOCK_SIZE_IN_BYTES, mtime).await);
+            let (latency, _) = elapsed!(storage
+                .load(0, 0, BLOCK_SIZE_IN_BYTES, mtime)
+                .await
+                .unwrap());
             assert!(latency.as_millis() < 2, "latency = {latency:?}");
 
             // Update
-            let (latency, _) = elapsed!(storage.store(0, 0, &BLOCK_CONTENT[..4], mtime).await);
+            let (latency, _) = elapsed!(storage
+                .store(0, 0, &BLOCK_CONTENT[..4], mtime)
+                .await
+                .unwrap());
             assert!(latency.as_millis() >= 100, "latency = {latency:?}");
 
             // Invalidate the cache, and update
-            let (latency, mtime) = elapsed!(
-                storage
-                    .store(0, 0, &BLOCK_CONTENT[..4], SystemTime::now())
-                    .await
-            );
+            let (latency, mtime) = elapsed!(storage
+                .store(0, 0, &BLOCK_CONTENT[..4], SystemTime::now())
+                .await
+                .unwrap());
             assert!(latency.as_millis() >= 200, "latency = {latency:?}");
 
-            let (latency, _) = elapsed!(storage.truncate(0, BLOCK_SIZE_IN_BYTES, 4, mtime).await);
+            let (latency, _) = elapsed!(storage
+                .truncate(0, BLOCK_SIZE_IN_BYTES, 4, mtime)
+                .await
+                .unwrap());
             assert!(latency.as_millis() >= 100, "latency = {latency:?}");
 
-            let (latency, _) = elapsed!(storage.truncate(0, 4, 1, SystemTime::now()).await);
+            let (latency, _) =
+                elapsed!(storage.truncate(0, 4, 1, SystemTime::now()).await.unwrap());
             assert!(latency.as_millis() >= 100, "latency = {latency:?}");
 
             // Invalid the cache, and load
-            let (latency, _) = elapsed!(
-                storage
-                    .load(0, 0, BLOCK_SIZE_IN_BYTES, SystemTime::now())
-                    .await
-            );
+            let (latency, _) = elapsed!(storage
+                .load(0, 0, BLOCK_SIZE_IN_BYTES, SystemTime::now())
+                .await
+                .unwrap());
             assert!(latency.as_millis() >= 100, "latency = {latency:?}");
         }
 
@@ -885,37 +1000,47 @@ mod tests {
         async fn test_write_back_latency() {
             let storage = create_storage_with_latency(false);
 
-            let (latency, mtime) =
-                elapsed!(storage.store(0, 0, BLOCK_CONTENT, SystemTime::now()).await);
+            let (latency, mtime) = elapsed!(storage
+                .store(0, 0, BLOCK_CONTENT, SystemTime::now())
+                .await
+                .unwrap());
             assert!(latency.as_millis() < 2, "latency = {latency:?}");
 
-            let (latency, _) = elapsed!(storage.load(0, 0, BLOCK_SIZE_IN_BYTES, mtime).await);
+            let (latency, _) = elapsed!(storage
+                .load(0, 0, BLOCK_SIZE_IN_BYTES, mtime)
+                .await
+                .unwrap());
             assert!(latency.as_millis() < 2, "latency = {latency:?}");
 
             // Update
-            let (latency, _) = elapsed!(storage.store(0, 0, &BLOCK_CONTENT[..4], mtime).await);
+            let (latency, _) = elapsed!(storage
+                .store(0, 0, &BLOCK_CONTENT[..4], mtime)
+                .await
+                .unwrap());
             assert!(latency.as_millis() < 2, "latency = {latency:?}");
 
             // Invalidate the cache, and update
-            let (latency, mtime) = elapsed!(
-                storage
-                    .store(0, 0, &BLOCK_CONTENT[..4], SystemTime::now())
-                    .await
-            );
+            let (latency, mtime) = elapsed!(storage
+                .store(0, 0, &BLOCK_CONTENT[..4], SystemTime::now())
+                .await
+                .unwrap());
             assert!(latency.as_millis() >= 100, "latency = {latency:?}");
 
-            let (latency, _) = elapsed!(storage.truncate(0, BLOCK_SIZE_IN_BYTES, 4, mtime).await);
+            let (latency, _) = elapsed!(storage
+                .truncate(0, BLOCK_SIZE_IN_BYTES, 4, mtime)
+                .await
+                .unwrap());
             assert!(latency.as_millis() < 2, "latency = {latency:?}");
 
-            let (latency, _) = elapsed!(storage.truncate(0, 4, 1, SystemTime::now()).await);
+            let (latency, _) =
+                elapsed!(storage.truncate(0, 4, 1, SystemTime::now()).await.unwrap());
             assert!(latency.as_millis() < 2, "latency = {latency:?}");
 
             // Invalidate the cache, and load
-            let (latency, _) = elapsed!(
-                storage
-                    .load(0, 0, BLOCK_SIZE_IN_BYTES, SystemTime::now())
-                    .await
-            );
+            let (latency, _) = elapsed!(storage
+                .load(0, 0, BLOCK_SIZE_IN_BYTES, SystemTime::now())
+                .await
+                .unwrap());
             assert!(latency.as_millis() >= 100, "latency = {latency:?}");
         }
 
@@ -925,13 +1050,16 @@ mod tests {
             let mut mtime = SystemTime::now();
             for block_id in 0..8 {
                 let offset = block_id.overflow_mul(BLOCK_SIZE_IN_BYTES);
-                mtime = storage.store(0, offset, BLOCK_CONTENT, mtime).await;
+                mtime = storage
+                    .store(0, offset, BLOCK_CONTENT, mtime)
+                    .await
+                    .unwrap();
             }
 
             // Wait for all blocks being flushed
             tokio::time::sleep(Duration::from_millis(900)).await;
 
-            let (latency, ()) = elapsed!(storage.flush(0).await);
+            let (latency, ()) = elapsed!(storage.flush(0).await.unwrap());
             assert!(latency.as_millis() < 10, "latency = {latency:?}");
         }
     }

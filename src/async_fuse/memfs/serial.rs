@@ -92,8 +92,6 @@ pub struct SerialNode {
     pub(crate) attr: SerialFileAttr,
     /// Node data
     pub(crate) data: SerialNodeData,
-    /// S3Node open counter
-    pub(crate) open_count: i64,
     /// S3Node lookup counter
     pub(crate) lookup_count: i64,
     /// If S3Node has been marked as deferred deletion
