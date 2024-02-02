@@ -11,7 +11,7 @@ pub mod policy;
 
 pub use backend::{Backend, BackendBuilder};
 pub use block::{Block, BlockCoordinate};
-pub use error::{StorageError, StorageErrorInner, StorageOperation};
+pub use error::StorageError;
 pub use memory_cache::{MemoryCache, MemoryCacheBuilder};
 pub use storage_manager::StorageManager;
 pub use storage_trait::Storage;
