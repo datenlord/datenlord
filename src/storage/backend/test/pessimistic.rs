@@ -5,7 +5,7 @@ use opendal::ErrorKind as OpenDalErrorKind;
 use tokio::fs;
 
 use super::{prepare_backend, BACKEND_ROOT, BLOCK_CONTENT, BLOCK_SIZE_IN_BYTES};
-use crate::storage::{Block, Storage, StorageError, StorageErrorInner, StorageOperation};
+use crate::storage::{Block, Storage, StorageError};
 
 async fn cleanup(backend_root: impl AsRef<Path>) {
     if fs::try_exists(&backend_root).await.unwrap() {
@@ -39,10 +39,7 @@ async fn test_failed_load() {
     assert!(
         matches!(
             err,
-            StorageError {
-                operation: StorageOperation::Load { ino: 0, block_id: 0 },
-                inner: StorageErrorInner::StdIoError(ref e),
-            }
+            StorageError::StdIoError(ref e)
             if e.kind() == StdErrorKind::PermissionDenied
         ),
         "Mismatched: error={err:?}"
@@ -55,10 +52,7 @@ async fn test_failed_load() {
     assert!(
         matches!(
             err,
-            StorageError {
-                operation: StorageOperation::Load { ino: 0, block_id: 0 },
-                inner: StorageErrorInner::OpenDalError(ref e),
-            }
+            StorageError::OpenDalError(ref e)
             if e.kind() == OpenDalErrorKind::PermissionDenied
         ),
         "Mismatched: error={err:?}"
@@ -85,10 +79,7 @@ async fn test_failed_store() {
     assert!(
         matches!(
             err,
-            StorageError {
-                operation: StorageOperation::Store { ino: 0, block_id: 0 },
-                inner: StorageErrorInner::StdIoError(ref e),
-            }
+            StorageError::StdIoError(ref e)
             if e.kind() == StdErrorKind::Other  // openDAL mapped all write error to `StdErrorKind::Other`
         ),
         "Mismatched: error={err:?}"
@@ -104,10 +95,7 @@ async fn test_failed_store() {
     assert!(
         matches!(
             err,
-            StorageError {
-                operation: StorageOperation::Store { ino: 0, block_id: 0 },
-                inner: StorageErrorInner::OpenDalError(ref e),
-            }
+            StorageError::OpenDalError(ref e)
             if e.kind() == OpenDalErrorKind::PermissionDenied
         ),
         "Mismatched: error={err:?}"
@@ -123,10 +111,7 @@ async fn test_failed_store() {
     assert!(
         matches!(
             err,
-            StorageError {
-                operation: StorageOperation::Store { ino: 0, block_id: 0 },
-                inner: StorageErrorInner::OpenDalError(ref e),
-            }
+            StorageError::OpenDalError(ref e)
             if e.kind() == OpenDalErrorKind::PermissionDenied
         ),
         "Mismatched: error={err:?}"
@@ -161,10 +146,7 @@ async fn test_failed_partial_store() {
     assert!(
         matches!(
             err,
-            StorageError {
-                operation: StorageOperation::Load { ino: 0, block_id: 0 },
-                inner: StorageErrorInner::OpenDalError(ref e),
-            }
+            StorageError::OpenDalError(ref e)
             if e.kind() == OpenDalErrorKind::PermissionDenied
         ),
         "Mismatched: error={err:?}"
@@ -185,10 +167,7 @@ async fn test_failed_partial_store() {
     assert!(
         matches!(
             err,
-            StorageError {
-                operation: StorageOperation::Store { ino: 0, block_id: 0 },
-                inner: StorageErrorInner::OpenDalError(ref e),
-            }
+            StorageError::OpenDalError(ref e)
             if e.kind() == OpenDalErrorKind::PermissionDenied
         ),
         "Mismatched: error={err:?}"
@@ -216,10 +195,7 @@ async fn test_failed_remove() {
     assert!(
         matches!(
             err,
-            StorageError {
-                operation: StorageOperation::Remove { ino: 0 },
-                inner: StorageErrorInner::OpenDalError(ref e),
-            }
+            StorageError::OpenDalError(ref e)
             if e.kind() == OpenDalErrorKind::PermissionDenied
         ),
         "Mismatched: error={err:?}"
@@ -251,10 +227,7 @@ async fn test_failed_truncate() {
     assert!(
         matches!(
             err,
-            StorageError {
-                operation: StorageOperation::Remove { ino: 0 },
-                inner: StorageErrorInner::OpenDalError(ref e),
-            }
+            StorageError::OpenDalError(ref e)
             if e.kind() == OpenDalErrorKind::PermissionDenied
         ),
         "Mismatched: error={err:?}"
@@ -268,10 +241,7 @@ async fn test_failed_truncate() {
     assert!(
         matches!(
             err,
-            StorageError {
-                operation: StorageOperation::Truncate { ino: 0, from: 8, to: 4 },
-                inner: StorageErrorInner::OpenDalError(ref e),
-            }
+            StorageError::OpenDalError(ref e)
             if e.kind() == OpenDalErrorKind::PermissionDenied
         ),
         "Mismatched: error={err:?}"
@@ -285,10 +255,7 @@ async fn test_failed_truncate() {
     assert!(
         matches!(
             err,
-            StorageError {
-                operation: StorageOperation::Load { ino: 0, block_id: 3 },
-                inner: StorageErrorInner::OpenDalError(ref e),
-            }
+            StorageError::OpenDalError(ref e)
             if e.kind() == OpenDalErrorKind::PermissionDenied
         ),
         "Mismatched: error={err:?}"
@@ -302,10 +269,7 @@ async fn test_failed_truncate() {
     assert!(
         matches!(
             err,
-            StorageError {
-                operation: StorageOperation::Store { ino: 0, block_id: 3 },
-                inner: StorageErrorInner::OpenDalError(ref e),
-            }
+            StorageError::OpenDalError(ref e)
             if e.kind() == OpenDalErrorKind::PermissionDenied
         ),
         "Mismatched: error={err:?}"

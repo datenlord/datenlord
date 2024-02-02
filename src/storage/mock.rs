@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use clippy_utilities::OverflowArithmetic;
 use parking_lot::Mutex;
 
-use super::error::{StorageError, StorageOperation, StorageResult};
+use super::error::StorageResult;
 use super::{Block, Storage};
 use crate::async_fuse::fuse::protocol::INum;
 
@@ -85,11 +85,7 @@ impl Storage for MemoryStorage {
             .or_default()
             .entry(block_id)
             .or_insert_with(|| Block::new_zeroed(self.block_size))
-            .update(&block)
-            .map_err(|e| StorageError {
-                operation: StorageOperation::Store { ino, block_id },
-                inner: e,
-            })?;
+            .update(&block)?;
         Ok(())
     }
 
@@ -165,7 +161,7 @@ mod tests {
     use tokio::time::Instant;
 
     use super::{Block, Duration, MemoryStorage, Storage};
-    use crate::storage::{StorageError, StorageErrorInner, StorageOperation};
+    use crate::storage::StorageError;
 
     const BLOCK_SIZE_IN_BYTES: usize = 8;
     const BLOCK_CONTENT: &[u8; BLOCK_SIZE_IN_BYTES] = b"foo bar ";
@@ -336,10 +332,7 @@ mod tests {
 
         assert!(matches!(
             err,
-            StorageError {
-                operation: StorageOperation::Store { ino: 0, block_id: 0 },
-                inner: StorageErrorInner::OutOfRange { maximum, found }
-            }
+            StorageError::OutOfRange { maximum, found }
             if maximum == BLOCK_SIZE_IN_BYTES && found == BLOCK_SIZE_IN_BYTES.overflow_mul(2)
         ));
     }

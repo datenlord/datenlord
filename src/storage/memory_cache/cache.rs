@@ -14,12 +14,10 @@ use super::write_back_task::Command;
 use crate::async_fuse::fuse::protocol::INum;
 use crate::storage::error::StorageResult;
 use crate::storage::policy::EvictPolicy;
-use crate::storage::{
-    Block, BlockCoordinate, BlockId, Storage, StorageError, StorageErrorInner, StorageOperation,
-};
+use crate::storage::{Block, BlockCoordinate, BlockId, Storage, StorageError};
 
 /// Merge the content from `src` to `dst`. This will set `dst` to be dirty.
-fn merge_two_blocks(src: &Block, dst: &mut Block) -> Result<(), StorageErrorInner> {
+fn merge_two_blocks(src: &Block, dst: &mut Block) -> Result<(), StorageError> {
     dst.set_dirty(true);
     dst.update(src)
 }
@@ -143,10 +141,7 @@ impl<P, S> MemoryCache<P, S> {
         let res = if let Some(file_cache) = self.get_file_cache(ino) {
             let mut file_cache = file_cache.write().await;
             if let Some(block) = file_cache.get_mut(&block_id) {
-                merge_two_blocks(src, block).map_err(|e| StorageError {
-                    operation: StorageOperation::Store { ino, block_id },
-                    inner: e,
-                })?;
+                merge_two_blocks(src, block)?;
                 if !self.write_through {
                     if let Some(truncate_record) = {
                         let guard = pin();
@@ -222,12 +217,7 @@ impl<P, S> MemoryCache<P, S> {
 
         let mut file_cache = loop {
             if retry_times >= Self::INSERT_RETRY_LIMMIT {
-                let inner = anyhow!("Gave up retrying to insert a block into the cache.").into();
-                let err = StorageError {
-                    operation: StorageOperation::Store { ino, block_id },
-                    inner,
-                };
-                return Err(err);
+                return Err(anyhow!("Gave up retrying to insert a block into the cache.").into());
             }
 
             let file_cache = {
@@ -295,12 +285,9 @@ where
         let end_offset = input.end();
 
         if end_offset > self.block_size {
-            return Err(StorageError {
-                operation: StorageOperation::Store { ino, block_id },
-                inner: StorageErrorInner::OutOfRange {
-                    maximum: self.block_size,
-                    found: end_offset,
-                },
+            return Err(StorageError::OutOfRange {
+                maximum: self.block_size,
+                found: end_offset,
             });
         }
 
@@ -329,10 +316,7 @@ where
                 // Create a new block for write, despite the offset is larger than file size.
                 Block::new_zeroed(self.block_size)
             });
-            merge_two_blocks(&input, &mut to_be_inserted).map_err(|e| StorageError {
-                operation: StorageOperation::Store { ino, block_id },
-                inner: e,
-            })?;
+            merge_two_blocks(&input, &mut to_be_inserted)?;
             self.write_block_into_cache(ino, block_id, to_be_inserted.clone())
                 .await?;
 

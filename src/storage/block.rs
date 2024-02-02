@@ -7,7 +7,7 @@ use aligned_utils::bytes::AlignedBytes;
 use clippy_utilities::OverflowArithmetic;
 use nix::sys::uio::IoVec;
 
-use super::StorageErrorInner;
+use super::StorageError;
 use crate::async_fuse::fuse::fuse_reply::{AsIoVec, CouldBeAsIoVecList};
 use crate::async_fuse::fuse::protocol::INum;
 
@@ -205,9 +205,9 @@ impl Block {
     /// range of `self` will be extended.
     ///
     /// This method calls `make_mut_slice` internal.
-    pub fn update(&mut self, other: &Block) -> Result<(), StorageErrorInner> {
+    pub fn update(&mut self, other: &Block) -> Result<(), StorageError> {
         if self.inner.len() < other.end {
-            return Err(StorageErrorInner::OutOfRange {
+            return Err(StorageError::OutOfRange {
                 maximum: self.inner.len(),
                 found: other.end,
             });

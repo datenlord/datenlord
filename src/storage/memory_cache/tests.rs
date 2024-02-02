@@ -9,9 +9,7 @@ use datenlord::config::SoftLimit;
 use super::{MemoryCache, MemoryCacheBuilder};
 use crate::storage::mock::MemoryStorage;
 use crate::storage::policy::LruPolicy;
-use crate::storage::{
-    Block, BlockCoordinate, Storage, StorageError, StorageErrorInner, StorageOperation,
-};
+use crate::storage::{Block, BlockCoordinate, Storage, StorageError};
 
 const BLOCK_SIZE_IN_BYTES: usize = 8;
 const BLOCK_CONTENT: &[u8; BLOCK_SIZE_IN_BYTES] = b"foo bar ";
@@ -341,15 +339,9 @@ async fn test_write_out_of_range() {
     assert!(
         matches!(
             res,
-            StorageError {
-                operation: StorageOperation::Store {
-                    ino: 0,
-                    block_id: 0
-                },
-                inner: StorageErrorInner::OutOfRange {
-                    maximum: 8,
-                    found: 16
-                },
+            StorageError::OutOfRange {
+                maximum: 8,
+                found: 16
             }
         ),
         "Mismatched: res={res:?}"

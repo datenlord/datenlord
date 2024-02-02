@@ -9,7 +9,7 @@ use opendal::{ErrorKind, Operator};
 
 use crate::async_fuse::fuse::protocol::INum;
 use crate::storage::error::StorageResult;
-use crate::storage::{Block, Storage, StorageError, StorageOperation};
+use crate::storage::{Block, Storage};
 
 /// Get file path by `ino`
 fn get_file_path(ino: INum) -> String {
@@ -101,21 +101,14 @@ impl Storage for Backend {
         if let Err(e) = self
             .operator
             .reader(&get_block_path(ino, block_id))
-            .await
-            .map_err(|e| StorageError {
-                operation: StorageOperation::Load { ino, block_id },
-                inner: e.into(),
-            })?
+            .await?
             .read(block.make_mut_slice())
             .await
         {
             if e.kind() == std::io::ErrorKind::NotFound {
                 Ok(None)
             } else {
-                Err(StorageError {
-                    operation: StorageOperation::Load { ino, block_id },
-                    inner: e.into(),
-                })
+                Err(e.into())
             }
         } else {
             Ok(Some(block))
@@ -139,25 +132,9 @@ impl Storage for Backend {
 
         if block_start == 0 && block_end == self.block_size {
             // To store a whole block
-            let mut writer = self
-                .operator
-                .writer(&path)
-                .await
-                .map_err(|e| StorageError {
-                    operation: StorageOperation::Store { ino, block_id },
-                    inner: e.into(),
-                })?;
-            writer
-                .write_all(block.as_slice())
-                .await
-                .map_err(|e| StorageError {
-                    operation: StorageOperation::Store { ino, block_id },
-                    inner: e.into(),
-                })?;
-            writer.close().await.map_err(|e| StorageError {
-                operation: StorageOperation::Store { ino, block_id },
-                inner: e.into(),
-            })?;
+            let mut writer = self.operator.writer(&path).await?;
+            writer.write_all(block.as_slice()).await?;
+            writer.close().await?;
             return Ok(());
         }
 
@@ -168,10 +145,7 @@ impl Storage for Backend {
                     // Create an empty block for overwriting is ok.
                     vec![]
                 } else {
-                    return Err(StorageError {
-                        operation: StorageOperation::Load { ino, block_id },
-                        inner: e.into(),
-                    });
+                    return Err(e.into());
                 }
             }
         };
@@ -185,25 +159,13 @@ impl Storage for Backend {
         dest.get_mut(block_start..block_end)
             .unwrap_or_else(|| unreachable!("The vector is ensured to be long enough."))
             .copy_from_slice(block.as_slice());
-        self.operator
-            .write(&path, dest)
-            .await
-            .map_err(|e| StorageError {
-                operation: StorageOperation::Store { ino, block_id },
-                inner: e.into(),
-            })?;
+        self.operator.write(&path, dest).await?;
 
         Ok(())
     }
 
     async fn remove(&self, ino: INum) -> StorageResult<()> {
-        self.operator
-            .remove_all(&get_file_path(ino))
-            .await
-            .map_err(|e| StorageError {
-                operation: StorageOperation::Remove { ino },
-                inner: e.into(),
-            })?;
+        self.operator.remove_all(&get_file_path(ino)).await?;
 
         Ok(())
     }
@@ -242,27 +204,11 @@ impl Storage for Backend {
 
         if file_exists {
             if to_block == 0 {
-                self.operator
-                    .remove_all(&file_path)
-                    .await
-                    .map_err(|e| StorageError {
-                        operation: StorageOperation::Remove { ino },
-                        inner: e.into(),
-                    })?;
+                self.operator.remove_all(&file_path).await?;
                 return Ok(());
             }
 
-            self.operator
-                .remove_via(paths)
-                .await
-                .map_err(|e| StorageError {
-                    operation: StorageOperation::Truncate {
-                        ino,
-                        from: from_block,
-                        to: to_block,
-                    },
-                    inner: e.into(),
-                })?;
+            self.operator.remove_via(paths).await?;
 
             // truncate the last block
             if to_block > 0 && fill_start < self.block_size {
@@ -271,27 +217,12 @@ impl Storage for Backend {
                 match self.operator.read(&path).await {
                     Ok(mut dest) => {
                         dest.truncate(fill_start);
-                        self.operator
-                            .write(&path, dest)
-                            .await
-                            .map_err(|e| StorageError {
-                                operation: StorageOperation::Store {
-                                    ino,
-                                    block_id: truncate_block_id,
-                                },
-                                inner: e.into(),
-                            })?;
+                        self.operator.write(&path, dest).await?;
                     }
                     Err(e) => {
                         // It's OK that the block is not found for truncate.
                         if e.kind() != ErrorKind::NotFound {
-                            return Err(StorageError {
-                                operation: StorageOperation::Load {
-                                    ino,
-                                    block_id: truncate_block_id,
-                                },
-                                inner: e.into(),
-                            });
+                            return Err(e.into());
                         }
                     }
                 }
