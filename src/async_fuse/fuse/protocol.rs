@@ -384,8 +384,6 @@ pub mod write_flags {
     pub const FUSE_WRITE_KILL_PRIV: u32 = 1 << 2_i32;
 }
 
-pub use write_flags::*;
-
 /// Read flags
 #[allow(dead_code)]
 #[cfg(feature = "abi-7-9")]
