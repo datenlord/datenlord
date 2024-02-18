@@ -16,7 +16,7 @@ use tracing::{error, info, instrument};
 use super::gc::GcHandle;
 use super::task::{Task, TaskName, EDGES, GC_TASKS};
 
-/// The task manager.
+/// The global task manager.
 pub static TASK_MANAGER: Lazy<TaskManager> = Lazy::new(TaskManager::default);
 
 /// Spawn error, occurs when spawnint a task after shutdown.

@@ -84,6 +84,7 @@ use async_fuse::memfs::kv_engine::{KVEngine, KVEngineType};
 use clap::Parser;
 use csi::meta_data::MetaData;
 use csi::scheduler_extender::SchedulerExtender;
+use datenlord::common::task_manager::{self, TaskName, TASK_MANAGER};
 use datenlord::config;
 use datenlord::config::{InnerConfig, NodeRole, StorageConfig};
 
@@ -192,7 +193,11 @@ async fn main() -> anyhow::Result<()> {
                 Arc::<MetaData>::clone(&md),
                 SocketAddr::new(ip_address, port),
             );
-            scheduler_extender.start().await;
+            TASK_MANAGER
+                .spawn(TaskName::SchedulerExtender, move |token| {
+                    scheduler_extender.start(token)
+                })
+                .await?;
         }
         NodeRole::AsyncFuse => {
             let kv_engine = Arc::new(KVEngineType::new(config.kv_addrs.clone()).await?);
@@ -212,5 +217,7 @@ async fn main() -> anyhow::Result<()> {
             }
         }
     }
+
+    task_manager::wait_for_shutdown(&TASK_MANAGER)?.await;
     Ok(())
 }
