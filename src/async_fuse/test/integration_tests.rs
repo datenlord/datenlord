@@ -762,7 +762,7 @@ async fn run_s3_test() -> anyhow::Result<()> {
 async fn _run_test(mount_dir_str: &str, is_s3: bool) -> anyhow::Result<()> {
     info!("begin integration test");
     let mount_dir = Path::new(mount_dir_str);
-    let th = test_util::setup(mount_dir, is_s3).await?;
+    test_util::setup(mount_dir, is_s3).await?;
 
     test_delete_file(mount_dir).context("test_delete_file() failed")?;
     test_file_manipulation_rust_way(mount_dir)
@@ -791,7 +791,7 @@ async fn _run_test(mount_dir_str: &str, is_s3: bool) -> anyhow::Result<()> {
     test_open_file_permission(mount_dir).context("test_open_file_permission() failed")?;
     test_write_read_only_file(mount_dir).context("test_write_read_only_file() failed")?;
 
-    test_util::teardown(mount_dir, th).await?;
+    test_util::teardown(mount_dir).await?;
 
     Ok(())
 }
@@ -810,7 +810,7 @@ async fn run_s3_bench() -> anyhow::Result<()> {
 
 async fn _run_bench(mount_dir_str: &str, is_s3: bool) -> anyhow::Result<()> {
     let mount_dir = Path::new(mount_dir_str);
-    let th = test_util::setup(mount_dir, is_s3).await?;
+    test_util::setup(mount_dir, is_s3).await?;
 
     let fio_handle = std::process::Command::new("fio")
         .arg("./scripts/perf/fio-jobs.ini")
@@ -829,6 +829,6 @@ async fn _run_bench(mount_dir_str: &str, is_s3: bool) -> anyhow::Result<()> {
         ))
     };
 
-    test_util::teardown(mount_dir, th).await?;
+    test_util::teardown(mount_dir).await?;
     fio_res
 }

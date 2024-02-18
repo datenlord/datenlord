@@ -5,9 +5,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use clippy_utilities::OverflowArithmetic;
+use datenlord::common::task_manager::{TaskName, TASK_MANAGER};
 use datenlord::config::{
     MemoryCacheConfig, SoftLimit, StorageConfig, StorageParams, StorageS3Config,
 };
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, info}; // warn, error
 
 use crate::async_fuse::fuse::{mount, session};
@@ -55,7 +57,7 @@ fn test_storage_config(is_s3: bool) -> StorageConfig {
     }
 }
 
-async fn run_fs(mount_point: &Path, is_s3: bool) -> anyhow::Result<()> {
+async fn run_fs(mount_point: &Path, is_s3: bool, token: CancellationToken) -> anyhow::Result<()> {
     let storage_config = test_storage_config(is_s3);
     let kv_engine: Arc<memfs::kv_engine::etcd_impl::EtcdKVEngine> =
         Arc::new(KVEngineType::new(vec![TEST_ETCD_ENDPOINT.to_owned()]).await?);
@@ -90,14 +92,13 @@ async fn run_fs(mount_point: &Path, is_s3: bool) -> anyhow::Result<()> {
     )
     .await?;
     let ss = session::new_session_of_memfs(mount_point, fs).await?;
-    ss.run().await?;
+    ss.run(token).await?;
 
     Ok(())
 }
 
 #[allow(clippy::let_underscore_must_use)]
-// TODO : Remove `is_s3` arg due too we only support s3 now
-pub async fn setup(mount_dir: &Path, is_s3: bool) -> anyhow::Result<tokio::task::JoinHandle<()>> {
+pub async fn setup(mount_dir: &Path, is_s3: bool) -> anyhow::Result<()> {
     init_logger(LogRole::Test);
     debug!("setup started with mount_dir: {:?}", mount_dir);
     if mount_dir.exists() {
@@ -123,22 +124,16 @@ pub async fn setup(mount_dir: &Path, is_s3: bool) -> anyhow::Result<tokio::task:
     fs::create_dir_all(mount_dir)?;
     let abs_root_path = fs::canonicalize(mount_dir)?;
 
-    let fs_task = tokio::task::spawn(async move {
-        if let Err(e) = run_fs(&abs_root_path, is_s3).await {
-            panic!(
-                "failed to run filesystem, the error is: {}",
-                crate::common::util::format_anyhow_error(&e),
-            );
-        }
-    });
-
-    debug!("Spawning main thread");
-    let th = tokio::task::spawn(async {
-        fs_task.await.unwrap_or_else(|e| {
-            panic!("fs_task failed to join for error {e}");
-        });
-        debug!("spawned a thread for futures::executor::block_on()");
-    });
+    TASK_MANAGER
+        .spawn(TaskName::AsyncFuse, |token| async move {
+            if let Err(e) = run_fs(&abs_root_path, is_s3, token).await {
+                panic!(
+                    "failed to run filesystem, the error is: {}",
+                    crate::common::util::format_anyhow_error(&e),
+                );
+            }
+        })
+        .await?;
 
     debug!("async_fuse task spawned");
     let seconds = 2;
@@ -146,10 +141,10 @@ pub async fn setup(mount_dir: &Path, is_s3: bool) -> anyhow::Result<tokio::task:
     tokio::time::sleep(Duration::new(seconds, 0)).await;
 
     info!("setup finished");
-    Ok(th)
+    Ok(())
 }
 
-pub async fn teardown(mount_dir: &Path, th: tokio::task::JoinHandle<()>) -> anyhow::Result<()> {
+pub async fn teardown(mount_dir: &Path) -> anyhow::Result<()> {
     info!("begin teardown");
     let seconds = 1;
     debug!("sleep {} seconds for teardown", seconds);
@@ -164,14 +159,6 @@ pub async fn teardown(mount_dir: &Path, th: tokio::task::JoinHandle<()>) -> anyh
     });
     let abs_mount_path = fs::canonicalize(mount_dir)?;
     fs::remove_dir_all(&abs_mount_path)?;
-
-    #[allow(box_pointers)] // thread join result involves box point
-    th.await.unwrap_or_else(|res| {
-        panic!(
-            "failed to wait the test setup thread to finish, \
-            the thread result is: {res:?}",
-        );
-    });
 
     Ok(())
 }
