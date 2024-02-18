@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use futures::{Future, StreamExt};
+use once_cell::sync::Lazy;
 use signal_hook_tokio::Signals;
 use thiserror::Error;
 use tokio::sync::Mutex;
@@ -14,6 +15,9 @@ use tracing::{error, info, instrument};
 
 use super::gc::GcHandle;
 use super::task::{Task, TaskName, EDGES, GC_TASKS};
+
+/// The task manager.
+pub static TASK_MANAGER: Lazy<TaskManager> = Lazy::new(TaskManager::default);
 
 /// Spawn error, occurs when spawnint a task after shutdown.
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -184,8 +188,8 @@ impl Default for TaskManager {
 /// manager.
 #[inline]
 pub fn wait_for_shutdown(
-    manager: Arc<TaskManager>,
-) -> anyhow::Result<impl Future<Output = ()> + Send> {
+    manager: &TaskManager,
+) -> anyhow::Result<impl Future<Output = ()> + Send + '_> {
     use signal_hook::consts::TERM_SIGNALS;
 
     let mut signals = Signals::new(TERM_SIGNALS)?;
