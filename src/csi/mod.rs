@@ -20,6 +20,8 @@ use grpcio::{Environment, Server};
 use identity::IdentityImpl;
 use meta_data::{DatenLordNode, MetaData};
 use node::NodeImpl;
+use tokio::select;
+use tokio_util::sync::CancellationToken;
 use tracing::info;
 use worker::WorkerImpl;
 
@@ -148,7 +150,8 @@ fn run_single_server_helper(srv: &mut Server) {
 }
 
 /// Run `gRPC` servers
-pub async fn run_grpc_servers(servers: &mut [Server]) {
+#[allow(clippy::pattern_type_mismatch)] // Raised by `tokio::select`
+pub async fn run_grpc_servers(token: CancellationToken, mut servers: Vec<Server>) {
     /// The future to run `gRPC` servers
     async fn run_servers(servers: &mut [Server]) {
         for server in servers.iter_mut() {
@@ -157,7 +160,16 @@ pub async fn run_grpc_servers(servers: &mut [Server]) {
         let f = futures::future::pending::<()>();
         f.await;
     }
-    run_servers(servers).await;
+
+    select! {
+        () = run_servers(&mut servers) => {
+            // This branch is unreachable now, because it waits on `Pending<()>`, which will never resolve.
+            info!("Grpc server quits.");
+        },
+        () = token.cancelled() => {
+            info!("Grpc server shutdown.");
+        }
+    }
 }
 
 #[cfg(test)]
@@ -169,6 +181,7 @@ mod test {
     use std::sync::Once;
 
     use clippy_utilities::{Cast, OverflowArithmetic};
+    use datenlord::common::task_manager::{TaskName, TASK_MANAGER};
     use grpcio::{ChannelBuilder, EnvBuilder};
     use proto::csi::{
         ControllerExpandVolumeRequest, ControllerExpandVolumeResponse, CreateSnapshotRequest,
@@ -228,6 +241,7 @@ mod test {
         test_controller_server().add_context("test controller server failed")?;
         info!("test node server");
         test_node_server().add_context("test node server failed")?;
+
         Ok(())
     }
 
@@ -475,14 +489,20 @@ mod test {
                 };
 
                 // Keep running the task in the background
-                let _controller_thread = tokio::spawn(async move {
-                    run_grpc_servers(&mut [controller_server]).await;
-                });
+                TASK_MANAGER
+                    .spawn(TaskName::Rpc, |token| {
+                        run_grpc_servers(token, vec![controller_server])
+                    })
+                    .await
+                    .unwrap_or_else(|e| panic!("Trying to spawn task {e:?} after shutdown."));
 
                 // Keep running the task in the background
-                let _node_thread = tokio::spawn(async move {
-                    run_grpc_servers(&mut [node_server, worker_server]).await;
-                });
+                TASK_MANAGER
+                    .spawn(TaskName::Rpc, |token| {
+                        run_grpc_servers(token, vec![node_server, worker_server])
+                    })
+                    .await
+                    .unwrap_or_else(|e| panic!("Trying to spawn task {e:?} after shutdown."));
             });
         });
         Ok(())
