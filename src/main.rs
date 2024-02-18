@@ -147,9 +147,11 @@ async fn main() -> anyhow::Result<()> {
 
             let worker_server = csi::build_grpc_worker_server(Arc::<MetaData>::clone(&md))?;
             let node_server = csi::build_grpc_node_server(&csi_endpoint, &driver_name, md)?;
-            let csi_thread = tokio::task::spawn(async move {
-                csi::run_grpc_servers(&mut [node_server, worker_server]).await;
-            });
+            TASK_MANAGER
+                .spawn(TaskName::Rpc, |token| {
+                    csi::run_grpc_servers(token, vec![worker_server, node_server])
+                })
+                .await?;
 
             TASK_MANAGER
                 .spawn(TaskName::Metrics, metrics::start_metrics_server)
@@ -171,10 +173,6 @@ async fn main() -> anyhow::Result<()> {
                     }
                 })
                 .await?;
-
-            csi_thread
-                .await
-                .unwrap_or_else(|e| panic!("csi thread error: {e:?}"));
         }
         NodeRole::Controller => {
             let metadata = parse_metadata(&config).await?;
@@ -187,7 +185,11 @@ async fn main() -> anyhow::Result<()> {
                 &driver_name,
                 Arc::<MetaData>::clone(&md),
             )?;
-            csi::run_grpc_servers(&mut [controller_server]).await;
+            TASK_MANAGER
+                .spawn(TaskName::Rpc, |token| {
+                    csi::run_grpc_servers(token, vec![controller_server])
+                })
+                .await?;
         }
         NodeRole::SchedulerExtender => {
             let metadata = parse_metadata(&config).await?;
