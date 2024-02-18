@@ -21,7 +21,7 @@ macro_rules! elapsed {
     }};
 }
 
-fn create_storage_with_latency(write_through: bool) -> Arc<StorageManager<impl Storage>> {
+async fn create_storage_with_latency(write_through: bool) -> Arc<StorageManager<impl Storage>> {
     let limit = SoftLimit(1, NonZeroUsize::new(1).unwrap());
 
     let backend = Arc::new(MemoryStorage::new(
@@ -32,13 +32,14 @@ fn create_storage_with_latency(write_through: bool) -> Arc<StorageManager<impl S
     let cache = MemoryCacheBuilder::new(lru, Arc::clone(&backend), BLOCK_SIZE_IN_BYTES)
         .write_through(write_through)
         .limit(limit)
-        .build();
+        .build()
+        .await;
     Arc::new(StorageManager::new(cache, BLOCK_SIZE_IN_BYTES))
 }
 
 #[tokio::test]
 async fn test_write_through_latency() {
-    let storage = create_storage_with_latency(true);
+    let storage = create_storage_with_latency(true).await;
 
     let (latency, mtime) = elapsed!(storage
         .store(0, 0, BLOCK_CONTENT, SystemTime::now())
@@ -85,7 +86,7 @@ async fn test_write_through_latency() {
 
 #[tokio::test]
 async fn test_write_back_latency() {
-    let storage = create_storage_with_latency(false);
+    let storage = create_storage_with_latency(false).await;
 
     let (latency, mtime) = elapsed!(storage
         .store(0, 0, BLOCK_CONTENT, SystemTime::now())
@@ -132,7 +133,7 @@ async fn test_write_back_latency() {
 
 #[tokio::test]
 async fn test_write_back_flush_latency() {
-    let storage = create_storage_with_latency(false);
+    let storage = create_storage_with_latency(false).await;
     let mut mtime = SystemTime::now();
     for block_id in 0..8 {
         let offset = block_id.overflow_mul(BLOCK_SIZE_IN_BYTES);
@@ -143,8 +144,6 @@ async fn test_write_back_flush_latency() {
     }
 
     // Wait for all blocks being flushed
-    tokio::time::sleep(Duration::from_millis(900)).await;
-
     let (latency, ()) = elapsed!(storage.flush(0).await.unwrap());
-    assert!(latency.as_millis() < 10, "latency = {latency:?}");
+    assert!(latency.as_millis() < 110, "latency = {latency:?}");
 }

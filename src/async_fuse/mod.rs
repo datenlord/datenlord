@@ -51,7 +51,8 @@ pub async fn start_async_fuse(
             .command_queue_limit(memory_cache_config.command_queue_limit)
             .limit(memory_cache_config.soft_limit)
             .write_through(!memory_cache_config.write_back)
-            .build();
+            .build()
+            .await;
         StorageManager::new(memory_cache, block_size)
     };
 

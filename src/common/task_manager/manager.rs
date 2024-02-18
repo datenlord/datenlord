@@ -160,7 +160,7 @@ impl TaskManager {
             task_node.token().cancel();
             for result in task_node.join_all().await {
                 if let Err(e) = result {
-                    error!("Background task failed with error: {e}.");
+                    error!("Background task {task_name:?} failed with error: {e}.");
                 }
             }
 

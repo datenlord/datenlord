@@ -4,6 +4,7 @@ use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::Duration;
 
+use datenlord::common::task_manager::{TaskName, TASK_MANAGER};
 use datenlord::config::SoftLimit;
 use tokio::sync::mpsc;
 
@@ -89,13 +90,8 @@ where
         self
     }
 
-    /// Builds a `MemoryCache`. Make sure that this method is called in `tokio`
-    /// runtime.
-    ///
-    /// # Panic
-    /// This method will panic if it's not called in a context of `tokio`
-    /// runtime.
-    pub fn build(self) -> Arc<MemoryCache<P, S>> {
+    /// Builds a `MemoryCache`.
+    pub async fn build(self) -> Arc<MemoryCache<P, S>> {
         let MemoryCacheBuilder {
             policy,
             backend,
@@ -117,8 +113,13 @@ where
         ));
 
         let write_back_task =
-            WriteBackTask::new(Arc::clone(&cache), rx, limit, interval, command_queue_limit);
-        tokio::spawn(write_back_task.run());
+            WriteBackTask::new(Arc::clone(&cache), rx, limit, interval, command_queue_limit).await;
+        TASK_MANAGER
+            .spawn(TaskName::WriteBack, |token| write_back_task.run(token))
+            .await
+            .unwrap_or_else(|_| {
+                panic!("Try to spawn a `WriteBack` task after shutdown.");
+            });
 
         cache
     }
