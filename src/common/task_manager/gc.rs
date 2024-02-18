@@ -35,6 +35,7 @@ pub struct GcHandle {
 
 impl GcHandle {
     /// Create a GC handle.
+    #[inline]
     pub fn new(
         name: TaskName,
         status: Arc<AtomicBool>,
@@ -50,6 +51,8 @@ impl GcHandle {
     }
 
     /// Checks if the task manager is shutdown.
+    #[inline]
+    #[must_use]
     pub fn is_shutdown(&self) -> bool {
         self.status.load(Ordering::Acquire)
     }

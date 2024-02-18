@@ -4,7 +4,9 @@ use hyper::header::CONTENT_TYPE;
 use hyper::service::{make_service_fn, service_fn};
 use hyper::{Body, Request, Response, Server};
 use prometheus::{Encoder, TextEncoder};
-use tracing::{error, info};
+use tokio_util::sync::CancellationToken;
+use tracing::debug;
+use tracing::info;
 
 use super::DATENLORD_REGISTRY;
 
@@ -30,17 +32,18 @@ async fn serve_req(_req: Request<Body>) -> Result<Response<Body>, hyper::Error> 
 
 /// Start a server to process prometheus request
 #[inline]
-pub fn start_metrics_server() {
-    tokio::task::spawn(async move {
-        let addr = ([0, 0, 0, 0], 9897).into();
-        let serve_future = Server::bind(&addr).serve(make_service_fn(|_| async {
-            Ok::<_, hyper::Error>(service_fn(serve_req))
-        }));
+pub async fn start_metrics_server(token: CancellationToken) {
+    let addr = ([0, 0, 0, 0], 9897).into();
+    let serve_future = Server::bind(&addr).serve(make_service_fn(|_| async {
+        Ok::<_, hyper::Error>(service_fn(serve_req))
+    }));
 
-        info!("Metrics server is listening on: {addr}");
+    info!("Metrics server is listening on: {addr}");
 
-        if let Err(err) = serve_future.await {
-            error!("Metric server error: {}", err);
-        }
-    });
+    if let Err(err) = serve_future
+        .with_graceful_shutdown(token.cancelled_owned())
+        .await
+    {
+        debug!("Metric server error: {}", err);
+    }
 }

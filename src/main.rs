@@ -87,6 +87,7 @@ use csi::scheduler_extender::SchedulerExtender;
 use datenlord::common::task_manager::{self, TaskName, TASK_MANAGER};
 use datenlord::config;
 use datenlord::config::{InnerConfig, NodeRole, StorageConfig};
+use datenlord::metrics;
 
 use crate::common::error::DatenLordResult;
 use crate::common::etcd_delegate::EtcdDelegate;
@@ -150,6 +151,10 @@ async fn main() -> anyhow::Result<()> {
                 csi::run_grpc_servers(&mut [node_server, worker_server]).await;
             });
 
+            TASK_MANAGER
+                .spawn(TaskName::Metrics, metrics::start_metrics_server)
+                .await?;
+
             let async_args = AsyncFuseArgs {
                 node_id,
                 ip_address,
@@ -157,16 +162,17 @@ async fn main() -> anyhow::Result<()> {
                 mount_dir: mount_dir.clone(),
                 storage_config: config.storage,
             };
-            let async_fuse_thread = tokio::task::spawn(async move {
-                if let Err(e) = async_fuse::start_async_fuse(kv_engine, &async_args).await {
-                    panic!("failed to start async fuse, error is {e:?}");
-                }
-            });
+
+            TASK_MANAGER
+                .spawn(TaskName::AsyncFuse, |token| async {
+                    if let Err(e) = async_fuse::start_async_fuse(kv_engine, async_args, token).await
+                    {
+                        panic!("failed to start async fuse, error is {e:?}"); // Panic or Error log?
+                    }
+                })
+                .await?;
 
             csi_thread
-                .await
-                .unwrap_or_else(|e| panic!("csi thread error: {e:?}"));
-            async_fuse_thread
                 .await
                 .unwrap_or_else(|e| panic!("csi thread error: {e:?}"));
         }
@@ -212,9 +218,18 @@ async fn main() -> anyhow::Result<()> {
                 storage_config: config.storage,
             };
 
-            if let Err(e) = async_fuse::start_async_fuse(kv_engine, &async_args).await {
-                panic!("failed to start async fuse, error is {e:?}");
-            }
+            TASK_MANAGER
+                .spawn(TaskName::Metrics, metrics::start_metrics_server)
+                .await?;
+
+            TASK_MANAGER
+                .spawn(TaskName::AsyncFuse, |token| async {
+                    if let Err(e) = async_fuse::start_async_fuse(kv_engine, async_args, token).await
+                    {
+                        panic!("failed to start async fuse, error is {e:?}"); // Panic or Error log?
+                    }
+                })
+                .await?;
         }
     }
 

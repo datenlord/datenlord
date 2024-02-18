@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use clippy_utilities::OverflowArithmetic;
-use datenlord::metrics;
+use tokio_util::sync::CancellationToken;
 
 use self::memfs::kv_engine::KVEngineType;
 use crate::async_fuse::fuse::session;
@@ -17,12 +17,12 @@ pub mod proactor;
 pub mod util;
 
 /// Start async-fuse
+#[allow(clippy::pattern_type_mismatch)] // Raised by `tokio::select`
 pub async fn start_async_fuse(
     kv_engine: Arc<KVEngineType>,
-    args: &AsyncFuseArgs,
+    args: AsyncFuseArgs,
+    token: CancellationToken,
 ) -> anyhow::Result<()> {
-    metrics::start_metrics_server();
-
     memfs::kv_engine::kv_utils::register_node_id(
         &kv_engine,
         &args.node_id,
@@ -66,7 +66,7 @@ pub async fn start_async_fuse(
     .await?;
 
     let ss = session::new_session_of_memfs(mount_point, fs).await?;
-    ss.run().await?;
+    ss.run(token).await?;
 
     Ok(())
 }
