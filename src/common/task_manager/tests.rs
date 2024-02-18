@@ -12,7 +12,7 @@ use tokio_util::sync::CancellationToken;
 use super::TaskManager;
 use crate::common::task_manager::manager::SpawnError;
 use crate::common::task_manager::task::{TaskName, EDGES};
-use crate::common::task_manager::wait_for_shutdown;
+use crate::common::task_manager::{wait_for_shutdown, TASK_MANAGER};
 
 #[tokio::test]
 async fn test_dependency_graph() {
@@ -103,11 +103,11 @@ async fn test_shutdown() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_wait_for_shutdown() {
-    let task_manager = Arc::new(TaskManager::new());
+    let task_manager = &*TASK_MANAGER;
 
     let (tx, mut rx) = mpsc::channel(1);
 
-    spawn_tasks(&task_manager, tx).await.unwrap();
+    spawn_tasks(task_manager, tx).await.unwrap();
 
     let collector = tokio::spawn(async move {
         let mut result = vec![];

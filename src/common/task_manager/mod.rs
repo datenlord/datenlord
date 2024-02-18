@@ -10,5 +10,5 @@ mod task;
 #[cfg(test)]
 mod tests;
 
-pub use manager::{wait_for_shutdown, SpawnError, TaskManager};
+pub use manager::{wait_for_shutdown, SpawnError, TaskManager, TASK_MANAGER};
 pub use task::TaskName;
