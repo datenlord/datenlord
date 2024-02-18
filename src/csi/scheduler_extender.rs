@@ -10,6 +10,9 @@ use k8s_openapi::api::core::v1::{Node, Pod};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ListMeta;
 use serde::{Deserialize, Serialize};
 use tiny_http::{Method, Request, Response, Server, StatusCode};
+use tokio::select;
+use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
 
 use super::meta_data::MetaData;
@@ -72,7 +75,7 @@ pub struct SchedulerExtender {
     /// Address of scheduler extender
     address: SocketAddr,
     /// Http server
-    server: Server,
+    server: Arc<Server>,
 }
 
 /// Send error reply if result is error or get wrapped data
@@ -104,18 +107,56 @@ impl SchedulerExtender {
         Self {
             meta_data,
             address,
-            server,
+            server: Arc::new(server),
         }
     }
 
     /// Start scheduler extender server
-    pub async fn start(&self) {
+    #[allow(clippy::pattern_type_mismatch)] // Raised by `tokio::select!`
+    pub async fn start(self, token: CancellationToken) {
         info!("listening on http://{}", self.address);
-        for req in self.server.incoming_requests() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let server = Arc::clone(&self.server);
+        let handle = tokio::task::spawn_blocking(move || {
+            for req in server.incoming_requests() {
+                if let Err(e) = tx.send(req) {
+                    error!("`rx` is closed unexpectedly: {e}.");
+                    break;
+                }
+            }
+        });
+
+        loop {
+            select! {
+                req = rx.recv() => {
+                    if let Some(req) = req {
+                        if let Err(e) = self.scheduler(req).await {
+                            error!("Failed to send response, error is: {}", e);
+                        }
+                    } else {
+                        break;
+                    }
+                },
+                () = token.cancelled() => {
+                    break;
+                }
+            }
+        }
+
+        info!("Scheduler extender exits.");
+        rx.close();
+        self.server.unblock();
+
+        // Handle the rest requests.
+        while let Some(req) = rx.recv().await {
             if let Err(e) = self.scheduler(req).await {
                 error!("Failed to send response, error is: {}", e);
             }
         }
+
+        handle
+            .await
+            .unwrap_or_else(|e| panic!("Failed to join scheduler extender server thread: {e}"));
     }
 
     /// Filter candidate nodes
