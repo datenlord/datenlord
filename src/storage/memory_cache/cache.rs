@@ -110,13 +110,13 @@ impl<P, S> MemoryCache<P, S> {
     /// Send a block to the write back task, and it will be stored to the
     /// backend later.
     async fn send_block_to_write_back_task(&self, ino: INum, block_id: BlockId, block: Block) {
-        let (sender, receiver) = oneshot::channel();
+        let (tx, rx) = oneshot::channel();
 
         self.command_sender
             .send(Command::Store {
                 coord: BlockCoordinate(ino, block_id),
                 block,
-                sender,
+                tx,
             })
             .await
             .unwrap_or_else(|_| {
@@ -127,7 +127,7 @@ impl<P, S> MemoryCache<P, S> {
             .await
             .entry(ino)
             .or_default()
-            .push(receiver);
+            .push(rx);
     }
 
     /// Update a block into cache in place.
@@ -437,10 +437,10 @@ where
     async fn flush_all(&self) -> StorageResult<()> {
         if !self.write_through {
             let mut pending_write_back = self.pending_write_back.write().await;
-            let (sender, receiver) = oneshot::channel();
+            let (tx, rx) = oneshot::channel();
 
-            if let Ok(()) = self.command_sender.send(Command::FlushAll(sender)).await {
-                if receiver.await.is_err() {
+            if let Ok(()) = self.command_sender.send(Command::FlushAll(tx)).await {
+                if rx.await.is_err() {
                     warn!("Receiver is closed unexpectedly.");
                 }
                 pending_write_back.clear();

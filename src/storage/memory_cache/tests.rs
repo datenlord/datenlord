@@ -17,13 +17,15 @@ const CACHE_CAPACITY_IN_BLOCKS: usize = 4;
 
 type MemoryCacheType = MemoryCache<LruPolicy<BlockCoordinate>, Arc<MemoryStorage>>;
 
-fn prepare_empty_storage() -> (Arc<MemoryStorage>, Arc<MemoryCacheType>) {
+async fn prepare_empty_storage() -> (Arc<MemoryStorage>, Arc<MemoryCacheType>) {
     let policy = LruPolicy::<BlockCoordinate>::new(CACHE_CAPACITY_IN_BLOCKS);
     let backend = Arc::new(MemoryStorage::new(
         BLOCK_SIZE_IN_BYTES,
         Duration::from_millis(0),
     ));
-    let cache = MemoryCacheBuilder::new(policy, Arc::clone(&backend), BLOCK_SIZE_IN_BYTES).build();
+    let cache = MemoryCacheBuilder::new(policy, Arc::clone(&backend), BLOCK_SIZE_IN_BYTES)
+        .build()
+        .await;
 
     (backend, cache)
 }
@@ -33,7 +35,7 @@ async fn test_write_whole_block() {
     let ino = 0;
     let block_id = 0;
 
-    let (backend, cache) = prepare_empty_storage();
+    let (backend, cache) = prepare_empty_storage().await;
 
     let block = Block::from_slice(BLOCK_SIZE_IN_BYTES, BLOCK_CONTENT);
     cache.store(ino, block_id, block).await.unwrap();
@@ -51,7 +53,7 @@ async fn test_overwrite() {
     let ino = 0;
     let block_id = 0;
 
-    let (_, cache) = prepare_empty_storage();
+    let (_, cache) = prepare_empty_storage().await;
 
     let block = Block::from_slice(BLOCK_SIZE_IN_BYTES, BLOCK_CONTENT);
     cache.store(ino, block_id, block).await.unwrap();
@@ -72,7 +74,7 @@ async fn test_load_inexist_block() {
     let ino = 0;
     let block_id = 0;
 
-    let (_, cache) = prepare_empty_storage();
+    let (_, cache) = prepare_empty_storage().await;
 
     let block = cache.load(ino, 1).await.unwrap();
     assert!(block.is_none());
@@ -85,7 +87,7 @@ async fn test_load_inexist_block() {
 async fn test_append() {
     let ino = 0;
 
-    let (_, cache) = prepare_empty_storage();
+    let (_, cache) = prepare_empty_storage().await;
 
     let block = Block::from_slice(BLOCK_SIZE_IN_BYTES, BLOCK_CONTENT);
     cache.store(ino, 0, block).await.unwrap();
@@ -102,7 +104,7 @@ async fn test_remove() {
     let ino = 0;
     let block_id = 0;
 
-    let (backend, cache) = prepare_empty_storage();
+    let (backend, cache) = prepare_empty_storage().await;
 
     let block = Block::from_slice(BLOCK_SIZE_IN_BYTES, BLOCK_CONTENT);
     cache.store(ino, block_id, block).await.unwrap();
@@ -130,7 +132,8 @@ async fn prepare_data_for_evict() -> (Arc<MemoryStorage>, Arc<MemoryCacheType>) 
     let cache = MemoryCacheBuilder::new(policy, Arc::clone(&backend), BLOCK_SIZE_IN_BYTES)
         .limit(limit) // Manually disable the write back task
         .interval(Duration::from_secs(1))
-        .build();
+        .build()
+        .await;
 
     // Fill the backend
     for block_id in 0..CACHE_CAPACITY_IN_BLOCKS {
@@ -199,7 +202,7 @@ async fn test_touch_by_store() {
 
 #[tokio::test]
 async fn test_evict_dirty_block() {
-    let (backend, cache) = prepare_empty_storage();
+    let (backend, cache) = prepare_empty_storage().await;
 
     // Fill the cache
     for block_id in 0..CACHE_CAPACITY_IN_BLOCKS {
@@ -225,7 +228,7 @@ async fn test_flush() {
     let ino = 0;
     let block_id = 0;
 
-    let (backend, cache) = prepare_empty_storage();
+    let (backend, cache) = prepare_empty_storage().await;
 
     let block = Block::from_slice(BLOCK_SIZE_IN_BYTES, BLOCK_CONTENT);
     cache.store(ino, block_id, block).await.unwrap();
@@ -242,7 +245,7 @@ async fn test_load_from_backend() {
     let ino = 0;
     let block_id = 0;
 
-    let (_, cache) = prepare_empty_storage();
+    let (_, cache) = prepare_empty_storage().await;
 
     let block = Block::from_slice(BLOCK_SIZE_IN_BYTES, BLOCK_CONTENT);
     cache.store(ino, block_id, block).await.unwrap();
@@ -257,7 +260,7 @@ async fn test_load_from_backend() {
 
 #[tokio::test]
 async fn test_write_missing_block_in_middle() {
-    let (_, cache) = prepare_empty_storage();
+    let (_, cache) = prepare_empty_storage().await;
 
     let block = Block::from_slice_with_range(BLOCK_SIZE_IN_BYTES, 4, 7, &BLOCK_CONTENT[4..7]);
     cache.store(0, 0, block).await.unwrap();
@@ -272,7 +275,7 @@ async fn test_truncate() {
     let from_block = 8;
     let to_block = 4;
 
-    let (backend, cache) = prepare_empty_storage();
+    let (backend, cache) = prepare_empty_storage().await;
 
     for block_id in 0..from_block {
         cache
@@ -298,7 +301,7 @@ async fn test_truncate_may_fill() {
     let from_block = 8;
     let to_block = 4;
 
-    let (_, cache) = prepare_empty_storage();
+    let (_, cache) = prepare_empty_storage().await;
 
     for block_id in 0..from_block {
         cache
@@ -318,7 +321,7 @@ async fn test_truncate_may_fill() {
 
 #[tokio::test]
 async fn test_truncate_in_the_same_block() {
-    let (_, cache) = prepare_empty_storage();
+    let (_, cache) = prepare_empty_storage().await;
 
     let block = Block::from_slice(BLOCK_SIZE_IN_BYTES, BLOCK_CONTENT);
 
@@ -331,7 +334,7 @@ async fn test_truncate_in_the_same_block() {
 
 #[tokio::test]
 async fn test_write_out_of_range() {
-    let (_, cache) = prepare_empty_storage();
+    let (_, cache) = prepare_empty_storage().await;
 
     let block = Block::new_zeroed(16);
     let res = cache.store(0, 0, block).await.unwrap_err();
@@ -348,7 +351,7 @@ async fn test_write_out_of_range() {
     );
 }
 
-fn prepare_empty_storage_with_write_back() -> (Arc<MemoryStorage>, Arc<MemoryCacheType>) {
+async fn prepare_empty_storage_with_write_back() -> (Arc<MemoryStorage>, Arc<MemoryCacheType>) {
     let policy = LruPolicy::<BlockCoordinate>::new(CACHE_CAPACITY_IN_BLOCKS);
     let backend = Arc::new(MemoryStorage::new(
         BLOCK_SIZE_IN_BYTES,
@@ -356,14 +359,15 @@ fn prepare_empty_storage_with_write_back() -> (Arc<MemoryStorage>, Arc<MemoryCac
     ));
     let cache = MemoryCacheBuilder::new(policy, Arc::clone(&backend), BLOCK_SIZE_IN_BYTES)
         .write_through(false)
-        .build();
+        .build()
+        .await;
 
     (backend, cache)
 }
 
 #[tokio::test]
 async fn test_store_write_back() {
-    let (backend, cache) = prepare_empty_storage_with_write_back();
+    let (backend, cache) = prepare_empty_storage_with_write_back().await;
 
     let mut block = Block::new_zeroed(BLOCK_SIZE_IN_BYTES);
     block.set_dirty(true);
@@ -383,7 +387,7 @@ async fn test_store_write_back() {
 
 #[tokio::test]
 async fn test_evict_dirty_block_with_write_back() {
-    let (backend, cache) = prepare_empty_storage_with_write_back();
+    let (backend, cache) = prepare_empty_storage_with_write_back().await;
 
     // Fill the cache
     for block_id in 0..CACHE_CAPACITY_IN_BLOCKS {
@@ -406,7 +410,7 @@ async fn test_evict_dirty_block_with_write_back() {
 
 #[tokio::test]
 async fn test_truncate_write_back() {
-    let (backend, cache) = prepare_empty_storage_with_write_back();
+    let (backend, cache) = prepare_empty_storage_with_write_back().await;
 
     for block_id in 0..4 {
         let mut block = Block::from_slice(BLOCK_SIZE_IN_BYTES, BLOCK_CONTENT);
@@ -428,7 +432,7 @@ async fn test_truncate_write_back() {
 
 #[tokio::test]
 async fn test_truncate_in_middle_write_back() {
-    let (backend, cache) = prepare_empty_storage_with_write_back();
+    let (backend, cache) = prepare_empty_storage_with_write_back().await;
 
     for block_id in 0..8 {
         let mut block = Block::from_slice(BLOCK_SIZE_IN_BYTES, BLOCK_CONTENT);
@@ -464,7 +468,7 @@ async fn test_truncate_in_middle_write_back() {
 
 #[tokio::test]
 async fn test_truncate_fill_write_back() {
-    let (backend, cache) = prepare_empty_storage_with_write_back();
+    let (backend, cache) = prepare_empty_storage_with_write_back().await;
 
     for block_id in 0..8 {
         let mut block = Block::from_slice(BLOCK_SIZE_IN_BYTES, BLOCK_CONTENT);
@@ -486,7 +490,7 @@ async fn test_truncate_fill_write_back() {
 
 #[tokio::test]
 async fn test_write_back_task() {
-    let (_, cache) = prepare_empty_storage();
+    let (_, cache) = prepare_empty_storage().await;
 
     for block_id in 0..CACHE_CAPACITY_IN_BLOCKS {
         cache

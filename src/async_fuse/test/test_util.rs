@@ -75,7 +75,8 @@ async fn run_fs(mount_point: &Path, is_s3: bool, token: CancellationToken) -> an
             .command_queue_limit(memory_cache_config.command_queue_limit)
             .limit(memory_cache_config.soft_limit)
             .write_through(!memory_cache_config.write_back)
-            .build();
+            .build()
+            .await;
         StorageManager::new(memory_cache, block_size)
     };
 
@@ -158,7 +159,7 @@ pub async fn teardown(mount_dir: &Path) -> anyhow::Result<()> {
         )
     });
     let abs_mount_path = fs::canonicalize(mount_dir)?;
-    fs::remove_dir_all(&abs_mount_path)?;
+    fs::remove_dir_all(abs_mount_path)?;
 
     Ok(())
 }

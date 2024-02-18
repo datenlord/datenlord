@@ -14,13 +14,15 @@ use crate::storage::{
 
 type MemoryCacheType = MemoryCache<LruPolicy<BlockCoordinate>, Arc<MemoryStorage>>;
 
-fn create_storage() -> (Arc<MemoryStorage>, StorageManager<Arc<MemoryCacheType>>) {
+async fn create_storage() -> (Arc<MemoryStorage>, StorageManager<Arc<MemoryCacheType>>) {
     let backend = Arc::new(MemoryStorage::new(
         BLOCK_SIZE_IN_BYTES,
         Duration::from_millis(0),
     ));
     let lru = LruPolicy::<BlockCoordinate>::new(CACHE_CAPACITY_IN_BLOCKS);
-    let cache = MemoryCacheBuilder::new(lru, Arc::clone(&backend), BLOCK_SIZE_IN_BYTES).build();
+    let cache = MemoryCacheBuilder::new(lru, Arc::clone(&backend), BLOCK_SIZE_IN_BYTES)
+        .build()
+        .await;
     let storage = StorageManager::new(cache, BLOCK_SIZE_IN_BYTES);
 
     (backend, storage)
@@ -32,7 +34,7 @@ async fn test_read_write_single_block() {
     let offset = 0;
     let mtime = SystemTime::now();
 
-    let (_, storage) = create_storage();
+    let (_, storage) = create_storage().await;
 
     let new_mtime = storage
         .store(ino, offset, BLOCK_CONTENT, mtime)
@@ -57,7 +59,7 @@ async fn test_read_write_miltiple_blocks() {
     let offset = 0;
     let mut mtime = SystemTime::now();
 
-    let (_, storage) = create_storage();
+    let (_, storage) = create_storage().await;
 
     let content = BLOCK_CONTENT.repeat(3);
     mtime = storage
@@ -81,7 +83,7 @@ async fn test_overwrite_between_blocks() {
     let offset = 0;
     let mut mtime = SystemTime::now();
 
-    let (_, storage) = create_storage();
+    let (_, storage) = create_storage().await;
 
     let content = BLOCK_CONTENT.repeat(3);
     mtime = storage
@@ -117,7 +119,7 @@ async fn test_overwrite_second_blocks() {
     let offset = 0;
     let mut mtime = SystemTime::now();
 
-    let (_, storage) = create_storage();
+    let (_, storage) = create_storage().await;
 
     let content = BLOCK_CONTENT.repeat(3);
     mtime = storage
@@ -146,7 +148,7 @@ async fn test_read_write_inexist_block() {
     let offset = 0;
     let mtime = SystemTime::now();
 
-    let (_, storage) = create_storage();
+    let (_, storage) = create_storage().await;
 
     let loaded = storage
         .load(ino, offset, BLOCK_SIZE_IN_BYTES, mtime)
@@ -176,7 +178,7 @@ async fn test_zero_size_read_write() {
     let offset = 0;
     let mtime = SystemTime::UNIX_EPOCH;
 
-    let (_, storage) = create_storage();
+    let (_, storage) = create_storage().await;
 
     let new_mtime = storage
         .store(ino, offset, BLOCK_CONTENT, mtime)
@@ -194,7 +196,7 @@ async fn test_zero_size_read_write() {
 
 #[tokio::test]
 async fn test_flush() {
-    let (backend, storage) = create_storage();
+    let (backend, storage) = create_storage().await;
 
     storage.flush(0).await.unwrap();
     assert!(backend.flushed(0));
@@ -212,7 +214,7 @@ async fn test_invalid_cache_on_read() {
     let ino = 0;
     let offset = 0;
 
-    let (backend, storage) = create_storage();
+    let (backend, storage) = create_storage().await;
 
     let mtime = storage
         .store(ino, offset, BLOCK_CONTENT, SystemTime::now())
@@ -251,7 +253,7 @@ async fn test_invalid_cache_on_write() {
     let ino = 0;
     let offset = 0;
 
-    let (backend, storage) = create_storage();
+    let (backend, storage) = create_storage().await;
 
     let mtime = storage
         .store(ino, offset, BLOCK_CONTENT, SystemTime::now())
@@ -286,7 +288,7 @@ async fn test_remove() {
     let ino = 0;
     let offset = 0;
 
-    let (_, storage) = create_storage();
+    let (_, storage) = create_storage().await;
 
     let mtime = storage
         .store(ino, offset, BLOCK_CONTENT, SystemTime::now())
@@ -317,7 +319,7 @@ async fn test_truncate() {
     let truncate_from = content.len();
     let truncate_to = 30;
 
-    let (backend, storage) = create_storage();
+    let (backend, storage) = create_storage().await;
 
     let mtime = storage
         .store(ino, offset, &content, SystemTime::now())
@@ -348,7 +350,7 @@ async fn test_truncate() {
 
 #[tokio::test]
 async fn test_truncate_remove() {
-    let (backend, storage) = create_storage();
+    let (backend, storage) = create_storage().await;
 
     let mtime = storage
         .store(0, 0, BLOCK_CONTENT, SystemTime::now())

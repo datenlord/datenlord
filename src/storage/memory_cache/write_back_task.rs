@@ -6,10 +6,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use clippy_utilities::OverflowArithmetic;
+use datenlord::common::task_manager::{GcHandle, TaskName, TASK_MANAGER};
 use datenlord::config::SoftLimit;
 use hashlink::LinkedHashSet;
 use tokio::select;
 use tokio::sync::{mpsc, oneshot};
+use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
 use crate::async_fuse::fuse::protocol::INum;
@@ -30,7 +32,7 @@ pub enum Command {
         block: Block,
         /// A sender to notify the `MemoryCache` that the block has been flushed
         /// to the backend
-        sender: StorageResultSender,
+        tx: StorageResultSender,
     },
     /// Flush the file specified immediately.
     Flush(INum),
@@ -40,8 +42,30 @@ pub enum Command {
     Cancel(INum),
 }
 
+/// Write a block back to the backend.
+async fn write_back_one_block<P, S>(
+    cache: Arc<MemoryCache<P, S>>,
+    ino: INum,
+    block_id: BlockId,
+    block: Block,
+    tx: oneshot::Sender<StorageResult<()>>,
+) where
+    P: EvictPolicy<BlockCoordinate> + Send + Sync + 'static,
+    S: Storage + Send + Sync + 'static,
+{
+    let result = cache.backend().store(ino, block_id, block).await;
+    tx.send(result).unwrap_or_else(|res| {
+        warn!("The receiver of pending block is closed unexpectedly.");
+        if let Err(e) = res {
+            error!("Failed to write the block back, where ino={ino}, block_id={block_id}, err={e}");
+        }
+    });
+}
+
 /// The write back task running in the background.
 pub(super) struct WriteBackTask<P, S> {
+    /// A handle to spawn block flush tasks.
+    block_flush_spawn_handle: GcHandle,
     /// The weak pointer of `MemoryCache`.
     storage: Arc<MemoryCache<P, S>>,
     /// The queue of block to be flushed.
@@ -67,14 +91,19 @@ impl<P, S> WriteBackTask<P, S> {
     /// And this task will evict blocks to the backend if the number of blocks
     /// hits the soft limit, whether the cache runs in write-back policy or
     /// not.
-    pub(super) fn new(
+    pub(super) async fn new(
         storage: Arc<MemoryCache<P, S>>,
         command_receiver: mpsc::Receiver<Command>,
         limit: SoftLimit,
         interval: Duration,
         command_queue_limit: usize,
     ) -> Self {
+        let block_flush_spawn_handle = TASK_MANAGER
+            .get_gc_handle(TaskName::BlockFlush)
+            .await
+            .unwrap_or_else(|| unreachable!("`BlockFlush` must be GC task."));
         Self {
+            block_flush_spawn_handle,
             storage,
             lru_queue: LinkedHashSet::new(),
             pending_blocks: HashMap::new(),
@@ -112,15 +141,34 @@ where
     /// Flush a pending block to the backend
     async fn flush_a_block(&mut self) {
         if let Some(BlockCoordinate(ino, block_id)) = self.lru_queue.pop_front() {
-            if let Some((block, sender)) = self
+            if let Some((block, tx)) = self
                 .pending_blocks
                 .get_mut(&ino)
                 .and_then(|file_level_pending_blocks| file_level_pending_blocks.remove(&block_id))
             {
-                let res = self.storage.backend().store(ino, block_id, block).await;
-                sender.send(res).unwrap_or_else(|res| {
-                    error!("The receiver is closed unexpectedly, with storage result: {res:?}");
-                });
+                if self
+                    .block_flush_spawn_handle
+                    .spawn(|_| {
+                        write_back_one_block(
+                            Arc::clone(&self.storage),
+                            ino,
+                            block_id,
+                            block.clone(),
+                            tx,
+                        )
+                    })
+                    .await
+                    .is_err()
+                {
+                    // Ensure that the block is flushed to the backend, and notify the loop to
+                    // shutdown.
+                    error!("Try to spawn a `BlockFlush` task after shutdown.");
+                    if let Err(e) = self.storage.backend().store(ino, block_id, block).await {
+                        error!(
+                            "Failed to store block where ino={ino}, block_id={block_id}, err={e}."
+                        );
+                    }
+                }
             }
         }
     }
@@ -131,18 +179,56 @@ where
         self.lru_queue
             .retain_with_order(|&BlockCoordinate(i, _)| i != ino);
 
+        let mut handles = vec![];
+        let mut shutdown = self.block_flush_spawn_handle.is_shutdown();
+
         if let Some(file_level_pending_blocks) = file_level_pending_blocks {
-            for (block_id, (block, sender)) in file_level_pending_blocks {
-                let res = self.storage.backend().store(ino, block_id, block).await;
-                sender.send(res).unwrap_or_else(|res| {
-                    error!("The receiver is closed unexpectedly, with storage result: {res:?}");
-                });
+            for (block_id, (block, tx)) in file_level_pending_blocks {
+                if shutdown {
+                    // Flush the rest blocks.
+                    let handle = tokio::spawn(write_back_one_block(
+                        Arc::clone(&self.storage),
+                        ino,
+                        block_id,
+                        block,
+                        tx,
+                    ));
+                    handles.push(handle);
+                } else {
+                    let res = self
+                        .block_flush_spawn_handle
+                        .spawn(|_| {
+                            write_back_one_block(
+                                Arc::clone(&self.storage),
+                                ino,
+                                block_id,
+                                block.clone(),
+                                tx,
+                            )
+                        })
+                        .await;
+                    if res.is_err() {
+                        shutdown = true;
+                        if let Err(e) = self.storage.backend().store(ino, block_id, block).await {
+                            error!("Failed to store block where ino={ino}, block_id={block_id}, err={e}.");
+                        }
+                    }
+                }
+            }
+        }
+
+        for handle in handles {
+            if let Err(e) = handle.await {
+                error!("Failed to flush a block, the nested error is: {e}");
             }
         }
     }
 
     /// Flush all files, write blocks of them to backend immediately.
-    async fn flush_all(&mut self, sender: oneshot::Sender<()>) {
+    ///
+    /// The flush tasks here are resolved in place, because the caller needs to
+    /// know when the operations finish.
+    async fn flush_all(&mut self, tx: oneshot::Sender<()>) {
         self.lru_queue.clear();
 
         let blocks = mem::take(&mut self.pending_blocks);
@@ -156,8 +242,7 @@ where
             }
         }
 
-        sender
-            .send(())
+        tx.send(())
             .unwrap_or_else(|()| warn!("The receiver of pending block is closed unexpectedly."));
     }
 
@@ -187,8 +272,38 @@ where
         }
     }
 
+    /// Handle commands
+    async fn handle_command(&mut self, command: Command) {
+        match command {
+            Command::Store {
+                coord: BlockCoordinate(ino, block_id),
+                block,
+                tx,
+            } => {
+                // Add the block to `lru_queue` and `pending_blocks`
+                self.lru_queue.insert(BlockCoordinate(ino, block_id));
+                self.pending_blocks
+                    .entry(ino)
+                    .or_default()
+                    .insert(block_id, (block, tx));
+            }
+            Command::Flush(ino) => {
+                self.flush_file(ino).await;
+            }
+            Command::FlushAll(tx) => {
+                self.flush_all(tx).await;
+            }
+            Command::Cancel(ino) => {
+                self.pending_blocks.remove(&ino);
+                self.lru_queue
+                    .retain_with_order(|&BlockCoordinate(i, _)| i != ino);
+            }
+        }
+    }
+
     /// Run the task
-    pub(super) async fn run(mut self) {
+    #[allow(clippy::pattern_type_mismatch)] // Raised by `tokio::select!`
+    pub(super) async fn run(mut self, token: CancellationToken) {
         let mut interval = tokio::time::interval(self.interval);
 
         loop {
@@ -200,30 +315,15 @@ where
 
             select! {
                 command = self.command_receiver.recv() => {
-                    match command {
-                        Some(Command::Store { coord: BlockCoordinate(ino, block_id), block, sender }) => {
-                            // Add the block to `lru_queue` and `pending_blocks`
-                            self.lru_queue.insert(BlockCoordinate(ino, block_id));
-                            self.pending_blocks.entry(ino).or_default().insert(block_id, (block, sender));
-                        }
-                        Some(Command::Flush(ino)) => {
-                            self.flush_file(ino).await;
-                        },
-                        Some(Command::FlushAll(sender)) => {
-                            self.flush_all(sender).await;
-                        },
-                        Some(Command::Cancel(ino)) => {
-                            self.pending_blocks.remove(&ino);
-                            self.lru_queue.retain_with_order(|&BlockCoordinate(i, _)| i != ino);
-                        }
-                        None => {
-                            // The command sender is closed, meaning that the `Storage` is also dropped.
-                            // Then the write back task should exit.
-                            // But it seems to be impossible, because the task holds an `Arc` of cache, which
-                            // holds the sender.
-                            info!("Write back task exits.");
-                            return;
-                        },
+                    if let Some(command) = command {
+                        self.handle_command(command).await;
+                    } else {
+                        // The command sender is closed, meaning that the `Storage` is also dropped.
+                        // Then the write back task should exit.
+                        // But it seems to be impossible, because the task holds an `Arc` of cache, which
+                        // holds the sender.
+                        info!("Write back task exits.");
+                        return;
                     }
                 },
                 _ = interval.tick() => {
@@ -235,7 +335,23 @@ where
                         self.flush_a_block().await;
                     }
                 },
+                () = token.cancelled() => {
+                    info!("Write back task is notified to shutdown.");
+                    break;
+                }
             }
+        }
+
+        // Clean Up
+        self.command_receiver.close();
+        while let Some(command) = self.command_receiver.recv().await {
+            self.handle_command(command).await;
+        }
+        if !self.lru_queue.is_empty() {
+            let (tx, rx) = oneshot::channel();
+            self.flush_all(tx).await;
+            rx.await
+                .unwrap_or_else(|_| error!("The sender for `flush_all` closed unexpectedly."));
         }
     }
 }
