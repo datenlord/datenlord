@@ -1,0 +1,40 @@
+// For format details, see https://aka.ms/devcontainer.json. For config options, see the
+{
+    "name": "DatenLord Dev Container",
+    "image": "ubuntu:jammy",
+    // Features to add to the dev container. More info: https://containers.dev/features.
+    "features": {
+        "ghcr.io/devcontainers/features/docker-in-docker": {},
+        "ghcr.io/devcontainers/features/common-utils:2": {
+            "installZsh": false,
+            "installOhMyZsh": false,
+            "installOhMyZshConfig": false,
+            "upgradePackages": true,
+            "username": "datenlord",
+            "userUid": "1000",
+            "userGid": "1000"
+        },
+        "ghcr.io/devcontainers/features/git:1": {}
+    },
+    "customizations": {
+        "vscode": {
+            "extensions": [
+                "vadimcn.vscode-lldb",
+                "rust-lang.rust-analyzer",
+                "tamasfe.even-better-toml",
+                "serayuzgur.crates"
+            ],
+            "settings": {
+                "files.watcherExclude": {
+                    "**/target/**": true
+                }
+            }
+        }
+    },
+    "remoteUser": "datenlord",
+    "onCreateCommand": "sudo apt-get update && sudo apt-get install -y cmake g++ libprotobuf-dev protobuf-compiler fuse curl",
+    "postCreateCommand": {
+        "rustup": "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- --default-toolchain none -y && ~/.cargo/bin/rustup show",
+        "fuse": "sudo sed -i 's/#user_allow_other/user_allow_other/g' /etc/fuse.conf"
+    }
+}
