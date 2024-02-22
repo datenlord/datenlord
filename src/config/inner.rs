@@ -74,21 +74,43 @@ impl TryFrom<SuperConfig> for InnerConfig {
 
     #[inline]
     fn try_from(value: SuperConfig) -> Result<Self, Self::Error> {
+        let Some(role_str) = value.role else {
+            return Err(DatenLordError::ArgumentInvalid {
+                context: vec!["role is empty".to_owned()],
+            });
+        };
         let log_level = Level::from_str(value.log_level.as_str()).map_err(|e| {
             DatenLordError::ArgumentInvalid {
                 context: vec![format!("log level {} is invalid: {}", value.log_level, e)],
             }
         })?;
-        let role = Role::from_str(value.role.as_str())?;
-        let node_name = value.node_name;
+        let role = Role::from_str(&role_str)?;
+        let Some(node_name) = value.node_name else {
+            return Err(DatenLordError::ArgumentInvalid {
+                context: vec!["node name is empty".to_owned()],
+            });
+        };
         let server_port = value.server_port;
         let scheduler_extender_port = value.scheduler_extender_port;
-        let node_ip = IpAddr::from_str(value.node_ip.as_str()).map_err(|e| {
+        let Some(node_ip_str) = value.node_ip else {
+            return Err(DatenLordError::ArgumentInvalid {
+                context: vec!["node ip is empty".to_owned()],
+            });
+        };
+        let node_ip = IpAddr::from_str(node_ip_str.as_str()).map_err(|e| {
             DatenLordError::ArgumentInvalid {
-                context: vec![format!("node ip {} is invalid: {}", value.node_ip, e)],
+                context: vec![format!(
+                    "node ip {} is invalid: {}",
+                    node_ip_str.as_str(),
+                    e
+                )],
             }
         })?;
-        let mount_path = value.mount_path;
+        let Some(mount_path) = value.mount_path else {
+            return Err(DatenLordError::ArgumentInvalid {
+                context: vec!["mount path is empty".to_owned()],
+            });
+        };
         let storage = value.storage.try_into()?;
         let kv_addrs: Vec<String> = value.kv_server_list;
         if kv_addrs.is_empty() {
