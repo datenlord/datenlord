@@ -110,21 +110,39 @@ impl Storage for Backend {
     async fn load_from_self(&self, ino: INum, block_id: usize) -> StorageResult<Option<Block>> {
         let mut block = Block::new_zeroed(self.block_size);
 
-        if let Err(e) = self
-            .operator
-            .reader(&get_block_path(ino, block_id))
-            .await?
-            .read(block.make_mut_slice())
-            .await
-        {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                Ok(None)
-            } else {
-                Err(e.into())
+        let mut reader = self.operator.reader(&get_block_path(ino, block_id)).await?;
+        let mut offset = 0;
+        // Check if the reader point is at the end of the file.
+        loop {
+            match reader
+                .read(block.make_mut_slice().get_mut(offset..).ok_or_else(|| {
+                    std::io::Error::new(std::io::ErrorKind::Other, "slice bounds out of range")
+                })?)
+                .await
+            {
+                Ok(0) => {
+                    // The reader point is at the end of the file.
+                    break;
+                }
+                Ok(bytes_read) => {
+                    // The block is not full, continue to read.
+                    offset += bytes_read;
+                    if offset == self.block_size {
+                        // The block is full, process is done.
+                        break;
+                    }
+                }
+                Err(e) => {
+                    // Meet an error.
+                    if e.kind() == std::io::ErrorKind::NotFound {
+                        return Ok(None);
+                    }
+                    return Err(e.into());
+                }
             }
-        } else {
-            Ok(Some(block))
         }
+
+        Ok(Some(block))
     }
 
     async fn load_from_backend(&self, _: INum, _: usize) -> StorageResult<Option<Block>> {
