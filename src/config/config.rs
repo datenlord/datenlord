@@ -1,21 +1,35 @@
-use clap::Parser;
+// use std::env;
 
-#[derive(Debug, Parser)]
+use std::env;
+
+use clap::Parser;
+use serde::{Deserialize, Serialize};
+use serfig::collectors::{from_env, from_file, from_self};
+use serfig::parsers::Toml;
+
+use crate::common::error::DatenLordError;
+
+#[derive(Debug, Clone, Serialize, Deserialize, Parser, Default)]
 #[clap(author, version, about, long_about = None)]
+#[serde(default)]
 /// A config
 pub struct Config {
+    /// Config file path, now only support toml file
+    #[clap(long = "config-file", short = 'c', value_name = "VALUE")]
+    #[serde(skip)]
+    pub config_file: Option<String>,
     #[clap(long, value_name = "VALUE")]
     /// Role: Controller, Node, AsyncFuse, Scheduler
-    pub role: String,
+    pub role: Option<String>,
     #[clap(long = "node-name", value_name = "VALUE")]
     /// Node name
-    pub node_name: String,
+    pub node_name: Option<String>,
     #[clap(long = "node-ip", value_name = "VALUE")]
     /// Node ip
-    pub node_ip: String,
+    pub node_ip: Option<String>,
     #[clap(long = "mount-path", value_name = "VALUE")]
     /// Set the mount point of FUSE
-    pub mount_path: String,
+    pub mount_path: Option<String>,
     #[clap(long = "kv-server-list", value_name = "VALUE", value_delimiter = ',')]
     /// A list of kv servers, separated by commas
     pub kv_server_list: Vec<String>,
@@ -37,7 +51,8 @@ pub struct Config {
     pub csi_config: CSIConfig,
 }
 
-#[derive(Debug, Parser)]
+#[derive(Debug, Clone, Serialize, Deserialize, Parser, Default)]
+#[serde(default)]
 /// Storage config
 pub struct StorageConfig {
     #[clap(long = "storage-type", value_name = "VALUE", default_value = "fs")]
@@ -66,7 +81,8 @@ pub struct StorageConfig {
 }
 
 /// Memory cache config
-#[derive(Debug, Parser)]
+#[derive(Debug, Clone, Serialize, Deserialize, Parser, Default)]
+#[serde(default)]
 pub struct MemoryCacheConfig {
     /// The capacity of memory cache in bytes, default is 8 GiB.
     #[clap(
@@ -97,7 +113,8 @@ pub struct MemoryCacheConfig {
 }
 
 /// S3 storage config
-#[derive(Debug, Parser)]
+#[derive(Debug, Clone, Serialize, Deserialize, Parser, Default)]
+#[serde(default)]
 pub struct S3StorageConfig {
     #[clap(
         long = "storage-s3-endpoint-url",
@@ -126,7 +143,8 @@ pub struct S3StorageConfig {
 }
 
 /// CSI related config
-#[derive(Debug, Clone, Parser)]
+#[derive(Debug, Clone, Serialize, Deserialize, Parser, Default)]
+#[serde(default)]
 pub struct CSIConfig {
     #[clap(long = "csi-endpoint", value_name = "VALUE", default_value_t)]
     /// Set the socket end point of CSI service
@@ -139,6 +157,64 @@ pub struct CSIConfig {
     pub worker_port: u16,
 }
 
+impl Config {
+    /// Load config from command line, config file and environment variables
+    ///
+    /// Priority: command line > config file > environment variables
+    #[inline]
+    pub fn load() -> Result<Self, DatenLordError> {
+        // Try to load from command line
+        let arg_conf = Self::parse();
+
+        let mut builder: serfig::Builder<Self> = serfig::Builder::default();
+
+        // Load from config file
+        {
+            let config_file = match arg_conf.config_file.clone() {
+                Some(path) => path,
+                None => {
+                    if let Ok(path) = env::var("CONFIG_FILE") {
+                        path
+                    } else {
+                        String::new()
+                    }
+                }
+            };
+
+            if !config_file.is_empty() {
+                builder = builder.collect(from_file(Toml, &config_file));
+            }
+        }
+
+        // Load from environment
+        builder = builder.collect(from_env());
+
+        // Load from arguments
+        builder = builder.collect(from_self(arg_conf));
+
+        // Build the config with multi sources
+        let conf = builder.build()?;
+
+        // Check valid
+        match conf.check_valid() {
+            Ok(true) => Ok(conf),
+            Ok(false) => Err(DatenLordError::ArgumentInvalid { context: vec![] }),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Check the config values are valid
+    #[inline]
+    pub fn check_valid(&self) -> Result<bool, DatenLordError> {
+        // Check role/node_name/node_ip/mount_path
+        let checked_values = [&self.role, &self.node_name, &self.node_ip, &self.mount_path];
+
+        let valid = checked_values.iter().all(|x| x.is_some());
+
+        Ok(valid)
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
@@ -146,9 +222,119 @@ mod tests {
     use std::num::NonZeroUsize;
     use std::str::FromStr;
 
+    use std::env;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
     use super::*;
     use crate::config::inner::{InnerConfig, Role, StorageParams as InnerStorageParams};
     use crate::config::SoftLimit;
+
+    #[test]
+    fn test_load_config_from_file() {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        let temp_file_path = temp_file.path().to_owned();
+        writeln!(
+            temp_file,
+            r#"
+            role = "node"
+            node_name = "node1"
+            node_ip = "127.0.0.1"
+            server_port = 8800
+            mount_path = "/tmp/datenlord_data_dir"
+            kv_server_list = [
+              "127.0.0.1:2379"
+            ]
+        "#
+        )
+        .unwrap();
+
+        let mut builder: serfig::Builder<Config> = serfig::Builder::default();
+        builder = builder.collect(from_file(Toml, temp_file_path.to_str().unwrap()));
+        let conf = builder.build().unwrap();
+
+        assert_eq!(conf.role, Some("node".to_owned()));
+        assert_eq!(conf.node_name, Some("node1".to_owned()));
+    }
+
+    #[test]
+    fn test_load_config_from_env() {
+        let args = vec![
+            ("CONFIG_FILE", "config.toml"),
+            ("ROLE", "node"),
+            ("NODE_NAME", "node222"),
+            ("NODE_IP", "127.0.0.1"),
+            ("SERVER_PORT", "8800"),
+            ("MOUNT_PATH", "/tmp/datenlord_data_dir"),
+            ("KV_SERVER_LIST", "127.0.0.1:7890,127.0.0.1:7891"),
+        ];
+
+        for &(k, v) in &args {
+            env::set_var(k, v);
+        }
+
+        let mut builder: serfig::Builder<Config> = serfig::Builder::default();
+        builder = builder.collect(from_env());
+        let conf = builder.build().unwrap();
+
+        assert_eq!(conf.role, Some("node".to_owned()));
+        assert_eq!(conf.node_name, Some("node222".to_owned()));
+        assert_eq!(conf.node_ip, Some("127.0.0.1".to_owned()));
+        assert_eq!(conf.mount_path, Some("/tmp/datenlord_data_dir".to_owned()));
+        assert_eq!(conf.server_port, 8800);
+        let kv_addrs = &conf.kv_server_list;
+        assert_eq!(kv_addrs.len(), 2);
+        assert_eq!(kv_addrs.get(0), Some(&"127.0.0.1:7890".to_owned()));
+        assert_eq!(kv_addrs.get(1), Some(&"127.0.0.1:7891".to_owned()));
+    }
+
+    #[test]
+    fn test_load_config_from_file_with_priority() {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        let temp_file_path = temp_file.path().to_owned();
+        writeln!(
+            temp_file,
+            r#"
+            role = "node"
+            node_name = "node1"
+            node_ip = "127.0.0.1"
+            server_port = 8800
+            mount_path = "/tmp/datenlord_data_dir"
+            kv_server_list = [
+              "127.0.0.1:2379"
+            ]
+        "#
+        )
+        .unwrap();
+
+        let args = vec![
+            ("CONFIG_FILE", "config.toml"),
+            ("ROLE", "node"),
+            ("NODE_NAME", "node1"),
+            ("NODE_IP", "127.0.0.1"),
+            ("SERVER_PORT", "8801"),
+            ("MOUNT_PATH", "/tmp/datenlord_data_dir"),
+            ("KV_SERVER_LIST", "127.0.0.1:7890,127.0.0.1:7891"),
+        ];
+
+        for &(k, v) in &args {
+            env::set_var(k, v);
+        }
+
+        // Set the args
+        let args = vec!["datenlord", "--node-name", "node2"];
+        let arg_conf = Config::parse_from(args);
+
+        let mut builder: serfig::Builder<Config> = serfig::Builder::default();
+        builder = builder.collect(from_file(Toml, temp_file_path.to_str().unwrap()));
+        builder = builder.collect(from_env());
+        builder = builder.collect(from_self(arg_conf));
+
+        let conf = builder.build().unwrap();
+
+        assert_eq!(conf.role, Some("node".to_owned()));
+        assert_eq!(conf.node_name, Some("node2".to_owned()));
+    }
 
     #[test]
     #[allow(clippy::indexing_slicing)]
@@ -176,10 +362,13 @@ mod tests {
             "/tmp/datenlord_backend",
         ];
         let config = Config::parse_from(args);
-        assert_eq!(config.role, "node");
-        assert_eq!(config.node_name, "node1");
-        assert_eq!(config.node_ip.as_str(), "127.0.0.1");
-        assert_eq!(config.mount_path.as_str(), "/tmp/datenlord_data_dir");
+        assert_eq!(config.role, Some("node".to_owned()));
+        assert_eq!(config.node_name, Some("node1".to_owned()));
+        assert_eq!(config.node_ip, Some("127.0.0.1".to_owned()));
+        assert_eq!(
+            config.mount_path,
+            Some("/tmp/datenlord_data_dir".to_owned())
+        );
 
         let kv_addrs = &config.kv_server_list;
         assert_eq!(kv_addrs.len(), 2);

@@ -80,7 +80,6 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 
 use async_fuse::memfs::kv_engine::{KVEngine, KVEngineType};
-use clap::Parser;
 use csi::meta_data::MetaData;
 use csi::scheduler_extender::SchedulerExtender;
 use datenlord::config;
@@ -125,7 +124,7 @@ async fn parse_metadata(config: &InnerConfig) -> DatenLordResult<MetaData> {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let config = InnerConfig::try_from(config::Config::parse())?;
+    let config = InnerConfig::try_from(config::Config::load()?)?;
 
     init_logger(config.role.into());
 

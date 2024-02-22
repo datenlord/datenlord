@@ -51,6 +51,7 @@ ring-io = { git = "https://github.com/datenlord/ring-io", rev = "2f0506c" }
 serde-xml-rs = "0.6"
 serde = "1.0.126"
 serde_json = "1.0.64"
+toml = "0.7.3"
 tar = "0.4.29"
 thiserror = "1.0.22"
 tiny_http = "0.10.0"
@@ -65,6 +66,8 @@ tracing-subscriber = "0.3"
 hashlink = "0.8.4"
 clap = { version = "4", features = ["derive"] }
 opendal = "0.43.0"
+serfig = "0.1.0"
+tempfile = "3"
 
 [build-dependencies]
 protoc-grpcio = "3.0.0"
