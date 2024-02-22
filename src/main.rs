@@ -127,7 +127,8 @@ async fn parse_metadata(config: &InnerConfig) -> DatenLordResult<MetaData> {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let config = InnerConfig::try_from(config::Config::parse())?;
+    let arg_conf = config::Config::parse();
+    let config = InnerConfig::try_from(config::Config::load_from_args(arg_conf)?)?;
 
     init_logger(config.role.into(), config.log_level);
 
