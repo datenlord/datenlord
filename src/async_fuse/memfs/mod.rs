@@ -225,8 +225,8 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
             return reply.error(e).await;
         }
         let context = ReqContext {
-            user_id: req.uid(),
-            group_id: req.gid(),
+            uid: req.uid(),
+            gid: req.gid(),
         };
         let lookup_res = self.metadata.lookup_helper(context, parent, name).await;
         match lookup_res {
@@ -269,8 +269,8 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         debug!("open(ino={}, flags={}, req={:?})", ino, flags, req);
 
         let context = ReqContext {
-            user_id: req.uid(),
-            group_id: req.gid(),
+            uid: req.uid(),
+            gid: req.gid(),
         };
 
         match self.metadata.open(context, ino, flags).await {
@@ -342,8 +342,8 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
             warn!("setattr() encountered valid=0, the req={:?}", req);
         };
         let context = ReqContext {
-            user_id: req.uid(),
-            group_id: req.gid(),
+            uid: req.uid(),
+            gid: req.gid(),
         };
         let set_res = self.metadata.setattr_helper(context, ino, &param).await;
         match set_res {
@@ -433,8 +433,8 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         }
 
         let context = ReqContext {
-            user_id: req.uid(),
-            group_id: req.gid(),
+            uid: req.uid(),
+            gid: req.gid(),
         };
 
         match self.metadata.unlink(context, parent, name).await {
@@ -468,8 +468,8 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         }
 
         let context = ReqContext {
-            user_id: req.uid(),
-            group_id: req.gid(),
+            uid: req.uid(),
+            gid: req.gid(),
         };
 
         let rmdir_res = self
@@ -513,8 +513,8 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         reply: ReplyEmpty,
     ) -> nix::Result<usize> {
         let context = ReqContext {
-            user_id: req.uid(),
-            group_id: req.gid(),
+            uid: req.uid(),
+            gid: req.gid(),
         };
         match self.metadata.rename(context, param).await {
             Ok(()) => reply.ok().await,
@@ -724,8 +724,8 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         let ino = req.nodeid();
         debug!("opendir(ino={}, flags={}, req={:?})", ino, flags, req,);
         let context = ReqContext {
-            user_id: req.uid(),
-            group_id: req.gid(),
+            uid: req.uid(),
+            gid: req.gid(),
         };
         let o_flags = fs_util::parse_oflag(flags);
         match self.metadata.opendir(context, ino, flags).await {
@@ -767,8 +767,8 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         );
 
         let context = ReqContext {
-            user_id: req.uid(),
-            group_id: req.gid(),
+            uid: req.uid(),
+            gid: req.gid(),
         };
         match self
             .metadata
@@ -844,8 +844,8 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         };
         debug!("statfs(ino={}, req={:?})", ino, req);
         let context = ReqContext {
-            user_id: req.uid(),
-            group_id: req.gid(),
+            uid: req.uid(),
+            gid: req.gid(),
         };
         match self.metadata.statfs(context, ino).await {
             Ok(statvfs) => {

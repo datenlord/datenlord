@@ -39,9 +39,9 @@ pub(crate) mod error {
 #[derive(Debug, Clone)]
 pub struct ReqContext {
     /// The uid of the user who sends the request
-    pub user_id: u32,
+    pub uid: u32,
     /// The gid of the user who sends the request
-    pub group_id: u32,
+    pub gid: u32,
 }
 
 /// MetaData of fs

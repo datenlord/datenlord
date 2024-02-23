@@ -110,9 +110,7 @@ impl MetaData for S3MetaData {
             .get_node_from_kv_engine(ino)
             .await?
             .ok_or_else(|| build_inconsistent_fs!(ino))?;
-        inode
-            .get_attr()
-            .check_perm(context.user_id, context.group_id, 5)?;
+        inode.get_attr().check_perm(context.uid, context.gid, 5)?;
 
         let dir_entries = self.get_all_dir_entry(ino).await?;
         for (i, dir_etnry) in dir_entries.iter().enumerate().skip(offset.cast()) {
@@ -146,7 +144,7 @@ impl MetaData for S3MetaData {
             }
             Some(node) => {
                 let o_flags = fs_util::parse_oflag(flags);
-                node.open_pre_check(o_flags, context.user_id, context.group_id)?;
+                node.open_pre_check(o_flags, context.uid, context.gid)?;
                 return Ok(GLOBAL_S3_FD_CNT.fetch_add(1, Ordering::SeqCst).cast());
             }
         }
@@ -167,8 +165,7 @@ impl MetaData for S3MetaData {
             .get_node_from_kv_engine(ino)
             .await?
             .ok_or_else(|| build_inconsistent_fs!(ino))?;
-        node.get_attr()
-            .check_perm(context.user_id, context.group_id, 5)?;
+        node.get_attr().check_perm(context.uid, context.gid, 5)?;
         node.statefs().await
     }
 
@@ -265,7 +262,7 @@ impl MetaData for S3MetaData {
             let open_file = open_file.read();
             open_file
                 .attr
-                .check_perm(context.user_id, context.group_id, access_mode)?;
+                .check_perm(context.uid, context.gid, access_mode)?;
             return Ok(GLOBAL_S3_FD_CNT.fetch_add(1, Ordering::SeqCst).cast());
         }
 
@@ -279,7 +276,7 @@ impl MetaData for S3MetaData {
             }
             Some(node) => {
                 let attr = node.get_attr();
-                attr.check_perm(context.user_id, context.group_id, access_mode)?;
+                attr.check_perm(context.uid, context.gid, access_mode)?;
                 // Add the file to `open_files`
                 self.open_files.open(ino, attr);
                 return Ok(GLOBAL_S3_FD_CNT.fetch_add(1, Ordering::SeqCst).cast());
@@ -346,7 +343,7 @@ impl MetaData for S3MetaData {
             let mut inode = self.get_inode_from_txn(txn.as_mut(), ino).await?;
             let remote_attr = inode.get_attr();
             let dirty_attr_for_reply =
-                match remote_attr.setattr_precheck(param, context.user_id, context.group_id)? {
+                match remote_attr.setattr_precheck(param, context.uid, context.gid)? {
                     Some(dirty_attr) => {
                         if remote_attr.size != dirty_attr.size {
                             inode.update_mtime_ctime_to_now();
@@ -579,7 +576,7 @@ impl MetaData for S3MetaData {
                 let parent_node = self.get_inode_from_txn(txn.as_mut(), parent).await?;
                 parent_node
                     .get_attr()
-                    .check_perm(context.user_id, context.group_id, 1)?;
+                    .check_perm(context.uid, context.gid, 1)?;
             }
 
             let Some(child_entry) = self
@@ -863,10 +860,10 @@ impl S3MetaData {
         let child_attr = child_node.get_attr();
 
         if NEED_CHECK_PERM
-            && context.user_id != 0
+            && context.uid != 0
             && (parent_attr.perm & 0o1000 != 0)
-            && context.user_id != parent_attr.uid
-            && context.user_id != child_attr.uid
+            && context.uid != parent_attr.uid
+            && context.uid != child_attr.uid
         {
             build_error_result_from_errno(Errno::EACCES, "Sticky bit set".to_owned())
         } else {
