@@ -236,14 +236,14 @@ impl S3Node {
     }
 
     /// Check if given uid and gid can access this node
-    pub fn open_pre_check(&self, flags: OFlag, user_id: u32, group_id: u32) -> DatenLordResult<()> {
+    pub fn open_pre_check(&self, flags: OFlag, uid: u32, gid: u32) -> DatenLordResult<()> {
         let attr = self.get_attr();
         let access_mode = match flags & (OFlag::O_RDONLY | OFlag::O_WRONLY | OFlag::O_RDWR) {
             OFlag::O_RDONLY => 4,
             OFlag::O_WRONLY => 2,
             _ => 6,
         };
-        attr.check_perm(user_id, group_id, access_mode)
+        attr.check_perm(uid, gid, access_mode)
     }
 }
 
@@ -408,8 +408,8 @@ impl Node for S3Node {
         inum: INum,
         child_dir_name: &str,
         mode: Mode,
-        user_id: u32,
-        group_id: u32,
+        uid: u32,
+        gid: u32,
         txn: &mut T,
     ) -> DatenLordResult<Self> {
         // get new directory attribute
@@ -417,8 +417,8 @@ impl Node for S3Node {
             ino: inum,
             kind: SFlag::S_IFDIR,
             perm: fs_util::parse_mode_bits(mode.bits()),
-            uid: user_id,
-            gid: group_id,
+            uid,
+            gid,
             nlink: 1,
             ..FileAttr::now()
         }));
@@ -467,8 +467,8 @@ impl Node for S3Node {
         child_file_name: &str,
         oflags: OFlag,
         mode: Mode,
-        user_id: u32,
-        group_id: u32,
+        uid: u32,
+        gid: u32,
         txn: &mut T,
     ) -> DatenLordResult<Self> {
         debug_assert!(oflags.contains(OFlag::O_CREAT));
@@ -480,8 +480,8 @@ impl Node for S3Node {
             perm: fs_util::parse_mode_bits(mode.bits()),
             size: 0,
             blocks: 0,
-            uid: user_id,
-            gid: group_id,
+            uid,
+            gid,
             nlink: 1,
             ..FileAttr::now()
         }));

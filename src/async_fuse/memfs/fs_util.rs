@@ -73,8 +73,8 @@ impl FileAttr {
     pub(crate) fn setattr_precheck(
         &self,
         param: &SetAttrParam,
-        user_id: u32,
-        group_id: u32,
+        context_uid: u32,
+        context_gid: u32,
     ) -> DatenLordResult<Option<FileAttr>> {
         let cur_attr = *self;
         let mut dirty_attr = cur_attr;
@@ -84,15 +84,15 @@ impl FileAttr {
 
         let check_permission = || -> DatenLordResult<()> {
             if NEED_CHECK_PERM {
-                //  owner is root check the user_id
-                if cur_attr.uid == 0 && user_id != 0 {
+                //  owner is root check the uid
+                if cur_attr.uid == 0 && context_uid != 0 {
                     return build_error_result_from_errno(
                         Errno::EPERM,
                         "setattr() cannot change atime".to_owned(),
                     );
                 }
-                cur_attr.check_perm(user_id, group_id, 2)?;
-                if user_id != cur_attr.uid {
+                cur_attr.check_perm(context_uid, context_gid, 2)?;
+                if context_uid != cur_attr.uid {
                     return build_error_result_from_errno(
                         Errno::EACCES,
                         "setattr() cannot change atime".to_owned(),
@@ -106,7 +106,7 @@ impl FileAttr {
         };
 
         if let Some(gid) = param.g_id {
-            if user_id != 0 && cur_attr.uid != user_id {
+            if context_uid != 0 && cur_attr.uid != context_uid {
                 return build_error_result_from_errno(
                     Errno::EPERM,
                     "setattr() cannot change gid".to_owned(),
@@ -121,7 +121,7 @@ impl FileAttr {
 
         if let Some(uid) = param.u_id {
             if cur_attr.uid != uid {
-                if user_id != 0 {
+                if context_uid != 0 {
                     return build_error_result_from_errno(
                         Errno::EPERM,
                         "setattr() cannot change uid".to_owned(),
@@ -135,7 +135,7 @@ impl FileAttr {
         if let Some(mode) = param.mode {
             let mode: u16 = mode.cast();
             if mode != cur_attr.perm {
-                if user_id != 0 && user_id != cur_attr.uid {
+                if context_uid != 0 && context_uid != cur_attr.uid {
                     return build_error_result_from_errno(
                         Errno::EPERM,
                         "setattr() cannot change mode".to_owned(),
@@ -204,9 +204,9 @@ impl FileAttr {
     /// When Sticky Bit set on a directory, files in that directory may only be unlinked or -
     /// renamed by root or the directory owner or the file owner.
     /// ```
-    pub fn check_perm(&self, user_id: u32, group_id: u32, access_mode: u8) -> DatenLordResult<()> {
+    pub fn check_perm(&self, uid: u32, gid: u32, access_mode: u8) -> DatenLordResult<()> {
         if NEED_CHECK_PERM {
-            self.check_perm_inner(user_id, group_id, access_mode)
+            self.check_perm_inner(uid, gid, access_mode)
         } else {
             Ok(())
         }
@@ -215,29 +215,24 @@ impl FileAttr {
     /// If `NEED_CHECK_PERM` is true, then check permission by ourselves not
     /// rely on kernel.
     #[inline]
-    fn check_perm_inner(
-        &self,
-        user_id: u32,
-        group_id: u32,
-        access_mode: u8,
-    ) -> DatenLordResult<()> {
+    fn check_perm_inner(&self, uid: u32, gid: u32, access_mode: u8) -> DatenLordResult<()> {
         debug_assert!(
             access_mode <= 0o7 && access_mode != 0,
             "check_perm() found access_mode={access_mode} invalid",
         );
-        if user_id == 0 {
+        if uid == 0 {
             return Ok(());
         }
 
-        let file_mode = self.get_access_mode(user_id, group_id);
+        let file_mode = self.get_access_mode(uid, gid);
         debug!(
             "check_perm() got access_mode={access_mode} and file_mode={file_mode} \
-            from uid={user_id} gid={group_id}",
+            from uid={uid} gid={gid}",
         );
         if (file_mode & access_mode) != access_mode {
             return build_error_result_from_errno(
                 Errno::EACCES,
-                format!("check_perm() failed {user_id} {group_id} {file_mode}"),
+                format!("check_perm() failed {uid} {gid} {file_mode}"),
             );
         }
         Ok(())
@@ -246,11 +241,11 @@ impl FileAttr {
     /// For given uid and gid, get the access mode of the file
     #[allow(clippy::default_numeric_fallback)]
     #[allow(clippy::arithmetic_side_effects)]
-    fn get_access_mode(&self, user_id: u32, group_id: u32) -> u8 {
+    fn get_access_mode(&self, uid: u32, gid: u32) -> u8 {
         let perm = self.perm;
-        let mode = if user_id == self.uid {
+        let mode = if uid == self.uid {
             (perm >> 6) & 0o7
-        } else if group_id == self.gid {
+        } else if gid == self.gid {
             (perm >> 3) & 0o7
         } else {
             perm & 0o7

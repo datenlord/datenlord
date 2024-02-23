@@ -32,12 +32,12 @@ fn test_create_file(mount_dir: &Path) -> anyhow::Result<()> {
     assert_eq!(file_metadata.mode() & 0o777, 0o644);
     // check the file owner
     let file_owner = file_metadata.uid();
-    let create_user_id = unistd::getuid();
-    assert_eq!(file_owner, create_user_id.as_raw());
+    let create_uid = unistd::getuid();
+    assert_eq!(file_owner, create_uid.as_raw());
     // check the file group
     let file_group = file_metadata.gid();
-    let create_group_id = unistd::getgid();
-    assert_eq!(file_group, create_group_id.as_raw());
+    let create_gid = unistd::getgid();
+    assert_eq!(file_group, create_gid.as_raw());
     // check nlink == 1
     assert_eq!(file_metadata.nlink(), 1);
     fs::remove_file(&file_path)?; // immediate deletion

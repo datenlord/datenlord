@@ -69,6 +69,7 @@
     clippy::impl_trait_in_params,  // Allow impl AsRef<Path>, it's common in Rust
     clippy::missing_assert_message, // Allow assert! without message, mainly in test code
     clippy::semicolon_outside_block, // We need to choose between this and `semicolon_inside_block`, we choose outside
+    clippy::similar_names, // Allow similar names, due to the existence of uid and gid
 )]
 
 pub mod async_fuse;

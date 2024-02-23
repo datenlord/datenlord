@@ -61,8 +61,8 @@ pub trait Node: Sized {
         inum: INum,
         child_dir_name: &str,
         mode: Mode,
-        user_id: u32,
-        group_id: u32,
+        uid: u32,
+        gid: u32,
         txn: &mut T,
     ) -> DatenLordResult<Self>;
     /// Open file in a directory
