@@ -10,6 +10,7 @@ use datenlord::config::{
     MemoryCacheConfig, SoftLimit, StorageConfig, StorageParams, StorageS3Config,
 };
 use tokio_util::sync::CancellationToken;
+use tracing::level_filters::LevelFilter;
 use tracing::{debug, info}; // warn, error
 
 use crate::async_fuse::fuse::{mount, session};
@@ -101,7 +102,7 @@ async fn run_fs(mount_point: &Path, is_s3: bool, token: CancellationToken) -> an
 
 #[allow(clippy::let_underscore_must_use)]
 pub async fn setup(mount_dir: &Path, is_s3: bool) -> anyhow::Result<()> {
-    init_logger(LogRole::Test);
+    init_logger(LogRole::Test, LevelFilter::INFO);
     debug!("setup started with mount_dir: {:?}", mount_dir);
     if mount_dir.exists() {
         debug!("mount_dir {:?} exists ,try umount", mount_dir);

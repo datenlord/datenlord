@@ -198,6 +198,7 @@ mod test {
     // use mock_etcd::MockEtcdServer;
     use protobuf::RepeatedField;
     use tracing::debug;
+    use tracing::level_filters::LevelFilter;
 
     use super::{util, *};
     use crate::common::error::Context;
@@ -226,7 +227,7 @@ mod test {
     #[allow(clippy::let_underscore_must_use)]
     #[tokio::test(flavor = "multi_thread")]
     async fn test_all() -> DatenLordResult<()> {
-        init_logger(LogRole::Test);
+        init_logger(LogRole::Test, LevelFilter::INFO);
         // TODO: run test case in parallel
         // Because they all depend on etcd, so cannot run in parallel now
         // let mut etcd_server = MockEtcdServer::new();

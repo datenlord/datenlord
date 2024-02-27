@@ -13,6 +13,9 @@ pub struct Config {
     #[clap(long = "node-ip", value_name = "VALUE")]
     /// Node ip
     pub node_ip: String,
+    #[clap(long = "log-level", value_name = "VALUE", default_value = "info")]
+    /// Log level
+    pub log_level: String,
     #[clap(long = "mount-path", value_name = "VALUE")]
     /// Set the mount point of FUSE
     pub mount_path: String,
@@ -146,6 +149,8 @@ mod tests {
     use std::num::NonZeroUsize;
     use std::str::FromStr;
 
+    use tracing::level_filters::LevelFilter;
+
     use super::*;
     use crate::config::inner::{InnerConfig, Role, StorageParams as InnerStorageParams};
     use crate::config::SoftLimit;
@@ -174,12 +179,15 @@ mod tests {
             "9001",
             "--storage-fs-root",
             "/tmp/datenlord_backend",
+            "--log-level",
+            "info",
         ];
         let config = Config::parse_from(args);
         assert_eq!(config.role, "node");
         assert_eq!(config.node_name, "node1");
         assert_eq!(config.node_ip.as_str(), "127.0.0.1");
         assert_eq!(config.mount_path.as_str(), "/tmp/datenlord_data_dir");
+        assert_eq!(config.log_level, "info");
 
         let kv_addrs = &config.kv_server_list;
         assert_eq!(kv_addrs.len(), 2);
@@ -375,6 +383,8 @@ mod tests {
             "/tmp/datenlord_data_dir",
             "--kv-server-list",
             "127.0.0.1:7890",
+            "--log-level",
+            "info",
         ];
         let config: InnerConfig = Config::parse_from(args).try_into().unwrap();
         assert_eq!(config.role, Role::Controller);
@@ -382,6 +392,7 @@ mod tests {
         assert_eq!(config.node_ip, IpAddr::from_str("127.0.0.1").unwrap());
         assert_eq!(config.mount_path.as_str(), "/tmp/datenlord_data_dir");
         assert_eq!(config.server_port, 8800);
+        assert_eq!(config.log_level, LevelFilter::INFO);
 
         let kv_addrs = config.kv_addrs;
         assert_eq!(kv_addrs.len(), 1);

@@ -57,14 +57,14 @@ impl LogRole {
 #[allow(clippy::let_underscore_must_use)]
 #[allow(clippy::needless_pass_by_value)] // Just pass a temporary value is fine.
 #[inline]
-pub fn init_logger(role: LogRole) {
+pub fn init_logger(role: LogRole, level: Level) {
     let filter = filter::Targets::new()
         .with_target("hyper", Level::WARN)
         .with_target("h2", Level::WARN)
         .with_target("tower", Level::WARN)
         .with_target("datenlord::async_fuse::fuse", Level::INFO)
         .with_target("datenlord::metrics", Level::INFO)
-        .with_target("", Level::INFO);
+        .with_target("", level);
 
     let log_path = format!("./datenlord_{}.log", role.as_str());
     let file = std::fs::OpenOptions::new()
