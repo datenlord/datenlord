@@ -63,4 +63,5 @@ cargo run $BUILD_FLAGS --bin=datenlord -- \
 --storage-fs-root=$STORAGE_FS_ROOT \
 --server-port=8800 \
 --storage-type=fs \
---storage-mem-cache-write-back
+--storage-mem-cache-write-back \
+--log-level=info

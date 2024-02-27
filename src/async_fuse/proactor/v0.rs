@@ -151,11 +151,13 @@ mod tests {
     use std::os::unix::io::AsRawFd;
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    use tracing::level_filters::LevelFilter;
+
     use crate::common::logger::{init_logger, LogRole};
 
     #[tokio::test(flavor = "multi_thread")]
     async fn proactor_v0_test() -> anyhow::Result<()> {
-        init_logger(LogRole::Test);
+        init_logger(LogRole::Test, LevelFilter::INFO);
 
         let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
 
