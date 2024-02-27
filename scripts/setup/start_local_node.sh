@@ -8,15 +8,6 @@
 # For example, run `scripts/setup/start_local_node.sh`, this script will just simply run `cargo build` without any option.
 # But run `scripts/setup/start_local_node.sh "-F abi-7-23"`, this script will run `cargo build -F abi-7-23` to build DatenLord.
 
-export CONTROLLER_SOCKET_FILE=/tmp/controller.sock
-export BIND_MOUNTER=../target/debug/bind_mounter
-export NODE_SOCKET_FILE=/tmp/node.sock
-export RUST_BACKTRACE=full
-export RUST_LOG=debug
-export RUST_BACKTRACE=1
-export ETCD_END_POINT=127.0.0.1:2379
-export BIND_MOUNTER=`realpath $BIND_MOUNTER`
-
 # build flags with `cargo build`
 BUILD_FLAGS=$1
 
@@ -62,14 +53,14 @@ fi
 echo "Starting datenlord.. ... ... ..."
 cargo run $BUILD_FLAGS --bin=datenlord -- \
 --role=node \
---csi-endpoint=unix:///tmp/node.sock \
+--csi-endpoint=unix://$NODE_SOCKET_FILE \
 --csi-worker-port=0 \
 --node-name=localhost \
 --node-ip=127.0.0.1 \
 --csi-driver-name=io.datenlord.csi.plugin \
 --mount-path=$DATENLORD_LOCAL_BIND_DIR \
---kv-server-list=127.0.0.1:2379 \
---storage-fs-root=/tmp/datenlord_backend \
+--kv-server-list=$ETCD_END_POINT \
+--storage-fs-root=$STORAGE_FS_ROOT \
 --server-port=8800 \
 --storage-type=fs \
 --storage-mem-cache-write-back
