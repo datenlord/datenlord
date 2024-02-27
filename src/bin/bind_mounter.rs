@@ -2,13 +2,15 @@
 
 use std::ffi::OsStr;
 use std::path::Path;
+use std::str::FromStr;
 
 use clap::Parser;
-use datenlord::common::error::DatenLordError::ArgumentInvalid;
+use datenlord::common::error::DatenLordError::{self, ArgumentInvalid};
 use datenlord::common::error::{Context, DatenLordResult};
 use datenlord::common::logger::{init_logger, LogRole};
 use nix::mount::{self, MsFlags};
 use tracing::debug;
+use tracing::level_filters::LevelFilter as Level;
 
 /// Argument name of mount from directory
 const FROM_DIR_ARG_NAME: &str = "from";
@@ -42,16 +44,29 @@ pub struct BindMounterConfig {
     readonly: bool,
     #[clap(short = 'm', long = "remount", value_name = "TRUE|FALSE")]
     remount: bool,
+    #[clap(
+        short = 'l',
+        long = "log-level",
+        value_name = "LEVEL",
+        default_value = "info"
+    )]
+    log_level: String,
 }
 
 fn main() -> DatenLordResult<()> {
-    init_logger(LogRole::BindMounter);
     debug!(
         "bind_mounter started with args: {:?}",
         std::env::args().collect::<Vec<_>>()
     );
     let config = BindMounterConfig::parse();
-
+    init_logger(
+        LogRole::BindMounter,
+        Level::from_str(config.log_level.as_str()).map_err(|e| {
+            DatenLordError::ArgumentInvalid {
+                context: vec![format!("log level {} is invalid: {}", config.log_level, e)],
+            }
+        })?,
+    );
     let (umount_path, do_umount) = match config.umount {
         Some(ref s) => (Path::new(s), true),
         None => (Path::new(""), false),
