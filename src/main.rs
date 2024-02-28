@@ -127,7 +127,7 @@ async fn parse_metadata(config: &InnerConfig) -> DatenLordResult<MetaData> {
 async fn main() -> anyhow::Result<()> {
     let config = InnerConfig::try_from(config::Config::parse())?;
 
-    init_logger(config.role.into());
+    init_logger(config.role.into(), config.log_level);
 
     match config.role {
         NodeRole::Node => {

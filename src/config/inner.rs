@@ -3,6 +3,7 @@ use std::num::NonZeroUsize;
 use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
+use tracing::level_filters::LevelFilter as Level;
 
 use crate::common::error::DatenLordError;
 use crate::config::config::{
@@ -54,6 +55,8 @@ pub struct InnerConfig {
     pub node_ip: IpAddr,
     /// Mount path
     pub mount_path: String,
+    /// Log level
+    pub log_level: Level,
     /// kv server addresses
     pub kv_addrs: Vec<String>,
     /// Service port number
@@ -71,6 +74,11 @@ impl TryFrom<SuperConfig> for InnerConfig {
 
     #[inline]
     fn try_from(value: SuperConfig) -> Result<Self, Self::Error> {
+        let log_level = Level::from_str(value.log_level.as_str()).map_err(|e| {
+            DatenLordError::ArgumentInvalid {
+                context: vec![format!("log level {} is invalid: {}", value.log_level, e)],
+            }
+        })?;
         let role = Role::from_str(value.role.as_str())?;
         let node_name = value.node_name;
         let server_port = value.server_port;
@@ -94,6 +102,7 @@ impl TryFrom<SuperConfig> for InnerConfig {
             node_name,
             node_ip,
             mount_path,
+            log_level,
             kv_addrs,
             server_port,
             scheduler_extender_port,
