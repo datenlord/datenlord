@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use clippy_utilities::{Cast, OverflowArithmetic};
+use datenlord::metrics::FILESYSTEM_METRICS;
 use libc::{RENAME_EXCHANGE, RENAME_NOREPLACE};
 use nix::errno::Errno;
 use nix::fcntl::OFlag;
@@ -228,7 +229,7 @@ impl MetaData for S3MetaData {
             .as_secs();
         if result > 1 {
             open_file.write().attr.atime = now;
-            retry_txn!(TXN_RETRY_LIMIT, {
+            let (res, retry) = retry_txn!(TXN_RETRY_LIMIT, {
                 let mut txn = self.kv_engine.new_meta_txn().await;
                 let mut node = self.get_inode_from_txn(txn.as_mut(), ino).await?;
                 let mut attr = node.get_attr();
@@ -239,7 +240,9 @@ impl MetaData for S3MetaData {
                     &ValueType::Node(node.to_serial_node()),
                 );
                 (txn.commit().await, ())
-            })?;
+            });
+            FILESYSTEM_METRICS.observe_storage_operation_throughput(retry, "read");
+            res?;
         }
         Ok(data)
     }
@@ -306,7 +309,7 @@ impl MetaData for S3MetaData {
 
     #[instrument(skip(self))]
     async fn forget(&self, ino: u64, nlookup: u64) -> DatenLordResult<()> {
-        retry_txn!(TXN_RETRY_LIMIT, {
+        let (res, retry) = retry_txn!(TXN_RETRY_LIMIT, {
             let mut txn = self.kv_engine.new_meta_txn().await;
             let inode = self.get_inode_from_txn(txn.as_mut(), ino).await?;
             inode.dec_lookup_count_by(nlookup);
@@ -326,8 +329,9 @@ impl MetaData for S3MetaData {
                 );
             }
             (txn.commit().await, ())
-        })?;
-        Ok(())
+        });
+        FILESYSTEM_METRICS.observe_storage_operation_throughput(retry, "forget");
+        res
     }
 
     #[instrument(skip(self), err, ret)]
@@ -338,7 +342,7 @@ impl MetaData for S3MetaData {
         param: &SetAttrParam,
     ) -> DatenLordResult<(Duration, FuseAttr)> {
         let ttl = Duration::new(MY_TTL_SEC, 0);
-        let result = retry_txn!(TXN_RETRY_LIMIT, {
+        let (res, retry) = retry_txn!(TXN_RETRY_LIMIT, {
             let mut txn = self.kv_engine.new_meta_txn().await;
             let mut inode = self.get_inode_from_txn(txn.as_mut(), ino).await?;
             let remote_attr = inode.get_attr();
@@ -382,13 +386,14 @@ impl MetaData for S3MetaData {
                 txn.commit().await,
                 (ttl, fs_util::convert_to_fuse_attr(dirty_attr_for_reply)),
             )
-        })?;
-        Ok(result)
+        });
+        FILESYSTEM_METRICS.observe_storage_operation_throughput(retry, "setattr");
+        res
     }
 
     #[instrument(skip(self), err, ret)]
     async fn unlink(&self, context: ReqContext, parent: INum, name: &str) -> DatenLordResult<()> {
-        retry_txn!(TXN_RETRY_LIMIT, {
+        let (res, retry) = retry_txn!(TXN_RETRY_LIMIT, {
             let mut txn = self.kv_engine.new_meta_txn().await;
             let mut parent_node = self.get_inode_from_txn(txn.as_mut(), parent).await?;
             parent_node.check_is_dir()?;
@@ -458,8 +463,10 @@ impl MetaData for S3MetaData {
                 &ValueType::Node(parent_node.to_serial_node()),
             );
             (txn.commit().await, ())
-        })?;
-        Ok(())
+        });
+
+        FILESYSTEM_METRICS.observe_storage_operation_throughput(retry, "unlink");
+        res
     }
 
     async fn new(
@@ -477,7 +484,7 @@ impl MetaData for S3MetaData {
             open_files: OpenFiles::new(),
         });
 
-        retry_txn!(TXN_RETRY_LIMIT, {
+        let (res, _) = retry_txn!(TXN_RETRY_LIMIT, {
             let mut txn = meta.kv_engine.new_meta_txn().await;
             let prev = meta
                 .try_get_inode_from_txn(txn.as_mut(), FUSE_ROOT_ID)
@@ -502,7 +509,9 @@ impl MetaData for S3MetaData {
                 );
                 (txn.commit().await, ())
             }
-        })?;
+        });
+        res?;
+
         Ok(meta)
     }
 
@@ -521,7 +530,7 @@ impl MetaData for S3MetaData {
         check_name_length(&param.name)?;
         check_type_supported(&param.node_type)?;
         let parent_ino = param.parent;
-        let (ttl, fuse_attr) = retry_txn!(TXN_RETRY_LIMIT, {
+        let (res, retry) = retry_txn!(TXN_RETRY_LIMIT, {
             let mut txn = self.kv_engine.new_meta_txn().await;
             let mut parent_node = self.get_inode_from_txn(txn.as_mut(), parent_ino).await?;
 
@@ -557,7 +566,10 @@ impl MetaData for S3MetaData {
                 &ValueType::Node(parent_node.to_serial_node()),
             );
             (txn.commit().await, (ttl, fuse_attr))
-        })?;
+        });
+        FILESYSTEM_METRICS.observe_storage_operation_throughput(retry, "mknod");
+        let (ttl, fuse_attr) = res?;
+
         Ok((ttl, fuse_attr, MY_GENERATION))
     }
 
@@ -570,7 +582,7 @@ impl MetaData for S3MetaData {
         parent: INum,
         child_name: &str,
     ) -> DatenLordResult<(Duration, FuseAttr, u64)> {
-        retry_txn!(TXN_RETRY_LIMIT, {
+        let (res, retry) = retry_txn!(TXN_RETRY_LIMIT, {
             let mut txn = self.kv_engine.new_meta_txn().await;
             if NEED_CHECK_PERM {
                 let parent_node = self.get_inode_from_txn(txn.as_mut(), parent).await?;
@@ -600,7 +612,10 @@ impl MetaData for S3MetaData {
                 &ValueType::Node(child_node.to_serial_node()),
             );
             (txn.commit().await, (ttl, fuse_attr, MY_GENERATION))
-        })
+        });
+
+        FILESYSTEM_METRICS.observe_storage_operation_throughput(retry, "lookup");
+        res
     }
 
     #[allow(clippy::too_many_lines)] // TODO: refactor it into smaller functions
@@ -639,7 +654,7 @@ impl MetaData for S3MetaData {
             )
         };
 
-        retry_txn!(TXN_RETRY_LIMIT, {
+        let (res, retry) = retry_txn!(TXN_RETRY_LIMIT, {
             let mut txn = self.kv_engine.new_meta_txn().await;
             let old_parent_node = Arc::new(Mutex::new(
                 self.get_inode_from_txn(txn.as_mut(), old_parent).await?,
@@ -760,7 +775,10 @@ impl MetaData for S3MetaData {
             }
 
             (txn.commit().await, ())
-        })
+        });
+
+        FILESYSTEM_METRICS.observe_storage_operation_throughput(retry, "rename");
+        res
     }
 
     #[instrument(skip(self), err, ret)]
@@ -804,7 +822,7 @@ impl MetaData for S3MetaData {
             open_file.attr.size = new_size;
         }
 
-        retry_txn!(TXN_RETRY_LIMIT, {
+        let (res, retry) = retry_txn!(TXN_RETRY_LIMIT, {
             let mut txn = self.kv_engine.new_meta_txn().await;
             let mut node = self.get_inode_from_txn(txn.as_mut(), ino).await?;
             let mut attr = node.get_attr();
@@ -816,7 +834,10 @@ impl MetaData for S3MetaData {
                 &ValueType::Node(node.to_serial_node()),
             );
             (txn.commit().await, ())
-        })?;
+        });
+
+        FILESYSTEM_METRICS.observe_storage_operation_throughput(retry, "write");
+        res?;
         Ok(written_size)
     }
 }
