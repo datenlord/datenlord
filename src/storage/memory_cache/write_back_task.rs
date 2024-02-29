@@ -163,11 +163,6 @@ where
                     // Ensure that the block is flushed to the backend, and notify the loop to
                     // shutdown.
                     error!("Try to spawn a `BlockFlush` task after shutdown.");
-                    if let Err(e) = self.storage.backend().store(ino, block_id, block).await {
-                        error!(
-                            "Failed to store block where ino={ino}, block_id={block_id}, err={e}."
-                        );
-                    }
                 }
             }
         }
@@ -179,21 +174,12 @@ where
         self.lru_queue
             .retain_with_order(|&BlockCoordinate(i, _)| i != ino);
 
-        let mut handles = vec![];
         let mut shutdown = self.block_flush_spawn_handle.is_shutdown();
 
         if let Some(file_level_pending_blocks) = file_level_pending_blocks {
             for (block_id, (block, tx)) in file_level_pending_blocks {
                 if shutdown {
-                    // Flush the rest blocks.
-                    let handle = tokio::spawn(write_back_one_block(
-                        Arc::clone(&self.storage),
-                        ino,
-                        block_id,
-                        block,
-                        tx,
-                    ));
-                    handles.push(handle);
+                    error!("Trying to flush a file after shutdown.");
                 } else {
                     let res = self
                         .block_flush_spawn_handle
@@ -214,12 +200,6 @@ where
                         }
                     }
                 }
-            }
-        }
-
-        for handle in handles {
-            if let Err(e) = handle.await {
-                error!("Failed to flush a block, the nested error is: {e}");
             }
         }
     }
