@@ -1,16 +1,15 @@
 use std::os::unix::io::RawFd;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use async_trait::async_trait;
 
 use super::kv_engine::KVEngineType;
 use super::node::Node;
-use super::{CreateParam, RenameParam, SetAttrParam};
+use super::{CreateParam, RenameParam, SetAttrParam, StorageType};
 use crate::async_fuse::fuse::fuse_reply::{ReplyDirectory, StatFsParam};
 use crate::async_fuse::fuse::protocol::{FuseAttr, INum};
 use crate::common::error::DatenLordResult;
-use crate::storage::{Block, Storage, StorageManager};
 
 pub(crate) mod error {
     //! A module containing helper functions to build errors.
@@ -50,16 +49,9 @@ pub trait MetaData {
     /// Node type
     type N: Node + Send + Sync + 'static;
 
-    /// Storage type
-    type S: Storage + Send + Sync + 'static;
-
     /// Create `MetaData`
     #[allow(clippy::too_many_arguments)]
-    async fn new(
-        kv_engine: Arc<KVEngineType>,
-        node_id: &str,
-        storage: StorageManager<Self::S>,
-    ) -> DatenLordResult<Arc<Self>>;
+    async fn new(kv_engine: Arc<KVEngineType>, node_id: &str) -> DatenLordResult<Arc<Self>>;
 
     /// Helper function to create node
     async fn mknod(&self, param: CreateParam) -> DatenLordResult<(Duration, FuseAttr, u64)>;
@@ -75,18 +67,19 @@ pub trait MetaData {
     /// Rename helper to exchange on disk
     async fn rename(&self, context: ReqContext, param: RenameParam) -> DatenLordResult<()>;
 
-    /// Helper function of fsync
-    async fn fsync_helper(&self, ino: u64, fh: u64, datasync: bool) -> DatenLordResult<()>;
-
     /// Helper function to write data
     async fn write_helper(
         &self,
         ino: u64,
-        fh: u64,
-        offset: i64,
-        data: Vec<u8>,
-        flags: u32,
-    ) -> DatenLordResult<usize>;
+        new_mtime: SystemTime,
+        new_size: u64,
+    ) -> DatenLordResult<()>;
+
+    /// Helper function to get a open file's size and mtime
+    /// # Return
+    /// Return a tuple of (file_size, modified_time)
+    /// It will not change the file's atime
+    fn mtime_and_size(&self, ino: u64) -> (u64, SystemTime);
 
     /// Set fuse fd into `MetaData`
     async fn set_fuse_fd(&self, fuse_fd: RawFd);
@@ -97,10 +90,18 @@ pub trait MetaData {
         context: ReqContext,
         ino: u64,
         param: &SetAttrParam,
+        storage: &StorageType,
     ) -> DatenLordResult<(Duration, FuseAttr)>;
 
     /// Helper function to unlink
-    async fn unlink(&self, context: ReqContext, parent: INum, name: &str) -> DatenLordResult<()>;
+    /// # Return
+    /// Return the ino of the removed file
+    async fn unlink(
+        &self,
+        context: ReqContext,
+        parent: INum,
+        name: &str,
+    ) -> DatenLordResult<Option<INum>>;
 
     /// Get attribute of i-node by ino
     async fn getattr(&self, ino: u64) -> DatenLordResult<(Duration, FuseAttr)>;
@@ -109,19 +110,15 @@ pub trait MetaData {
     async fn open(&self, context: ReqContext, ino: u64, flags: u32) -> DatenLordResult<RawFd>;
 
     /// Forget a i-node by ino
-    async fn forget(&self, ino: u64, nlookup: u64) -> DatenLordResult<()>;
+    /// # Return
+    /// Return true if the file is removed
+    /// Return false if the file is not removed
+    async fn forget(&self, ino: u64, nlookup: u64) -> DatenLordResult<bool>;
 
     /// Helper function to read data
-    async fn read_helper(
-        &self,
-        ino: u64,
-        fh: u64,
-        offset: i64,
-        size: u32,
-    ) -> DatenLordResult<Vec<Block>>;
-
-    /// Helper function to flush node by ino
-    async fn flush(&self, ino: u64, fh: u64) -> DatenLordResult<()>;
+    /// # Return
+    /// Return a tuple of (file_size, modified_time)
+    async fn read_helper(&self, ino: u64) -> DatenLordResult<(u64, SystemTime)>;
 
     /// Helper function to release dir
     async fn releasedir(&self, ino: u64, fh: u64) -> DatenLordResult<()>;

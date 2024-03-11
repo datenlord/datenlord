@@ -3,7 +3,7 @@ use std::os::unix::ffi::OsStringExt;
 use std::os::unix::io::RawFd;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use async_trait::async_trait;
 use clippy_utilities::{Cast, OverflowArithmetic};
@@ -22,7 +22,7 @@ use super::metadata::{error, MetaData, ReqContext};
 use super::node::Node;
 use super::open_file::OpenFiles;
 use super::s3_node::{S3Node, GLOBAL_S3_FD_CNT};
-use super::{check_type_supported, CreateParam, RenameParam, SetAttrParam};
+use super::{check_type_supported, CreateParam, RenameParam, SetAttrParam, StorageType};
 use crate::async_fuse::fuse::fuse_reply::{ReplyDirectory, StatFsParam};
 use crate::async_fuse::fuse::protocol::{FuseAttr, INum, FUSE_ROOT_ID};
 use crate::async_fuse::memfs::check_name_length;
@@ -34,8 +34,6 @@ use crate::common::error::{
     DatenLordResult,
 };
 use crate::function_name;
-use crate::storage::policy::LruPolicy;
-use crate::storage::{Backend, Block, BlockCoordinate, MemoryCache, StorageManager};
 
 /// A helper function to build [`DatenLordError::InconsistentFS`] with default
 /// context and get the function name automatic.
@@ -56,8 +54,6 @@ const TXN_RETRY_LIMIT: u32 = 10;
 #[derive(Debug)]
 #[allow(dead_code)]
 pub struct S3MetaData {
-    /// Storage manager
-    pub(crate) storage: Arc<StorageManager<<Self as MetaData>::S>>,
     /// Current available fd, it'll increase after using
     pub(crate) cur_fd: AtomicU32,
     /// Current service id
@@ -75,7 +71,6 @@ pub struct S3MetaData {
 #[async_trait]
 impl MetaData for S3MetaData {
     type N = S3Node;
-    type S = Arc<MemoryCache<LruPolicy<BlockCoordinate>, Backend>>;
 
     #[instrument(skip(self))]
     async fn release(
@@ -84,11 +79,8 @@ impl MetaData for S3MetaData {
         fh: u64,
         _flags: u32,
         _lock_owner: u64,
-        flush: bool,
+        _flush: bool,
     ) -> DatenLordResult<()> {
-        if flush {
-            self.flush(ino, fh).await?;
-        }
         if self.open_files.close(ino).is_some() {
             // open_count reaches 0, flush the metadata to kv
             info!("release() ino={} fh={} file is closed", ino, fh);
@@ -171,13 +163,6 @@ impl MetaData for S3MetaData {
     }
 
     #[instrument(skip(self))]
-    async fn flush(&self, ino: u64, _fh: u64) -> DatenLordResult<()> {
-        // Flush the storage cache
-        self.storage.flush(ino).await?;
-        Ok(())
-    }
-
-    #[instrument(skip(self))]
     async fn releasedir(&self, ino: u64, _fh: u64) -> DatenLordResult<()> {
         let inode = self.get_node_from_kv_engine(ino).await?;
         if inode.is_none() {
@@ -190,35 +175,13 @@ impl MetaData for S3MetaData {
     }
 
     #[instrument(skip(self), err, ret)]
-    async fn read_helper(
-        &self,
-        ino: INum,
-        _fh: u64,
-        offset: i64,
-        size: u32,
-    ) -> DatenLordResult<Vec<Block>> {
+    async fn read_helper(&self, ino: INum) -> DatenLordResult<(u64, SystemTime)> {
         let open_file = self.open_files.get(ino);
 
         let (mtime, file_size) = {
             let attr = open_file.read().attr;
             (attr.mtime, attr.size)
         };
-
-        if offset.cast::<u64>() >= file_size {
-            return Ok(vec![]);
-        }
-
-        // Ensure `offset + size` is le than the size of the file
-        let read_size: u64 = if offset.cast::<u64>().overflow_add(size.cast::<u64>()) > file_size {
-            file_size.overflow_sub(offset.cast::<u64>())
-        } else {
-            size.cast()
-        };
-
-        let data = self
-            .storage
-            .load(ino, offset.cast(), read_size.cast(), mtime)
-            .await?;
 
         // If now is after atime + 1s, update atime
         let atime = open_file.read().attr.atime;
@@ -244,7 +207,7 @@ impl MetaData for S3MetaData {
             FILESYSTEM_METRICS.observe_storage_operation_throughput(retry, "read");
             res?;
         }
-        Ok(data)
+        Ok((file_size, mtime))
     }
 
     #[instrument(skip(self), err, ret)]
@@ -307,10 +270,20 @@ impl MetaData for S3MetaData {
         Ok((ttl, fuse_attr))
     }
 
+    fn mtime_and_size(&self, ino: u64) -> (u64, SystemTime) {
+        let open_file = self.open_files.get(ino);
+        let (mtime, file_size) = {
+            let attr = open_file.read().attr;
+            (attr.mtime, attr.size)
+        };
+        (file_size, mtime)
+    }
+
     #[instrument(skip(self))]
-    async fn forget(&self, ino: u64, nlookup: u64) -> DatenLordResult<()> {
+    async fn forget(&self, ino: u64, nlookup: u64) -> DatenLordResult<bool> {
         let (res, retry) = retry_txn!(TXN_RETRY_LIMIT, {
             let mut txn = self.kv_engine.new_meta_txn().await;
+            let mut result = false;
             let inode = self.get_inode_from_txn(txn.as_mut(), ino).await?;
             inode.dec_lookup_count_by(nlookup);
             let is_deleted = inode.get_lookup_count() == 0;
@@ -321,14 +294,14 @@ impl MetaData for S3MetaData {
                     inode.get_name().to_owned(),
                 )));
                 txn.delete(&KeyType::INum2Node(ino));
-                self.storage.remove(ino).await?;
+                result = true;
             } else {
                 txn.set(
                     &KeyType::INum2Node(ino),
                     &ValueType::Node(inode.to_serial_node()),
                 );
             }
-            (txn.commit().await, ())
+            (txn.commit().await, result)
         });
         FILESYSTEM_METRICS.observe_storage_operation_throughput(retry, "forget");
         res
@@ -340,6 +313,7 @@ impl MetaData for S3MetaData {
         context: ReqContext,
         ino: u64,
         param: &SetAttrParam,
+        storage: &StorageType,
     ) -> DatenLordResult<(Duration, FuseAttr)> {
         let ttl = Duration::new(MY_TTL_SEC, 0);
         let (res, retry) = retry_txn!(TXN_RETRY_LIMIT, {
@@ -351,7 +325,7 @@ impl MetaData for S3MetaData {
                     Some(dirty_attr) => {
                         if remote_attr.size != dirty_attr.size {
                             inode.update_mtime_ctime_to_now();
-                            self.storage
+                            storage
                                 .truncate(
                                     ino,
                                     remote_attr.size.cast(),
@@ -392,10 +366,16 @@ impl MetaData for S3MetaData {
     }
 
     #[instrument(skip(self), err, ret)]
-    async fn unlink(&self, context: ReqContext, parent: INum, name: &str) -> DatenLordResult<()> {
+    async fn unlink(
+        &self,
+        context: ReqContext,
+        parent: INum,
+        name: &str,
+    ) -> DatenLordResult<Option<INum>> {
         let (res, retry) = retry_txn!(TXN_RETRY_LIMIT, {
             let mut txn = self.kv_engine.new_meta_txn().await;
             let mut parent_node = self.get_inode_from_txn(txn.as_mut(), parent).await?;
+            let mut result = None;
             parent_node.check_is_dir()?;
             let child_entry = match self.try_get_dir_entry(txn.as_mut(), parent, name).await? {
                 None => {
@@ -454,7 +434,7 @@ impl MetaData for S3MetaData {
                 );
             } else {
                 if let SFlag::S_IFREG = child_node.get_type() {
-                    self.storage.remove(child_ino).await?;
+                    result = Some(child_ino);
                 }
                 txn.delete(&KeyType::INum2Node(child_ino));
             }
@@ -462,25 +442,20 @@ impl MetaData for S3MetaData {
                 &KeyType::INum2Node(parent),
                 &ValueType::Node(parent_node.to_serial_node()),
             );
-            (txn.commit().await, ())
+            (txn.commit().await, result)
         });
 
         FILESYSTEM_METRICS.observe_storage_operation_throughput(retry, "unlink");
         res
     }
 
-    async fn new(
-        kv_engine: Arc<KVEngineType>,
-        node_id: &str,
-        storage: StorageManager<Self::S>,
-    ) -> DatenLordResult<Arc<Self>> {
+    async fn new(kv_engine: Arc<KVEngineType>, node_id: &str) -> DatenLordResult<Arc<Self>> {
         let meta = Arc::new(Self {
             cur_fd: AtomicU32::new(4),
             node_id: Arc::<str>::from(node_id.to_owned()),
             fuse_fd: Mutex::new(-1_i32),
             inum_allocator: INumAllocator::new(Arc::clone(&kv_engine)),
             kv_engine,
-            storage: Arc::new(storage),
             open_files: OpenFiles::new(),
         });
 
@@ -781,39 +756,13 @@ impl MetaData for S3MetaData {
         res
     }
 
-    #[instrument(skip(self), err, ret)]
-    /// Helper function of fsync
-    async fn fsync_helper(
-        &self,
-        ino: u64,
-        fh: u64,
-        _datasync: bool,
-        // reply: ReplyEmpty,
-    ) -> DatenLordResult<()> {
-        self.flush(ino, fh).await
-    }
-
-    #[instrument(skip(self, data), err, ret)]
     /// Helper function to write data
     async fn write_helper(
         &self,
         ino: u64,
-        _fh: u64,
-        offset: i64,
-        data: Vec<u8>,
-        _flags: u32,
-    ) -> DatenLordResult<usize> {
-        let open_file = self.open_files.get(ino);
-
-        let (mtime, file_size) = {
-            let attr = open_file.read().attr;
-            (attr.mtime, attr.size)
-        };
-
-        let new_mtime = self.storage.store(ino, offset.cast(), &data, mtime).await?;
-        let written_size = data.len();
-        let new_size = file_size.max(offset.cast::<u64>().overflow_add(written_size.cast()));
-
+        new_mtime: SystemTime,
+        new_size: u64,
+    ) -> DatenLordResult<()> {
         // Update the `mtime` and `size` of the file
         {
             let raw_open_file = self.open_files.get(ino);
@@ -838,7 +787,7 @@ impl MetaData for S3MetaData {
 
         FILESYSTEM_METRICS.observe_storage_operation_throughput(retry, "write");
         res?;
-        Ok(written_size)
+        Ok(())
     }
 }
 

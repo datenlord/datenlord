@@ -24,7 +24,7 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use async_trait::async_trait;
-use clippy_utilities::Cast;
+use clippy_utilities::{Cast, OverflowArithmetic};
 use datenlord::config::StorageConfig;
 use datenlord::metrics::FILESYSTEM_METRICS;
 pub use metadata::MetaData;
@@ -32,12 +32,12 @@ use nix::errno::Errno;
 use nix::sys::stat::SFlag;
 pub use s3_metadata::S3MetaData;
 use serde::{Deserialize, Serialize};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, instrument, warn};
 
 use self::kv_engine::KVEngineType;
 use crate::async_fuse::fuse::file_system::FileSystem;
 use crate::async_fuse::fuse::fuse_reply::{
-    AsIoVec, ReplyAttr, ReplyBMap, ReplyCreate, ReplyData, ReplyDirectory, ReplyEmpty, ReplyEntry,
+    ReplyAttr, ReplyBMap, ReplyCreate, ReplyData, ReplyDirectory, ReplyEmpty, ReplyEntry,
     ReplyLock, ReplyOpen, ReplyStatFs, ReplyWrite, ReplyXAttr,
 };
 use crate::async_fuse::fuse::fuse_request::Request;
@@ -45,13 +45,19 @@ use crate::async_fuse::fuse::protocol::{INum, FUSE_ROOT_ID};
 use crate::async_fuse::memfs::metadata::ReqContext;
 use crate::async_fuse::util::build_error_result_from_errno;
 use crate::common::error::{Context, DatenLordResult};
-use crate::storage::StorageManager;
+use crate::storage::policy::LruPolicy;
+use crate::storage::{Backend, Block, BlockCoordinate, MemoryCache, StorageManager};
+
+/// The type of storage
+pub type StorageType = Arc<StorageManager<Arc<MemoryCache<LruPolicy<BlockCoordinate>, Backend>>>>;
 
 /// In-memory file system
 #[derive(Debug)]
 pub struct MemFs<M: MetaData + Send + Sync + 'static> {
     /// Fs metadata
     metadata: Arc<M>,
+    /// Storage manager
+    storage: StorageType,
 }
 
 /// Set attribute parameters
@@ -170,28 +176,14 @@ impl<M: MetaData + Send + Sync + 'static> MemFs<M> {
         kv_engine: Arc<KVEngineType>,
         node_id: &str,
         storage_config: &StorageConfig,
-        storage: StorageManager<<M as MetaData>::S>,
+        storage: StorageType,
     ) -> anyhow::Result<Self> {
-        // print the args
-        debug!(
+        info!(
             "mount_point: ${}$, capacity: ${}$, node_id: {}, storage_config: {:?}",
             mount_point, capacity, node_id, storage_config
         );
-        let metadata = M::new(kv_engine, node_id, storage).await?;
-        Ok(Self { metadata })
-    }
-
-    /// Read content check
-    fn read_helper<A: AsIoVec>(content: Vec<A>, size: usize) -> DatenLordResult<Vec<A>> {
-        if content.iter().filter(|c| !c.can_convert()).count() > 0 {
-            return build_error_result_from_errno(
-                Errno::EIO,
-                "The content is out of scope".to_owned(),
-            );
-        }
-        let content_total_len: usize = content.iter().map(<A as AsIoVec>::len).sum();
-        debug!("read {} data, expected size {}", content_total_len, size);
-        Ok(content)
+        let metadata = M::new(kv_engine, node_id).await?;
+        Ok(Self { metadata, storage })
     }
 }
 
@@ -300,13 +292,21 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
     /// filesystem may ignore forget calls, if the inodes don't need to have
     /// a limited lifetime. On unmount it is not guaranteed, that all referenced
     /// inodes will receive a forget message.
+    #[instrument(skip(self))]
     async fn forget(&self, req: &Request<'_>, nlookup: u64) {
         let _timer = FILESYSTEM_METRICS.start_storage_operation_timer("forget");
         let ino = req.nodeid();
-        self.metadata
+        let deleted = self
+            .metadata
             .forget(ino, nlookup)
             .await
             .unwrap_or_else(|e| panic!("{e}"));
+        if deleted {
+            self.storage
+                .remove(ino)
+                .await
+                .unwrap_or_else(|e| panic!("{e}"));
+        }
     }
 
     /// Set file attributes.
@@ -319,31 +319,11 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         let _timer = FILESYSTEM_METRICS.start_storage_operation_timer("setattr");
         let ino = req.nodeid();
         let valid = param.valid;
-        let fh = param.fh;
-        let mode = param.mode;
-        let u_id = param.u_id;
-        let g_id = param.g_id;
-        let size = param.size;
-        let a_time = param.a_time;
-        let m_time = param.m_time;
+
         #[cfg(feature = "abi-7-9")]
         let _lock_owner = param.lock_owner;
         #[cfg(feature = "abi-7-23")]
         let _c_time = param.c_time;
-        debug!(
-            "setattr(ino={}, valid={:?}, mode={:?}, uid={:?}, gid={:?}, size={:?}, \
-                atime={:?}, mtime={:?}, fh={:?}, req={:?})",
-            ino,
-            valid,
-            mode.map(|bits| format!("{bits:#o}")),
-            u_id,
-            g_id,
-            size,
-            a_time,
-            m_time,
-            fh,
-            req,
-        );
         if 0 == valid {
             warn!("setattr() encountered valid=0, the req={:?}", req);
         };
@@ -351,7 +331,10 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
             uid: req.uid(),
             gid: req.gid(),
         };
-        let set_res = self.metadata.setattr_helper(context, ino, &param).await;
+        let set_res = self
+            .metadata
+            .setattr_helper(context, ino, &param, &self.storage)
+            .await;
         match set_res {
             Ok((ttl, fuse_attr)) => reply.attr(ttl, fuse_attr).await,
             Err(e) => reply.error(e).await,
@@ -427,6 +410,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
     }
 
     /// Remove a file.
+    #[instrument(skip(self), err, ret)]
     async fn unlink(
         &self,
         req: &Request<'_>,
@@ -447,19 +431,23 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         };
 
         match self.metadata.unlink(context, parent, name).await {
-            Ok(()) => reply.ok().await,
-            Err(e) => {
-                debug!(
-                    "unlink() failed to remove file name={:?} under parent ino={}, \
-                        the error is: {:?}",
-                    name, parent, e,
-                );
-                reply.error(e).await
+            Ok(result) => {
+                if let Some(ino) = result {
+                    match self.storage.remove(ino).await {
+                        Ok(()) => {}
+                        Err(e) => {
+                            return reply.error(e).await;
+                        }
+                    }
+                }
+                reply.ok().await
             }
+            Err(e) => reply.error(e).await,
         }
     }
 
     /// Remove a directory.
+    #[instrument(skip(self), err, ret)]
     async fn rmdir(
         &self,
         req: &Request<'_>,
@@ -468,10 +456,6 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         reply: ReplyEmpty,
     ) -> nix::Result<usize> {
         let _timer = FILESYSTEM_METRICS.start_storage_operation_timer("rmdir");
-        debug!(
-            "rmdir(parent={}, name={:?}, req={:?})",
-            parent, dir_name, req,
-        );
         // check the dir_name is valid
         if let Err(e) = check_name_length(dir_name) {
             return reply.error(e).await;
@@ -490,15 +474,10 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
             "rmdir() failed to remove sub-directory name={dir_name:?} under parent ino={parent}",
         ));
         match rmdir_res {
-            Ok(()) => reply.ok().await,
-            Err(e) => {
-                debug!(
-                    "rmdir() failed to remove sub-directory name={:?} under parent ino={}, \
-                            the error is: {:?}",
-                    dir_name, parent, e,
-                );
-                reply.error(e).await
-            }
+            // We don't store dir information in the persistent storage, so we don't need to remove
+            // it
+            Ok(_) => reply.ok().await,
+            Err(e) => reply.error(e).await,
         }
     }
 
@@ -547,37 +526,41 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
     async fn read(
         &self,
         req: &Request<'_>,
-        fh: u64,
+        _fh: u64,
         offset: i64,
         size: u32,
         reply: ReplyData,
     ) -> nix::Result<usize> {
         let _timer = FILESYSTEM_METRICS.start_storage_operation_timer("read");
         let ino = req.nodeid();
-        debug_assert!(!offset.is_negative(), "offset={offset} cannot be negative");
-        let file_data = match self.metadata.read_helper(ino, fh, offset, size).await {
-            Ok(file_data) => file_data,
+        let offset: u64 = offset.cast();
+
+        let (file_size, mtime) = match self.metadata.read_helper(ino).await {
+            Ok((file_size, mtime)) => (file_size, mtime),
             Err(e) => {
                 return reply.error(e).await;
             }
         };
-        // Check the read data
-        match Self::read_helper(file_data, size.cast()) {
-            Ok(content) => {
-                debug!(
-                    "read() successfully read {} bytes from the file of ino={}",
-                    content.iter().map(AsIoVec::len).sum::<usize>(),
-                    ino,
-                );
-                reply.data(content).await
-            }
-            Err(e) => {
-                debug!(
-                    "read() failed to read from the file of ino={}, the error is: {:?}",
-                    ino, e,
-                );
-                reply.error(e).await
-            }
+
+        if offset >= file_size {
+            return reply.data(Vec::<Block>::new()).await;
+        }
+
+        // Ensure `offset + size` is le than the size of the file
+        let read_size: u64 = if offset.overflow_add(size.cast::<u64>()) > file_size {
+            file_size.overflow_sub(offset.cast::<u64>())
+        } else {
+            size.cast()
+        };
+
+        let result = self
+            .storage
+            .load(ino, offset.cast(), read_size.cast(), mtime)
+            .await;
+        // Check the load result
+        match result {
+            Ok(content) => reply.data(content).await,
+            Err(e) => reply.error(e).await,
         }
     }
 
@@ -588,49 +571,39 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
     /// call will reflect the return value of self operation. fh will
     /// contain the value set by the open method, or will be undefined if
     /// the open method did not set any value.
+    #[instrument(skip(self, data), err, ret)]
     async fn write(
         &self,
         req: &Request<'_>,
-        fh: u64,
+        _fh: u64,
         offset: i64,
         data: Vec<u8>,
-        flags: u32,
+        _flags: u32,
         reply: ReplyWrite,
     ) -> nix::Result<usize> {
         let _timer = FILESYSTEM_METRICS.start_storage_operation_timer("write");
         let ino = req.nodeid();
-        debug!(
-            "write(ino={}, fh={}, offset={}, data-size={}, flags={})",
-            // "write(ino={}, fh={}, offset={}, data-size={}, req={:?})",
-            ino,
-            fh,
-            offset,
-            data.len(),
-            flags,
-            // req.request,
-        );
-        let data_len = data.len();
-        let write_result = self
-            .metadata
-            .write_helper(ino, fh, offset, data, flags)
+        let data_len: u64 = data.len().cast();
+
+        let (old_size, old_mtime) = self.metadata.mtime_and_size(ino);
+        let new_mtime = self
+            .storage
+            .store(ino, offset.cast(), &data, old_mtime)
             .await;
-        match write_result {
-            Ok(written_size) => {
-                debug!(
-                    "write() successfully wrote {} byte data to \
-                        the file of ino={} at offset={}",
-                    data_len, ino, offset,
-                );
-                reply.written(written_size.cast()).await
-            }
+
+        let new_mtime = match new_mtime {
+            Ok(new_mtime) => new_mtime,
             Err(e) => {
-                debug!(
-                    "write() failed to write to the file of ino={} at offset={}, \
-                        the error is: {:?}",
-                    ino, offset, e,
-                );
-                reply.error(e).await
+                return reply.error(e).await;
             }
+        };
+
+        let new_size = old_size.max(offset.cast::<u64>().overflow_add(data_len));
+
+        let write_result = self.metadata.write_helper(ino, new_mtime, new_size).await;
+        match write_result {
+            Ok(()) => reply.written(data_len.cast()).await,
+            Err(e) => reply.error(e).await,
         }
     }
 
@@ -646,6 +619,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
     /// flush data, is if the filesystem wants to return write errors. If
     /// the filesystem supports file locking operations (setlk, getlk) it
     /// should remove all locks belonging to `lock_owner`.
+    #[instrument(skip(self), err, ret)]
     async fn flush(
         &self,
         req: &Request<'_>,
@@ -664,11 +638,10 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         // called multiple times for an open file, self must not really
         // close the file. This is important if used on a network
         // filesystem like NFS which flush the data/metadata on close()
-        self.metadata
-            .flush(ino, fh)
-            .await
-            .unwrap_or_else(|e| panic!("{e}"));
-        reply.ok().await
+        match self.storage.flush(ino).await {
+            Ok(()) => reply.ok().await,
+            Err(e) => reply.error(e).await,
+        }
     }
 
     /// Release an open file.
@@ -680,6 +653,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
     /// contain the value set by the open method, or will be undefined
     /// if the open method didn't set any value. flags will contain the same
     /// flags as for open.
+    #[instrument(skip(self), err, ret)]
     async fn release(
         &self,
         req: &Request<'_>,
@@ -691,10 +665,14 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
     ) -> nix::Result<usize> {
         let _timer = FILESYSTEM_METRICS.start_storage_operation_timer("release");
         let ino = req.nodeid();
-        debug!(
-            "release(ino={}, fh={}, flags={}, lock_owner={}, flush={}, req={:?})",
-            ino, fh, flags, lock_owner, flush, req,
-        );
+        if flush {
+            match self.storage.flush(ino).await {
+                Ok(()) => {}
+                Err(e) => {
+                    return reply.error(e).await;
+                }
+            }
+        }
         self.metadata
             .release(ino, fh, flags, lock_owner, flush)
             .await
@@ -705,26 +683,19 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
     /// Synchronize file contents.
     /// If the datasync parameter is non-zero, then only the user data should be
     /// flushed, not the meta data.
+    #[instrument(skip(self), err, ret)]
     async fn fsync(
         &self,
         req: &Request<'_>,
-        fh: u64,
-        datasync: bool,
+        _fh: u64,
+        _datasync: bool,
         reply: ReplyEmpty,
     ) -> nix::Result<usize> {
         let _timer = FILESYSTEM_METRICS.start_storage_operation_timer("fsync");
         let ino = req.nodeid();
-
-        debug!(
-            "fsync(ino={}, fh={}, datasync={}, req={:?})",
-            ino, fh, datasync, req,
-        );
-        match self.metadata.fsync_helper(ino, fh, datasync).await {
+        match self.storage.flush(ino).await {
             Ok(()) => reply.ok().await,
-            Err(e) => {
-                debug!("fsync() failed, the error is: {:?}", e);
-                reply.error(e).await
-            }
+            Err(e) => reply.error(e).await,
         }
     }
 
@@ -831,27 +802,19 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
     /// should be flushed, not the meta data. fh will contain the value set
     /// by the opendir method, or will be undefined if the opendir method
     /// didn't set any value.
+    #[instrument(skip(self), err, ret)]
     async fn fsyncdir(
         &self,
         req: &Request<'_>,
-        fh: u64,
-        datasync: bool,
+        _fh: u64,
+        _datasync: bool,
         reply: ReplyEmpty,
     ) -> nix::Result<usize> {
         let _timer = FILESYSTEM_METRICS.start_storage_operation_timer("fsyncdir");
-        let ino = req.nodeid();
-        debug!(
-            "fsyncdir(ino={}, fh={}, datasync={}, req={:?})",
-            ino, fh, datasync, req,
-        );
-        // Self::fsync_helper(ino, fh, datasync, reply).await
-        match self.metadata.fsync_helper(ino, fh, datasync).await {
-            Ok(()) => reply.ok().await,
-            Err(e) => {
-                debug!("fsyncdir() failed, the error is: {:?}", e);
-                reply.error(e).await
-            }
-        }
+
+        // Similarity to rmdir, we don't store dir information in the persistent storage,
+        // so we don't need to flush it
+        reply.ok().await
     }
 
     /// Get file system statistics.

@@ -56,6 +56,8 @@ pub async fn start_async_fuse(
         StorageManager::new(memory_cache, block_size)
     };
 
+    let storage = Arc::new(storage);
+
     let fs: memfs::MemFs<memfs::S3MetaData> = memfs::MemFs::new(
         &args.mount_dir,
         global_cache_capacity,
