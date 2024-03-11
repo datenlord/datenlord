@@ -80,6 +80,7 @@ async fn run_fs(mount_point: &Path, is_s3: bool, token: CancellationToken) -> an
         StorageManager::new(memory_cache, block_size)
     };
 
+    let storage = Arc::new(storage);
     let fs: memfs::MemFs<memfs::S3MetaData> = memfs::MemFs::new(
         mount_point
             .as_os_str()

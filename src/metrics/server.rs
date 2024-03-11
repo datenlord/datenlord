@@ -5,8 +5,7 @@ use hyper::service::{make_service_fn, service_fn};
 use hyper::{Body, Request, Response, Server};
 use prometheus::{Encoder, TextEncoder};
 use tokio_util::sync::CancellationToken;
-use tracing::debug;
-use tracing::info;
+use tracing::{debug, info};
 
 use super::DATENLORD_REGISTRY;
 

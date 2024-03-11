@@ -85,9 +85,8 @@ use clap::Parser;
 use csi::meta_data::MetaData;
 use csi::scheduler_extender::SchedulerExtender;
 use datenlord::common::task_manager::{self, TaskName, TASK_MANAGER};
-use datenlord::config;
 use datenlord::config::{InnerConfig, NodeRole, StorageConfig};
-use datenlord::metrics;
+use datenlord::{config, metrics};
 
 use crate::common::error::DatenLordResult;
 use crate::common::etcd_delegate::EtcdDelegate;
