@@ -60,10 +60,41 @@ const PAGE_SIZE: usize = 4096;
 /// otherwise deadlock
 const MAX_BACKGROUND: u16 = 10; // TODO: set to larger value when release
 
-/// Static variable to indicate whether FUSE is initialized or not
-// static FUSE_INITIALIZED: AtomicBool = AtomicBool::new(false);
-/// Static variable to indicate whether FUSE is destroyed or not
-// static FUSE_DESTROYED: AtomicBool = AtomicBool::new(false);
+#[allow(missing_docs)] // Raised by `ioctl_read!`
+mod _fuse_fd_clone {
+    use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd, RawFd};
+
+    use clippy_utilities::Cast;
+    use nix::{
+        fcntl::{self, FcntlArg, FdFlag, OFlag},
+        ioctl_read,
+        sys::stat::Mode,
+    };
+    ioctl_read!(fuse_fd_clone_impl, 229, 0, u32);
+
+    /// Clones a FUSE session fd into a FUSE worker fd.
+    ///
+    /// # Safety
+    /// Behavior is undefined if any of the following conditions are violated:
+    ///
+    /// - `session_fd` must be a valid file descriptor to an open FUSE device.
+    pub unsafe fn fuse_fd_clone(session_fd: RawFd) -> nix::Result<RawFd> {
+        let devname = "/dev/fuse";
+        let cloned_fd = fcntl::open(devname, OFlag::O_RDWR | OFlag::O_CLOEXEC, Mode::empty())?;
+        // use `OwnedFd` here is just to release the fd when error occurs
+        // SAFETY: the `cloned_fd` is just opened
+        let cloned_fd = OwnedFd::from_raw_fd(cloned_fd); 
+
+        fcntl::fcntl(cloned_fd.as_raw_fd(), FcntlArg::F_SETFD(FdFlag::FD_CLOEXEC))?;
+
+        let mut result_fd: u32 = session_fd.cast();
+        // SAFETY: `cloned_fd` is ensured to be valid, and `&mut result_fd` is a valid pointer to a value on stack
+        fuse_fd_clone_impl(cloned_fd.as_raw_fd(), &mut result_fd)?;
+        Ok(cloned_fd.into_raw_fd()) // use `into_raw_fd` to transfer the ownership of the fd
+    }
+}
+
+use _fuse_fd_clone::fuse_fd_clone;
 
 /// FUSE session
 #[allow(missing_debug_implementations)]
@@ -167,7 +198,6 @@ impl<F: FileSystem + Send + Sync + 'static> Session<F> {
             Ok(read_size) => {
                 debug!("read successfully {} byte data from FUSE device", read_size);
 
-                // let chan = Channel::new(self).await?;
                 let fuse_fd = self.dev_fd();
                 let fs = Arc::clone(&self.filesystem);
                 let proto_version = self.proto_version.load();
