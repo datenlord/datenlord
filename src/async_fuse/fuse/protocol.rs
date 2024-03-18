@@ -221,7 +221,6 @@ pub mod setattr_flags {
 use std::mem;
 
 use clippy_utilities::{Cast, OverflowArithmetic};
-use nix::request_code_read;
 pub use setattr_flags::*;
 
 /// Flags returned by the OPEN request
@@ -1437,19 +1436,6 @@ pub struct FuseNotifyRetrieveIn {
     pub dummy4: u64,
 }
 
-/// A device ioctl command.
-///
-/// It's defined as below in `fuse.h`:
-///
-/// ```c
-/// #define FUSE_DEV_IOC_CLONE    _IOR(229, 0, uint32_t)
-/// ```
-///
-/// <https://github.com/torvalds/linux/blob/00c570f4ba43ae73b41fa0a2269c3b0ac20386ef/include/uapi/linux/fuse.h#L759>
-///
-/// This constant is unused now, but reserved for the future.
-#[allow(dead_code)]
-const FUSE_DEV_IOC_CLONE: u64 = request_code_read!(229, 0, mem::size_of::<u32>());
 /// FUSE lseek request input `fuse_lseek_in`
 // #[cfg(feature = "abi-7-24")]
 #[derive(Debug)]
