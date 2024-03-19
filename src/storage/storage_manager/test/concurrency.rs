@@ -7,7 +7,7 @@ use std::time::{Duration, SystemTime};
 use clippy_utilities::OverflowArithmetic;
 use crossbeam_utils::atomic::AtomicCell;
 
-use crate::async_fuse::fuse::fuse_reply::AsIoVec;
+use crate::async_fuse::fuse::fuse_reply::AsIoSlice;
 use crate::storage::policy::LruPolicy;
 use crate::storage::{
     Block, BlockCoordinate, MemoryCacheBuilder, MemoryStorage, Storage, StorageManager,

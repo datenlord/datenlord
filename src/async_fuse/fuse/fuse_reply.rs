@@ -1,10 +1,15 @@
 //! The implementation of FUSE response
 
+// We allow unused async here for supporting other asynchronous fuse IO in the future
+#![allow(clippy::unused_async)]
+
 use std::convert::AsRef;
 #[cfg(feature = "abi-7-18")]
 use std::ffi::CString;
 use std::ffi::OsStr;
 use std::fmt::Debug;
+use std::fs::File;
+use std::io::{IoSlice, Write};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::io::RawFd;
 use std::time::Duration;
@@ -13,7 +18,6 @@ use std::{mem, slice};
 use clippy_utilities::{Cast, OverflowArithmetic};
 use nix::errno::Errno;
 use nix::sys::stat::SFlag;
-use nix::sys::uio::{self, IoVec};
 use tracing::debug;
 
 use super::abi_marker;
@@ -24,24 +28,24 @@ use super::protocol::{
 #[cfg(feature = "abi-7-18")]
 use super::protocol::{FuseNotifyCode::FUSE_NOTIFY_DELETE, FuseNotifyDeleteOut};
 
-/// This trait describes a type that can be converted to Vec<`IoVec`<&[u8]>>
-pub trait AsIoVecList {
-    /// Convert the type to a Vec of `IoVec`
-    fn as_io_vec_list(&self) -> Vec<IoVec<&[u8]>>;
-    /// The sum of the length of all the `IoVec`s in the Vec
+/// This trait describes a type that can be converted to `Vec<IoSlice>`
+pub trait AsIoSliceList {
+    /// Convert the type to a Vec of `IoSlice`
+    fn as_io_slice_list(&self) -> Vec<IoSlice>;
+    /// The sum of the length of all the `IoSlice`s in the Vec
     fn len(&self) -> usize;
-    /// Vec of `IoVec` is empty
+    /// Vec of `IoSlice` is empty
     fn is_empty(&self) -> bool;
 }
 
-/// Any type implement the `AsIoVec` trait, its Vec can be automatically for
-/// Vec<`IoVec`<&[u8]>>.
-impl<T> AsIoVecList for Vec<T>
+/// Any type implement the `AsIoSlice` trait, its Vec can be automatically for
+/// `Vec<IoSlice>`.
+impl<T> AsIoSliceList for Vec<T>
 where
-    T: AsIoVec,
+    T: AsIoSlice,
 {
-    fn as_io_vec_list(&self) -> Vec<IoVec<&[u8]>> {
-        self.iter().map(T::as_io_vec).collect()
+    fn as_io_slice_list(&self) -> Vec<IoSlice> {
+        self.iter().map(T::as_io_slice).collect()
     }
 
     fn len(&self) -> usize {
@@ -53,16 +57,16 @@ where
     }
 }
 
-/// All the Type implement `CouldBeAsIoVecList` and `AsIoVec` can automatically
-/// implement `AsIoVecList`
-pub trait CouldBeAsIoVecList {}
+/// All the Type implement `CouldBeAsIoSliceList` and `AsIoSlice` can
+/// automatically implement `AsIoSliceList`
+pub trait CouldBeAsIoSliceList {}
 
-impl<T> AsIoVecList for T
+impl<T> AsIoSliceList for T
 where
-    T: AsIoVec + CouldBeAsIoVecList,
+    T: AsIoSlice + CouldBeAsIoSliceList,
 {
-    fn as_io_vec_list(&self) -> Vec<IoVec<&[u8]>> {
-        vec![self.as_io_vec()]
+    fn as_io_slice_list(&self) -> Vec<IoSlice> {
+        vec![self.as_io_slice()]
     }
 
     fn len(&self) -> usize {
@@ -74,10 +78,10 @@ where
     }
 }
 
-/// Implement `AsIoVecList` for Vec<u8> Separately
-impl AsIoVecList for Vec<u8> {
-    fn as_io_vec_list(&self) -> Vec<IoVec<&[u8]>> {
-        vec![self.as_io_vec()]
+/// Implement `AsIoSliceList` for Vec<u8> Separately
+impl AsIoSliceList for Vec<u8> {
+    fn as_io_slice_list(&self) -> Vec<IoSlice> {
+        vec![self.as_io_slice()]
     }
 
     fn len(&self) -> usize {
@@ -89,9 +93,9 @@ impl AsIoVecList for Vec<u8> {
     }
 }
 
-/// Implement `AsIoVecList` for empty tuple
-impl AsIoVecList for () {
-    fn as_io_vec_list(&self) -> Vec<IoVec<&[u8]>> {
+/// Implement `AsIoSliceList` for empty tuple
+impl AsIoSliceList for () {
+    fn as_io_slice_list(&self) -> Vec<IoSlice> {
         vec![]
     }
 
@@ -104,17 +108,17 @@ impl AsIoVecList for () {
     }
 }
 
-impl<U, V> AsIoVecList for (U, V)
+impl<U, V> AsIoSliceList for (U, V)
 where
-    U: AsIoVec,
-    V: AsIoVec,
+    U: AsIoSlice,
+    V: AsIoSlice,
 {
-    fn as_io_vec_list(&self) -> Vec<IoVec<&[u8]>> {
-        vec![self.0.as_io_vec(), self.1.as_io_vec()]
+    fn as_io_slice_list(&self) -> Vec<IoSlice> {
+        vec![self.0.as_io_slice(), self.1.as_io_slice()]
     }
 
     fn len(&self) -> usize {
-        AsIoVec::len(&self.0).overflow_add(AsIoVec::len(&self.1))
+        AsIoSlice::len(&self.0).overflow_add(AsIoSlice::len(&self.1))
     }
 
     fn is_empty(&self) -> bool {
@@ -122,22 +126,22 @@ where
     }
 }
 
-/// The trait indicates the ability to be converted to `IoVec`
-pub trait AsIoVec {
-    /// Convert the type to `IoVec`<&[u8]>
-    fn as_io_vec(&self) -> IoVec<&[u8]>;
+/// The trait indicates the ability to be converted to `IoSlice`
+pub trait AsIoSlice {
+    /// Convert the type to `IoSlice`
+    fn as_io_slice(&self) -> IoSlice;
     /// Tell if the type is ready to be converted, please call it before calling
-    /// `as_io_vec`
+    /// `as_io_slice`
     fn can_convert(&self) -> bool;
-    /// The length of the `IoVec`
+    /// The length of the `IoSlice`
     fn len(&self) -> usize;
-    /// `IoVec` is empty
+    /// `IoSlice` is empty
     fn is_empty(&self) -> bool;
 }
 
-impl AsIoVec for Vec<u8> {
-    fn as_io_vec(&self) -> IoVec<&[u8]> {
-        IoVec::from_slice(self.as_slice())
+impl AsIoSlice for Vec<u8> {
+    fn as_io_slice(&self) -> IoSlice {
+        IoSlice::new(self.as_slice())
     }
 
     fn can_convert(&self) -> bool {
@@ -155,61 +159,58 @@ impl AsIoVec for Vec<u8> {
 
 /// FUSE raw response
 #[derive(Debug)]
-struct ReplyRaw {
+struct ReplyRaw<'a> {
     /// The FUSE request unique ID
     unique: u64,
     /// The FUSE device fd
-    fd: RawFd,
+    file: &'a mut File,
 }
 
-impl ReplyRaw {
+impl<'a> ReplyRaw<'a> {
     /// Create `ReplyRaw`
-    const fn new(unique: u64, fd: RawFd) -> Self {
-        Self { unique, fd }
+    fn new(unique: u64, file: &'a mut File) -> Self {
+        Self { unique, file }
     }
 
     /// Send raw message to FUSE kernel
-    async fn send_raw_message(
+    #[allow(clippy::needless_pass_by_value)]
+    fn send_raw_message(
         self,
         error: i32,
-        data: impl AsIoVecList + Send + Sync + 'static,
+        data: impl AsIoSliceList + Send + Sync + 'static,
     ) -> nix::Result<usize> {
-        let fd = self.fd;
-        let wsize = tokio::task::spawn_blocking(move || {
-            let header_len = mem::size_of::<FuseOutHeader>();
+        let header_len = mem::size_of::<FuseOutHeader>();
 
-            let header = FuseOutHeader {
-                len: (header_len.overflow_add(data.len())).cast(),
-                error,
-                unique: self.unique,
-            };
+        let header = FuseOutHeader {
+            len: (header_len.overflow_add(data.len())).cast(),
+            error,
+            unique: self.unique,
+        };
 
-            let header_bytes = abi_marker::as_abi_bytes(&header);
+        let header_bytes = abi_marker::as_abi_bytes(&header);
 
-            let (single, mut vecs);
-            let iovecs: &[IoVec<&[u8]>] = if data.len() > 0 {
-                vecs = data.as_io_vec_list();
-                vecs.insert(0, IoVec::from_slice(header_bytes));
-                vecs.as_slice()
-            } else {
-                single = [IoVec::from_slice(header_bytes)];
-                &single
-            };
+        let (single, mut vecs);
+        let io_slices: &[IoSlice] = if data.len() > 0 {
+            vecs = data.as_io_slice_list();
+            vecs.insert(0, IoSlice::new(header_bytes));
+            vecs.as_slice()
+        } else {
+            single = [IoSlice::new(header_bytes)];
+            &single
+        };
 
-            uio::writev(fd, iovecs)
-        })
-        .await
-        .unwrap_or_else(|e| {
-            panic!("failed to send bytes to fuse device for error {e}");
-        })?;
+        let wsize = self
+            .file
+            .write_vectored(io_slices)
+            .map_err(|e| Errno::try_from(e).unwrap_or(Errno::EIO))?;
 
         debug!("sent {} bytes to fuse device successfully", wsize);
         Ok(wsize)
     }
 
     /// Send response to FUSE kernel
-    async fn send(self, data: impl AsIoVecList + Send + Sync + 'static) -> nix::Result<usize> {
-        self.send_raw_message(0_i32, data).await
+    async fn send(self, data: impl AsIoSliceList + Send + Sync + 'static) -> nix::Result<usize> {
+        self.send_raw_message(0_i32, data)
     }
 
     /// Send error code response to FUSE kernel
@@ -219,7 +220,6 @@ impl ReplyRaw {
             crate::async_fuse::util::convert_nix_errno_to_cint(error_code).overflow_neg(),
             (),
         )
-        .await
     }
 
     #[allow(clippy::wildcard_enum_match_arm)]
@@ -257,13 +257,13 @@ impl ReplyRaw {
 
 /// Impl fuse reply new
 macro_rules! impl_fuse_reply_new_for{
-    {$($t:ty,)+} => {
-        $(impl $t {
+    {$($t:tt,)+} => {
+        $(impl<'a> $t<'a> {
             /// New fuse reply
             #[must_use]
-            pub const fn new(unique: u64, fd: RawFd) -> Self {
+            pub fn new(unique: u64, file: &'a mut File) -> Self {
                 Self {
-                    reply: ReplyRaw::new(unique, fd),
+                    reply: ReplyRaw::new(unique, file),
                 }
             }
         })+
@@ -289,8 +289,8 @@ use crate::common::error::DatenLordError;
 
 /// Impl fuse reply error
 macro_rules! impl_fuse_reply_error_for{
-    {$($t:ty,)+} => {
-        $(impl $t {
+    {$($t:tt,)+} => {
+        $(impl $t<'_> {
             #[allow(dead_code)]
             /// fuse reply error
             pub async fn error(self, err: DatenLordError) -> nix::Result<usize> {
@@ -322,13 +322,13 @@ impl_fuse_reply_error_for! {
     ReplyXAttr,
 }
 
-/// Impl `AsIoVec` trait
-macro_rules! impl_as_iovec_for {
+/// Impl `AsIoSlice` trait
+macro_rules! impl_as_ioslice_for {
     {$($t:ty,)+} => {
-        $(impl AsIoVec for $t {
+        $(impl AsIoSlice for $t {
             #[allow(dead_code)]
-            fn as_io_vec(&self) -> IoVec<&[u8]> {
-                IoVec::from_slice(abi_marker::as_abi_bytes(self))
+            fn as_io_slice(&self) -> IoSlice {
+                IoSlice::new(abi_marker::as_abi_bytes(self))
             }
 
             #[allow(dead_code)]
@@ -343,16 +343,16 @@ macro_rules! impl_as_iovec_for {
 
             #[allow(dead_code)]
             fn is_empty(&self) -> bool {
-                AsIoVec::len(self) == 0
+                AsIoSlice::len(self) == 0
             }
         }
 
-        impl CouldBeAsIoVecList for $t {}
+        impl CouldBeAsIoSliceList for $t {}
         )+
     }
 }
 
-impl_as_iovec_for! {
+impl_as_ioslice_for! {
     FuseAttrOut,
     FuseBMapOut,
     FuseEntryOut,
@@ -364,18 +364,18 @@ impl_as_iovec_for! {
     FuseGetXAttrOut,
 }
 #[cfg(feature = "abi-7-18")]
-impl_as_iovec_for! {
+impl_as_ioslice_for! {
     FuseNotifyDeleteOut,
 }
 
 /// FUSE init response
 #[derive(Debug)]
-pub struct ReplyInit {
+pub struct ReplyInit<'a> {
     /// The inner raw reply
-    reply: ReplyRaw,
+    reply: ReplyRaw<'a>,
 }
 
-impl ReplyInit {
+impl ReplyInit<'_> {
     /// Reply init response
     pub async fn init(self, resp: FuseInitOut) -> nix::Result<usize> {
         self.reply.send(resp).await
@@ -384,12 +384,12 @@ impl ReplyInit {
 
 /// FUSE empty response
 #[derive(Debug)]
-pub struct ReplyEmpty {
+pub struct ReplyEmpty<'a> {
     /// The inner raw reply
-    reply: ReplyRaw,
+    reply: ReplyRaw<'a>,
 }
 
-impl ReplyEmpty {
+impl ReplyEmpty<'_> {
     /// Reply with empty OK response
     pub async fn ok(self) -> nix::Result<usize> {
         self.reply.send(()).await
@@ -398,26 +398,29 @@ impl ReplyEmpty {
 
 /// FUSE data response
 #[derive(Debug)]
-pub struct ReplyData {
+pub struct ReplyData<'a> {
     /// The inner raw reply
-    reply: ReplyRaw,
+    reply: ReplyRaw<'a>,
 }
 
-impl ReplyData {
+impl ReplyData<'_> {
     /// Reply with byte data response
-    pub async fn data(self, bytes: impl AsIoVecList + Send + Sync + 'static) -> nix::Result<usize> {
+    pub async fn data(
+        self,
+        bytes: impl AsIoSliceList + Send + Sync + 'static,
+    ) -> nix::Result<usize> {
         self.reply.send(bytes).await
     }
 }
 
 /// FUSE entry response
 #[derive(Debug)]
-pub struct ReplyEntry {
+pub struct ReplyEntry<'a> {
     /// The inner raw reply
-    reply: ReplyRaw,
+    reply: ReplyRaw<'a>,
 }
 
-impl ReplyEntry {
+impl ReplyEntry<'_> {
     /// Reply to a request with the given entry
     pub async fn entry(self, ttl: Duration, attr: FuseAttr, generation: u64) -> nix::Result<usize> {
         self.reply
@@ -436,12 +439,12 @@ impl ReplyEntry {
 
 /// FUSE attribute response
 #[derive(Debug)]
-pub struct ReplyAttr {
+pub struct ReplyAttr<'a> {
     /// The inner raw reply
-    reply: ReplyRaw,
+    reply: ReplyRaw<'a>,
 }
 
-impl ReplyAttr {
+impl ReplyAttr<'_> {
     /// Reply to a request with the given attribute
     pub async fn attr(self, ttl: Duration, attr: FuseAttr) -> nix::Result<usize> {
         self.reply
@@ -457,12 +460,12 @@ impl ReplyAttr {
 
 /// FUSE open response
 #[derive(Debug)]
-pub struct ReplyOpen {
+pub struct ReplyOpen<'a> {
     /// The inner raw reply
-    reply: ReplyRaw,
+    reply: ReplyRaw<'a>,
 }
 
-impl ReplyOpen {
+impl ReplyOpen<'_> {
     /// Reply to a request with the given open result
     pub async fn opened(self, fh: RawFd, flags: u32) -> nix::Result<usize> {
         self.reply
@@ -477,12 +480,12 @@ impl ReplyOpen {
 
 /// FUSE write response
 #[derive(Debug)]
-pub struct ReplyWrite {
+pub struct ReplyWrite<'a> {
     /// The inner raw reply
-    reply: ReplyRaw,
+    reply: ReplyRaw<'a>,
 }
 
-impl ReplyWrite {
+impl ReplyWrite<'_> {
     /// Reply to a request with the given open result
     pub async fn written(self, size: u32) -> nix::Result<usize> {
         self.reply.send(FuseWriteOut { size, padding: 0 }).await
@@ -491,9 +494,9 @@ impl ReplyWrite {
 
 /// FUSE statfs response
 #[derive(Debug)]
-pub struct ReplyStatFs {
+pub struct ReplyStatFs<'a> {
     /// The inner raw reply
-    reply: ReplyRaw,
+    reply: ReplyRaw<'a>,
 }
 
 /// POSIX statvfs parameters
@@ -517,7 +520,7 @@ pub struct StatFsParam {
     pub frsize: u32,
 }
 
-impl ReplyStatFs {
+impl ReplyStatFs<'_> {
     /// Reply statfs response
     #[allow(dead_code)]
     pub async fn statfs(self, param: StatFsParam) -> nix::Result<usize> {
@@ -542,12 +545,12 @@ impl ReplyStatFs {
 
 /// FUSE create response
 #[derive(Debug)]
-pub struct ReplyCreate {
+pub struct ReplyCreate<'a> {
     /// The inner raw reply
-    reply: ReplyRaw,
+    reply: ReplyRaw<'a>,
 }
 
-impl ReplyCreate {
+impl ReplyCreate<'_> {
     /// Reply to a request with the given entry
     #[allow(dead_code)]
     pub async fn created(
@@ -581,12 +584,12 @@ impl ReplyCreate {
 
 /// FUSE lock response
 #[derive(Debug)]
-pub struct ReplyLock {
+pub struct ReplyLock<'a> {
     /// The inner raw reply
-    reply: ReplyRaw,
+    reply: ReplyRaw<'a>,
 }
 
-impl ReplyLock {
+impl ReplyLock<'_> {
     /// Reply to a request with the given open result
     #[allow(dead_code)]
     pub async fn locked(self, start: u64, end: u64, typ: u32, pid: u32) -> nix::Result<usize> {
@@ -605,12 +608,12 @@ impl ReplyLock {
 
 /// FUSE bmap response
 #[derive(Debug)]
-pub struct ReplyBMap {
+pub struct ReplyBMap<'a> {
     /// The inner raw reply
-    reply: ReplyRaw,
+    reply: ReplyRaw<'a>,
 }
 
-impl ReplyBMap {
+impl ReplyBMap<'_> {
     /// Reply to a request with the given open result
     #[allow(dead_code)]
     pub async fn bmap(self, block: u64) -> nix::Result<usize> {
@@ -620,19 +623,19 @@ impl ReplyBMap {
 
 /// FUSE directory response
 #[derive(Debug)]
-pub struct ReplyDirectory {
+pub struct ReplyDirectory<'a> {
     /// The inner raw reply
-    reply: ReplyRaw,
+    reply: ReplyRaw<'a>,
     /// The directory data in bytes
     data: Vec<u8>,
 }
 
-impl ReplyDirectory {
+impl<'a> ReplyDirectory<'a> {
     /// Creates a new `ReplyDirectory` with a specified buffer size.
     #[must_use]
-    pub fn new(unique: u64, fd: RawFd, size: usize) -> Self {
+    pub fn new(unique: u64, file: &'a mut File, size: usize) -> Self {
         Self {
-            reply: ReplyRaw::new(unique, fd),
+            reply: ReplyRaw::new(unique, file),
             data: Vec::with_capacity(size),
         }
     }
@@ -705,12 +708,12 @@ unsafe fn fuse_dir_ent_in_raw(from: &FuseDirEnt) -> &[u8] {
 
 /// FUSE extended attribute response
 #[derive(Debug)]
-pub struct ReplyXAttr {
+pub struct ReplyXAttr<'a> {
     /// The inner raw reply
-    reply: ReplyRaw,
+    reply: ReplyRaw<'a>,
 }
 
-impl ReplyXAttr {
+impl ReplyXAttr<'_> {
     /// Reply to a request with the size of the xattr.
     #[allow(dead_code)]
     pub async fn size(self, size: u32) -> nix::Result<usize> {
@@ -725,9 +728,9 @@ impl ReplyXAttr {
 }
 
 #[cfg(feature = "abi-7-18")]
-impl AsIoVec for CString {
-    fn as_io_vec(&self) -> IoVec<&[u8]> {
-        IoVec::from_slice(self.as_bytes_with_nul())
+impl AsIoSlice for CString {
+    fn as_io_slice(&self) -> IoSlice {
+        IoSlice::new(self.as_bytes_with_nul())
     }
 
     fn can_convert(&self) -> bool {
@@ -746,18 +749,18 @@ impl AsIoVec for CString {
 /// Fuse delete notification
 #[cfg(feature = "abi-7-18")]
 #[derive(Debug)]
-pub struct FuseDeleteNotification {
+pub struct FuseDeleteNotification<'a> {
     /// The inner raw reply
-    reply: ReplyRaw,
+    reply: ReplyRaw<'a>,
 }
 
 #[cfg(feature = "abi-7-18")]
-impl FuseDeleteNotification {
+impl<'a> FuseDeleteNotification<'a> {
     /// Create `FuseDeleteNotification`
     #[must_use]
-    pub const fn new(fd: RawFd) -> Self {
+    pub fn new(file: &'a mut File) -> Self {
         Self {
-            reply: ReplyRaw::new(0, fd),
+            reply: ReplyRaw::new(0, file),
         }
     }
 
@@ -774,12 +777,12 @@ impl FuseDeleteNotification {
         #[allow(clippy::as_conversions)] // allow this for enum
         self.reply
             .send_raw_message(FUSE_NOTIFY_DELETE as i32, (notify_delete, file_name))
-            .await
     }
 }
 
 #[cfg(test)]
 mod test {
+    use std::fs::File;
     use std::os::unix::io::FromRawFd;
     use std::time::Duration;
 
@@ -866,7 +869,9 @@ mod test {
         };
 
         let unique = 12345;
-        let reply_attr = ReplyAttr::new(unique, fd);
+        // SAFETY: `fd` is just opened
+        let mut file = unsafe { File::from_raw_fd(fd) };
+        let reply_attr = ReplyAttr::new(unique, &mut file);
         reply_attr.attr(Duration::from_secs(1), attr).await?;
 
         let mut file =

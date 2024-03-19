@@ -1,8 +1,12 @@
 //! The implementation of FUSE session
 
+use std::fs::File;
+use std::io::Read;
+use std::os::fd::FromRawFd;
 use std::os::unix::io::RawFd;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::thread;
 use std::time::{Duration, UNIX_EPOCH};
 
 use aligned_utils::bytes::AlignedBytes;
@@ -14,6 +18,7 @@ use datenlord::common::task_manager::{GcHandle, TaskName, TASK_MANAGER};
 use nix::errno::Errno;
 use nix::sys::stat::SFlag;
 use nix::unistd;
+use tokio::runtime::Handle;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, instrument};
 
@@ -59,17 +64,19 @@ const PAGE_SIZE: usize = 4096;
 /// Max background pending requests under processing, at least to be 4,
 /// otherwise deadlock
 const MAX_BACKGROUND: u16 = 10; // TODO: set to larger value when release
+/// The max number of FUSE device reader threads.
+const MAX_FUSE_READER: usize = 2; // TODO: make it custom
 
+/// The implementation of fuse fd clone.
+/// This module is just for avoiding the `missing_docs` of `ioctl_read` macro.
 #[allow(missing_docs)] // Raised by `ioctl_read!`
 mod _fuse_fd_clone {
     use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd, RawFd};
 
     use clippy_utilities::Cast;
-    use nix::{
-        fcntl::{self, FcntlArg, FdFlag, OFlag},
-        ioctl_read,
-        sys::stat::Mode,
-    };
+    use nix::fcntl::{self, FcntlArg, FdFlag, OFlag};
+    use nix::ioctl_read;
+    use nix::sys::stat::Mode;
     ioctl_read!(fuse_fd_clone_impl, 229, 0, u32);
 
     /// Clones a FUSE session fd into a FUSE worker fd.
@@ -78,23 +85,160 @@ mod _fuse_fd_clone {
     /// Behavior is undefined if any of the following conditions are violated:
     ///
     /// - `session_fd` must be a valid file descriptor to an open FUSE device.
+    #[allow(clippy::unnecessary_safety_comment)]
     pub unsafe fn fuse_fd_clone(session_fd: RawFd) -> nix::Result<RawFd> {
         let devname = "/dev/fuse";
         let cloned_fd = fcntl::open(devname, OFlag::O_RDWR | OFlag::O_CLOEXEC, Mode::empty())?;
         // use `OwnedFd` here is just to release the fd when error occurs
         // SAFETY: the `cloned_fd` is just opened
-        let cloned_fd = OwnedFd::from_raw_fd(cloned_fd); 
+        let cloned_fd = OwnedFd::from_raw_fd(cloned_fd);
 
         fcntl::fcntl(cloned_fd.as_raw_fd(), FcntlArg::F_SETFD(FdFlag::FD_CLOEXEC))?;
 
         let mut result_fd: u32 = session_fd.cast();
-        // SAFETY: `cloned_fd` is ensured to be valid, and `&mut result_fd` is a valid pointer to a value on stack
+        // SAFETY: `cloned_fd` is ensured to be valid, and `&mut result_fd` is a valid
+        // pointer to a value on stack
         fuse_fd_clone_impl(cloned_fd.as_raw_fd(), &mut result_fd)?;
-        Ok(cloned_fd.into_raw_fd()) // use `into_raw_fd` to transfer the ownership of the fd
+        Ok(cloned_fd.into_raw_fd()) // use `into_raw_fd` to transfer the
+                                    // ownership of the fd
     }
 }
 
 use _fuse_fd_clone::fuse_fd_clone;
+
+/// A loop to read requests from FUSE device continuously
+#[allow(clippy::needless_pass_by_value)]
+fn fuse_device_reader(
+    buffer_tx: Sender<(File, AlignedBytes)>,
+    buffer_rx: Receiver<(File, AlignedBytes)>,
+    fuse_request_spawn_handle: GcHandle,
+    runtime_handle: Handle,
+    proto_version: ProtoVersion,
+    fs: Arc<dyn FileSystem + Send + Sync>,
+) {
+    loop {
+        let Ok((mut file, mut buffer)) = buffer_rx.recv() else {
+            error!("The channel of buffer is exhausted and closed.");
+            return;
+        };
+
+        let size = match file.read(&mut buffer) {
+            Ok(size) => size,
+            Err(e) => {
+                let errno = e.raw_os_error().map(Errno::from_i32);
+                match errno {
+                    None => {
+                        panic!("Failed to get the errno on reading failure. The error is {e}");
+                    }
+                    // Operation interrupted. Accordingly to FUSE, this is safe to retry
+                    Some(Errno::ENOENT) => {
+                        info!("operation interrupted, retry.");
+                        buffer_tx.send((file, buffer)).unwrap_or_else(|_| {
+                            unreachable!("The buffer channel is not to be closed.")
+                        });
+                        continue;
+                    }
+                    // Interrupted system call, retry
+                    Some(Errno::EINTR) => {
+                        info!("interrupted system call, retry");
+                        buffer_tx.send((file, buffer)).unwrap_or_else(|_| {
+                            unreachable!("The buffer channel is not to be closed.")
+                        });
+                        continue;
+                    }
+                    // Explicitly try again
+                    Some(Errno::EAGAIN) => {
+                        info!("Explicitly retry");
+                        buffer_tx.send((file, buffer)).unwrap_or_else(|_| {
+                            unreachable!("The buffer channel is not to be closed.")
+                        });
+                        continue;
+                    }
+                    // Filesystem was unmounted, quit the loop
+                    Some(Errno::ENODEV) => {
+                        info!("filesystem destroyed, quit the run loop");
+                        return;
+                    }
+                    // Unhandled error
+                    Some(errno) => {
+                        panic!(
+                            "non-recoverable io error when read FUSE device, \
+                            the error is: {errno}",
+                        );
+                    }
+                }
+            }
+        };
+
+        let spawn_result = runtime_handle.block_on(fuse_request_spawn_handle.spawn(|_| {
+            process_fuse_request(
+                buffer,
+                size,
+                file,
+                Arc::clone(&fs),
+                buffer_tx.clone(),
+                proto_version,
+            )
+        }));
+        if spawn_result.is_err() {
+            info!("Try to spawn task of `FuseRequest` after shutdow.");
+            return;
+        }
+    }
+}
+
+/// Process one FUSE request
+async fn process_fuse_request(
+    byte_buffer: AlignedBytes,
+    read_size: usize,
+    mut file: File,
+    fs: Arc<dyn FileSystem + Send + Sync + 'static>,
+    sender: Sender<(File, AlignedBytes)>,
+    proto_version: ProtoVersion,
+) {
+    let bytes = byte_buffer
+        .get(..read_size)
+        .unwrap_or_else(|| panic!("failed to read {read_size} bytes from the buffer",));
+    let fuse_req = match Request::new(bytes, proto_version) {
+        // Dispatch request
+        Ok(r) => r,
+        // Quit on illegal request
+        Err(e) => {
+            if let &DeserializeError::UnknownOpCode { code, unique } = &e {
+                error!("Unknown operation code found: {code}, with context: {e}");
+                let unique = unique.unwrap_or_else(|| {
+                    unreachable!("A `unique` must be filled in by deserializer.")
+                });
+                ReplyEmpty::new(unique, &mut file)
+                    .error_code(Errno::ENOSYS)
+                    .await
+                    .unwrap_or_else(|reply_err| {
+                        panic!("Failed to reply an error code: {reply_err}.")
+                    });
+                sender.send((file, byte_buffer)).unwrap_or_else(|_| {
+                    error!("The buffer pool is closed.");
+                });
+                return;
+            }
+
+            // TODO: graceful handle request build failure
+            panic!("failed to build FUSE request, the error is: {e}");
+        }
+    };
+    debug!("received FUSE req={}", fuse_req);
+    let res = dispatch(&fuse_req, &mut file, fs).await;
+    if let Err(e) = res {
+        panic!(
+            "failed to process req={:?}, the error is: {}",
+            fuse_req,
+            crate::async_fuse::util::format_nix_error(e), // TODO: refactor format_nix_error()
+        );
+    }
+    let res = sender.send((file, byte_buffer));
+    if let Err(e) = res {
+        panic!("failed to put the buffer back to buffer pool, the error is: {e}",);
+    }
+}
 
 /// FUSE session
 #[allow(missing_debug_implementations)]
@@ -180,83 +324,6 @@ impl<F: FileSystem + Send + Sync + 'static> Session<F> {
         self.fuse_fd.0
     }
 
-    /// Handles a FUSE request (by spawning a task).
-    ///
-    /// # Returns
-    /// It returns `false` if no more FUSE request should be handled.
-    ///
-    /// i.e. the loop to receive and handle FUSE requests should exit.
-    #[allow(clippy::wildcard_enum_match_arm)] // nix::Errno is marked as non_exhaustive
-    async fn handle_fuse_request_res(
-        &self,
-        res: nix::Result<usize>,
-        byte_buffer: AlignedBytes,
-        pool_sender: Sender<(u16, AlignedBytes)>,
-        buffer_idx: u16,
-    ) -> bool {
-        match res {
-            Ok(read_size) => {
-                debug!("read successfully {} byte data from FUSE device", read_size);
-
-                let fuse_fd = self.dev_fd();
-                let fs = Arc::clone(&self.filesystem);
-                let proto_version = self.proto_version.load();
-                let spawn_result = self
-                    .fuse_request_spawn_handle
-                    .spawn(|_| {
-                        Self::process_fuse_request(
-                            buffer_idx,
-                            byte_buffer,
-                            read_size,
-                            fuse_fd,
-                            fs,
-                            pool_sender,
-                            proto_version,
-                        )
-                    })
-                    .await;
-
-                if spawn_result.is_err() {
-                    info!("Try to spawn task of `FuseRequest` after shutdown, quitting the FUSE session.");
-                    return false;
-                }
-            }
-            Err(err) => {
-                let err_msg = crate::async_fuse::util::format_nix_error(err); // TODO: refactor format_nix_error()
-                error!(
-                    "failed to receive from FUSE kernel, the error is: {}",
-                    err_msg
-                );
-                match err {
-                    // Operation interrupted. Accordingly to FUSE, this is safe to retry
-                    Errno::ENOENT => {
-                        info!("operation interrupted, retry.");
-                    }
-                    // Interrupted system call, retry
-                    Errno::EINTR => {
-                        info!("interrupted system call, retry");
-                    }
-                    // Explicitly try again
-                    Errno::EAGAIN => info!("Explicitly retry"),
-                    // Filesystem was unmounted, quit the loop
-                    Errno::ENODEV => {
-                        info!("filesystem destroyed, quit the run loop");
-                        return false;
-                    }
-                    // Unhandled error
-                    _ => {
-                        panic!(
-                            "non-recoverable io error when read FUSE device, \
-                            the error is: {err_msg}",
-                        );
-                    }
-                }
-            }
-        }
-
-        true
-    }
-
     /// Run the FUSE session
     #[allow(clippy::arithmetic_side_effects, clippy::pattern_type_mismatch)] // The `select!` macro will generate code that goes against these rules.
     pub async fn run(self, token: CancellationToken) -> anyhow::Result<()> {
@@ -265,121 +332,61 @@ impl<F: FileSystem + Send + Sync + 'static> Session<F> {
             .setup_buffer_pool()
             .await
             .context("failed to setup buffer pool")?;
-        let fuse_dev_fd = self.dev_fd();
-        let mut buffer_idx = 0;
-        let mut read_fuse_task = None;
 
-        loop {
-            // Prepare the task to read a request from kernel.
-            if read_fuse_task.is_none() {
-                let (buffer_idx_, mut byte_buffer) = pool_receiver.recv()?;
-                buffer_idx = buffer_idx_;
-                // Read msg from FUSE
-                read_fuse_task = Some(tokio::task::spawn_blocking(move || {
-                    let res = unistd::read(fuse_dev_fd, &mut byte_buffer);
-                    (res, byte_buffer)
-                }));
-            }
-
-            // Select read_fuse_task and async Result
-            tokio::select! {
-                res = read_fuse_task.take().unwrap_or_else(||{
-                    // read_fuse_task is always prepared with value by above logic.
-                    panic!("read_fuse_task is always prepared with value by above logic.")
-                }) => {
-                    let (res, byte_buffer) = res?;
-                    if !self.handle_fuse_request_res(res, byte_buffer, pool_sender.clone(), buffer_idx).await {
-                        break;
-                    }
-                }
-                () = token.cancelled() => {
-                    info!("Async FUSE session exits.");
-                    break;
-                }
-            }
+        for _ in 0..MAX_FUSE_READER {
+            let pool_tx = pool_sender.clone();
+            let pool_rx = pool_receiver.clone();
+            let gc_handle = self.fuse_request_spawn_handle.clone();
+            let handle = Handle::current();
+            let fs = Arc::clone(&self.filesystem);
+            let protocol_version = self.proto_version.load();
+            // The `JoinHandle` is ignored
+            thread::spawn(move || {
+                fuse_device_reader(pool_tx, pool_rx, gc_handle, handle, protocol_version, fs);
+            });
         }
+
+        drop(pool_receiver);
+
+        token.cancelled().await;
+        info!("Async FUSE session exits.");
+
         Ok(())
-    }
-
-    /// Process one FUSE request
-    async fn process_fuse_request(
-        buffer_idx: u16,
-        byte_buffer: AlignedBytes,
-        read_size: usize,
-        fuse_fd: RawFd,
-        fs: Arc<dyn FileSystem + Send + Sync + 'static>,
-        sender: Sender<(u16, AlignedBytes)>,
-        proto_version: ProtoVersion,
-    ) {
-        let bytes = byte_buffer.get(..read_size).unwrap_or_else(|| {
-            panic!("failed to read {read_size} bytes from the {buffer_idx}-th buffer",)
-        });
-        let fuse_req = match Request::new(bytes, proto_version) {
-            // Dispatch request
-            Ok(r) => r,
-            // Quit on illegal request
-            Err(e) => {
-                if let &DeserializeError::UnknownOpCode { code, unique } = &e {
-                    error!("Unknown operation code found: {code}, with context: {e}");
-                    let unique = unique.unwrap_or_else(|| {
-                        unreachable!("A `unique` must be filled in by deserializer.")
-                    });
-                    ReplyEmpty::new(unique, fuse_fd)
-                        .error_code(Errno::ENOSYS)
-                        .await
-                        .unwrap_or_else(|reply_err| {
-                            panic!("Failed to reply an error code: {reply_err}.")
-                        });
-                    return;
-                }
-
-                // TODO: graceful handle request build failure
-                panic!("failed to build FUSE request, the error is: {e}");
-            }
-        };
-        debug!("received FUSE req={}", fuse_req);
-        let res = dispatch(&fuse_req, fuse_fd, fs).await;
-        if let Err(e) = res {
-            panic!(
-                "failed to process req={:?}, the error is: {}",
-                fuse_req,
-                crate::async_fuse::util::format_nix_error(e), // TODO: refactor format_nix_error()
-            );
-        }
-        let res = sender.send((buffer_idx, byte_buffer));
-        if let Err(e) = res {
-            panic!(
-                "failed to put the {buffer_idx}-th buffer back to buffer pool, the error is: {e}",
-            );
-        }
     }
 
     /// Setup buffer pool
     async fn setup_buffer_pool(
         &self,
-    ) -> anyhow::Result<(Sender<(u16, AlignedBytes)>, Receiver<(u16, AlignedBytes)>)> {
+    ) -> anyhow::Result<(Sender<(File, AlignedBytes)>, Receiver<(File, AlignedBytes)>)> {
         let (pool_sender, pool_receiver) =
-            crossbeam_channel::bounded::<(u16, AlignedBytes)>(MAX_BACKGROUND.into());
+            crossbeam_channel::bounded::<(File, AlignedBytes)>(MAX_BACKGROUND.into());
 
-        (0..MAX_BACKGROUND).for_each(|i| {
+        for _ in 0..MAX_BACKGROUND {
             let buf = AlignedBytes::new_zeroed(BUFFER_SIZE.cast(), PAGE_SIZE);
-            let res = pool_sender.send((i, buf));
+            let session_fd = self.dev_fd();
+
+            let file = unsafe {
+                // SAFETY: We assume that the fuse session fd is valid.
+                let worker_fd = fuse_fd_clone(session_fd)?;
+                // SAFETY: The worker fd is just cloned.
+                File::from_raw_fd(worker_fd)
+            };
+
+            let res = pool_sender.send((file, buf));
             if let Err(e) = res {
                 panic!(
-                    "failed to insert buffer idx={i} to buffer pool when initializing, the error is: {e}",
+                    "failed to insert buffer to buffer pool when initializing, the error is: {e}",
                 );
             }
-        });
+        }
 
-        let fuse_fd = self.dev_fd();
-        let (idx, mut byte_buf) = pool_receiver.recv()?;
-        let read_result = tokio::task::spawn_blocking(move || {
-            let res = unistd::read(fuse_fd, &mut byte_buf);
-            (res, byte_buf)
+        let (mut file, mut byte_buf) = pool_receiver.recv()?;
+        let (read_result, mut file, byte_buf) = tokio::task::spawn_blocking(move || {
+            let res = file.read(&mut byte_buf);
+            (res, file, byte_buf)
         })
         .await?;
-        byte_buf = read_result.1;
-        if let Ok(read_size) = read_result.0 {
+        if let Ok(read_size) = read_result {
             debug!("read successfully {} byte data from FUSE device", read_size);
             let bytes = byte_buf.get(..read_size).unwrap_or_else(|| {
                 panic!(
@@ -391,13 +398,13 @@ impl<F: FileSystem + Send + Sync + 'static> Session<F> {
             if let Ok(req) = Request::new(bytes, self.proto_version.load()) {
                 if let Operation::Init { arg } = *req.operation() {
                     let filesystem = Arc::clone(&self.filesystem);
-                    self.init(arg, &req, &*filesystem, fuse_fd).await?;
+                    self.init(arg, &req, &*filesystem, &mut file).await?;
                 }
             }
         }
-        pool_sender.send((idx, byte_buf)).context(format!(
-            "failed to put buffer idx={idx} back to buffer pool after FUSE init",
-        ))?;
+        pool_sender
+            .send((file, byte_buf))
+            .context("failed to put buffer back to buffer pool after FUSE init")?;
 
         Ok((pool_sender, pool_receiver))
     }
@@ -409,12 +416,12 @@ impl<F: FileSystem + Send + Sync + 'static> Session<F> {
         arg: &'_ FuseInitIn,
         req: &'_ Request<'a>,
         fs: &'_ (dyn FileSystem + Send + Sync + 'static),
-        fd: RawFd,
+        file: &mut File,
     ) -> anyhow::Result<()> {
         debug!("Init args={:?}", arg);
         // TODO: rewrite init based on do_init() in fuse_lowlevel.c
         // https://github.com/libfuse/libfuse/blob/master/lib/fuse_lowlevel.c#L1892
-        let reply = ReplyInit::new(req.unique(), fd);
+        let reply = ReplyInit::new(req.unique(), file);
         // We don't support ABI versions before 7.8
         if arg.major < 7 || (arg.major == 7 && arg.minor < 8) {
             error!("Unsupported FUSE ABI version={}.{}", arg.major, arg.minor);
@@ -428,12 +435,6 @@ impl<F: FileSystem + Send + Sync + 'static> Session<F> {
             reply.error_code(Errno::ENOSYS).await?;
             return Err(anyhow!("user defined init failed, the error is: {}", err,));
         }
-        debug_assert!(
-            arg.max_readahead <= MAX_WRITE_SIZE,
-            "the max readahead={} larger than max write size 16M={}",
-            arg.max_readahead,
-            MAX_WRITE_SIZE,
-        );
         let flags = arg.flags & INIT_FLAGS; // TODO: handle init flags properly
         #[cfg(not(feature = "abi-7-13"))]
         let unused = 0_u32;
@@ -502,10 +503,10 @@ impl<F: FileSystem + Send + Sync + 'static> Session<F> {
 /// This calls the appropriate filesystem operation method for the
 /// request and sends back the returned reply to the kernel
 #[allow(clippy::too_many_lines)]
-#[instrument(name="request",skip(req,fd, fs), fields(fuse_id =req.unique(),ino=req.nodeid()),ret)]
+#[instrument(name="request",skip(req, file, fs), fields(fuse_id =req.unique(),ino=req.nodeid()),ret)]
 async fn dispatch<'a>(
     req: &'a Request<'a>,
-    fd: RawFd,
+    file: &mut File,
     fs: Arc<dyn FileSystem + Send + Sync + 'static>,
 ) -> nix::Result<usize> {
     let result = match *req.operation() {
@@ -515,7 +516,7 @@ async fn dispatch<'a>(
         // Filesystem destroyed
         Operation::Destroy => {
             fs.destroy(req).await;
-            let reply = ReplyEmpty::new(req.unique(), fd);
+            let reply = ReplyEmpty::new(req.unique(), file);
             reply.ok().await
         }
 
@@ -525,7 +526,7 @@ async fn dispatch<'a>(
         }
 
         Operation::Lookup { name } => {
-            let reply = ReplyEntry::new(req.unique(), fd);
+            let reply = ReplyEntry::new(req.unique(), file);
             fs.lookup(req, req.nodeid(), name, reply).await
         }
         Operation::Forget { arg } => {
@@ -533,7 +534,7 @@ async fn dispatch<'a>(
             Ok(0)
         }
         Operation::GetAttr => {
-            let reply = ReplyAttr::new(req.unique(), fd);
+            let reply = ReplyAttr::new(req.unique(), file);
             fs.getattr(req, reply).await
         }
         Operation::SetAttr { arg } => {
@@ -594,7 +595,7 @@ async fn dispatch<'a>(
                 _ => Some(UNIX_EPOCH + Duration::new(arg.ctime, arg.ctimensec)),
             };
 
-            let reply = ReplyAttr::new(req.unique(), fd);
+            let reply = ReplyAttr::new(req.unique(), file);
             let param = SetAttrParam {
                 valid: arg.valid,
                 fh,
@@ -612,7 +613,7 @@ async fn dispatch<'a>(
             fs.setattr(req, param, reply).await
         }
         Operation::ReadLink => {
-            let reply = ReplyData::new(req.unique(), fd);
+            let reply = ReplyData::new(req.unique(), file);
             fs.readlink(req, reply).await
         }
         Operation::MkNod { arg, name } => {
@@ -626,23 +627,23 @@ async fn dispatch<'a>(
                 node_type: SFlag::S_IFREG,
                 link: None,
             };
-            let reply = ReplyEntry::new(req.unique(), fd);
+            let reply = ReplyEntry::new(req.unique(), file);
             fs.mknod(req, param, reply).await
         }
         Operation::MkDir { arg, name } => {
-            let reply = ReplyEntry::new(req.unique(), fd);
+            let reply = ReplyEntry::new(req.unique(), file);
             fs.mkdir(req, req.nodeid(), name, arg.mode, reply).await
         }
         Operation::Unlink { name } => {
-            let reply = ReplyEmpty::new(req.unique(), fd);
+            let reply = ReplyEmpty::new(req.unique(), file);
             fs.unlink(req, req.nodeid(), name, reply).await
         }
         Operation::RmDir { name } => {
-            let reply = ReplyEmpty::new(req.unique(), fd);
+            let reply = ReplyEmpty::new(req.unique(), file);
             fs.rmdir(req, req.nodeid(), name, reply).await
         }
         Operation::SymLink { name, link } => {
-            let reply = ReplyEntry::new(req.unique(), fd);
+            let reply = ReplyEntry::new(req.unique(), file);
             fs.symlink(req, req.nodeid(), name, Path::new(link), reply)
                 .await
         }
@@ -651,7 +652,7 @@ async fn dispatch<'a>(
             oldname,
             newname,
         } => {
-            let reply = ReplyEmpty::new(req.unique(), fd);
+            let reply = ReplyEmpty::new(req.unique(), file);
             let param = RenameParam {
                 old_parent: req.nodeid(),
                 old_name: oldname.to_owned(),
@@ -662,21 +663,21 @@ async fn dispatch<'a>(
             fs.rename(req, param, reply).await
         }
         Operation::Link { arg, name } => {
-            let reply = ReplyEntry::new(req.unique(), fd);
+            let reply = ReplyEntry::new(req.unique(), file);
             fs.link(req, arg.oldnodeid, name, reply).await
         }
         Operation::Open { arg } => {
-            let reply = ReplyOpen::new(req.unique(), fd);
+            let reply = ReplyOpen::new(req.unique(), file);
             fs.open(req, arg.flags, reply).await
         }
         Operation::Read { arg } => {
-            let reply = ReplyData::new(req.unique(), fd);
+            let reply = ReplyData::new(req.unique(), file);
             fs.read(req, arg.fh, arg.offset.cast(), arg.size, reply)
                 .await
         }
         Operation::Write { arg, data } => {
             assert_eq!(data.len(), arg.size.cast::<usize>());
-            let reply = ReplyWrite::new(req.unique(), fd);
+            let reply = ReplyWrite::new(req.unique(), file);
             fs.write(
                 req,
                 arg.fh,
@@ -688,39 +689,39 @@ async fn dispatch<'a>(
             .await
         }
         Operation::Flush { arg } => {
-            let reply = ReplyEmpty::new(req.unique(), fd);
+            let reply = ReplyEmpty::new(req.unique(), file);
             fs.flush(req, arg.fh, arg.lock_owner, reply).await
         }
         Operation::Release { arg } => {
             let flush = !matches!(arg.release_flags & FUSE_RELEASE_FLUSH, 0);
-            let reply = ReplyEmpty::new(req.unique(), fd);
+            let reply = ReplyEmpty::new(req.unique(), file);
             fs.release(req, arg.fh, arg.flags, arg.lock_owner, flush, reply)
                 .await
         }
         Operation::FSync { arg } => {
             let datasync = !matches!(arg.fsync_flags & 1, 0);
-            let reply = ReplyEmpty::new(req.unique(), fd);
+            let reply = ReplyEmpty::new(req.unique(), file);
             fs.fsync(req, arg.fh, datasync, reply).await
         }
         Operation::OpenDir { arg } => {
-            let reply = ReplyOpen::new(req.unique(), fd);
+            let reply = ReplyOpen::new(req.unique(), file);
             fs.opendir(req, arg.flags, reply).await
         }
         Operation::ReadDir { arg } => {
-            let reply = ReplyDirectory::new(req.unique(), fd, arg.size.cast());
+            let reply = ReplyDirectory::new(req.unique(), file, arg.size.cast());
             fs.readdir(req, arg.fh, arg.offset.cast(), reply).await
         }
         Operation::ReleaseDir { arg } => {
-            let reply = ReplyEmpty::new(req.unique(), fd);
+            let reply = ReplyEmpty::new(req.unique(), file);
             fs.releasedir(req, arg.fh, arg.flags, reply).await
         }
         Operation::FSyncDir { arg } => {
             let datasync = !matches!(arg.fsync_flags & 1, 0);
-            let reply = ReplyEmpty::new(req.unique(), fd);
+            let reply = ReplyEmpty::new(req.unique(), file);
             fs.fsyncdir(req, arg.fh, datasync, reply).await
         }
         Operation::StatFs => {
-            let reply = ReplyStatFs::new(req.unique(), fd);
+            let reply = ReplyStatFs::new(req.unique(), file);
             fs.statfs(req, reply).await
         }
         Operation::SetXAttr { arg, name, value } => {
@@ -732,33 +733,33 @@ async fn dispatch<'a>(
                 0
             }
             assert!(value.len() == arg.size.cast::<usize>());
-            let reply = ReplyEmpty::new(req.unique(), fd);
+            let reply = ReplyEmpty::new(req.unique(), file);
             fs.setxattr(req, name, value, arg.flags, get_position(arg), reply)
                 .await
         }
         Operation::GetXAttr { arg, name } => {
-            let reply = ReplyXAttr::new(req.unique(), fd);
+            let reply = ReplyXAttr::new(req.unique(), file);
             fs.getxattr(req, name, arg.size, reply).await
         }
         Operation::ListXAttr { arg } => {
-            let reply = ReplyXAttr::new(req.unique(), fd);
+            let reply = ReplyXAttr::new(req.unique(), file);
             fs.listxattr(req, arg.size, reply).await
         }
         Operation::RemoveXAttr { name } => {
-            let reply = ReplyEmpty::new(req.unique(), fd);
+            let reply = ReplyEmpty::new(req.unique(), file);
             fs.removexattr(req, name, reply).await
         }
         Operation::Access { arg } => {
-            let reply = ReplyEmpty::new(req.unique(), fd);
+            let reply = ReplyEmpty::new(req.unique(), file);
             fs.access(req, arg.mask, reply).await
         }
         Operation::Create { arg, name } => {
-            let reply = ReplyCreate::new(req.unique(), fd);
+            let reply = ReplyCreate::new(req.unique(), file);
             fs.create(req, req.nodeid(), name, arg.mode, arg.flags, reply)
                 .await
         }
         Operation::GetLk { arg } => {
-            let reply = ReplyLock::new(req.unique(), fd);
+            let reply = ReplyLock::new(req.unique(), file);
             let lock_param = FileLockParam {
                 fh: arg.fh,
                 lock_owner: arg.owner,
@@ -770,7 +771,7 @@ async fn dispatch<'a>(
             fs.getlk(req, lock_param, reply).await
         }
         Operation::SetLk { arg } => {
-            let reply = ReplyEmpty::new(req.unique(), fd);
+            let reply = ReplyEmpty::new(req.unique(), file);
             let lock_param = FileLockParam {
                 fh: arg.fh,
                 lock_owner: arg.owner,
@@ -782,7 +783,7 @@ async fn dispatch<'a>(
             fs.setlk(req, lock_param, false, reply).await
         }
         Operation::SetLkW { arg } => {
-            let reply = ReplyEmpty::new(req.unique(), fd);
+            let reply = ReplyEmpty::new(req.unique(), file);
             let lock_param = FileLockParam {
                 fh: arg.fh,
                 lock_owner: arg.owner,
@@ -798,24 +799,24 @@ async fn dispatch<'a>(
             .await
         }
         Operation::BMap { arg } => {
-            let reply = ReplyBMap::new(req.unique(), fd);
+            let reply = ReplyBMap::new(req.unique(), file);
             fs.bmap(req, arg.blocksize, arg.block, reply).await
         }
 
         #[cfg(feature = "abi-7-11")]
         Operation::IoCtl { arg, data } => {
             error!("IoCtl not implemented, arg={:?}, data={:?}", arg, data);
-            not_implement_helper(req, fd).await
+            not_implement_helper(req, file).await
         }
         #[cfg(feature = "abi-7-11")]
         Operation::Poll { arg } => {
             error!("Poll not implemented, arg={:?}", arg);
-            not_implement_helper(req, fd).await
+            not_implement_helper(req, file).await
         }
         #[cfg(feature = "abi-7-15")]
         Operation::NotifyReply { data } => {
             error!("NotifyReply not implemented, data={:?}", data);
-            not_implement_helper(req, fd).await
+            not_implement_helper(req, file).await
         }
         #[cfg(feature = "abi-7-16")]
         Operation::BatchForget { arg, nodes } => {
@@ -823,17 +824,17 @@ async fn dispatch<'a>(
                 "BatchForget not implemented, arg={:?}, nodes={:?}",
                 arg, nodes
             );
-            not_implement_helper(req, fd).await
+            not_implement_helper(req, file).await
         }
         #[cfg(feature = "abi-7-19")]
         Operation::FAllocate { arg } => {
             error!("FAllocate not implemented, arg={:?}", arg);
-            not_implement_helper(req, fd).await
+            not_implement_helper(req, file).await
         }
         #[cfg(feature = "abi-7-21")]
         Operation::ReadDirPlus { arg } => {
             error!("ReadDirPlus not implemented, arg={:?}", arg);
-            not_implement_helper(req, fd).await
+            not_implement_helper(req, file).await
         }
         #[cfg(feature = "abi-7-23")]
         Operation::Rename2 {
@@ -841,7 +842,7 @@ async fn dispatch<'a>(
             oldname,
             newname,
         } => {
-            let reply = ReplyEmpty::new(req.unique(), fd);
+            let reply = ReplyEmpty::new(req.unique(), file);
             let param = RenameParam {
                 old_parent: req.nodeid(),
                 old_name: oldname.to_owned(),
@@ -854,12 +855,12 @@ async fn dispatch<'a>(
         // #[cfg(feature = "abi-7-24")]
         Operation::LSeek { arg } => {
             error!("LSeek not implemented, arg={:?}", arg);
-            not_implement_helper(req, fd).await
+            not_implement_helper(req, file).await
         }
         // #[cfg(feature = "abi-7-28")]
         Operation::CopyFileRange { arg } => {
             error!("ReadDirPlusCopyFileRange not implemented, arg={:?}", arg);
-            not_implement_helper(req, fd).await
+            not_implement_helper(req, file).await
         }
         #[cfg(feature = "abi-7-11")]
         Operation::CuseInit { arg } => {
@@ -871,7 +872,7 @@ async fn dispatch<'a>(
 }
 
 /// Replies ENOSYS
-async fn not_implement_helper(req: &Request<'_>, fd: RawFd) -> nix::Result<usize> {
-    let reply = ReplyEmpty::new(req.unique(), fd);
+async fn not_implement_helper(req: &Request<'_>, file: &mut File) -> nix::Result<usize> {
+    let reply = ReplyEmpty::new(req.unique(), file);
     reply.error_code(Errno::ENOSYS).await
 }

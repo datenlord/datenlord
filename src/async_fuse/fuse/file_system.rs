@@ -31,32 +31,32 @@ pub trait FileSystem {
         req: &Request<'_>,
         parent: INum,
         name: &str,
-        reply: ReplyEntry,
+        reply: ReplyEntry<'_>,
     ) -> nix::Result<usize>;
 
     /// Forget about an inode
     async fn forget(&self, req: &Request<'_>, nlookup: u64);
 
     /// Get file attributes.
-    async fn getattr(&self, req: &Request<'_>, reply: ReplyAttr) -> nix::Result<usize>;
+    async fn getattr(&self, req: &Request<'_>, reply: ReplyAttr<'_>) -> nix::Result<usize>;
 
     /// Set file attributes.
     async fn setattr(
         &self,
         req: &Request<'_>,
         param: SetAttrParam,
-        reply: ReplyAttr,
+        reply: ReplyAttr<'_>,
     ) -> nix::Result<usize>;
 
     /// Read symbolic link.
-    async fn readlink(&self, req: &Request<'_>, reply: ReplyData) -> nix::Result<usize>;
+    async fn readlink(&self, req: &Request<'_>, reply: ReplyData<'_>) -> nix::Result<usize>;
 
     /// Create file node.
     async fn mknod(
         &self,
         req: &Request<'_>,
         param: CreateParam,
-        reply: ReplyEntry,
+        reply: ReplyEntry<'_>,
     ) -> nix::Result<usize>;
 
     /// Create a directory
@@ -66,7 +66,7 @@ pub trait FileSystem {
         parent: INum,
         name: &str,
         mode: u32,
-        reply: ReplyEntry,
+        reply: ReplyEntry<'_>,
     ) -> nix::Result<usize>;
 
     /// Remove a file
@@ -75,7 +75,7 @@ pub trait FileSystem {
         req: &Request<'_>,
         parent: INum,
         name: &str,
-        reply: ReplyEmpty,
+        reply: ReplyEmpty<'_>,
     ) -> nix::Result<usize>;
 
     /// Remove a directory
@@ -84,7 +84,7 @@ pub trait FileSystem {
         req: &Request<'_>,
         parent: INum,
         name: &str,
-        reply: ReplyEmpty,
+        reply: ReplyEmpty<'_>,
     ) -> nix::Result<usize>;
 
     /// Create a symbolic link
@@ -94,7 +94,7 @@ pub trait FileSystem {
         parent: INum,
         name: &str,
         target_path: &Path,
-        reply: ReplyEntry,
+        reply: ReplyEntry<'_>,
     ) -> nix::Result<usize>;
 
     /// Rename a file
@@ -102,7 +102,7 @@ pub trait FileSystem {
         &self,
         req: &Request<'_>,
         param: RenameParam,
-        reply: ReplyEmpty,
+        reply: ReplyEmpty<'_>,
     ) -> nix::Result<usize>;
 
     /// Create a hard link
@@ -111,11 +111,12 @@ pub trait FileSystem {
         _req: &Request<'_>,
         _newparent: u64,
         _newname: &str,
-        reply: ReplyEntry,
+        reply: ReplyEntry<'_>,
     ) -> nix::Result<usize>;
 
     /// Open a file
-    async fn open(&self, req: &Request<'_>, flags: u32, reply: ReplyOpen) -> nix::Result<usize>;
+    async fn open(&self, req: &Request<'_>, flags: u32, reply: ReplyOpen<'_>)
+        -> nix::Result<usize>;
 
     /// Read data
     async fn read(
@@ -124,7 +125,7 @@ pub trait FileSystem {
         fh: u64,
         offset: i64,
         size: u32,
-        reply: ReplyData,
+        reply: ReplyData<'_>,
     ) -> nix::Result<usize>;
 
     /// Write data
@@ -135,7 +136,7 @@ pub trait FileSystem {
         offset: i64,
         data: Vec<u8>,
         flags: u32,
-        reply: ReplyWrite,
+        reply: ReplyWrite<'_>,
     ) -> nix::Result<usize>;
 
     /// Flush method
@@ -144,7 +145,7 @@ pub trait FileSystem {
         req: &Request<'_>,
         fh: u64,
         lock_owner: u64,
-        reply: ReplyEmpty,
+        reply: ReplyEmpty<'_>,
     ) -> nix::Result<usize>;
 
     /// Release an open file
@@ -155,7 +156,7 @@ pub trait FileSystem {
         flags: u32, // same as the open flags
         lock_owner: u64,
         flush: bool,
-        reply: ReplyEmpty,
+        reply: ReplyEmpty<'_>,
     ) -> nix::Result<usize>;
 
     /// Synchronize file contents
@@ -164,11 +165,16 @@ pub trait FileSystem {
         req: &Request<'_>,
         fh: u64,
         datasync: bool,
-        reply: ReplyEmpty,
+        reply: ReplyEmpty<'_>,
     ) -> nix::Result<usize>;
 
     /// Open a directory
-    async fn opendir(&self, req: &Request<'_>, flags: u32, reply: ReplyOpen) -> nix::Result<usize>;
+    async fn opendir(
+        &self,
+        req: &Request<'_>,
+        flags: u32,
+        reply: ReplyOpen<'_>,
+    ) -> nix::Result<usize>;
 
     /// Read directory
     async fn readdir(
@@ -176,7 +182,7 @@ pub trait FileSystem {
         req: &Request<'_>,
         fh: u64,
         offset: i64,
-        mut reply: ReplyDirectory,
+        mut reply: ReplyDirectory<'_>,
     ) -> nix::Result<usize>;
 
     /// Release an open directory
@@ -185,7 +191,7 @@ pub trait FileSystem {
         req: &Request<'_>,
         fh: u64,
         flags: u32,
-        reply: ReplyEmpty,
+        reply: ReplyEmpty<'_>,
     ) -> nix::Result<usize>;
 
     /// Synchronize directory contents
@@ -194,11 +200,11 @@ pub trait FileSystem {
         req: &Request<'_>,
         fh: u64,
         datasync: bool,
-        reply: ReplyEmpty,
+        reply: ReplyEmpty<'_>,
     ) -> nix::Result<usize>;
 
     /// Get file system statistics
-    async fn statfs(&self, req: &Request<'_>, reply: ReplyStatFs) -> nix::Result<usize>;
+    async fn statfs(&self, req: &Request<'_>, reply: ReplyStatFs<'_>) -> nix::Result<usize>;
 
     /// Set an extended attribute
     async fn setxattr(
@@ -208,7 +214,7 @@ pub trait FileSystem {
         _value: &[u8],
         _flags: u32,
         _position: u32,
-        reply: ReplyEmpty,
+        reply: ReplyEmpty<'_>,
     ) -> nix::Result<usize>;
 
     /// Get an extended attribute
@@ -217,7 +223,7 @@ pub trait FileSystem {
         _req: &Request<'_>,
         _name: &str,
         _size: u32,
-        reply: ReplyXAttr,
+        reply: ReplyXAttr<'_>,
     ) -> nix::Result<usize>;
 
     /// Get an extended attribute
@@ -225,7 +231,7 @@ pub trait FileSystem {
         &self,
         _req: &Request<'_>,
         _size: u32,
-        reply: ReplyXAttr,
+        reply: ReplyXAttr<'_>,
     ) -> nix::Result<usize>;
 
     /// Remove an extended attribute
@@ -233,12 +239,16 @@ pub trait FileSystem {
         &self,
         _req: &Request<'_>,
         _name: &str,
-        reply: ReplyEmpty,
+        reply: ReplyEmpty<'_>,
     ) -> nix::Result<usize>;
 
     /// Check file access permissions
-    async fn access(&self, _req: &Request<'_>, _mask: u32, reply: ReplyEmpty)
-        -> nix::Result<usize>;
+    async fn access(
+        &self,
+        _req: &Request<'_>,
+        _mask: u32,
+        reply: ReplyEmpty<'_>,
+    ) -> nix::Result<usize>;
 
     /// Create and open a file
     async fn create(
@@ -248,7 +258,7 @@ pub trait FileSystem {
         _name: &str,
         _mode: u32,
         _flags: u32,
-        reply: ReplyCreate,
+        reply: ReplyCreate<'_>,
     ) -> nix::Result<usize>;
 
     /// Test for a POSIX file lock
@@ -256,7 +266,7 @@ pub trait FileSystem {
         &self,
         _req: &Request<'_>,
         _lk_param: FileLockParam,
-        reply: ReplyLock,
+        reply: ReplyLock<'_>,
     ) -> nix::Result<usize>;
 
     /// Acquire, modify or release a POSIX file lock
@@ -265,7 +275,7 @@ pub trait FileSystem {
         _req: &Request<'_>,
         _lk_param: FileLockParam,
         _sleep: bool,
-        reply: ReplyEmpty,
+        reply: ReplyEmpty<'_>,
     ) -> nix::Result<usize>;
 
     /// Map block index within file to block index within device
@@ -274,9 +284,8 @@ pub trait FileSystem {
         _req: &Request<'_>,
         _blocksize: u32,
         _idx: u64,
-        reply: ReplyBMap,
+        reply: ReplyBMap<'_>,
     ) -> nix::Result<usize>;
-
     /// Set fuse fd into `FileSystem`
     async fn set_fuse_fd(&self, fuse_fd: RawFd);
 }
