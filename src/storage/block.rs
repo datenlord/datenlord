@@ -1,14 +1,14 @@
 //! Utilities for blocks.
 
 use std::fmt::Formatter;
+use std::io::IoSlice;
 use std::sync::Arc;
 
 use aligned_utils::bytes::AlignedBytes;
 use clippy_utilities::OverflowArithmetic;
-use nix::sys::uio::IoVec;
 
 use super::StorageError;
-use crate::async_fuse::fuse::fuse_reply::{AsIoVec, CouldBeAsIoVecList};
+use crate::async_fuse::fuse::fuse_reply::{AsIoSlice, CouldBeAsIoSliceList};
 use crate::async_fuse::fuse::protocol::INum;
 
 /// Page Size
@@ -239,11 +239,11 @@ impl Block {
     }
 }
 
-impl CouldBeAsIoVecList for Block {}
+impl CouldBeAsIoSliceList for Block {}
 
-impl AsIoVec for Block {
-    fn as_io_vec(&self) -> IoVec<&[u8]> {
-        IoVec::from_slice(self.as_slice())
+impl AsIoSlice for Block {
+    fn as_io_slice(&self) -> IoSlice {
+        IoSlice::new(self.as_slice())
     }
 
     fn can_convert(&self) -> bool {
@@ -265,7 +265,7 @@ mod tests {
     use clippy_utilities::OverflowArithmetic;
 
     use super::{Arc, Block};
-    use crate::async_fuse::fuse::fuse_reply::AsIoVec;
+    use crate::async_fuse::fuse::fuse_reply::AsIoSlice;
 
     const BLOCK_SIZE_IN_BYTES: usize = 8;
     const BLOCK_CONTENT: &[u8; BLOCK_SIZE_IN_BYTES] = b"foo bar ";
