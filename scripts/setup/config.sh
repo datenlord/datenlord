@@ -21,7 +21,6 @@ export DATENLORD_MONITORING_NAMESPACE=datenlord-monitoring
 export DATENLORD_NAMESPACE=csi-datenlord
 export E2E_TEST_CONFIG=scripts/ci/datenlord-e2e-test.yaml
 export ELASTICSEARCH_LABEL=elasticsearch
-export ETCD_IMAGE=gcr.io/etcd-development/etcd:v3.4.13
 export FUSE_CONTAINER_NAME=datenlord-async
 export FUSE_MOUNT_PATH=/var/opt/datenlord-data
 export GRAFANA_LABEL=grafana
@@ -36,8 +35,20 @@ export NODE_CONTAINER_NAME=datenlord
 export PROMETHEUS_LABEL=prometheus-server
 export SCHEDULER_IMAGE=k8s.gcr.io/kube-scheduler:v1.19.1
 export SNAPSHOTTER_VERSION=v5.0.0
+# setup etcd config
+export ETCD_IMAGE=gcr.io/etcd-development/etcd:v3.4.13
 export ETCD_CONTAINER_NAME=etcd
+# start local node config
 export DATENLORD_LOCAL_BIND_DIR=/tmp/datenlord_data_dir
+export CONTROLLER_SOCKET_FILE=/tmp/controller.sock
+export BIND_MOUNTER=../target/debug/bind_mounter
+export NODE_SOCKET_FILE=/tmp/node.sock
+export STORAGE_FS_ROOT=/tmp/datenlord_backend
+export RUST_BACKTRACE=full
+export RUST_LOG=debug
+export RUST_BACKTRACE=1
+export ETCD_END_POINT=127.0.0.1:2379
+export BIND_MOUNTER=`realpath $BIND_MOUNTER`
 
 set -xv # enable debug
 set -e # exit on error
