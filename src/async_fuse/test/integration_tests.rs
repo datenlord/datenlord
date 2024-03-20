@@ -135,16 +135,20 @@ fn test_directory_manipulation_rust_way(mount_dir: &Path) -> anyhow::Result<()> 
 
 #[cfg(test)]
 fn test_deferred_deletion(mount_dir: &Path) -> anyhow::Result<()> {
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+
     info!("test file deletion deferred");
     let file_path = Path::new(mount_dir).join("test_file.txt");
     let oflags = OFlag::O_CREAT | OFlag::O_EXCL | OFlag::O_RDWR;
     let file_mode = Mode::from_bits_truncate(0o644);
     let fd = fcntl::open(&file_path, oflags, file_mode)?;
+    // SAFETY: The fd is just opened
+    let fd = unsafe { OwnedFd::from_raw_fd(fd) };
     unistd::unlink(&file_path)?; // deferred deletion
 
     let repeat_times = 3;
     for _ in 0..repeat_times {
-        let write_size = unistd::write(fd, FILE_CONTENT.as_bytes())?;
+        let write_size = unistd::write(&fd, FILE_CONTENT.as_bytes())?;
         assert_eq!(
             write_size,
             FILE_CONTENT.len(),
@@ -153,15 +157,14 @@ fn test_deferred_deletion(mount_dir: &Path) -> anyhow::Result<()> {
             FILE_CONTENT.len(),
         );
     }
-    unistd::fsync(fd)?;
+    unistd::fsync(fd.as_raw_fd())?;
 
     let mut buffer: Vec<u8> = iter::repeat(0_u8)
         .take(FILE_CONTENT.len().overflow_mul(repeat_times))
         .collect();
-    unistd::lseek(fd, 0, Whence::SeekSet)?;
-    let read_size = unistd::read(fd, &mut buffer)?;
+    unistd::lseek(fd.as_raw_fd(), 0, Whence::SeekSet)?;
+    let read_size = unistd::read(fd.as_raw_fd(), &mut buffer)?;
     let content = String::from_utf8(buffer)?;
-    unistd::close(fd)?;
 
     assert_eq!(
         read_size,
