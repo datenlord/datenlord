@@ -46,3 +46,6 @@ pub use mock::MemoryStorage;
 
 /// The cache module for storage.
 pub mod cache;
+
+/// Cache module
+pub mod cache_proxy;
