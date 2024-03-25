@@ -194,7 +194,7 @@ where
     /// Add a node to a slot
     /// We will create a new slot and update slot mapping, then add to the ring
     /// If must is true, the ring need to be rebalanced or expanded
-    pub fn add(&mut self, node: T, must: bool) -> Option<T> {
+    pub fn add(&mut self, node: &T, must: bool) -> Option<T> {
         // If the ring is full, return None
         if usize_to_u64(self.slots.len()) >= self.capacity {
             return None;
@@ -207,10 +207,11 @@ where
 
         // If there are no slots, add the first one covering the whole range
         if self.slots.is_empty() {
-            let new_slot = Slot::new(1, self.capacity, node);
+            // TODO:Try to use rc to avoid clone?
+            let new_slot = Slot::new(1, self.capacity, node.clone());
             self.slots.push(new_slot);
 
-            return Some(node);
+            return Some(node.clone());
         }
 
         // Try to judge if the ring need to be expanded
@@ -240,7 +241,7 @@ where
             .0;
 
         // Create new slot with the second half of the range
-        let new_slot = Slot::new(mid_point + 1, slot_to_split.end, node);
+        let new_slot = Slot::new(mid_point + 1, slot_to_split.end, node.clone());
 
         // Update the end of the existing slot to the mid_point
         slot_to_split.end = mid_point;
@@ -256,7 +257,7 @@ where
             return None;
         }
 
-        Some(node)
+        Some(node.clone())
     }
 
     /// Add a batch of slots
@@ -289,7 +290,7 @@ where
             // Iterate the nodes to add
             for node in nodes {
                 // Try to rebalance it later
-                if let Some(n) = self.add(node, false) {
+                if let Some(n) = self.add(&node.clone(), false) {
                     success_nodes.push(n);
                 }
             }
@@ -305,11 +306,14 @@ where
 
     /// Remove a slot
     /// If must is true, the ring need to be rebalanced
-    pub fn remove(&mut self, node: T, must: bool) -> Option<T> {
+    pub fn remove(&mut self, node: &T, must: bool) -> Option<T> {
         // Find the slot to remove
         // TODO: Find the slot with faster way?
         // If the slot is not found, return None
-        let index = self.slots.iter().position(|slot| slot.inner == node)?;
+        let index = self
+            .slots
+            .iter()
+            .position(|slot| slot.inner == node.to_owned())?;
 
         // Remove the slot by index
         let _removed = self.remove_by_index(index, false)?;
@@ -319,7 +323,7 @@ where
             self.rebalance();
         }
 
-        Some(node)
+        Some(node.to_owned())
     }
 
     /// Remove a slot by index
@@ -422,8 +426,50 @@ where
     }
 
     /// Get the node of a given key
-    pub fn get_node<U: Hash>(&self, key: &U) -> Option<&T> {
-        self.get_slot(key).map(Slot::inner)
+    pub fn get_node<U: Hash>(&self, key: &U) -> Option<T> {
+        self.get_slot(key).map(Slot::inner).cloned()
+    }
+
+    /// Get nodes of a given key
+    pub fn get_nodes<U: Hash>(&self, key: &U, n: usize) -> Option<Vec<T>> {
+        if self.slots.is_empty() {
+            return None;
+        }
+
+        if n > self.slots.len() {
+            return Some(self.slots.iter().map(|slot| slot.inner.clone()).collect());
+        }
+
+        let idx = get_hash(&self.hash_builder, key) % self.capacity;
+
+        // Find the slot with binary search
+        // If the idx is not in slot start, binary search will return the next slot
+        // We can set the index to the range start
+        match self.slots.binary_search_by(|slot| slot.start.cmp(&idx)) {
+            Err(index) => {
+                // If the key is not in the slots, return the last n slots
+                Some(
+                    self.slots
+                        .iter()
+                        .cycle()
+                        .skip(index - 1)
+                        .take(n)
+                        .map(|slot| slot.inner.clone())
+                        .collect(),
+                )
+            }
+            // If the key is in the slots, return the next n slots
+            // If the left slot is not enough, cycle the slots and take the rest
+            Ok(index) => Some(
+                self.slots
+                    .iter()
+                    .cycle()
+                    .skip(index)
+                    .take(n)
+                    .map(|slot| slot.inner.clone())
+                    .collect(),
+            ),
+        }
     }
 
     /// Get the replicas slots of a given key
@@ -539,7 +585,7 @@ where
 mod tests {
     use super::*;
 
-    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    #[derive(Debug, Clone, PartialEq, Eq, Hash)]
     struct Node {
         id: u64,
     }
@@ -564,9 +610,9 @@ mod tests {
 
         let mut ring = Ring::new(DefaultHashBuilder, 1024);
 
-        ring.add(node1, false);
-        ring.add(node2, false);
-        ring.add(node3, false);
+        ring.add(&node1.clone(), false);
+        ring.add(&node2.clone(), false);
+        ring.add(&node3.clone(), false);
 
         assert_eq!(ring.len_slots(), 3);
         assert_eq!(ring.capacity(), 1024);
@@ -587,15 +633,15 @@ mod tests {
 
         let mut ring = Ring::new(DefaultHashBuilder, 1024);
 
-        ring.add(node1, false);
-        ring.add(node2, false);
-        ring.add(node3, false);
+        ring.add(&node1.clone(), false);
+        ring.add(&node2.clone(), false);
+        ring.add(&node3.clone(), false);
 
         assert_eq!(ring.len_slots(), 3);
         assert_eq!(ring.capacity(), 1024);
         assert_eq!(ring.version(), 3);
 
-        ring.remove(node2, false);
+        ring.remove(&node2.clone(), false);
 
         assert_eq!(ring.len_slots(), 2);
         assert_eq!(ring.capacity(), 1024);
@@ -610,7 +656,7 @@ mod tests {
 
         let mut ring = Ring::new(DefaultHashBuilder, 1024);
 
-        ring.batch_add(vec![node1, node2, node3], false);
+        ring.batch_add(vec![node1.clone(), node2.clone(), node3.clone()], false);
 
         assert_eq!(ring.len_slots(), 3);
         assert_eq!(ring.capacity(), 1024);
@@ -629,7 +675,7 @@ mod tests {
         ring.slots_clear();
         assert_eq!(ring.version(), 3);
 
-        ring.batch_add(vec![node1, node2, node3], true);
+        ring.batch_add(vec![node1.clone(), node2.clone(), node3.clone()], true);
 
         assert_eq!(ring.len_slots(), 3);
         assert_eq!(ring.capacity(), 1024);
@@ -654,13 +700,13 @@ mod tests {
 
         let mut ring = Ring::new(DefaultHashBuilder, 1024);
 
-        ring.batch_add(vec![node1, node2, node3], true);
+        ring.batch_add(vec![node1.clone(), node2.clone(), node3.clone()], true);
 
         assert_eq!(ring.len_slots(), 3);
         assert_eq!(ring.capacity(), 1024);
         assert_eq!(ring.version(), 4); // 3 + 1
 
-        ring.batch_remove(&[node2], true);
+        ring.batch_remove(&[node2.clone()], true);
 
         assert_eq!(ring.len_slots(), 2);
         assert_eq!(ring.capacity(), 1024);
@@ -671,7 +717,7 @@ mod tests {
         assert_eq!(ring.get_slot(&10_000_i32).unwrap().start, 513);
         assert_eq!(ring.get_slot(&10_000_i32).unwrap().end, 1024);
 
-        ring.batch_remove(&[node3], true);
+        ring.batch_remove(&[node3.clone()], true);
 
         assert_eq!(ring.len_slots(), 1);
         assert_eq!(ring.capacity(), 1024);
@@ -701,9 +747,9 @@ mod tests {
 
         let mut ring = Ring::new(DefaultHashBuilder, 1024);
 
-        ring.add(node1, false);
-        ring.add(node2, false);
-        ring.add(node3, false);
+        ring.add(&node1, false);
+        ring.add(&node2, false);
+        ring.add(&node3, false);
 
         let slot = ring.get_slot(&1_i32).unwrap();
         assert_eq!(slot.inner().id, 1);
@@ -725,9 +771,9 @@ mod tests {
 
         println!("{:?}", ring.get_replicas(&1_i32, 2));
 
-        ring.add(node1, false);
-        ring.add(node2, false);
-        ring.add(node3, false);
+        ring.add(&node1, false);
+        ring.add(&node2, false);
+        ring.add(&node3, false);
 
         println!("{:?}", ring.get_replicas(&1_i32, 2));
 
