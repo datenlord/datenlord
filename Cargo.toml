@@ -34,7 +34,6 @@ itertools = "0.10.0"
 k8s-openapi = { version = "0.15.0", default-features = false, features = [
     "v1_19",
 ] }
-lazy_static = "^1.4"
 libc = "0.2.79"
 lockfree-cuckoohash = "0.1.0"
 memchr = "2.3.4"
