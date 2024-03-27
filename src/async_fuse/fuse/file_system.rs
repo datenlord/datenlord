@@ -1,6 +1,4 @@
 //! The `FileSystem` trait
-
-use std::os::unix::io::RawFd;
 use std::path::Path;
 
 use async_trait::async_trait;
@@ -286,6 +284,4 @@ pub trait FileSystem {
         _idx: u64,
         reply: ReplyBMap<'_>,
     ) -> nix::Result<usize>;
-    /// Set fuse fd into `FileSystem`
-    async fn set_fuse_fd(&self, fuse_fd: RawFd);
 }
