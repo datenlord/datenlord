@@ -1,6 +1,7 @@
 use std::net::IpAddr;
 use std::num::NonZeroUsize;
 use std::str::FromStr;
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use tracing::level_filters::LevelFilter as Level;
@@ -200,6 +201,10 @@ pub struct MemoryCacheConfig {
     /// It's a fraction with the form of `a,b`, which means that
     /// the soft limit is `a/b` of the capacity.
     pub soft_limit: SoftLimit,
+    /// he interval of a write back cycle.
+    pub write_back_interval: Duration,
+    /// The max count of pending dirty blocks.
+    pub write_back_dirty_limit: usize,
 }
 
 /// A type to represent the soft limit of cache.
@@ -254,6 +259,8 @@ impl TryFrom<SuperMemoryCacheConfig> for MemoryCacheConfig {
             command_queue_limit,
             write_back,
             soft_limit,
+            write_back_interval,
+            write_back_dirty_limit,
         } = value;
 
         Ok(Self {
@@ -261,6 +268,8 @@ impl TryFrom<SuperMemoryCacheConfig> for MemoryCacheConfig {
             command_queue_limit,
             write_back,
             soft_limit: soft_limit.parse()?,
+            write_back_interval: Duration::from_millis(write_back_interval),
+            write_back_dirty_limit,
         })
     }
 }
