@@ -9,10 +9,11 @@ use std::process::Command;
 use clippy_utilities::Cast;
 use futures::prelude::*;
 use grpcio::{RpcStatus, UnarySink};
-use lazy_static::lazy_static;
 use nix::mount::{self, MntFlags, MsFlags};
 use nix::unistd;
+use once_cell::sync::Lazy;
 use protobuf::RepeatedField;
+use tokio::runtime::Runtime;
 use tracing::{error, info};
 use walkdir::WalkDir;
 
@@ -50,13 +51,12 @@ pub const DEFAULT_BIND_MOUNT_HELPER_CMD_PATH: &str = "./target/debug/bind_mounte
 /// The key of the bind mount helper command path environment variable
 pub const BIND_MOUNT_HELPER_CMD_ENV_KEY: &str = "BIND_MOUNTER";
 
-lazy_static! {
-    // Dedicated runtime for spawn grpc task
-    static ref TOKIO_RUNTIME: tokio::runtime::Runtime = tokio::runtime::Runtime::new()
-        .unwrap_or_else(|e| {
-            panic!("failed to spawn a runtime for error {e}");
-        });
-}
+/// Static Tokio runtime for spawning `gRPC` tasks.
+static TOKIO_RUNTIME: Lazy<Runtime> = Lazy::new(|| {
+    Runtime::new().unwrap_or_else(|e| {
+        panic!("failed to spawn a runtime for error {e}");
+    })
+});
 
 /// The bind mount mode of a volume
 #[derive(Clone, Copy, Debug)]
