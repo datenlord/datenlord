@@ -2,8 +2,6 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
-use tracing::debug;
-
 use crate::async_fuse::fuse::protocol::INum;
 use crate::async_fuse::memfs::kv_engine::{
     self, KVEngine, KVEngineType, KeyType, LockKeyType, ValueType,
@@ -35,25 +33,6 @@ pub async fn register_node_id(
         })?;
 
     Ok(())
-}
-
-/// Get ip address and port of a node
-pub async fn get_node_ip_and_port(
-    kv_engine: &Arc<KVEngineType>,
-    node_id: &str,
-) -> DatenLordResult<String> {
-    let ip_and_port = kv_engine
-        .get(&KeyType::NodeIpPort(node_id.to_owned()))
-        .await
-        .with_context(|| format!("Fail to get node {node_id} ip and port",))?;
-    if let Some(value) = ip_and_port {
-        let ip_and_port = value.into_string();
-        debug!("node {} ip and port is {}", node_id, ip_and_port);
-        Ok(ip_and_port)
-    } else {
-        debug!("node {} missing ip and port information", node_id);
-        Err(anyhow::anyhow!("node {} missing ip and port information", node_id).into())
-    }
 }
 
 /// Register volume information, add the volume to `node_id` list mapping
@@ -116,42 +95,6 @@ pub async fn register_volume(
         .with_context(|| "unlock fail while register volume")?;
 
     Ok(())
-}
-
-/// Get node list related to a volume, execluding the input `node_ide` as its
-/// the local node id. This function is used to sync metadata, the inode
-/// information.
-pub async fn get_volume_nodes(
-    kv_engine: &Arc<KVEngineType>,
-    node_id: &str,
-    volume_info: &str,
-) -> DatenLordResult<HashSet<String>> {
-    let volume_info_key = volume_info.to_owned();
-    let volume_node_list: Option<Vec<u8>> = kv_engine
-        .get(&KeyType::VolumeInfo(volume_info_key.clone()))
-        .await
-        .with_context(|| format!("Fail to get volume node list for volume {volume_info:?}",))?
-        .map(kv_engine::ValueType::into_raw);
-
-    let new_volume_node_list = if let Some(node_list) = volume_node_list {
-        let mut node_set: HashSet<String> = bincode::deserialize(node_list.as_slice())
-            .unwrap_or_else(|e| {
-                panic!("fail to deserialize node list for volume {volume_info:?}, error: {e}");
-            });
-
-        debug!("node set when get volume related node, {:?}", node_set);
-
-        if node_set.contains(node_id) {
-            node_set.remove(node_id);
-        }
-
-        node_set
-    } else {
-        debug!("node set is empty");
-        HashSet::new()
-    };
-
-    Ok(new_volume_node_list)
 }
 
 /// Modify node list of a file

@@ -300,7 +300,6 @@ where
     let fuse_fd = mount::mount(mount_path)
         .await
         .context("failed to mount fuse device")?;
-    fs.set_fuse_fd(fuse_fd).await;
 
     let fuse_request_spawn_handle = TASK_MANAGER
         .get_gc_handle(TaskName::FuseRequest)

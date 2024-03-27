@@ -28,11 +28,3 @@ impl<K: KVEngine + 'static> INumAllocator<K> {
         self.id_allocator.alloc_id().await
     }
 }
-
-/// Fd allocator
-/// TODO: implement this
-#[allow(dead_code)]
-pub struct FdAllocator<K: KVEngine> {
-    /// inum allocator
-    id_allocator: DistIdAllocator<K>,
-}
