@@ -52,6 +52,8 @@ fn test_storage_config(is_s3: bool) -> StorageConfig {
             command_queue_limit: 1000,
             write_back: true,
             soft_limit,
+            write_back_interval: Duration::from_millis(200),
+            write_back_dirty_limit: 10,
         },
         params,
     }

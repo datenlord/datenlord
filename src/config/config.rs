@@ -94,6 +94,15 @@ pub struct MemoryCacheConfig {
     /// **Note**: `b` cannot be set to 0.
     #[clap(long = "storage-mem-cache-soft-limit", default_value = "3,5")]
     pub soft_limit: String,
+    /// The interval of a write back cycle (in ms).
+    #[clap(long = "storage-mem-cache-write-back-interval", default_value_t = 200)]
+    pub write_back_interval: u64,
+    /// The max count of pending dirty blocks.
+    #[clap(
+        long = "storage-mem-cache-write-back-dirty-limit",
+        default_value_t = 10
+    )]
+    pub write_back_dirty_limit: usize,
 }
 
 /// S3 storage config
@@ -145,6 +154,7 @@ mod tests {
     use std::net::IpAddr;
     use std::num::NonZeroUsize;
     use std::str::FromStr;
+    use std::time::Duration;
 
     use super::*;
     use crate::config::inner::{InnerConfig, Role, StorageParams as InnerStorageParams};
@@ -218,6 +228,11 @@ mod tests {
             memory_cache_config.soft_limit,
             SoftLimit(3, NonZeroUsize::new(5).unwrap())
         );
+        assert_eq!(
+            memory_cache_config.write_back_interval,
+            Duration::from_millis(200)
+        );
+        assert_eq!(memory_cache_config.write_back_dirty_limit, 10);
 
         let csi_config = inner_config.csi_config;
         assert_eq!(csi_config.endpoint, "unix:///tmp/node.sock ");
@@ -295,6 +310,10 @@ mod tests {
             "--storage-mem-cache-write-back",
             "--storage-mem-cache-soft-limit",
             "1,2",
+            "--storage-mem-cache-write-back-interval",
+            "1000",
+            "--storage-mem-cache-write-back-dirty-limit",
+            "100",
         ];
 
         let config = Config::parse_from(args);
@@ -314,6 +333,12 @@ mod tests {
         assert_eq!(memory_cache_config.command_queue_limit, 2000);
         assert!(memory_cache_config.write_back);
         assert_eq!(memory_cache_config.soft_limit, soft_limit);
+
+        assert_eq!(
+            memory_cache_config.write_back_interval,
+            Duration::from_millis(1000)
+        );
+        assert_eq!(memory_cache_config.write_back_dirty_limit, 100);
     }
 
     #[test]
