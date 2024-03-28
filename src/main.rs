@@ -75,6 +75,7 @@
 pub mod async_fuse;
 mod common;
 mod csi;
+pub mod new_storage;
 pub mod storage;
 
 use std::net::{IpAddr, SocketAddr};
