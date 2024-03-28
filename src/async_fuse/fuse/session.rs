@@ -125,7 +125,7 @@ fn fuse_device_reader(
         let size = match file.read(&mut buffer) {
             Ok(size) => size,
             Err(e) => {
-                let errno = e.raw_os_error().map(Errno::from_i32);
+                let errno = e.raw_os_error().map(Errno::from_raw);
                 match errno {
                     None => {
                         panic!("Failed to get the errno on reading failure. The error is {e}");

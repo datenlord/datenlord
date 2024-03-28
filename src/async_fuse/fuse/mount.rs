@@ -71,13 +71,14 @@ pub async fn mount(mount_point: &Path) -> anyhow::Result<RawFd> {
 /// Linux fusermount
 #[cfg(target_os = "linux")]
 async fn fuser_mount(mount_point: &Path) -> anyhow::Result<RawFd> {
+    use std::io::IoSliceMut;
+    use std::os::fd::AsRawFd;
     use std::process::Command;
 
     use nix::cmsg_space;
     use nix::sys::socket::{
         self, AddressFamily, ControlMessageOwned, MsgFlags, SockFlag, SockType,
     };
-    use nix::sys::uio::IoVec;
 
     let mount_path = mount_point.to_path_buf();
 
@@ -99,7 +100,7 @@ async fn fuser_mount(mount_point: &Path) -> anyhow::Result<RawFd> {
             // /etc/fuse.conf
             .arg("nosuid,nodev,allow_other,default_permissions") // rw,async,noatime,noexec,auto_unmount,allow_other
             .arg(mount_path.as_os_str())
-            .env("_FUSE_COMMFD", remote.to_string())
+            .env("_FUSE_COMMFD", remote.as_raw_fd().to_string())
             .output()
     })
     .await?
@@ -117,12 +118,17 @@ async fn fuser_mount(mount_point: &Path) -> anyhow::Result<RawFd> {
 
     tokio::task::spawn_blocking(move || {
         let mut buf = [0_u8; 5];
-        let iov = [IoVec::from_mut_slice(&mut buf[..])];
+        let mut iov = [IoSliceMut::new(&mut buf[..])];
 
         #[allow(clippy::arithmetic_side_effects)]
         let mut cmsgspace = cmsg_space!([RawFd; 1]);
-        let msg = socket::recvmsg(local, &iov, Some(&mut cmsgspace), MsgFlags::empty())
-            .context("failed to receive from fusermount")?;
+        let msg: socket::RecvMsg<'_, '_, ()> = socket::recvmsg(
+            local.as_raw_fd(),
+            &mut iov,
+            Some(&mut cmsgspace),
+            MsgFlags::empty(),
+        )
+        .context("failed to receive from fusermount")?;
 
         let mount_fd = if let Some(cmsg) = msg.cmsgs().next() {
             if let ControlMessageOwned::ScmRights(fds) = cmsg {
