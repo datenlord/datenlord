@@ -23,18 +23,7 @@ pub async fn start_async_fuse(
     args: AsyncFuseArgs,
     token: CancellationToken,
 ) -> anyhow::Result<()> {
-    memfs::kv_engine::kv_utils::register_node_id(
-        &kv_engine,
-        &args.node_id,
-        &args.ip_address.to_string(),
-        args.server_port,
-    )
-    .await?;
-
     let storage_config = &args.storage_config;
-
-    let volume_info = serde_json::to_string(storage_config)?;
-    memfs::kv_engine::kv_utils::register_volume(&kv_engine, &args.node_id, &volume_info).await?;
 
     let mount_point = std::path::Path::new(&args.mount_dir);
     let global_cache_capacity = args.storage_config.memory_cache_config.capacity;

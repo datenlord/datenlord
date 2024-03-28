@@ -16,12 +16,6 @@ pub enum KeyType {
     DirEntryKey((INum, String)),
     /// IdAllocator value key
     IdAllocatorValue(IdType),
-    /// Node ip and port info : node_id -> "{node_ipaddr}:{port}"
-    /// The corresponding value type is ValueType::String
-    NodeIpPort(String),
-    /// Volume information
-    /// The corresponding value type is ValueType::RawData
-    VolumeInfo(String),
     /// Node list
     /// The corresponding value type is ValueType::RawData
     FileNodeList(INum),
@@ -51,8 +45,6 @@ impl Display for KeyType {
                 write!(f, "DirEntryKey(({parent_id}, {child_name}))")
             }
             KeyType::IdAllocatorValue(ref id_type) => write!(f, "IdAllocatorValue({id_type})"),
-            KeyType::NodeIpPort(ref s) => write!(f, "NodeIpPort({s})"),
-            KeyType::VolumeInfo(ref s) => write!(f, "VolumeInfo({s})"),
             KeyType::FileNodeList(ref inum) => write!(f, "FileNodeList({inum})"),
             #[cfg(test)]
             KeyType::String(ref s) => write!(f, "String({s})"),
@@ -97,8 +89,6 @@ impl KeyType {
             #[cfg(test)]
             KeyType::String(_) => "TEST_",
             KeyType::IdAllocatorValue(_) => "IdAlloc",
-            KeyType::NodeIpPort(_) => "NodeIpPort",
-            KeyType::VolumeInfo(_) => "VolumeInfo",
             KeyType::FileNodeList(_) => "FileNodeList",
         }
     }
@@ -118,12 +108,6 @@ impl KeyType {
             }
             KeyType::IdAllocatorValue(ref id_type) => {
                 write!(f, "{id_type}").unwrap();
-            }
-            KeyType::NodeIpPort(ref s) => {
-                write!(f, "{s}").unwrap();
-            }
-            KeyType::VolumeInfo(ref s) => {
-                write!(f, "{s}").unwrap();
             }
             KeyType::FileNodeList(ref inum) => {
                 write!(f, "{inum}").unwrap();
@@ -193,26 +177,6 @@ mod tests {
             key.to_string_key(),
             "IdAllocINum",
             "IdAllocatorValue key mismatch"
-        );
-    }
-
-    #[test]
-    fn test_nodeipport_key() {
-        let key = KeyType::NodeIpPort("127.0.0.1:8080".to_owned());
-        assert_eq!(
-            key.to_string_key(),
-            "NodeIpPort127.0.0.1:8080",
-            "NodeIpPort key mismatch"
-        );
-    }
-
-    #[test]
-    fn test_volumeinfo_key() {
-        let key = KeyType::VolumeInfo("volume1".to_owned());
-        assert_eq!(
-            key.to_string_key(),
-            "VolumeInfovolume1",
-            "VolumeInfo key mismatch"
         );
     }
 
