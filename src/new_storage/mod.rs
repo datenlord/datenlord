@@ -8,4 +8,5 @@ mod backend;
 mod block;
 mod block_slice;
 pub mod error;
+mod memory_cache;
 pub mod policy;
