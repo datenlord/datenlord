@@ -23,6 +23,7 @@ impl Block {
     /// Creates a new `Block` with the given data.
     ///
     /// The length of the provided data must be equal to `BLOCK_SIZE`.
+    #[must_use]
     pub fn new(data: Vec<u8>) -> Self {
         debug_assert!(data.len() == BLOCK_SIZE);
         Block {
@@ -34,6 +35,7 @@ impl Block {
     }
 
     /// Returns the current version of the block.
+    #[must_use]
     pub fn version(&self) -> usize {
         self.version
     }
@@ -44,11 +46,13 @@ impl Block {
     }
 
     /// Returns the current pin count of the block.
+    #[must_use]
     pub fn pin_count(&self) -> u32 {
         self.pin_count
     }
 
     /// Returns whether the block is marked as dirty.
+    #[must_use]
     pub fn dirty(&self) -> bool {
         self.dirty
     }
