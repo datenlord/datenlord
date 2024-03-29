@@ -307,7 +307,7 @@ impl MetaData for S3MetaData {
         res
     }
 
-    #[instrument(skip(self), err, ret)]
+    #[instrument(skip(self, storage), err, ret)]
     async fn setattr_helper(
         &self,
         context: ReqContext,

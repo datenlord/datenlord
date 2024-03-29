@@ -9,6 +9,16 @@ use tracing::warn;
 use super::block::{Block, BLOCK_SIZE};
 use super::policy;
 
+/// The `CacheKey` struct represents a key used for caching file data.
+/// It consists of an inode number and a block ID.
+#[derive(Debug, Hash, Clone, Copy, PartialEq, Eq)]
+pub struct CacheKey {
+    /// The inode number.
+    pub ino: u64,
+    /// The block ID.
+    pub block_id: u64,
+}
+
 /// The `MemoryCache` struct is used to manage cache of blocks with a
 /// specified capacity.
 ///
