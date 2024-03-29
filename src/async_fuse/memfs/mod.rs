@@ -18,7 +18,6 @@ mod s3_node;
 
 /// Serializable types module
 pub mod serial;
-use std::os::unix::prelude::RawFd;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -1068,11 +1067,6 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         reply: ReplyBMap<'_>,
     ) -> nix::Result<usize> {
         reply.error_code(Errno::ENOSYS).await
-    }
-
-    /// Set fuse fd into `FileSystem`
-    async fn set_fuse_fd(&self, fuse_fd: RawFd) {
-        self.metadata.set_fuse_fd(fuse_fd).await;
     }
 }
 
