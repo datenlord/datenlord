@@ -18,6 +18,7 @@ pub struct BackendImpl {
 
 impl BackendImpl {
     /// Creates a new `BackendImpl` instance with the given operator.
+    #[must_use]
     pub fn new(operator: Operator) -> Self {
         Self { operator }
     }
