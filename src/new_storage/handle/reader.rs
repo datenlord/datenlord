@@ -9,7 +9,6 @@ use parking_lot::{Mutex, RwLock};
 use super::super::policy::LruPolicy;
 use super::super::{
     format_path, Backend, Block, BlockSlice, CacheKey, MemoryCache, StorageError, StorageResult,
-    BLOCK_SIZE,
 };
 
 /// Reader is a struct responsible for reading blocks of data from a backend
@@ -19,6 +18,8 @@ use super::super::{
 pub struct Reader {
     /// The inode number associated with the file being read.
     ino: u64,
+    /// The block size
+    block_size: usize,
     /// The `MemoryCache`
     cache: Arc<Mutex<MemoryCache<CacheKey, LruPolicy<CacheKey>>>>,
     /// The backend storage system.
@@ -28,14 +29,16 @@ pub struct Reader {
 }
 
 impl Reader {
-    /// Creates a new `Reader` instance with the given parameters.
+    /// Creates a new `Reader` instance.
     pub fn new(
         ino: u64,
+        block_size: usize,
         cache: Arc<Mutex<MemoryCache<CacheKey, LruPolicy<CacheKey>>>>,
         backend: Arc<dyn Backend>,
     ) -> Self {
         Reader {
             ino,
+            block_size,
             cache,
             backend,
             access_keys: Mutex::new(HashSet::new()),
@@ -69,7 +72,7 @@ impl Reader {
             block_id,
         };
         let content = {
-            let mut buf = vec![0; BLOCK_SIZE];
+            let mut buf = vec![0; self.block_size];
             self.backend
                 .read(&format_path(self.ino, block_id), &mut buf)
                 .await?;
@@ -131,21 +134,22 @@ mod tests {
     use super::super::writer::Writer;
     use super::*;
     use crate::new_storage::backend::backend_impl::memory_backend;
+    use crate::new_storage::block::BLOCK_SIZE;
 
     #[tokio::test]
     async fn test_reader() {
         let backend = Arc::new(memory_backend().unwrap());
-        let manger = Arc::new(Mutex::new(MemoryCache::new(10)));
+        let manger = Arc::new(Mutex::new(MemoryCache::new(10, BLOCK_SIZE)));
         let content = Bytes::from(vec![b'1'; BLOCK_SIZE]);
         let slice = BlockSlice::new(0, 0, content.len().cast());
 
         let b = Arc::clone(&backend);
-        let writer = Writer::new(1, Arc::clone(&manger), b);
+        let writer = Writer::new(1, BLOCK_SIZE, Arc::clone(&manger), b);
         writer.write(&content, &[slice]).await.unwrap();
         writer.flush().await;
         writer.close().await;
 
-        let reader = Reader::new(1, Arc::clone(&manger), backend);
+        let reader = Reader::new(1, BLOCK_SIZE, Arc::clone(&manger), backend);
         let slice = BlockSlice::new(0, 0, BLOCK_SIZE.cast());
         let mut buf = Vec::with_capacity(BLOCK_SIZE);
         let size = reader.read(&mut buf, &[slice]).await.unwrap();
