@@ -31,5 +31,5 @@ pub trait Storage {
     async fn remove(&self, ino: u64) -> StorageResult<()>;
 
     /// Closes a file specified by the file handle.
-    async fn close(&self, fh: u64);
+    async fn close(&self, fh: u64) -> StorageResult<()>;
 }

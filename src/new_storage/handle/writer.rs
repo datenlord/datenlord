@@ -6,6 +6,7 @@ use bytes::Bytes;
 use clippy_utilities::Cast;
 use parking_lot::{Mutex, RwLock};
 use tokio::sync::mpsc::{Receiver, Sender};
+use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use tracing::{error, warn};
 
@@ -28,7 +29,7 @@ pub struct Writer {
     /// The backend storage system.
     backend: Arc<dyn Backend>,
     /// The sender to send tasks to the write back worker.
-    write_back_sender: Sender<Arc<Task>>,
+    write_back_sender: Sender<Task>,
     /// The handle to the write back worker.
     write_back_handle: tokio::sync::Mutex<Option<JoinHandle<()>>>,
     /// The access keys.
@@ -42,9 +43,9 @@ enum Task {
     /// A pending write task.
     Pending(Arc<WriteTask>),
     /// A flush task.
-    Flush,
+    Flush(oneshot::Sender<Option<StorageError>>),
     /// A finish task.
-    Finish,
+    Finish(oneshot::Sender<Option<StorageError>>),
 }
 
 /// The `WriteTask` struct represents a write task
@@ -104,8 +105,9 @@ async fn write_back_block(task: Arc<WriteTask>) -> StorageResult<()> {
 }
 
 /// Write the blocks to the backend storage system concurrently.
-async fn write_blocks(tasks: &Vec<Arc<WriteTask>>) {
+async fn write_blocks(tasks: &Vec<Arc<WriteTask>>) -> Option<StorageError> {
     let mut handles = Vec::new();
+    let mut result = None;
     for task in tasks {
         let handle = tokio::spawn(write_back_block(Arc::clone(task)));
         handles.push(handle);
@@ -113,40 +115,53 @@ async fn write_blocks(tasks: &Vec<Arc<WriteTask>>) {
     for handle in handles {
         match handle.await {
             Err(e) => {
-                error!("Write back failed: {e}");
+                result = Some(StorageError::Internal(e.into()));
             }
             Ok(Err(e)) => {
-                error!("Storage error occurs when write back a block: {e}");
+                result = Some(e);
             }
             _ => {}
         }
     }
+    result
 }
 
 /// The `write_back_work` function represents the write back worker.
 #[allow(clippy::pattern_type_mismatch)] // Raised by `tokio::select!`
-async fn write_back_work(mut write_back_receiver: Receiver<Arc<Task>>) {
+async fn write_back_work(mut write_back_receiver: Receiver<Task>) {
     //  Create a timer to flush the cache every 200ms.
     let mut interval = tokio::time::interval(std::time::Duration::from_millis(200));
     let mut tasks = Vec::new();
+    let mut result = None;
     loop {
         tokio::select! {
             Some(task) = write_back_receiver.recv() => {
-                match task.as_ref() {
+                match task {
                     Task::Pending(task) => {
-                        tasks.push(Arc::clone(task));
+                        tasks.push(task);
                         if tasks.len() >= 10 {
-                            write_blocks(&tasks).await;
+                            let res = write_blocks(&tasks).await;
+                            if let Some(e) = res {
+                                result.get_or_insert(e);
+                            }
                             tasks.clear();
                         }
                     }
-                    Task::Flush => {
-                        write_blocks(&tasks).await;
+                    Task::Flush(tx) => {
+                        let res = write_blocks(&tasks).await;
                         tasks.clear();
+                        let res = result.take().or(res);
+                        if let Err(Some(e)) = tx.send(res) {
+                            error!("Failed to send storage error back to `Writer`, the error is {e}.");
+                        }
                     }
-                    Task::Finish => {
-                        write_blocks(&tasks).await;
+                    Task::Finish(tx) => {
+                        let res = write_blocks(&tasks).await;
                         tasks.clear();
+                        let res = result.take().or(res);
+                        if let Err(Some(e)) = tx.send(res) {
+                            error!("Failed to send storage error back to `Writer`, the error is {e}.");
+                        }
                         return;
                     }
                 }
@@ -264,7 +279,7 @@ impl Writer {
                 block,
             });
             self.write_back_sender
-                .send(Arc::new(Task::Pending(task)))
+                .send(Task::Pending(task))
                 .await
                 .unwrap_or_else(|_| {
                     panic!("Should not send command to write back task when the task quits.");
@@ -276,13 +291,19 @@ impl Writer {
 
     /// Flushes any pending writes to the file.
     #[inline]
-    pub async fn flush(&self) {
+    pub async fn flush(&self) -> StorageResult<()> {
+        let (tx, rx) = oneshot::channel();
+
         self.write_back_sender
-            .send(Arc::new(Task::Flush))
+            .send(Task::Flush(tx))
             .await
             .unwrap_or_else(|_| {
                 panic!("Should not send command to write back task when the task quits.");
             });
+
+        rx.await
+            .unwrap_or_else(|_| panic!("The sender should not be closed."))
+            .map_or(Ok(()), Err)
     }
 
     /// Extends the file from the old size to the new size.
@@ -299,9 +320,11 @@ impl Writer {
     }
 
     /// Closes the writer associated with the file handle.
-    pub async fn close(&self) {
+    pub async fn close(&self) -> StorageResult<()> {
+        let (tx, rx) = oneshot::channel();
+
         self.write_back_sender
-            .send(Arc::new(Task::Finish))
+            .send(Task::Finish(tx))
             .await
             .unwrap_or_else(|_| {
                 panic!("Should not send command to write back task when the task quits.");
@@ -318,10 +341,17 @@ impl Writer {
             .unwrap_or_else(|e| {
                 panic!("Failed to join the write back task: {e}");
             });
-        let keys = self.access_keys.lock();
-        for key in keys.iter() {
-            self.cache.lock().remove(key);
+
+        {
+            let keys = self.access_keys.lock();
+            for key in keys.iter() {
+                self.cache.lock().remove(key);
+            }
         }
+
+        rx.await
+            .unwrap_or_else(|_| panic!("The sender should not be closed."))
+            .map_or(Ok(()), Err)
     }
 }
 
@@ -343,7 +373,7 @@ mod tests {
         writer.write(&content, &[slice]).await.unwrap();
         let memory_size = manger.lock().len();
         assert_eq!(memory_size, 1);
-        writer.close().await;
+        writer.close().await.unwrap();
         let memory_size = manger.lock().len();
         assert_eq!(memory_size, 0);
     }

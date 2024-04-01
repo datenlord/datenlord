@@ -106,7 +106,7 @@ async fn seq_read(storage: Arc<StorageManager>, ino: u64) {
         assert_eq!(buf.len(), IO_SIZE);
         check_data(&buf, i as u64);
     }
-    storage.close(fh).await;
+    storage.close(fh).await.unwrap();
 }
 
 async fn create_a_file(storage: Arc<StorageManager>, ino: u64) {
@@ -123,7 +123,7 @@ async fn create_a_file(storage: Arc<StorageManager>, ino: u64) {
             .unwrap();
     }
     storage.flush(ino, fh).await.unwrap();
-    storage.close(fh).await;
+    storage.close(fh).await.unwrap();
     let end = std::time::Instant::now();
     let throughput = TOTAL_SIZE.lossy_cast() / (end - start).as_secs_f64();
     println!(
@@ -341,7 +341,7 @@ async fn test_truncate() {
     let fh = CURRENT_FD.fetch_add(1, Ordering::SeqCst);
     storage.open(ino, fh, OpenFlag::ReadAndWrite);
     storage.write(ino, fh, 0, &content).await.unwrap();
-    storage.close(fh).await;
+    storage.close(fh).await.unwrap();
     let size = backend
         .read(&format_path(ino, 1), &mut buffer)
         .await
@@ -404,7 +404,7 @@ async fn test_remove() {
     let fh = CURRENT_FD.fetch_add(1, Ordering::SeqCst);
     storage.open(ino, fh, OpenFlag::ReadAndWrite);
     storage.write(ino, fh, 0, &content).await.unwrap();
-    storage.close(fh).await;
+    storage.close(fh).await.unwrap();
 
     storage.remove(ino).await.unwrap();
 
