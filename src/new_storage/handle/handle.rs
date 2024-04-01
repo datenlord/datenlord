@@ -154,28 +154,31 @@ impl FileHandle {
     }
 
     /// Flushes any pending writes to the file.
-    pub async fn flush(&self) {
+    pub async fn flush(&self) -> StorageResult<()> {
         let writer = self.writer();
-        writer.flush().await;
+        writer.flush().await?;
+        Ok(())
     }
 
     /// Closes the writer associated with the file handle.
-    async fn close_writer(&self) {
+    async fn close_writer(&self) -> StorageResult<()> {
         let writer = {
             let handle = self.inner.read();
             handle.writer.clone()
         };
         if let Some(writer) = writer {
-            writer.close().await;
+            writer.close().await?;
         }
+        Ok(())
     }
 
     /// Closes the file handle, closing both the reader and writer.
-    pub async fn close(&self) {
-        self.close_writer().await;
+    pub async fn close(&self) -> StorageResult<()> {
+        let res = self.close_writer().await;
         if let Some(reader) = self.inner.read().reader.as_ref() {
             reader.close();
         }
+        res
     }
 }
 
@@ -281,6 +284,6 @@ mod tests {
         file_handle.write(0, &buf).await.unwrap();
         let read_buf = file_handle.read(0, 4).await.unwrap();
         assert_eq!(read_buf, buf);
-        file_handle.flush().await;
+        file_handle.flush().await.unwrap();
     }
 }
