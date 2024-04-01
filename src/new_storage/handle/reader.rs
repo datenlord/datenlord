@@ -146,8 +146,8 @@ mod tests {
         let b = Arc::clone(&backend);
         let writer = Writer::new(1, BLOCK_SIZE, Arc::clone(&manger), b);
         writer.write(&content, &[slice]).await.unwrap();
-        writer.flush().await;
-        writer.close().await;
+        writer.flush().await.unwrap();
+        writer.close().await.unwrap();
 
         let reader = Reader::new(1, BLOCK_SIZE, Arc::clone(&manger), backend);
         let slice = BlockSlice::new(0, 0, BLOCK_SIZE.cast());

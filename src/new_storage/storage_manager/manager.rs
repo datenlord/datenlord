@@ -65,16 +65,19 @@ impl Storage for StorageManager {
     #[inline]
     async fn flush(&self, _ino: u64, fh: u64) -> StorageResult<()> {
         let handle = self.get_handle(fh);
-        handle.flush().await;
+        handle.flush().await?;
         Ok(())
     }
 
     /// Closes a file specified by the file handle.
     #[inline]
-    async fn close(&self, fh: u64) {
-        let handle = self.get_handle(fh);
-        handle.close().await;
-        let _handle = self.handles.remove_handle(fh);
+    async fn close(&self, fh: u64) -> StorageResult<()> {
+        let handle = self
+            .handles
+            .remove_handle(fh)
+            .unwrap_or_else(|| panic!("Cannot close a file that is not open."));
+        handle.close().await?;
+        Ok(())
     }
 
     /// Truncates a file specified by the inode number to a new size, given the
@@ -114,7 +117,7 @@ impl Storage for StorageManager {
             );
             let fill_content = vec![0; fill_size];
             handle.write(new_size, &fill_content).await?;
-            handle.close().await;
+            handle.close().await?;
         }
 
         Ok(())
