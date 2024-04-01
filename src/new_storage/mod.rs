@@ -16,7 +16,7 @@ mod storage_trait;
 mod utils;
 
 pub use backend::{Backend, BackendImpl};
-pub use block::{Block, BLOCK_SIZE};
+pub use block::Block;
 pub use block_slice::{offset_to_slice, BlockSlice};
 pub use error::{StorageError, StorageResult};
 pub use handle::handle::{FileHandle, Handles, OpenFlag};
