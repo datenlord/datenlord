@@ -1,6 +1,7 @@
 //! The definition of the `Block`.
 
-/// The size of a block in bytes.
+/// The size of a block in bytes (for test).
+#[cfg(test)]
 pub const BLOCK_SIZE: usize = 4 * 1024 * 1024;
 
 /// Represents a block of data.
@@ -20,14 +21,11 @@ pub struct Block {
 }
 
 impl Block {
-    /// Creates a new `Block` with the given data.
-    ///
-    /// The length of the provided data must be equal to `BLOCK_SIZE`.
+    /// Creates a new `Block`.
     #[must_use]
-    pub fn new(data: Vec<u8>) -> Self {
-        debug_assert!(data.len() == BLOCK_SIZE);
+    pub fn zeroed(size: usize) -> Self {
         Block {
-            data,
+            data: vec![0; size],
             pin_count: 0,
             dirty: false,
             version: 0,

@@ -9,7 +9,7 @@ use parking_lot::Mutex;
 use super::super::policy::LruPolicy;
 use super::super::{
     format_file_path, format_path, Backend, CacheKey, FileHandle, Handles, MemoryCache, OpenFlag,
-    Storage, StorageResult, BLOCK_SIZE,
+    Storage, StorageResult,
 };
 
 /// The `Storage` struct represents a storage system that implements the
@@ -17,6 +17,8 @@ use super::super::{
 /// backend storage.
 #[derive(Debug)]
 pub struct StorageManager {
+    /// The size of a block
+    block_size: usize,
     /// The file handles.
     handles: Arc<Handles>,
     /// The cache manager.
@@ -34,6 +36,7 @@ impl Storage for StorageManager {
         let handle = FileHandle::new(
             fh,
             ino,
+            self.block_size,
             Arc::clone(&self.cache),
             Arc::clone(&self.backend),
             flag,
@@ -84,11 +87,11 @@ impl Storage for StorageManager {
         }
 
         // new_size < old_size, we may need to remove some blocks
-        let end = (old_size - 1).overflow_div(BLOCK_SIZE.cast::<u64>()) + 1;
+        let end = (old_size - 1).overflow_div(self.block_size.cast::<u64>()) + 1;
         let start = if new_size == 0 {
             0
         } else {
-            (new_size - 1).overflow_div(BLOCK_SIZE.cast::<u64>()) + 1
+            (new_size - 1).overflow_div(self.block_size.cast::<u64>()) + 1
         };
         for block_id in start..end {
             self.backend.remove(&format_path(ino, block_id)).await?;
@@ -96,14 +99,15 @@ impl Storage for StorageManager {
 
         // Fill zeros
         if start > 0 {
-            let fill_offset_in_block = new_size.cast::<usize>() % BLOCK_SIZE;
-            let fill_size = BLOCK_SIZE - fill_offset_in_block;
-            if fill_size == BLOCK_SIZE {
+            let fill_offset_in_block = new_size.cast::<usize>() % self.block_size;
+            let fill_size = self.block_size - fill_offset_in_block;
+            if fill_size == self.block_size {
                 return Ok(());
             }
             let handle = FileHandle::new(
                 0,
                 ino,
+                self.block_size,
                 Arc::clone(&self.cache),
                 Arc::clone(&self.backend),
                 OpenFlag::Write,
@@ -124,13 +128,15 @@ impl Storage for StorageManager {
 }
 
 impl StorageManager {
-    /// Creates a new `Storage` instance with the provided cache and backend.
+    /// Creates a new `Storage` instance.
     #[inline]
     pub fn new(
         cache: Arc<Mutex<MemoryCache<CacheKey, LruPolicy<CacheKey>>>>,
         backend: Arc<dyn Backend>,
+        block_size: usize,
     ) -> Self {
         StorageManager {
+            block_size,
             handles: Arc::new(Handles::new()),
             cache,
             backend,

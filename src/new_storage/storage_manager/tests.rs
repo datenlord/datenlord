@@ -22,7 +22,8 @@ use rand::{thread_rng, Rng};
 use rand_distr::Zipf;
 
 use super::super::backend::memory_backend::MemoryBackend;
-use super::super::{Backend, MemoryCache, OpenFlag, Storage, StorageManager, BLOCK_SIZE};
+use super::super::{Backend, MemoryCache, OpenFlag, Storage, StorageManager};
+use crate::new_storage::block::BLOCK_SIZE;
 use crate::new_storage::format_path;
 
 // Bench time : default is 30s
@@ -143,8 +144,8 @@ async fn concurrency_read() {
     println!("In order to keep the cache warm");
     let backend = Arc::new(MemoryBackend::new(BACKEND_LATENCY));
     // Only 1 file, 256 blocks , the cache will never miss
-    let manager = Arc::new(Mutex::new(MemoryCache::new(500)));
-    let storage = Arc::new(StorageManager::new(manager, backend));
+    let manager = Arc::new(Mutex::new(MemoryCache::new(500, BLOCK_SIZE)));
+    let storage = Arc::new(StorageManager::new(manager, backend, BLOCK_SIZE));
     create_a_file(Arc::clone(&storage), 10).await;
     warm_up(Arc::clone(&storage), 10).await;
     // Concurrency read ,thread num : 1,2,4,8
@@ -183,8 +184,11 @@ async fn concurrency_read_with_write() {
     );
     let backend = Arc::new(MemoryBackend::new(BACKEND_LATENCY));
     // Only 1 file, 256 blocks , the cache will never miss
-    let manager = Arc::new(Mutex::new(MemoryCache::new(2 * TOTAL_TEST_BLOCKS + 10)));
-    let storage = Arc::new(StorageManager::new(manager, backend));
+    let manager = Arc::new(Mutex::new(MemoryCache::new(
+        2 * TOTAL_TEST_BLOCKS + 10,
+        BLOCK_SIZE,
+    )));
+    let storage = Arc::new(StorageManager::new(manager, backend, BLOCK_SIZE));
     create_a_file(Arc::clone(&storage), 10).await;
     warm_up(Arc::clone(&storage), 10).await;
     // Concurrency read ,thread num : 1,2,4,8
@@ -265,8 +269,8 @@ async fn real_workload() {
     println!("Real workload test");
     let backend = Arc::new(MemoryBackend::new(BACKEND_LATENCY));
     // A 4GB cache
-    let manager = Arc::new(Mutex::new(MemoryCache::new(1024 + 10)));
-    let storage = Arc::new(StorageManager::new(manager, backend));
+    let manager = Arc::new(Mutex::new(MemoryCache::new(1024 + 10, BLOCK_SIZE)));
+    let storage = Arc::new(StorageManager::new(manager, backend, BLOCK_SIZE));
     // 100 is for scan worker
     create_a_file(Arc::clone(&storage), 100).await;
     let mut create_tasks = vec![];
@@ -324,10 +328,10 @@ async fn storage_real_workload_test() {
 
 #[tokio::test]
 async fn test_truncate() {
-    let cache = Arc::new(Mutex::new(MemoryCache::new(1024)));
+    let cache = Arc::new(Mutex::new(MemoryCache::new(1024, BLOCK_SIZE)));
     let backend = Arc::new(MemoryBackend::new(BACKEND_LATENCY));
     let backend_clone = Arc::clone(&backend);
-    let storage = StorageManager::new(cache, backend_clone);
+    let storage = StorageManager::new(cache, backend_clone, BLOCK_SIZE);
 
     let content = vec![6_u8; BLOCK_SIZE * 2];
     let ino = 0;
@@ -388,10 +392,10 @@ async fn test_truncate() {
 
 #[tokio::test]
 async fn test_remove() {
-    let cache = Arc::new(Mutex::new(MemoryCache::new(1024)));
+    let cache = Arc::new(Mutex::new(MemoryCache::new(1024, BLOCK_SIZE)));
     let backend = Arc::new(MemoryBackend::new(BACKEND_LATENCY));
     let backend_clone = Arc::clone(&backend);
-    let storage = StorageManager::new(cache, backend_clone);
+    let storage = StorageManager::new(cache, backend_clone, BLOCK_SIZE);
 
     let content = vec![6_u8; BLOCK_SIZE * 2];
     let ino = 0;

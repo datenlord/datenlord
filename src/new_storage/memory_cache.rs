@@ -6,7 +6,7 @@ use std::sync::Arc;
 use parking_lot::RwLock;
 use tracing::warn;
 
-use super::block::{Block, BLOCK_SIZE};
+use super::block::Block;
 use super::policy;
 
 /// The `CacheKey` struct represents a key used for caching file data.
@@ -43,15 +43,15 @@ where
     K: Eq + std::hash::Hash + Clone + std::fmt::Debug,
     P: policy::EvictPolicy<K>,
 {
-    /// Creates a new `CacheManager` with the specified capacity.
+    /// Creates a new `CacheManager` with the specified capacity and block size.
     ///
-    /// The capacity is in blocks.
+    /// The `capacity` is in blocks, and `block_size` is in bytes.
     #[inline]
     #[must_use]
-    pub fn new(capacity: usize) -> Self {
+    pub fn new(capacity: usize, block_size: usize) -> Self {
         let mut free_list = VecDeque::with_capacity(capacity);
         for _ in 0..capacity {
-            let block = Arc::new(RwLock::new(Block::new(vec![0; BLOCK_SIZE])));
+            let block = Arc::new(RwLock::new(Block::zeroed(block_size)));
             free_list.push_back(block);
         }
         MemoryCache {
@@ -211,9 +211,10 @@ where
 mod tests {
     use super::super::policy::LruPolicy;
     use super::*;
+    use crate::new_storage::block::BLOCK_SIZE;
 
     fn prepare_cache(capacity: usize) -> MemoryCache<usize, LruPolicy<usize>> {
-        MemoryCache::new(capacity)
+        MemoryCache::new(capacity, BLOCK_SIZE)
     }
 
     #[test]

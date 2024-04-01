@@ -8,7 +8,6 @@ use clippy_utilities::Cast;
 use parking_lot::{Mutex, RwLock};
 
 use super::super::backend::Backend;
-use super::super::block::BLOCK_SIZE;
 use super::super::block_slice::offset_to_slice;
 use super::super::error::StorageResult;
 use super::super::policy::LruPolicy;
@@ -38,11 +37,12 @@ pub enum OpenFlag {
 }
 
 impl FileHandleInner {
-    /// Creates a new `FileHandleInner` instance with the given parameters.
+    /// Creates a new `FileHandleInner` instance.
     #[inline]
     #[allow(clippy::needless_pass_by_value)]
     pub fn new(
         ino: u64,
+        block_size: usize,
         cache: Arc<Mutex<MemoryCache<CacheKey, LruPolicy<CacheKey>>>>,
         backend: Arc<dyn Backend>,
         flag: OpenFlag,
@@ -50,6 +50,7 @@ impl FileHandleInner {
         let reader = match flag {
             OpenFlag::Read | OpenFlag::ReadAndWrite => Some(Arc::new(Reader::new(
                 ino,
+                block_size,
                 Arc::clone(&cache),
                 Arc::clone(&backend),
             ))),
@@ -58,6 +59,7 @@ impl FileHandleInner {
         let writer = match flag {
             OpenFlag::Write | OpenFlag::ReadAndWrite => Some(Arc::new(Writer::new(
                 ino,
+                block_size,
                 Arc::clone(&cache),
                 Arc::clone(&backend),
             ))),
@@ -73,22 +75,29 @@ impl FileHandleInner {
 pub struct FileHandle {
     /// The file handle.
     fh: u64,
+    /// The block size in bytes
+    block_size: usize,
     /// The inner file handle
     inner: Arc<RwLock<FileHandleInner>>,
 }
 
 impl FileHandle {
-    /// Creates a new `FileHandle` instance with the given parameters.
+    /// Creates a new `FileHandle` instance.
     pub fn new(
         fh: u64,
         ino: u64,
+        block_size: usize,
         cache: Arc<Mutex<MemoryCache<CacheKey, LruPolicy<CacheKey>>>>,
         backend: Arc<dyn Backend>,
         flag: OpenFlag,
     ) -> Self {
-        let inner = FileHandleInner::new(ino, cache, backend, flag);
+        let inner = FileHandleInner::new(ino, block_size, cache, backend, flag);
         let inner = Arc::new(RwLock::new(inner));
-        FileHandle { fh, inner }
+        FileHandle {
+            fh,
+            block_size,
+            inner,
+        }
     }
 
     /// Returns the file handle.
@@ -125,7 +134,7 @@ impl FileHandle {
     /// given length.
     pub async fn read(&self, offset: u64, len: u64) -> StorageResult<Vec<u8>> {
         let reader = self.reader();
-        let slices = offset_to_slice(BLOCK_SIZE.cast(), offset, len);
+        let slices = offset_to_slice(self.block_size.cast(), offset, len);
         let mut buf = Vec::with_capacity(len.cast());
         reader.read(&mut buf, &slices).await?;
         Ok(buf)
@@ -134,7 +143,7 @@ impl FileHandle {
     /// Writes data to the file starting at the given offset.
     pub async fn write(&self, offset: u64, buf: &[u8]) -> StorageResult<()> {
         let writer = self.writer();
-        let slices = offset_to_slice(BLOCK_SIZE.cast(), offset, buf.len().cast());
+        let slices = offset_to_slice(self.block_size.cast(), offset, buf.len().cast());
         writer.write(buf, &slices).await
     }
 
@@ -250,18 +259,21 @@ impl Handles {
 mod tests {
     use super::*;
     use crate::new_storage::backend::backend_impl::tmp_fs_backend;
+    use crate::new_storage::block::BLOCK_SIZE;
 
     #[tokio::test]
     async fn test_file_handle() {
-        let cache = Arc::new(Mutex::new(MemoryCache::new(100)));
+        let cache = Arc::new(Mutex::new(MemoryCache::new(100, BLOCK_SIZE)));
         let backend = Arc::new(tmp_fs_backend().unwrap());
         let handles = Arc::new(Handles::new());
         let ino = 1;
         let fh = 1;
-        let file_handle = FileHandleInner::new(ino, cache, backend, OpenFlag::ReadAndWrite);
+        let file_handle =
+            FileHandleInner::new(ino, BLOCK_SIZE, cache, backend, OpenFlag::ReadAndWrite);
         let file_handle = Arc::new(RwLock::new(file_handle));
         let file_handle = FileHandle {
             fh,
+            block_size: BLOCK_SIZE,
             inner: file_handle,
         };
         handles.add_handle(file_handle.clone());

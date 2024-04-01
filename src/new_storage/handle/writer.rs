@@ -11,7 +11,7 @@ use tracing::{error, warn};
 
 use super::super::policy::LruPolicy;
 use super::super::{
-    format_path, offset_to_slice, Backend, Block, BlockSlice, CacheKey, MemoryCache, BLOCK_SIZE,
+    format_path, offset_to_slice, Backend, Block, BlockSlice, CacheKey, MemoryCache,
 };
 use crate::new_storage::{StorageError, StorageResult};
 
@@ -21,6 +21,8 @@ use crate::new_storage::{StorageError, StorageResult};
 pub struct Writer {
     /// The inode number associated with the writer
     ino: u64,
+    /// The block size
+    block_size: usize,
     /// The cache manager.
     cache: Arc<Mutex<MemoryCache<CacheKey, LruPolicy<CacheKey>>>>,
     /// The backend storage system.
@@ -158,18 +160,19 @@ async fn write_back_work(mut write_back_receiver: Receiver<Arc<Task>>) {
 }
 
 impl Writer {
-    /// Create a new `Writer` with the given inode number, cache manager, and
-    /// backend.
+    /// Create a new `Writer`.
     #[inline]
     #[must_use]
     pub fn new(
         ino: u64,
+        block_size: usize,
         cache: Arc<Mutex<MemoryCache<CacheKey, LruPolicy<CacheKey>>>>,
         backend: Arc<dyn Backend>,
     ) -> Self {
         let (tx, rx) = tokio::sync::mpsc::channel(100);
         let mut writer = Writer {
             ino,
+            block_size,
             cache,
             backend,
             write_back_sender: tx,
@@ -210,7 +213,7 @@ impl Writer {
         // There is a gap between the block is created and the content is read from the
         // backend. But according to the current design, concurrency
         // read/write is not supported.
-        let mut buf = vec![0; BLOCK_SIZE];
+        let mut buf = vec![0; self.block_size];
         self.backend.read(&path, &mut buf).await?;
         let block = {
             let mut cache = self.cache.lock();
@@ -286,7 +289,7 @@ impl Writer {
     /// It is only called by the truncate method in the storage system.
     #[inline]
     pub async fn extend(&self, old_size: u64, new_size: u64) -> StorageResult<()> {
-        let slices = offset_to_slice(BLOCK_SIZE.cast(), old_size, new_size - old_size);
+        let slices = offset_to_slice(self.block_size.cast(), old_size, new_size - old_size);
         for slice in slices {
             let buf = vec![0_u8; slice.size.cast()];
             self.write(&buf, &[slice]).await?;
@@ -327,13 +330,14 @@ impl Writer {
 mod tests {
     use super::*;
     use crate::new_storage::backend::backend_impl::memory_backend;
+    use crate::new_storage::block::BLOCK_SIZE;
 
     const IO_SIZE: usize = 128 * 1024;
     #[tokio::test]
     async fn test_writer() {
         let backend = Arc::new(memory_backend().unwrap());
-        let manger = Arc::new(Mutex::new(MemoryCache::new(10)));
-        let writer = Writer::new(1, Arc::clone(&manger), backend);
+        let manger = Arc::new(Mutex::new(MemoryCache::new(10, BLOCK_SIZE)));
+        let writer = Writer::new(1, BLOCK_SIZE, Arc::clone(&manger), backend);
         let content = Bytes::from_static(&[b'1'; IO_SIZE]);
         let slice = BlockSlice::new(0, 0, content.len().cast());
         writer.write(&content, &[slice]).await.unwrap();
