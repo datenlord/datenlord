@@ -107,7 +107,7 @@ pub trait MetaData {
     async fn getattr(&self, ino: u64) -> DatenLordResult<(Duration, FuseAttr)>;
 
     /// Open a file or directory by ino and flags
-    async fn open(&self, context: ReqContext, ino: u64, flags: u32) -> DatenLordResult<RawFd>;
+    async fn open(&self, context: ReqContext, ino: u64, flags: u32) -> DatenLordResult<u64>;
 
     /// Forget a i-node by ino
     /// # Return
@@ -130,7 +130,7 @@ pub trait MetaData {
     async fn readlink(&self, ino: u64) -> DatenLordResult<Vec<u8>>;
 
     /// Helper function to opendir
-    async fn opendir(&self, context: ReqContext, ino: u64, flags: u32) -> DatenLordResult<RawFd>;
+    async fn opendir(&self, context: ReqContext, ino: u64, flags: u32) -> DatenLordResult<u64>;
 
     /// Helper function to readdir
     async fn readdir(
