@@ -502,7 +502,7 @@ impl<F: FileSystem + Send + Sync + 'static> Session<F> {
 /// This calls the appropriate filesystem operation method for the
 /// request and sends back the returned reply to the kernel
 #[allow(clippy::too_many_lines)]
-#[instrument(name="request",skip(req, file, fs), fields(fuse_id =req.unique(),ino=req.nodeid()),ret)]
+#[instrument(name="request",skip(req, file, fs), fields(fuse_id =req.unique(),ino=req.nodeid(), op=%req.operation()),ret)]
 async fn dispatch<'a>(
     req: &'a Request<'a>,
     file: &mut File,
