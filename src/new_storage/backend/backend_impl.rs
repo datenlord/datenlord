@@ -1,12 +1,72 @@
 //! The general backend implementation with `openDAL`
 
 use async_trait::async_trait;
+use datenlord::config::{StorageParams, StorageS3Config};
+use datenlord::metrics::DATENLORD_REGISTRY;
+use opendal::layers::PrometheusLayer;
 use opendal::raw::oio::ReadExt;
-use opendal::services::{Fs, Memory};
+use opendal::services::{Fs, Memory, S3};
 use opendal::{ErrorKind, Operator};
+use prometheus::{exponential_buckets, linear_buckets};
 use tokio::io::AsyncWriteExt;
 
 use super::{Backend, StorageResult};
+
+/// A builder to build `BackendWrapper`.
+#[derive(Debug)]
+pub struct BackendBuilder {
+    /// The storage config
+    config: StorageParams,
+}
+
+impl BackendBuilder {
+    /// Create a backend builder.
+    #[must_use]
+    pub fn new(config: StorageParams) -> Self {
+        Self { config }
+    }
+
+    /// Build the backend.
+    #[allow(clippy::expect_used, clippy::unwrap_in_result)] // `.expect()` here are ensured not to panic.
+    pub fn build(self) -> opendal::Result<BackendImpl> {
+        let BackendBuilder { config } = self;
+
+        let layer = PrometheusLayer::with_registry(DATENLORD_REGISTRY.clone())
+            .bytes_total_buckets(
+                exponential_buckets(1024.0, 2.0, 10).expect("Arguments are legal."),
+            )
+            .requests_duration_seconds_buckets(
+                linear_buckets(0.005, 0.005, 20).expect("Arguments are legal."),
+            );
+
+        let operator = match config {
+            StorageParams::S3(StorageS3Config {
+                ref endpoint_url,
+                ref access_key_id,
+                ref secret_access_key,
+                ref bucket_name,
+            }) => {
+                let mut builder = S3::default();
+
+                builder
+                    .endpoint(endpoint_url)
+                    .access_key_id(access_key_id)
+                    .secret_access_key(secret_access_key)
+                    .region("auto")
+                    .bucket(bucket_name);
+
+                Operator::new(builder)?.layer(layer).finish()
+            }
+            StorageParams::Fs(ref root) => {
+                let mut builder = Fs::default();
+                builder.root(root);
+                Operator::new(builder)?.layer(layer).finish()
+            }
+        };
+
+        Ok(BackendImpl::new(operator))
+    }
+}
 
 /// The `BackendImpl` struct represents a backend storage system that implements
 /// the `Backend` trait.

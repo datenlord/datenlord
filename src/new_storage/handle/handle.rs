@@ -5,6 +5,7 @@ use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use clippy_utilities::Cast;
+use nix::fcntl::OFlag;
 use parking_lot::{Mutex, RwLock};
 
 use super::super::backend::Backend;
@@ -34,6 +35,21 @@ pub enum OpenFlag {
     Write,
     /// Open the file for reading and writing.
     ReadAndWrite,
+}
+
+impl From<u32> for OpenFlag {
+    fn from(value: u32) -> Self {
+        let write_flags = OFlag::O_APPEND | OFlag::O_WRONLY;
+
+        let flags = OFlag::from_bits_truncate(value.cast());
+        if flags.intersects(write_flags) {
+            Self::Write
+        } else if flags.intersects(OFlag::O_RDWR) {
+            Self::ReadAndWrite
+        } else {
+            Self::Read
+        }
+    }
 }
 
 impl FileHandleInner {
@@ -155,9 +171,13 @@ impl FileHandle {
 
     /// Flushes any pending writes to the file.
     pub async fn flush(&self) -> StorageResult<()> {
-        let writer = self.writer();
-        writer.flush().await?;
-        Ok(())
+        let writer = self.inner.read().writer.clone();
+        if let Some(writer) = writer {
+            writer.flush().await?;
+            Ok(())
+        } else {
+            Ok(())
+        }
     }
 
     /// Closes the writer associated with the file handle.

@@ -15,8 +15,10 @@ mod storage_manager;
 mod storage_trait;
 mod utils;
 
-pub use backend::{Backend, BackendImpl};
+pub use backend::{Backend, BackendBuilder, BackendImpl};
 pub use block::Block;
+#[cfg(test)]
+pub use block::BLOCK_SIZE;
 pub use block_slice::{offset_to_slice, BlockSlice};
 pub use error::{StorageError, StorageResult};
 pub use handle::handle::{FileHandle, Handles, OpenFlag};

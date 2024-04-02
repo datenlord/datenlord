@@ -45,8 +45,6 @@ pub trait Node: Sized {
     fn get_lookup_count(&self) -> i64;
     /// Decrease node lookup count
     fn dec_lookup_count_by(&self, nlookup: u64) -> i64;
-    /// Duplicate fd
-    async fn dup_fd(&self, oflags: OFlag) -> DatenLordResult<RawFd>;
     /// Create symlink in a directory
     async fn create_child_symlink<T: MetaTxn + ?Sized>(
         &mut self,

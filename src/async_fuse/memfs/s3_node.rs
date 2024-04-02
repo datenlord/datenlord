@@ -2,7 +2,7 @@
 
 use std::os::unix::io::RawFd;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::Arc;
 use std::time::SystemTime;
 
@@ -26,9 +26,6 @@ use crate::async_fuse::fuse::fuse_reply::StatFsParam;
 use crate::async_fuse::fuse::protocol::{INum, FUSE_ROOT_ID};
 use crate::async_fuse::util::build_error_result_from_errno;
 use crate::common::error::DatenLordResult;
-
-/// S3's available fd count
-pub static GLOBAL_S3_FD_CNT: AtomicU32 = AtomicU32::new(4);
 
 /// A file node data or a directory node data
 #[derive(Debug)]
@@ -161,13 +158,6 @@ impl S3Node {
             kv_engine: Arc::clone(&parent.kv_engine),
             k8s_node_id: Arc::clone(&parent.k8s_node_id),
         }
-    }
-
-    #[allow(clippy::unused_self)]
-    /// Get new fd
-    fn new_fd(&self) -> u32 {
-        // Add global fd counter
-        GLOBAL_S3_FD_CNT.fetch_add(1, Ordering::SeqCst)
     }
 
     /// Update mtime and ctime to now
@@ -355,11 +345,6 @@ impl Node for S3Node {
     /// If node is marked as deferred deletion
     fn is_deferred_deletion(&self) -> bool {
         self.deferred_deletion.load(Ordering::SeqCst)
-    }
-
-    /// Duplicate fd
-    async fn dup_fd(&self, _oflags: OFlag) -> DatenLordResult<RawFd> {
-        Ok(self.new_fd().cast())
     }
 
     /// Create symlink in a directory
