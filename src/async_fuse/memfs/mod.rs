@@ -275,8 +275,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         match self.metadata.open(context, ino, flags).await {
             Ok(fd) => {
                 self.storage.open(ino, fd.cast(), flags.into());
-                reply.opened(fd.cast(), flags).await // TODO: Fix the type
-                                                     // of fd
+                reply.opened(fd, flags).await
             }
             Err(e) => {
                 debug!("open() failed, the error is: {:?}", e);
@@ -721,7 +720,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
                         ino={}  with flags={:?}, the new fd={}",
                     ino, o_flags, new_fd,
                 );
-                reply.opened(new_fd.cast(), flags).await
+                reply.opened(new_fd, flags).await
             }
             Err(e) => {
                 debug!(
