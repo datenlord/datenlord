@@ -1,14 +1,17 @@
 //! The backend implementation.
 
+use std::time::Duration;
+
 use async_trait::async_trait;
 use clippy_utilities::OverflowArithmetic;
 use datenlord::config::{StorageParams, StorageS3Config};
 use datenlord::metrics::DATENLORD_REGISTRY;
 use futures::{stream, AsyncReadExt, AsyncWriteExt, StreamExt};
-use opendal::layers::PrometheusLayer;
+use opendal::layers::{ConcurrentLimitLayer, PrometheusLayer};
 use opendal::services::{Fs, S3};
 use opendal::{ErrorKind, Operator};
 use prometheus::{exponential_buckets, linear_buckets};
+use tokio::time::sleep;
 
 use crate::async_fuse::fuse::protocol::INum;
 use crate::storage::error::StorageResult;
@@ -42,7 +45,7 @@ impl BackendBuilder {
 
     /// Build the backend.
     #[allow(clippy::expect_used, clippy::unwrap_in_result)] // `.expect()` here are ensured not to panic.
-    pub fn build(self) -> opendal::Result<Backend> {
+    pub async fn build(self) -> opendal::Result<Backend> {
         let BackendBuilder { config, block_size } = self;
 
         let layer = PrometheusLayer::with_registry(DATENLORD_REGISTRY.clone())
@@ -66,10 +69,23 @@ impl BackendBuilder {
                     .endpoint(endpoint_url)
                     .access_key_id(access_key_id)
                     .secret_access_key(secret_access_key)
-                    .region("auto")
                     .bucket(bucket_name);
 
-                Operator::new(builder)?.layer(layer).finish()
+                // Auto detect region
+                let region = match S3::detect_region(endpoint_url, bucket_name).await {
+                    Some(region) => region,
+                    None => "auto".to_owned(),
+                };
+                builder.region(region.as_str());
+
+                // For aws s3 issue: https://repost.aws/questions/QU_F-UC6-fSdOYzp-gZSDTvQ/receiving-s3-503-slow-down-responses
+                // 3,500 PUT/COPY/POST/DELETE or 5,500 GET/HEAD requests per second per prefix in a bucket
+                let conncurrency_layer = ConcurrentLimitLayer::new(3500);
+
+                Operator::new(builder)?
+                    .layer(layer)
+                    .layer(conncurrency_layer)
+                    .finish()
             }
             StorageParams::Fs(ref root) => {
                 let mut builder = Fs::default();
@@ -155,6 +171,11 @@ impl Storage for Backend {
     }
 
     async fn store(&self, ino: INum, block_id: usize, block: Block) -> StorageResult<()> {
+        /// The maximum number of retries for writing a block.
+        const MAX_RETRIES: usize = 3;
+        /// The delay between retries for writing a block.
+        const RETRY_DELAY: Duration = Duration::from_secs(1);
+
         let path = get_block_path(ino, block_id);
 
         let block_start = block.start();
@@ -163,9 +184,20 @@ impl Storage for Backend {
         if block_start == 0 && block_end == self.block_size {
             // To store a whole block
             let mut writer = self.operator.writer(&path).await?;
-            writer.write_all(block.as_slice()).await?;
-            writer.close().await?;
-            return Ok(());
+
+            // Retry for a few times if the write fails.
+            for attempt in 0..MAX_RETRIES {
+                match writer.write_all(block.as_slice()).await {
+                    Ok(()) => {
+                        writer.close().await?;
+                        return Ok(());
+                    }
+                    Err(_) if attempt < MAX_RETRIES - 1 => {
+                        sleep(RETRY_DELAY).await;
+                    }
+                    Err(e) => return Err(e.into()),
+                }
+            }
         }
 
         let mut dest = match self.operator.read(&path).await {
@@ -189,7 +221,15 @@ impl Storage for Backend {
         dest.get_mut(block_start..block_end)
             .unwrap_or_else(|| unreachable!("The vector is ensured to be long enough."))
             .copy_from_slice(block.as_slice());
-        self.operator.write(&path, dest).await?;
+
+        // Retry for a few times if the write fails.
+        for attempt in 0..MAX_RETRIES {
+            match self.operator.write(&path, dest.clone()).await {
+                Ok(()) => return Ok(()),
+                Err(_) if attempt < MAX_RETRIES - 1 => sleep(RETRY_DELAY).await,
+                Err(e) => return Err(e.into()),
+            }
+        }
 
         Ok(())
     }
