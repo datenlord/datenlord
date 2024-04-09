@@ -11,7 +11,6 @@ use std::fmt::Debug;
 use std::fs::File;
 use std::io::{IoSlice, Write};
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::io::RawFd;
 use std::time::Duration;
 use std::{mem, slice};
 
@@ -467,10 +466,10 @@ pub struct ReplyOpen<'a> {
 
 impl ReplyOpen<'_> {
     /// Reply to a request with the given open result
-    pub async fn opened(self, fh: RawFd, flags: u32) -> nix::Result<usize> {
+    pub async fn opened(self, fh: u64, flags: u32) -> nix::Result<usize> {
         self.reply
             .send(FuseOpenOut {
-                fh: fh.cast(),
+                fh,
                 open_flags: flags,
                 padding: 0,
             })
