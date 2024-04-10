@@ -35,7 +35,7 @@ jobs:
             docker pull $ETCD_IMAGE
             docker run -d --rm --net host --name $ETCD_CONTAINER_NAME $ETCD_IMAGE
             docker ps
-            docker logs $ETCD_CONTAINER_NAME    
+            docker logs $ETCD_CONTAINER_NAME
       - name: Modify fuse.conf
         run: sudo sed -i 's/#user_allow_other/user_allow_other/g' /etc/fuse.conf
       - name: Install cargo-llvm-cov
@@ -49,4 +49,5 @@ jobs:
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: codecov.info
+          fail_ci_if_error: true
           verbose: true
