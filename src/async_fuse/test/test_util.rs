@@ -35,6 +35,8 @@ fn test_storage_config(is_s3: bool) -> StorageConfig {
             access_key_id: "test".to_owned(),
             secret_access_key: "test1234".to_owned(),
             bucket_name: "fuse-test-bucket".to_owned(),
+            region: None,
+            max_concurrent_requests: None,
         };
 
         StorageParams::S3(s3_config)

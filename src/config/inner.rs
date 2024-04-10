@@ -276,6 +276,10 @@ pub struct StorageS3Config {
     pub secret_access_key: String,
     /// Bucket name
     pub bucket_name: String,
+    /// Region
+    pub region: Option<String>,
+    /// Max concurrent requests
+    pub max_concurrent_requests: Option<usize>,
 }
 
 impl TryFrom<SuperS3StorageConfig> for StorageS3Config {
@@ -288,6 +292,8 @@ impl TryFrom<SuperS3StorageConfig> for StorageS3Config {
             access_key_id: value.access_key_id,
             secret_access_key: value.secret_access_key,
             bucket_name: value.bucket_name,
+            region: value.region,
+            max_concurrent_requests: value.max_concurrent_requests,
         })
     }
 }
