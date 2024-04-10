@@ -139,6 +139,12 @@ pub struct S3StorageConfig {
     #[clap(long = "storage-s3-bucket", value_name = "VALUE", default_value_t)]
     /// The bucket name of s3 storage
     pub bucket_name: String,
+    /// The region of s3 storage
+    #[clap(long = "storage-s3-region", value_name = "VALUE")]
+    pub region: Option<String>,
+    /// S3 Max concurrent requests
+    #[clap(long = "storage-s3-max-concurrent-requests", value_name = "VALUE")]
+    pub max_concurrent_requests: Option<usize>,
 }
 
 /// CSI related config
