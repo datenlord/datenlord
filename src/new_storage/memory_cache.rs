@@ -24,7 +24,7 @@ pub struct CacheKey {
 ///
 /// It uses an eviction policy to determine which blocks to evict when the cache
 /// is full.
-#[derive(Debug)]
+#[allow(clippy::missing_fields_in_debug)]
 pub struct MemoryCache<K, P>
 where
     K: Eq + std::hash::Hash + Clone,
@@ -36,6 +36,21 @@ where
     map: HashMap<K, Arc<RwLock<Block>>>,
     /// The free list of blocks
     free_list: VecDeque<Arc<RwLock<Block>>>,
+}
+
+impl<K, P> std::fmt::Debug for MemoryCache<K, P>
+where
+    K: Eq + std::hash::Hash + Clone,
+    P: policy::EvictPolicy<K>,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "MemoryCache {{ map: {} blocks, free_list: {} blocks, ... }}",
+            self.map.len(),
+            self.free_list.len()
+        )
+    }
 }
 
 impl<K, P> MemoryCache<K, P>

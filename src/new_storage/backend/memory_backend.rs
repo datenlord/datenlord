@@ -1,19 +1,31 @@
 //! The memory backend implementation
 
+use std::fmt::Debug;
 use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
 use dashmap::DashMap;
+use itertools::Itertools;
 
 use super::{Backend, StorageResult};
 /// A memory backend for testing purposes.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct MemoryBackend {
     /// The inner map of memory backend.
     map: Arc<DashMap<String, Vec<u8>>>,
     /// The mock latency in ms
     latency: Duration,
+}
+
+impl Debug for MemoryBackend {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let keys = self.map.iter().map(|k| k.key().clone()).collect_vec();
+        f.debug_struct("MemoryBackend")
+            .field("map", &keys)
+            .field("latency", &self.latency)
+            .finish()
+    }
 }
 
 #[async_trait]
