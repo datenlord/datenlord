@@ -18,7 +18,6 @@ use crate::new_storage::{StorageError, StorageResult};
 
 /// The `Writer` struct represents a struct responsible for writing blocks of
 /// data to a backend storage system
-#[derive(Debug)]
 pub struct Writer {
     /// The inode number associated with the writer
     ino: u64,
@@ -34,6 +33,18 @@ pub struct Writer {
     write_back_handle: tokio::sync::Mutex<Option<JoinHandle<()>>>,
     /// The access keys.
     access_keys: Mutex<Vec<CacheKey>>,
+}
+
+impl std::fmt::Debug for Writer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Writer")
+            .field("ino", &self.ino)
+            .field("block_size", &self.block_size)
+            .field("cache", &self.cache)
+            .field("backend", &self.backend)
+            .field("access_keys", &self.access_keys)
+            .finish_non_exhaustive()
+    }
 }
 
 /// The `Task` enum represents the different types of tasks that the write back
