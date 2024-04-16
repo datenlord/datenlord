@@ -80,15 +80,15 @@ impl BackendBuilder {
                     .bucket(bucket_name);
 
                 // Init region
-                if region.is_some() {
-                    builder.region(region.as_ref().map_or("auto", String::as_str));
+                if let Some(region) = region.to_owned() {
+                    builder.region(region.as_str());
                 } else {
                     // Auto detect region
-                    let region = match S3::detect_region(endpoint_url, bucket_name).await {
-                        Some(region) => region,
-                        None => "auto".to_owned(),
-                    };
-                    builder.region(region.as_str());
+                    if let Some(region) = S3::detect_region(endpoint_url, bucket_name).await {
+                        builder.region(region.as_str());
+                    } else {
+                        builder.region("auto");
+                    }
                 }
 
                 // For aws s3 issue: https://repost.aws/questions/QU_F-UC6-fSdOYzp-gZSDTvQ/receiving-s3-503-slow-down-responses
@@ -310,7 +310,20 @@ impl Storage for Backend {
                 match self.operator.read(&path).await {
                     Ok(mut dest) => {
                         dest.truncate(fill_start);
-                        self.operator.write(&path, dest).await?;
+                        // Retry for a few times if the write fails.
+                        for attempt in 0..MAX_RETRIES {
+                            match self.operator.write(&path, dest.clone()).await {
+                                Ok(()) => return Ok(()),
+                                Err(_) if attempt < MAX_RETRIES - 1 => {
+                                    debug!(
+                                        "Failed to write block, retrying after {} seconds.",
+                                        RETRY_DELAY.as_secs()
+                                    );
+                                    sleep(RETRY_DELAY).await;
+                                }
+                                Err(e) => return Err(e.into()),
+                            }
+                        }
                     }
                     Err(e) => {
                         // It's OK that the block is not found for truncate.
