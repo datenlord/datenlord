@@ -575,7 +575,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
     /// call will reflect the return value of self operation. fh will
     /// contain the value set by the open method, or will be undefined if
     /// the open method did not set any value.
-    #[instrument(skip(self, data), err, ret)]
+    #[instrument(skip(self, data, req), err, ret)]
     async fn write(
         &self,
         req: &Request<'_>,

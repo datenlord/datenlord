@@ -502,7 +502,7 @@ impl<F: FileSystem + Send + Sync + 'static> Session<F> {
 /// This calls the appropriate filesystem operation method for the
 /// request and sends back the returned reply to the kernel
 #[allow(clippy::too_many_lines)]
-#[instrument(name="request",skip(req, file, fs), fields(fuse_id =req.unique(),ino=req.nodeid()),ret)]
+#[instrument(name="request",skip(req, file, fs), fields(fuse_id =req.unique(),ino=req.nodeid(), len=req.len()),ret)]
 async fn dispatch<'a>(
     req: &'a Request<'a>,
     file: &mut File,
@@ -675,6 +675,7 @@ async fn dispatch<'a>(
                 .await
         }
         Operation::Write { arg, data } => {
+            info!("operation:write: {:?}", arg);
             assert_eq!(data.len(), arg.size.cast::<usize>());
             let reply = ReplyWrite::new(req.unique(), file);
             fs.write(
