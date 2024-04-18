@@ -21,3 +21,6 @@ localtest.sh
 *.log
 
 tests/fstest_dir/fstest
+
+# Current cargo config
+.cargo/config

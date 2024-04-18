@@ -12,7 +12,7 @@ use opendal::services::{Fs, S3};
 use opendal::{ErrorKind, Operator};
 use prometheus::{exponential_buckets, linear_buckets};
 use tokio::time::sleep;
-use tracing::debug;
+use tracing::{error, warn};
 
 use crate::async_fuse::fuse::protocol::INum;
 use crate::storage::error::StorageResult;
@@ -195,24 +195,37 @@ impl Storage for Backend {
         let block_end = block.end();
 
         if block_start == 0 && block_end == self.block_size {
-            // To store a whole block
-            let mut writer = self.operator.writer(&path).await?;
-
             // Retry for a few times if the write fails.
             for attempt in 0..MAX_RETRIES {
+                // To store a whole block
+                let mut writer = self.operator.writer(&path).await?;
+
                 match writer.write_all(block.as_slice()).await {
                     Ok(()) => {
-                        writer.close().await?;
-                        return Ok(());
+                        let close = writer.close().await;
+                        if close.is_err() {
+                            warn!(
+                                "Failed to write block, retrying after {} seconds.",
+                                RETRY_DELAY.as_secs()
+                            );
+                            sleep(RETRY_DELAY).await;
+                        } else {
+                            return Ok(());
+                        }
                     }
                     Err(_) if attempt < MAX_RETRIES - 1 => {
-                        debug!(
+                        warn!(
                             "Failed to write block, retrying after {} seconds.",
                             RETRY_DELAY.as_secs()
                         );
                         sleep(RETRY_DELAY).await;
                     }
-                    Err(e) => return Err(e.into()),
+                    Err(e) => {
+                        return {
+                            error!("Failed to write block: {:?}", e);
+                            Err(e.into())
+                        }
+                    }
                 }
             }
         }
@@ -244,13 +257,16 @@ impl Storage for Backend {
             match self.operator.write(&path, dest.clone()).await {
                 Ok(()) => return Ok(()),
                 Err(_) if attempt < MAX_RETRIES - 1 => {
-                    debug!(
+                    warn!(
                         "Failed to write block, retrying after {} seconds.",
                         RETRY_DELAY.as_secs()
                     );
                     sleep(RETRY_DELAY).await;
                 }
-                Err(e) => return Err(e.into()),
+                Err(e) => {
+                    error!("Failed to write block: {:?}", e);
+                    return Err(e.into());
+                }
             }
         }
 
@@ -315,13 +331,16 @@ impl Storage for Backend {
                             match self.operator.write(&path, dest.clone()).await {
                                 Ok(()) => return Ok(()),
                                 Err(_) if attempt < MAX_RETRIES - 1 => {
-                                    debug!(
+                                    warn!(
                                         "Failed to write block, retrying after {} seconds.",
                                         RETRY_DELAY.as_secs()
                                     );
                                     sleep(RETRY_DELAY).await;
                                 }
-                                Err(e) => return Err(e.into()),
+                                Err(e) => {
+                                    error!("Failed to write block: {:?}", e);
+                                    return Err(e.into());
+                                }
                             }
                         }
                     }
