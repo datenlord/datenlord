@@ -45,7 +45,8 @@ jobs:
       - name: Print Integration Test Logs
         run: cat datenlord_test.log
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v3
+        uses: codecov/codecov-action@v4
         with:
+          token: ${{ secrets.CODECOV_TOKEN }}
           files: codecov.info
-          fail_ci_if_error: true
+          verbose: true
