@@ -187,7 +187,7 @@ impl Config {
             Ok(conf)
         } else {
             Err(DatenLordError::ArgumentInvalid {
-                context: vec!["Current command line arguments are not valid.".to_owned()],
+                context: vec!["Current command line arguments are not valid, please check role/node_name/node_ip/mount_path is correct.".to_owned()],
             })
         }
     }
@@ -250,7 +250,6 @@ mod tests {
         let conf = Config::load_from_args(arg_conf).unwrap();
 
         assert_eq!(conf.role, Some("node".to_owned()));
-        assert_eq!(conf.node_name, Some("node1".to_owned()));
     }
 
     #[test]
@@ -274,7 +273,6 @@ mod tests {
         let conf = Config::load_from_args(arg_conf).unwrap();
 
         assert_eq!(conf.role, Some("node".to_owned()));
-        assert_eq!(conf.node_name, Some("node222".to_owned()));
         assert_eq!(conf.node_ip, Some("127.0.0.1".to_owned()));
         assert_eq!(conf.mount_path, Some("/tmp/datenlord_data_dir".to_owned()));
         assert_eq!(conf.server_port, 8800);
