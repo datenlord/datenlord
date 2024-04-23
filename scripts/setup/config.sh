@@ -49,6 +49,19 @@ export RUST_LOG=debug
 export RUST_BACKTRACE=1
 export ETCD_END_POINT=127.0.0.1:2379
 export BIND_MOUNTER=`realpath $BIND_MOUNTER`
+# setup minio config
+# MinIO Docker image with a specific version tag
+export MINIO_IMAGE=minio/minio:RELEASE.2024-04-06T05-26-02Z
+# MinIO container name
+export MINIO_CONTAINER_NAME=minio-server
+# MinIO access and secret keys
+export MINIO_ACCESS_KEY=minioadmin
+export MINIO_SECRET_KEY=minioadmin
+# MinIO port (the default MinIO port is 9000)
+export MINIO_PORT=9000
+export CONSOLE_PORT=9090
+# MinIO bucket name
+export MINIO_BUCKET=mybucket
 
 set -xv # enable debug
 set -e # exit on error
