@@ -258,12 +258,14 @@ impl Writer {
         for slice in slices {
             let block_id = slice.block_id;
             let end = consume_index + slice.size.cast::<usize>();
+            let len = buf.len();
+            assert!(
+                len >= end,
+                "The `buf` should be longer than {end} bytes, but {len} found."
+            );
             let write_content = buf
                 .get(consume_index..end)
-                .ok_or(StorageError::OutOfRange {
-                    maximum: buf.len(),
-                    found: end,
-                })?;
+                .unwrap_or_else(|| unreachable!("The `buf` is checked to be long enough."));
             self.access(block_id);
             let block = self.fetch_block(block_id).await?;
             {
@@ -272,12 +274,13 @@ impl Writer {
                 let start = slice.offset.cast();
                 let end = start + slice.size.cast::<usize>();
                 let block_size = block.len();
+                assert!(
+                    block_size >= end,
+                    "The size of block should be greater than {end}, but {block_size} found."
+                );
                 block
                     .get_mut(start..end)
-                    .ok_or(StorageError::OutOfRange {
-                        maximum: block_size,
-                        found: end,
-                    })?
+                    .unwrap_or_else(|| unreachable!("The block is checked to be big enough."))
                     .copy_from_slice(write_content);
                 consume_index += slice.size.cast::<usize>();
                 block.inc_version();

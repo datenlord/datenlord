@@ -12,14 +12,6 @@ pub type StorageResult<T> = Result<T, StorageError>;
 /// An error occurs in storage operation.
 #[derive(Debug, Error)]
 pub enum StorageError {
-    /// The storage operation is out of range of a block
-    #[error("{found} is out of range of {maximum}")]
-    OutOfRange {
-        /// The maximum size of the operated block
-        maximum: usize,
-        /// The size or offset found in argument
-        found: usize,
-    },
     /// The storage is run out of memory
     #[error("Out of memory")]
     OutOfMemory,
@@ -37,10 +29,6 @@ pub enum StorageError {
 impl From<StorageError> for DatenLordError {
     fn from(value: StorageError) -> Self {
         match value {
-            StorageError::OutOfRange { maximum, found } => DatenLordError::InternalErr {
-                source: anyhow!("IO out of range: the maximum is {maximum}, but {found} found."),
-                context: vec![],
-            },
             StorageError::OutOfMemory => DatenLordError::InternalErr {
                 source: anyhow::Error::new(Errno::EIO),
                 context: vec!["Cache is out of memory.".to_owned()],
