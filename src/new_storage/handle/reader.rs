@@ -101,12 +101,15 @@ impl Reader {
                 assert!(block.pin_count() >= 1);
                 let offset = slice.offset.cast();
                 let size: usize = slice.size.cast();
+                let end = offset + size;
+                let block_size = block.len();
+                assert!(
+                    block_size >= end,
+                    "The size of block should be greater than {end}, but {block_size} found."
+                );
                 let slice = block
-                    .get(offset..offset + size)
-                    .ok_or(StorageError::OutOfRange {
-                        maximum: block.len(),
-                        found: offset + size,
-                    })?;
+                    .get(offset..end)
+                    .unwrap_or_else(|| unreachable!("The block is checked to be big enough."));
                 buf.extend_from_slice(slice);
             }
             self.cache.lock().unpin(&CacheKey {
