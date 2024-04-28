@@ -127,7 +127,7 @@ impl Default for DefaultHashBuilder {
 pub struct Ring<T, S = DefaultHashBuilder>
 where
     T: NodeType,
-    S: BuildHasher,
+    S: BuildHasher + Clone,
 {
     /// The hash builder
     #[serde(skip)]
@@ -158,7 +158,7 @@ where
 impl<T, S> Ring<T, S>
 where
     T: NodeType,
-    S: BuildHasher,
+    S: BuildHasher + Clone,
 {
     /// Create a new hash ring with a given hash builder and capacity
     pub fn new(hash_builder: S) -> Self {
@@ -168,6 +168,25 @@ where
             capacity: DEFAULT_SLOT_SIZE,
             version: 0,
         }
+    }
+
+    /// Create a new hash ring with current given hash builder and capacity
+    pub fn dump(&self) -> Self {
+        Self {
+            // Use the default hash builder
+            hash_builder: self.hash_builder.clone(),
+            slots: self.slots.clone(),
+            capacity: self.capacity,
+            version: self.version,
+        }
+    }
+
+    /// Update the ring with a given ring
+    /// It will node update the hash builder
+    pub fn update(&mut self, ring: Ring<T, S>) {
+        self.slots = ring.slots.clone();
+        self.capacity = ring.capacity;
+        self.version = ring.version;
     }
 
     /// Get the slot length
@@ -199,7 +218,7 @@ where
 impl<T, S: BuildHasher> Ring<T, S>
 where
     T: NodeType,
-    S: BuildHasher,
+    S: BuildHasher + Clone,
 {
     /// Add a node to a slot
     /// We will create a new slot and update slot mapping, then add to the ring

@@ -1,18 +1,190 @@
-use std::collections::HashMap;
 use std::fmt::Debug;
+use std::sync::atomic::AtomicBool;
 use std::time::Duration;
+use std::vec;
+use std::{collections::HashMap, sync::Arc};
 
 use async_trait::async_trait;
 use datenlord::metrics::KV_METRICS;
 use etcd_client::{
     Compare, CompareOp, DeleteOptions, GetOptions, LockOptions, PutOptions, Txn, TxnOp,
 };
+use tokio::sync::mpsc;
+use tracing::{error, info};
 
 use super::{
     check_ttl, conv_u64_sec_2_i64, fmt, DeleteOption, KVEngine, KeyType, KvVersion, LockKeyType,
     MetaTxn, SetOption, ValueType,
 };
 use crate::common::error::{Context, DatenLordResult};
+
+/// The keepalive session struct
+#[derive(Clone)]
+pub struct Session {
+    close_tx: mpsc::Sender<()>,
+    inner: Arc<SessionInner>,
+}
+
+impl Debug for Session {
+    #[inline]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Session").finish()
+    }
+}
+
+/// The keepalive session inner struct
+pub struct SessionInner {
+    is_closed: Arc<AtomicBool>,
+    lease_id: i64,
+    ttl: i64,
+    client: etcd_client::Client,
+}
+
+impl Debug for SessionInner {
+    #[inline]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SessionInner")
+            .field("is_closed", &self.is_closed)
+            .field("lease_id", &self.lease_id)
+            .field("ttl", &self.ttl)
+            .finish()
+    }
+}
+
+impl Session {
+    /// Create a new session
+    pub async fn new(client: etcd_client::Client, ttl: i64, lease_id: i64) -> Arc<Self> {
+        let is_closed = Arc::new(AtomicBool::new(false));
+        let inner = Arc::new(SessionInner {
+            is_closed,
+            lease_id,
+            ttl,
+            client,
+        });
+        let (close_tx, close_rx) = mpsc::channel(1);
+
+        let _inner = inner.clone();
+        tokio::spawn(async move {
+            _inner.keep_alive(close_rx).await.unwrap();
+        });
+
+        let session = Session { close_tx, inner };
+
+        return Arc::new(session);
+    }
+
+    /// Get the lease id
+    pub fn lease_id(&self) -> i64 {
+        self.inner.lease_id
+    }
+
+    /// Get the ttl
+    pub fn ttl(&self) -> i64 {
+        self.inner.ttl
+    }
+
+    /// Get the is_closed flag
+    pub fn is_closed(&self) -> bool {
+        self.inner
+            .is_closed
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+impl Drop for Session {
+    fn drop(&mut self) {
+        // Try to close the session
+        let _ = self.close_tx.try_send(());
+        // Set the is_closed flag
+        self.inner
+            .is_closed
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+impl SessionInner {
+    /// Keep alive the lease
+    pub async fn keep_alive(&self, mut close_rx: mpsc::Receiver<()>) -> DatenLordResult<()> {
+        let mut interval = tokio::time::interval(Duration::from_secs(self.ttl as u64 / 3));
+
+        loop {
+            if self.is_closed.load(std::sync::atomic::Ordering::Relaxed) {
+                error!("lease keep alive stream closed by is_closed flag");
+                return Ok(());
+            }
+
+            // Try to clone a client, if the keeper failed, try to reconnect
+            let mut client = self.client.clone();
+            let lease_id = self.lease_id;
+            let (mut keeper, mut lease_keep_alive_stream) =
+                match client.lease_keep_alive(lease_id).await {
+                    Ok((keeper, lease_keep_alive_stream)) => (keeper, lease_keep_alive_stream),
+                    Err(e) => {
+                        error!("failed to keep alive lease, error={e:?}");
+
+                        // Retry to connect
+                        tokio::time::sleep(Duration::from_secs(1)).await;
+                        continue;
+                    }
+                };
+
+            // Set the is_closed flag
+            self.is_closed
+                .store(false, std::sync::atomic::Ordering::Relaxed);
+
+            // Start to keep alive the lease
+            loop {
+                if self.is_closed.load(std::sync::atomic::Ordering::Relaxed) {
+                    error!("lease keep alive stream closed by is_closed flag");
+                    return Ok(());
+                }
+
+                tokio::select! {
+                    _ = interval.tick() => {
+                        // Try to send a keep alive request
+                        match keeper.keep_alive().await {
+                            Ok(_) => {
+                                info!("keep alive lease, lease_id={lease_id}");
+                            }
+                            Err(e) => {
+                                error!("failed to keep alive lease, error={e:?}");
+                                break;
+                            }
+                        }
+
+                        // Try to parse
+                        match lease_keep_alive_stream.message().await {
+                            Ok(Some(val)) => {
+                                if val.ttl() == 0 {
+                                    error!("lease keep alive stream closed");
+                                    self.is_closed
+                                        .store(true, std::sync::atomic::Ordering::Relaxed);
+                                    return Ok(());
+                                }
+                                continue
+                            }
+                            Ok(None) => {
+                                error!("lease keep alive stream closed");
+                                break;
+                            }
+                            Err(e) => {
+                                error!("failed to keep alive lease, error={e:?}");
+                                break;
+                            }
+                        }
+                    }
+                    _ = close_rx.recv() => {
+                        info!("close the keep alive session, lease_id={lease_id}");
+                        self.is_closed
+                            .store(true, std::sync::atomic::Ordering::Relaxed);
+
+                        return Ok(());
+                    }
+                }
+            }
+        }
+    }
+}
 
 #[derive(Clone)]
 /// Wrap the etcd client to support the `KVEngine` trait.
@@ -62,6 +234,8 @@ impl EtcdKVEngine {
 
 #[async_trait]
 impl KVEngine for EtcdKVEngine {
+    type Session = Session;
+
     async fn new(end_points: Vec<String>) -> DatenLordResult<Self> {
         let client = etcd_client::Client::connect(end_points, None).await?;
         Ok(Self { client })
@@ -80,6 +254,64 @@ impl KVEngine for EtcdKVEngine {
             .await
             .with_context(|| "failed to get lease at `MetaTxn::lock`".to_owned())?
             .id())
+    }
+
+    /// Try to campaign the master with simple txn
+    /// Old(reference to etcd client v3):
+    /// Create a key with prefix, and compare key (sorted by revision) with the key created by the same session.
+    /// If current key is the smallest, then the session is the master, and campaign success.
+    ///
+    /// New(For datenlord cache scenario):
+    /// A small batch of nodes in cluster, we just need a simple txn to get the master key.
+    /// The thundering herd is not the main problem, which will cause a bunch of etcd raft logs.
+    async fn campaign(&self, key: &KeyType, val: &ValueType, lease_id: i64) -> bool {
+        let mut client = self.client.clone();
+
+        // Try to get the key, if key is existed
+        // We need to return the data from etcd,
+        // If the key is not existed, we need to set the key.
+        let txn = Txn::new()
+            .when(vec![Compare::create_revision(
+                key.to_string_key(),
+                CompareOp::Equal,
+                0,
+            )])
+            .and_then(vec![TxnOp::put(
+                key.to_string_key(),
+                serde_json::to_string(val).unwrap(),
+                Some(PutOptions::new().with_lease(lease_id)),
+            )])
+            .or_else(vec![TxnOp::get(
+                key.to_string_key(),
+                Some(GetOptions::new().with_serializable()),
+            )]);
+
+        let res = match client.txn(txn).await {
+            Ok(resp) => {
+                // Check the txn branch is `then` or `else`
+                if resp.succeeded() {
+                    info!("campaign success, key={key:?}, val={val:?}");
+                    true
+                } else {
+                    info!("campaign failed, key={key:?}, val={val:?}");
+                    false
+                }
+            }
+            Err(e) => {
+                error!("failed to campaign, error={e:?}");
+                false
+            }
+        };
+
+        return res;
+    }
+
+    /// Keep alive the lease
+    async fn create_keep_alive_session(&self, lease_id: i64, ttl: i64) -> Arc<Session> {
+        let client = self.client.clone();
+        let session = Session::new(client.clone(), ttl, lease_id).await;
+
+        return session;
     }
 
     /// Distribute lock - lock
@@ -207,10 +439,67 @@ impl KVEngine for EtcdKVEngine {
         }
     }
 
+    /// Range get, return all key-value pairs start with prefix
     async fn range(&self, prefix: &KeyType) -> DatenLordResult<Vec<ValueType>> {
         let _timer = KV_METRICS.start_kv_operation_timer("range");
         let result = self.range_raw_key(prefix.to_string_key()).await?;
         Ok(result)
+    }
+
+    /// Watch the key, return a receiver to receive the value
+    async fn watch(
+        &self,
+        prefix: &KeyType,
+    ) -> DatenLordResult<Arc<mpsc::Receiver<(String, Option<ValueType>)>>> {
+        // Create a mpsc channel, default capacity is 1024
+        let (tx, rx) = mpsc::channel(1024);
+
+        let mut client = self.client.clone();
+        // Try to watch the key prefix
+        let opt = etcd_client::WatchOptions::new().with_prefix();
+        let (_watcher, mut watch_stream) = client
+            .watch(prefix.to_string_key(), Some(opt.clone()))
+            .await
+            .with_context(|| "Failed to create watcher".to_owned())?;
+
+        let self_prefix = prefix.to_string_key();
+        // Spawn a new task to handle the watch stream
+        tokio::spawn(async move {
+            while let Ok(response) = watch_stream.message().await {
+                match response {
+                    Some(watch_response) => {
+                        for event in watch_response.events() {
+                            // Get event data
+                            let kv = event.kv().unwrap();
+                            // Get key and value
+                            let item_key = kv
+                                .key_str()
+                                .unwrap()
+                                .strip_prefix(self_prefix.as_str())
+                                .unwrap()
+                                .to_string();
+                            let item_value = serde_json::from_slice(kv.value()).with_context(||{
+                                "failed to deserialize value from bytes, KVEngine's value supposed to be `ValueType`".to_owned()
+                            }).unwrap();
+
+                            match event.event_type() {
+                                etcd_client::EventType::Put => {
+                                    tx.send((item_key, Some(item_value))).await.unwrap();
+                                }
+                                etcd_client::EventType::Delete => {
+                                    tx.send((item_key, None)).await.unwrap();
+                                }
+                            }
+                        }
+                    }
+                    None => {
+                        continue;
+                    }
+                }
+            }
+        });
+
+        Ok(Arc::new(rx))
     }
 }
 
