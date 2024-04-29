@@ -172,7 +172,7 @@ async fn direct_mount(mount_point: &Path) -> anyhow::Result<RawFd> {
             "failed to get the file stat of mount point={mount_point:?}",
         ))?;
     let opts = format!(
-        "fd={},rootmode={:o},user_id={},group_id={}",
+        "fd={},rootmode={:o},user_id={},group_id={},allow_other,default_permissions",
         dev_fd,
         mnt_sb.st_mode & SFlag::S_IFMT.bits(),
         unistd::getuid().as_raw(),

@@ -18,7 +18,7 @@ use std::{mem, slice};
 use clippy_utilities::{Cast, OverflowArithmetic};
 use nix::errno::Errno;
 use nix::sys::stat::SFlag;
-use tracing::debug;
+use tracing::{debug, error};
 
 use super::abi_marker;
 use super::protocol::{
@@ -231,25 +231,39 @@ impl<'a> ReplyRaw<'a> {
                     source.root_cause().downcast_ref::<nix::Error>()
                 {
                     if *nix_err == nix::errno::Errno::UnknownErrno {
-                        panic!(
+                        error!(
                             "should not send nix::errno::Errno::UnknownErrno to FUSE kernel, \
                                     the error is: {} ,context is : {:?}",
                             crate::common::util::format_anyhow_error(&source),
                             context,
                         );
+                        // panic!(
+                        //     "should not send nix::errno::Errno::UnknownErrno to FUSE kernel, \
+                        //             the error is: {} ,context is : {:?}",
+                        //     crate::common::util::format_anyhow_error(&source),
+                        //     context,
+                        // );
+                        nix_err
                     } else {
                         nix_err
                     }
                 } else {
-                    panic!(
-                            "should not send non-nix error to FUSE kernel, the error is: {},context is : {:?}",
-                            crate::common::util::format_anyhow_error(&source),context,
-                        );
+                    error!(
+                        "should not send non-nix error to FUSE kernel, the error is: {},context is : {:?}",
+                        crate::common::util::format_anyhow_error(&source),context,
+                    );
+                    // panic!(
+                    //         "should not send non-nix error to FUSE kernel, the error is: {},context is : {:?}",
+                    //         crate::common::util::format_anyhow_error(&source),context,
+                    //     );
+                    &nix::errno::Errno::UnknownErrno
                 };
                 self.send_error_code(*error_code).await
             }
             err => {
-                panic!("should not send non-internal error to FUSE kernel ,the error is : {err}",);
+                error!("should not send non-internal error to FUSE kernel ,the error is : {err}",);
+                // panic!("should not send non-internal error to FUSE kernel ,the error is : {err}",);
+                self.send_error_code(Errno::UnknownErrno).await
             }
         }
     }

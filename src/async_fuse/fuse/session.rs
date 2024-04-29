@@ -675,6 +675,7 @@ async fn dispatch<'a>(
                 .await
         }
         Operation::Write { arg, data } => {
+            info!("operation:write: {:?}", arg);
             assert_eq!(data.len(), arg.size.cast::<usize>());
             let reply = ReplyWrite::new(req.unique(), file);
             fs.write(

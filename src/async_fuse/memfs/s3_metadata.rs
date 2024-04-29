@@ -13,7 +13,7 @@ use nix::errno::Errno;
 use nix::fcntl::OFlag;
 use nix::sys::stat::SFlag;
 use tokio::sync::Mutex;
-use tracing::{debug, info, instrument};
+use tracing::{debug, info, instrument, error};
 
 use super::fs_util::{self, NEED_CHECK_PERM};
 use super::id_alloc_used::INumAllocator;
@@ -149,6 +149,7 @@ impl MetaData for S3MetaData {
             .get_node_from_kv_engine(ino)
             .await?
             .ok_or_else(|| build_inconsistent_fs!(ino))?;
+        info!("readlink() ino={} symlink_target={:?}", ino, node.get_symlink_target());
         Ok(node.get_symlink_target().as_os_str().to_owned().into_vec())
     }
 
@@ -158,6 +159,7 @@ impl MetaData for S3MetaData {
             .get_node_from_kv_engine(ino)
             .await?
             .ok_or_else(|| build_inconsistent_fs!(ino))?;
+        info!("statfs() ino={} attr={:?}", ino, node.get_attr());
         node.get_attr().check_perm(context.uid, context.gid, 5)?;
         node.statefs().await
     }
@@ -264,6 +266,7 @@ impl MetaData for S3MetaData {
             .get_node_from_kv_engine(ino)
             .await?
             .ok_or_else(|| build_inconsistent_fs!(ino))?;
+        info!("getattr() ino={} attr={:?}", ino, inode.get_attr());
         let attr = inode.get_attr();
         let ttl = Duration::new(MY_TTL_SEC, 0);
         let fuse_attr = fs_util::convert_to_fuse_attr(attr);
@@ -286,8 +289,9 @@ impl MetaData for S3MetaData {
             let mut result = false;
             let inode = self.get_inode_from_txn(txn.as_mut(), ino).await?;
             inode.dec_lookup_count_by(nlookup);
-            let is_deleted = inode.get_lookup_count() == 0;
+            let is_deleted = inode.get_lookup_count() == 0 && inode.is_deferred_deletion();
             if is_deleted {
+                error!("[FORGETERROR]forget() ino={} nlookup={} is_deleted={}", ino, nlookup, is_deleted);
                 // FIXME: rename should also rename the node's name and reset the parent ino
                 txn.delete(&KeyType::DirEntryKey((
                     inode.get_parent_ino(),
@@ -417,6 +421,13 @@ impl MetaData for S3MetaData {
                     );
                 }
             }
+
+            error!(
+                "[UNLINKERROR]unlink() parent={} child={} name={:?}",
+                parent,
+                child_ino,
+                name
+            );
 
             // Ready to unlink
             let deferred_deletion = child_node.get_lookup_count() > 0;
@@ -608,6 +619,7 @@ impl MetaData for S3MetaData {
             0 | RENAME_NOREPLACE => false,
             RENAME_EXCHANGE => true,
             _ => {
+                error!("[RENAMEERROR] rename(): flags={flags} is not supported");
                 return build_error_result_from_errno(
                     Errno::EINVAL,
                     format!("rename(): flags={flags} is not supported"),
@@ -620,6 +632,10 @@ impl MetaData for S3MetaData {
         }
 
         let build_enoent = |name: &str, parent: INum| {
+            error!(
+                "[RENAMEERROR] exchange_pre_check() failed to find child entry of name={name:?} \
+                    under parent directory ino={parent}",
+            );
             build_error_result_from_errno(
                 Errno::ENOENT,
                 format!(
@@ -662,8 +678,15 @@ impl MetaData for S3MetaData {
             let new_entry = self
                 .try_get_dir_entry(txn.as_mut(), new_parent, new_name)
                 .await?;
+            error!(
+                "[RENAMEERROR] exchange_pre_check() new_entry={new_entry:?}",
+            );
             match new_entry {
                 None => {
+                    error!(
+                        "[RENAMEERROR] exchange_pre_check() failed to find child entry of \
+                            new_name={new_name:?} under new_parent={new_parent}",
+                    );
                     // new_name does not exist under new_parent
                     if exchange {
                         // exchange is true, new name must exist
@@ -682,6 +705,9 @@ impl MetaData for S3MetaData {
                     );
                 }
                 Some(new_entry) => {
+                    error!(
+                        "[RENAMEERROR] exchange_pre_check() new_entry={new_entry:?}",
+                    );
                     // new_name exists under new_parent
                     if exchange {
                         // old_name -> new_entry
@@ -713,6 +739,10 @@ impl MetaData for S3MetaData {
                                 ),
                             );
                         }
+                        error!(
+                            "[RENAMEERROR] exchange_pre_check() failed to find child entry of \
+                                new_name={new_name:?} under new_parent={new_parent}",
+                        );
                         let delete_key = KeyType::DirEntryKey((old_parent, old_name.into()));
                         txn.delete(&delete_key);
                         txn.set(
@@ -866,6 +896,7 @@ impl S3MetaData {
         txn: &mut T,
         ino: INum,
     ) -> DatenLordResult<S3Node> {
+        info!("get_inode_from_txn() ino={}", ino);
         Ok(txn
             .get(&KeyType::INum2Node(ino))
             .await
