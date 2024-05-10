@@ -5,7 +5,7 @@ COPY . .
 RUN apt-get update && apt-get install -y cmake g++ libprotobuf-dev protobuf-compiler
 RUN cargo build --release
 
-FROM ubuntu as datenlord
+FROM ubuntu:22.04 as datenlord
 LABEL maintainers="DatenLord Authors"
 LABEL description="DatenLord Distributed Storage"
 
