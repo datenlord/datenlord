@@ -38,6 +38,9 @@ export SNAPSHOTTER_VERSION=v5.0.0
 # setup etcd config
 export ETCD_IMAGE=gcr.io/etcd-development/etcd:v3.4.13
 export ETCD_CONTAINER_NAME=etcd
+# setup xline config
+export XLINE_IMAGE=ghcr.io/xline-kv/xline  #from Run Xline from a pre-built image, quick start
+export XLINE_CONTAINER_NAME=xline
 # start local node config
 export DATENLORD_LOCAL_BIND_DIR=/tmp/datenlord_data_dir
 export CONTROLLER_SOCKET_FILE=/tmp/controller.sock
@@ -48,6 +51,7 @@ export RUST_BACKTRACE=full
 export RUST_LOG=debug
 export RUST_BACKTRACE=1
 export ETCD_END_POINT=127.0.0.1:2379
+export XLINE_END_POINT=127.0.0.1:2379
 export BIND_MOUNTER=`realpath $BIND_MOUNTER`
 
 set -xv # enable debug
