@@ -44,5 +44,5 @@ mod mock;
 #[cfg(test)]
 pub use mock::MemoryStorage;
 
-/// Cache module
-pub mod cache_proxy;
+/// The cache module for storage.
+pub mod cache;
