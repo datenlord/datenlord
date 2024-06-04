@@ -1,4 +1,4 @@
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 use std::fmt;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -76,8 +76,10 @@ mod tests {
         println!("Serialized request: {}", serialized_request);
         println!("Serialized response: {}", serialized_response);
 
-        let deserialized_request: FileBlockRequest = serde_json::from_str(&serialized_request).unwrap();
-        let deserialized_response: FileBlockResponse = serde_json::from_str(&serialized_response).unwrap();
+        let deserialized_request: FileBlockRequest =
+            serde_json::from_str(&serialized_request).unwrap();
+        let deserialized_response: FileBlockResponse =
+            serde_json::from_str(&serialized_response).unwrap();
 
         println!("Deserialized request: {:?}", deserialized_request);
         println!("Deserialized response: {:?}", deserialized_response);

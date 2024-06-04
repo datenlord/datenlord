@@ -1,10 +1,26 @@
 use std::{sync::Arc, time::Duration};
 
+use async_trait::async_trait;
 use bytes::BytesMut;
-use file_async_rpc::{client::RpcClient, common::TimeoutOptions, connect_timeout, error::RpcError, message::ReqType, packet::{Encode, Packet, PacketStatus, ReqHeader, RespHeader}, server::{FileBlockRpcServerHandler, RpcServer, RpcServerConnectionHandler}, workerpool::{Job, WorkerPool}};
+use file_async_rpc::{
+    client::RpcClient,
+    common::TimeoutOptions,
+    connect_timeout,
+    error::RpcError,
+    message::ReqType,
+    packet::{Encode, Packet, PacketStatus, ReqHeader, RespHeader},
+    server::{FileBlockRpcServerHandler, RpcServer, RpcServerConnectionHandler},
+    workerpool::{Job, WorkerPool},
+};
+use serde::Deserialize;
 use tokio::{net::TcpStream, sync::mpsc, time::Instant};
 use tonic::async_trait;
 use tracing::{debug, error, info};
+
+use crate::storage::cache::server::handlers::MAX_PACKET_SIZE;
+
+use super::message::FileBlockRequest;
+
 
 /// File block handler
 #[derive(Debug, Clone)]
@@ -19,9 +35,15 @@ pub struct FileBlockPacket {
     pub buffer: BytesMut,
 }
 
+/// FileBlockPacket for client to control the req/resp data
 impl FileBlockPacket {
     pub fn new(op: u8) -> Self {
-        Self { seq:0, op, status:PacketStatus::Pending, buffer: BytesMut::with_capacity(MAX_PACKET_SIZE)}
+        Self {
+            seq: 0,
+            op,
+            status: PacketStatus::Pending,
+            buffer: BytesMut::with_capacity(MAX_PACKET_SIZE),
+        }
     }
 }
 
@@ -44,32 +66,29 @@ impl Packet for FileBlockPacket {
 
     fn set_req_data(&mut self, data: &[u8]) -> Result<(), RpcError<String>> {
         // Try to set the request data
-        debug!("Setting request data");
-
+        self.buffer.extend_from_slice(data);
+        self.status = PacketStatus::Request;
         Ok(())
     }
 
     fn get_req_data(&self) -> Result<Vec<u8>, RpcError<String>> {
-        // Try to get the request data
+        // Try to serialize the request data
         debug!("Getting request data");
-
-        // Return a 4MB vec
-        Ok(vec![0u8; MAX_PACKET_SIZE])
+        Ok(self.buffer.to_vec())
     }
 
-    fn set_resp_data(&mut self, _data: &[u8]) -> Result<(), RpcError<String>> {
+    fn set_resp_data(&mut self, data: &[u8]) -> Result<(), RpcError<String>> {
         // Try to set the response data
         debug!("Setting response data");
-
+        self.buffer.extend_from_slice(data);
+        self.status = PacketStatus::Response;
         Ok(())
     }
 
     fn get_resp_data(&self) -> Result<Vec<u8>, RpcError<String>> {
         // Try to get the response data
         debug!("Getting response data");
-
-        // Return a 4MB vec
-        Ok(vec![0u8; MAX_PACKET_SIZE])
+        Ok(self.buffer.to_vec())
     }
 
     fn status(&self) -> PacketStatus {
@@ -84,19 +103,45 @@ impl Packet for FileBlockPacket {
 /// File block handler
 pub struct FileBlockHandler {
     done_tx: mpsc::Sender<Vec<u8>>,
+    file_block_request: FileBlockRequest,
+    local_cache_manager: Arc<LocalCacheManager>,
 }
 
 /// File block handler
 impl FileBlockHandler {
-    pub fn new( done_tx: mpsc::Sender<Vec<u8>>) -> Self {
-        Self { done_tx }
+    pub fn new(done_tx: mpsc::Sender<Vec<u8>>, file_block_request: FileBlockRequest, local_cache_manager: Arc<LocalCacheManager>) -> Self {
+        Self { done_tx, file_block_request, local_cache_manager }
     }
 }
 
 #[async_trait]
 impl Job for FileBlockHandler {
     async fn run(&self) {
-        self.done_tx.send(vec![0u8; 4]).await.unwrap();
+        let block_id = self.file_block_request.block_id;
+        let block_size = self.file_block_request.block_size;
+        let block_version = self.file_block_request.version;
+
+        // Retrieve block from local
+        match self.local_cache_manager.read(block_id, block_size, block_version).await {
+            Ok(data) => {
+                // Create a response packet
+                let resp_body_packet =
+                    FileBlockPacket::new(ReqType::FileBlockRequest as u8).get_resp_data().unwrap();
+                let resp_header = RespHeader {
+                    seq: 0,
+                    op: ReqType::FileBlockRequest as u8,
+                    len: resp_body_packet.len() as u64,
+                };
+
+                let mut resp_packet = resp_header.encode();
+                resp_packet.extend(resp_body_packet);
+
+                self.done_tx.send(resp_packet).await.unwrap();
+            }
+            Err(err) => {
+                error!("Failed to read block from local cache: {:?}", err);
+            }
+        }
     }
 }
 
@@ -104,11 +149,12 @@ impl Job for FileBlockHandler {
 #[derive(Clone)]
 pub struct FileBlockServerHandler {
     worker_pool: Arc<WorkerPool>,
+    local_cache_manager: Arc<LocalCacheManager>,
 }
 
 impl FileBlockServerHandler {
-    pub fn new(worker_pool: Arc<WorkerPool>) -> Self {
-        Self { worker_pool }
+    pub fn new(worker_pool: Arc<WorkerPool>, local_cache_manager: Arc<LocalCacheManager>) -> Self {
+        Self { worker_pool, local_cache_manager }
     }
 }
 
@@ -127,10 +173,11 @@ impl RpcServerConnectionHandler for FileBlockServerHandler {
                     // Try to read the request body
                     // Decode the request body
                     // File block request
+                    let file_block_request = FileBlockRequest::decode(req_buffer).unwrap();
+                    let handler = FileBlockHandler::new(done_tx.clone(), file_block_request, Arc::clone(local_cache_manager));
                     // Submit the handler to the worker pool
                     // When the handler is done, send the response to the done channel
                     // Response need to contain the response header and body
-                    let handler = FileBlockHandler::new(done_tx.clone());
                     if let Ok(_) = self
                         .worker_pool
                         .submit_job(Box::new(handler))
@@ -140,19 +187,6 @@ impl RpcServerConnectionHandler for FileBlockServerHandler {
                     {
                         debug!("Submitted job to worker pool");
                     }
-
-                    // Create a response packet
-                    let resp_body_packet = FileBlockPacket::new(req_header.op).get_resp_data().unwrap();
-                    let resp_header = RespHeader{
-                        seq: req_header.seq,
-                        op: req_header.op,
-                        len: resp_body_packet.len() as u64,
-                    };
-
-                    let mut resp_packet = resp_header.encode();
-                    resp_packet.extend(resp_body_packet);
-
-                    done_tx.send(resp_packet).await.unwrap();
                 }
                 _ => {
                     debug!(

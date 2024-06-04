@@ -32,6 +32,8 @@ pub enum TaskName {
     WriteBack,
     /// The scheduler extender.
     SchedulerExtender,
+    /// Distribute cache tasks
+    DistributeCache,
 }
 
 /// The task handle(s) of the current task node.
@@ -181,7 +183,7 @@ impl Task {
 }
 
 /// Edges of the dependency graph of the tasks.
-pub(super) const EDGES: [(TaskName, TaskName); 9] = [
+pub(super) const EDGES: [(TaskName, TaskName); 10] = [
     (TaskName::Root, TaskName::Metrics),
     (TaskName::Root, TaskName::BlockFlush),
     (TaskName::Root, TaskName::SchedulerExtender),
@@ -191,6 +193,7 @@ pub(super) const EDGES: [(TaskName, TaskName); 9] = [
     (TaskName::FuseRequest, TaskName::WriteBack),
     (TaskName::AsyncFuse, TaskName::Rpc),
     (TaskName::AsyncFuse, TaskName::WriteBack),
+    (TaskName::Root, TaskName::DistributeCache),
 ];
 
 /// Nodes of GC tasks.
