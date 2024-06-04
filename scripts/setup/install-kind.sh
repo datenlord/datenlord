@@ -10,7 +10,9 @@ if command -v kind &> /dev/null; then
     # Compare the extracted version with the expected version
     if [ "$CURRENT_KIND_VERSION" != "$KIND_VERSION" ]; then
         echo "kind version mismatch, installing $KIND_VERSION"
-        sudo rm -f `which kind`
+        # We try to cover the default kind executable path by PATH
+        # so we do not need to use root authority to remove the old kind
+        # sudo rm -f `which kind`
     else
         echo "kind already installed with correct version"
         exit 0
@@ -23,4 +25,8 @@ fi
 echo "Installing kind"
 curl -Lo ./kind https://kind.sigs.k8s.io/dl/v$KIND_VERSION/kind-linux-amd64
 chmod +x ./kind
-sudo mv ./kind /usr/local/bin/kind
+echo "kind is in $PATH"
+# sudo mv ./kind /usr/local/bin/kind
+
+mkdir -p $HOME/bin
+mv ./kind $HOME/bin/
