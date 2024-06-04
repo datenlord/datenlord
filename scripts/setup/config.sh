@@ -62,6 +62,8 @@ export MINIO_PORT=9000
 export CONSOLE_PORT=9090
 # MinIO bucket name
 export MINIO_BUCKET=mybucket
+# Export kind executable path
+export PATH=$HOME/bin:$PATH
 
 set -xv # enable debug
 set -e # exit on error
