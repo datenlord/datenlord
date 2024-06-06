@@ -1,6 +1,7 @@
 use std::sync::{Arc, Mutex};
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use tokio::sync::mpsc;
+use tokio_util::bytes::BytesMut;
 use std::error::Error;
 use bytes::Bytes;
 
@@ -67,7 +68,6 @@ impl CacheNodeClient {
         let node_key = format!("{}-{}", block.file_id, block.block_id);
         let node = inner.hashring.get_node(&node_key).ok_or(CacheNodeError::NodeNotFound)?;
 
-        // 模拟RPC调用
         let result = simulate_rpc_call(&node.address, &block).await;
         match result {
             Ok(data) => Ok(data),
@@ -81,16 +81,75 @@ async fn simulate_rpc_call(address: &str, block: &BlockInfo) -> Result<Vec<u8>, 
     Ok(vec![0; 1024])
 }
 
-#[tokio::main]
-async fn main() {
-    let hashring = HashRing {
-        nodes: vec![Node { id: 1, address: "127.0.0.1:8080".to_string() }],
-    };
-    let nodes = VecDeque::from(vec![Node { id: 1, address: "127.0.0.1:8080".to_string() }]);
+/// TimeoutOptions
+pub struct ClientConfig {
+    /// client timeout options
+    timeout_options: TimeoutOptions
+}
+/// DistributeCacheClient
+///
+/// This client is used to read/write the distribute cache.
+#[derive(Debug)]
+#[allow(dead_code)]
+pub struct DistributeCacheClient {
+    /// Local config
+    config: Arc<ClientConfig>,
+    /// RPC Client
+    rpc_client: Arc<RPCClient>,
+}
 
-    let client = CacheNodeClient::new(hashring, nodes);
-    match client.read_file(FileInfo { file_id: 123 }).await {
-        Ok(data) => println!("Read data: {:?}", data),
-        Err(e) => println!("Error: {:?}", e),
+impl DistributeCacheClient {
+    /// Create a new cache proxy client
+    pub async fn new(config: ClientConfig, rpc_client: Arc<RPCServer>) -> Self {
+        Self {
+            config: Arc::new(config),
+            rpc_client,
+        }
+    }
+
+    pub async fn keep_alive(&self) -> Result<(), CacheNodeError> {
+        // Tickers to keep alive the connection
+        let mut tickers = tokio::time::interval(self.timeout_options.idle_timeout / 3);
+        loop {
+            tokio::select! {
+                _ = tickers.tick() => {
+                    // Send keep alive message
+                    let keep_alive_msg = ReqHeader {
+                        seq: self.keep_alive_seq.load(std::sync::atomic::Ordering::Relaxed) as u64,
+                        req_type: ReqType::KeepAliveRequest,
+                        len: 0,
+                    }.encode();
+
+                    if let Ok(_) =  self.send_data(&keep_alive_msg).await {
+                        debug!("Sent keep alive message");
+                    } else {
+                        debug!("Failed to send keep alive message");
+                        break;
+                    }
+                }
+                req_result = request_channel_rx.recv() => {
+                    match req_result {
+                        Some(req) => {
+                            if let Ok(_) = self.send_data(&req).await {
+                                debug!("Sent request: {:?}", req);
+                            } else {
+                                debug!("Failed to send request: {:?}", req);
+                                break;
+                            }
+                        }
+                        None => {
+                            // The request channel is closed and no remaining requests
+                            debug!("Request channel closed.");
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Read file from the distribute cache
+    pub async fn read_file(&self, file: FileInfo) -> Result<Bytes, CacheNodeError> {
+        let file_range = HashMap<u64, BytesMut>();
     }
 }
