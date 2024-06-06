@@ -99,6 +99,7 @@ impl MetaData for S3MetaData {
         offset: i64,
         reply: &mut ReplyDirectory,
     ) -> DatenLordResult<()> {
+        info!("readdir() ino={} offset={} reply={:?}", ino, offset, reply);
         let inode = self
             .get_node_from_kv_engine(ino)
             .await?
@@ -145,6 +146,7 @@ impl MetaData for S3MetaData {
 
     #[instrument(skip(self))]
     async fn readlink(&self, ino: u64) -> DatenLordResult<Vec<u8>> {
+        info!("readlink() ino={}", ino);
         let node = self
             .get_node_from_kv_engine(ino)
             .await?
@@ -154,6 +156,7 @@ impl MetaData for S3MetaData {
 
     #[instrument(skip(self), err, ret)]
     async fn statfs(&self, context: ReqContext, ino: u64) -> DatenLordResult<StatFsParam> {
+        info!("statfs() ino={}", ino);
         let node = self
             .get_node_from_kv_engine(ino)
             .await?
@@ -259,6 +262,7 @@ impl MetaData for S3MetaData {
             return Ok((Duration::new(MY_TTL_SEC, 0), attr));
         }
 
+        info!("getattr() ino={}", ino);
         // If the file is not open, return the attr in kv engine
         let inode = self
             .get_node_from_kv_engine(ino)
@@ -834,6 +838,7 @@ impl S3MetaData {
         txn: &mut T,
         ino: INum,
     ) -> DatenLordResult<S3Node> {
+        info!("get_inode_from_txn() ino={}", ino);
         Ok(txn
             .get(&KeyType::INum2Node(ino))
             .await
