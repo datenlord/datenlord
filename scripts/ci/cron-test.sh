@@ -6,29 +6,37 @@
 LOCAL_TEST=${1:-true}
 
 # Install kind
-sh scripts/setup/install-kind.sh
+echo "Install Kind"
+sh scripts/setup/install-kind.sh || exit 1
 
 # Create Kind Cluster
-sh scripts/setup/create-kind-cluster.sh
+echo "Create Kind Cluster"
+sh scripts/setup/create-kind-cluster.sh || exit 1
 
 # Setup SSH
-sh scripts/setup/setup-ssh-for-cluster-nodes.sh
+echo "Setup SSH"
+sh scripts/setup/setup-ssh-for-cluster-nodes.sh || exit 1
 
 # Datenlord Monitoring and Alerting Test
-sh scripts/ci/datenlord-monitor-test.sh
+# echo "Datenlord Monitoring and Alerting Test"
+sh scripts/ci/datenlord-monitor-test.sh || exit 1
 
 # Deploy DatenLord to K8S
-sh scripts/setup/deploy-datenlord-to-k8s.sh $LOCAL_TEST
+echo "Deploy DatenLord to K8S"
+sh scripts/setup/deploy-datenlord-to-k8s.sh $LOCAL_TEST || exit 1
 
 # Datenlord metric and logging test
-sh scripts/ci/datenlord-metrics-logging-test.sh
+echo "Datenlord metric and logging test"
+sh scripts/ci/datenlord-metrics-logging-test.sh || exit 1
 
 # CSI E2E Test
-sh scripts/ci/csi-e2e-test.sh
+echo "CSI E2E Test"
+sh scripts/ci/csi-e2e-test.sh || exit 1
 
 # DatenLord Perf Test
 # TODO: avoid to re-create cluster
+echo "DatenLord Perf Test"
 kind delete cluster
 kind create cluster --config /tmp/kind-config.yaml
 kind load docker-image ${DATENLORD_IMAGE}
-sh scripts/perf/datenlord-perf-test.sh
+sh scripts/perf/datenlord-perf-test.sh || exit 1
