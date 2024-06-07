@@ -84,11 +84,11 @@ where
         match read_exact_timeout!(reader, &mut req_buffer, self.timeout_options.read_timeout).await
         {
             Ok(size) => {
-                debug!("Received response body len: {:?}", size);
+                debug!("{:?} Received response body len: {:?}", self, size);
                 return Ok(());
             },
             Err(err) => {
-                debug!("Failed to receive response header: {:?}", err);
+                debug!("{:?} Failed to receive response header: {:?}", self, err);
                 return Err(RpcError::InternalError(err.to_string()));
             }
         }
@@ -111,14 +111,14 @@ where
 
     /// Get the next sequence number.
     pub fn next_seq(&self) -> u64 {
-        self.seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        self.seq.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
     }
 
     pub async fn ping(&self) -> Result<(), RpcError<String>> {
         // Send keep alive message
         let current_seq = self.next_seq();
         // Check keepalive is valid
-        let received_keepalive_seq = self.received_keepalive_seq.load(std::sync::atomic::Ordering::Relaxed);
+        let received_keepalive_seq = self.received_keepalive_seq.load(std::sync::atomic::Ordering::Acquire);
         if current_seq - received_keepalive_seq > 100 {
             debug!("Keep alive timeout, close the connection");
             return Err(RpcError::InternalError("Keep alive timeout".to_string()));
@@ -256,12 +256,6 @@ where
     #[inline(always)]
     fn get_stream_mut(&self) -> &mut net::TcpStream {
         // Current implementation is safe because the stream is only accessed by one thread
-        unsafe { std::mem::transmute(self.stream.get()) }
-    }
-
-    /// Get stream with immutable reference
-    #[inline(always)]
-    fn get_stream(&self) -> &net::TcpStream {
         unsafe { std::mem::transmute(self.stream.get()) }
     }
 

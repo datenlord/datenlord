@@ -231,11 +231,11 @@ where
         match read_exact_timeout!(reader, &mut req_buffer, self.timeout_options.read_timeout).await
         {
             Ok(size) => {
-                debug!("Received request body: {:?}", size);
+                debug!("{:?} Received request body: {:?}", self, size);
                 return Ok(());
             }
             Err(err) => {
-                debug!("Failed to receive request: {:?}", err);
+                debug!("{:?} Failed to receive request: {:?}", self, err);
                 return Err(RpcError::InternalError(err.to_string()));
             }
         }
