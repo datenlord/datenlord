@@ -244,7 +244,9 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
             Err(err) => {
                 // In the previous version ,this panic will never happen.
                 // Later, we will
-                panic!("getattr() failed to get the attr of ino={ino}, the error is: {err}",);
+                error!("getattr() failed to get the attr of ino={ino}, the error is: {err}",);
+                reply.error(err).await
+                // panic!("getattr() failed to get the attr of ino={ino}, the error is: {err}",);
             }
         }
     }
