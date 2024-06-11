@@ -1,8 +1,9 @@
 use std::{
-    cell::UnsafeCell, mem::transmute, sync::{atomic::{AtomicU64, AtomicUsize}, Arc}, time::Duration, u8
+    cell::UnsafeCell, fmt::Debug, mem::transmute, sync::{atomic::{AtomicU64, AtomicUsize}, Arc}, time::Duration, u8
 };
 
 use bytes::BytesMut;
+use hyper::client;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{self, TcpStream},
@@ -10,7 +11,7 @@ use tokio::{
 use tracing::debug;
 
 use crate::{
-    common::TimeoutOptions, error::RpcError, message::{ReqType, RespType}, packet::{
+    common::ClientTimeoutOptions, error::RpcError, message::{ReqType, RespType}, packet::{
         Decode, Encode, Packet, PacketStatus, PacketsKeeper, ReqHeader, RespHeader, REQ_HEADER_SIZE
     }, read_exact_timeout, write_all_timeout
 };
@@ -23,13 +24,13 @@ where
     /// The TCP stream for the connection.
     stream: UnsafeCell<net::TcpStream>,
     /// Options for the timeout of the connection
-    timeout_options: TimeoutOptions,
+    timeout_options: ClientTimeoutOptions,
     /// Stream auto increment sequence number, used to mark the request and response
     seq: AtomicU64,
     /// Received keep alive seq number, will mark the valid keep alive response.
-    /// If the keep alive response is not received in 100 times, the connection will be closed,
-    /// If we receive other response, we will update the received_keepalive_seq too, just treat it as a keep alive response.
-    received_keepalive_seq: AtomicU64,
+    /// If the keep alive response is not received in right mestamp, the connection will be closed,
+    /// If we receive other response, we will update the received_keepalive_timestamp too, just treat it as a keep alive response.
+    received_keepalive_timestamp: AtomicU64,
     /// Send packet task
     packets_keeper: UnsafeCell<PacketsKeeper<P>>,
     /// Response buffer, try to reuse same buffer to reduce memory allocation
@@ -37,20 +38,34 @@ where
     /// Init size is 4MB
     /// Besides, we want to reduce memory copy, and read/write the response to the same data buffer
     resp_buf: UnsafeCell<BytesMut>,
+    /// The Client ID for the connection
+    client_id: u64,
+}
+
+// TODO: Add markable id for this client
+impl<P> Debug for RpcClientConnectionInner<P>
+where P: Packet + Clone + Send + Sync + 'static,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RpcClientConnectionInner")
+            .field("client id", &self.client_id)
+            .finish()
+    }
 }
 
 impl<P> RpcClientConnectionInner<P>
 where
     P: Packet + Clone + Send + Sync + 'static
 {
-    pub fn new(stream: net::TcpStream, timeout_options: TimeoutOptions) -> Self {
+    pub fn new(stream: net::TcpStream, timeout_options: ClientTimeoutOptions, client_id: u64) -> Self {
         Self {
             stream: UnsafeCell::new(stream),
             timeout_options: timeout_options.clone(),
             seq: AtomicU64::new(0),
-            received_keepalive_seq: AtomicU64::new(0),
+            received_keepalive_timestamp: AtomicU64::new(0),
             packets_keeper: UnsafeCell::new(PacketsKeeper::new(timeout_options.clone().idle_timeout.as_secs())),
             resp_buf: UnsafeCell::new(BytesMut::with_capacity(8 * 1024 * 1024)),
+            client_id,
         }
     }
 
@@ -99,11 +114,11 @@ where
         let writer = self.get_stream_mut();
         match write_all_timeout!(writer, data, self.timeout_options.write_timeout).await {
             Ok(_) => {
-                debug!("Sent data with length: {:?}", data.len());
+                debug!("{:?} Sent data with length: {:?}", self, data.len());
                 return Ok(());
             }
             Err(err) => {
-                debug!("Failed to send data: {:?}", err);
+                debug!("{:?} Failed to send data: {:?}", self, err);
                 return Err(RpcError::InternalError(err.to_string()));
             }
         }
@@ -111,16 +126,17 @@ where
 
     /// Get the next sequence number.
     pub fn next_seq(&self) -> u64 {
-        self.seq.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        self.seq.fetch_add(1, std::sync::atomic::Ordering::AcqRel)
     }
 
     pub async fn ping(&self) -> Result<(), RpcError<String>> {
         // Send keep alive message
         let current_seq = self.next_seq();
+        let current_timestamp = tokio::time::Instant::now().elapsed().as_secs();
         // Check keepalive is valid
-        let received_keepalive_seq = self.received_keepalive_seq.load(std::sync::atomic::Ordering::Acquire);
-        if current_seq - received_keepalive_seq > 100 {
-            debug!("Keep alive timeout, close the connection");
+        let received_keepalive_timestamp = self.received_keepalive_timestamp.load(std::sync::atomic::Ordering::Acquire);
+        if current_timestamp - received_keepalive_timestamp > self.timeout_options.keep_alive_timeout.as_secs() {
+            debug!("{:?} keep alive timeout, close the connection", self);
             return Err(RpcError::InternalError("Keep alive timeout".to_string()));
         }
 
@@ -132,10 +148,10 @@ where
         }.encode();
 
         if let Ok(_) =  self.send_data(&keep_alive_msg).await {
-            debug!("Success to sent keep alive message");
+            debug!("{:?} Success to sent keep alive message", self);
             Ok(())
         } else {
-            debug!("Failed to send keep alive message");
+            debug!("{:?} Failed to send keep alive message", self);
             Err(RpcError::InternalError("Failed to send keep alive message".to_string()))
         }
     }
@@ -144,7 +160,7 @@ where
     pub async fn send_packet(&self, req_packet: &mut P) -> Result<(), RpcError<String>> {
         let current_seq = self.next_seq();
         req_packet.set_seq(current_seq);
-        debug!("Try to send request: {:?}", current_seq);
+        debug!("{:?} Try to send request: {:?}", self, current_seq);
 
         // Send may be used in different threads, so we need to create local buffer to store the request data
         if let Ok(req_buffer) = req_packet.get_req_data() {
@@ -158,18 +174,18 @@ where
             req_header.extend_from_slice(&req_buffer);
 
             if let Ok(_) = self.send_data(&req_header).await {
-                debug!("Sent request success: {:?}", req_packet.seq());
+                debug!("{:?} Sent request success: {:?}", self, req_packet.seq());
                 // We have set a copy to keeper and manage the status for the packets keeper
                 // Set to packet task with clone
-                self.get_packets_keeper_mut().add_task(req_packet.clone()).await;
+                self.get_packets_keeper_mut().add_task(req_packet.clone());
 
                 Ok(())
             } else {
-                debug!("Failed to send request: {:?}", req_packet.seq());
+                debug!("{:?} Failed to send request: {:?}", self, req_packet.seq());
                 Err(RpcError::InternalError("Failed to send request".to_string()))
             }
         } else {
-            debug!("Failed to serialize request: {:?}", req_packet.seq());
+            debug!("{:?} Failed to serialize request: {:?}", self, req_packet.seq());
             Err(RpcError::InternalError("Failed to serialize request".to_string()))
         }
     }
@@ -178,7 +194,7 @@ where
     pub async fn recv_packet(&self, resp_packet: &mut P) -> Option<P> {
         // Try to receive the response from innner keeper
         let packets_keeper: &mut PacketsKeeper<P> = self.get_packets_keeper_mut();
-        packets_keeper.consume_task(resp_packet.seq()).await
+        packets_keeper.consume_task(resp_packet.seq())
     }
 
     /// Receive loop for the client.
@@ -192,18 +208,19 @@ where
             tokio::select! {
                 _ = tickers.tick() => {
                     let packets_keeper: &mut PacketsKeeper<P> = self.get_packets_keeper_mut();
-                    packets_keeper.clean_timeout_tasks().await;
+                    packets_keeper.clean_timeout_tasks();
                 }
             }
 
             // Try to receive the response from the server
-            debug!("Waiting for response...");
+            debug!("{:?} Waiting for response...", self);
             let resp_header = self.recv_header().await;
             match resp_header {
                 Ok(header) => {
                     let header_seq = header.seq;
-                    debug!("Received keep alive response or other response.");
-                    self.received_keepalive_seq.store(header_seq, std::sync::atomic::Ordering::Relaxed);
+                    debug!("{:?} Received keep alive response or other response.", self);
+                    let current_timestamp = tokio::time::Instant::now().elapsed().as_secs();
+                    self.received_keepalive_timestamp.store(current_timestamp, std::sync::atomic::Ordering::Release);
                     // Update the received keep alive seq
                     if let Ok(resp_type) = RespType::from_u8(header.op) {
                         match resp_type {
@@ -211,21 +228,21 @@ where
                                 continue;
                             }
                             _ => {
-                                debug!("Received response header: {:?}", header);
+                                debug!("{:?} Received response header: {:?}", self, header);
                                 // Try to read to buffer
                                 match self.recv_len(header.len).await {
                                     Ok(_) => {}
                                     Err(err) => {
-                                        debug!("Failed to receive request header: {:?}", err);
+                                        debug!("{:?} Failed to receive request header: {:?}", self, err);
                                         break;
                                     }
                                 }
 
                                 // Take the packet task and recv the response
                                 let packets_keeper: &mut PacketsKeeper<P> = self.get_packets_keeper_mut();
-                                if let Some(body) = packets_keeper.take_task_mut(header_seq).await {
+                                if let Some(body) = packets_keeper.get_task_mut(header_seq) {
                                     // Try to fill the packet with the response
-                                    debug!("Find response body in current client: {:?}", body.seq());
+                                    debug!("{:?} Find response body in current client: {:?}", self, body.seq());
                                     let resp_buffer: &mut BytesMut = unsafe {
                                         transmute(self.resp_buf.get())
                                     };
@@ -234,18 +251,18 @@ where
                                     // Try to set result code in `set_resp_data`
                                     body.set_resp_data(resp_buffer).unwrap();
                                 } else {
-                                    debug!("Failed to get packet task");
+                                    debug!("{:?} Failed to get packet task", self);
                                     break;
                                 }
                             }
                         }
                     } else {
-                        debug!("Invalid response type: {:?}", header.op);
+                        debug!("{:?} Invalid response type: {:?}", self, header.op);
                         break;
                     }
                 }
                 Err(err) => {
-                    debug!("Failed to receive request header: {:?}", err);
+                    debug!("{:?} Failed to receive request header: {:?}", self, err);
                     break;
                 }
             }
@@ -265,12 +282,6 @@ where
         // Current implementation is safe because the packet task is only accessed by one thread
         unsafe { std::mem::transmute(self.packets_keeper.get()) }
     }
-
-    /// Get packet task with immutable reference
-    #[inline(always)]
-    fn get_packets_keeper(&self) -> &PacketsKeeper<P> {
-        unsafe { std::mem::transmute(self.packets_keeper.get()) }
-    }
 }
 
 unsafe impl<P> Send for RpcClientConnectionInner<P>
@@ -288,9 +299,11 @@ where P: Packet + Clone + Send + Sync + 'static,
     /// Address of the server.
     // addr: String,
     /// The timeout options for the client.
-    timeout_options: TimeoutOptions,
+    timeout_options: ClientTimeoutOptions,
     /// Inner connection for the client.
     inner_connection: Arc<RpcClientConnectionInner<P>>,
+    /// Client ID for the connection
+    client_id: AtomicU64,
 }
 
 impl<P> RpcClient<P>
@@ -301,12 +314,14 @@ impl<P> RpcClient<P>
     /// We don't manage the stream is dead or clean
     /// The client will be closed if the keep alive message is not received in 100 times
     /// When the stream is broken, the client will be closed, and we need to recreate a new client
-    pub async fn new(stream: TcpStream, timeout_options: TimeoutOptions) -> Self {
-        let inner_connection = RpcClientConnectionInner::new(stream, timeout_options.clone());
+    pub async fn new(stream: TcpStream, timeout_options: ClientTimeoutOptions) -> Self {
+        let client_id = AtomicU64::new(0);
+        let inner_connection = RpcClientConnectionInner::new(stream, timeout_options.clone(), client_id.load(std::sync::atomic::Ordering::Acquire));
 
         Self {
             timeout_options,
             inner_connection: Arc::new(inner_connection),
+            client_id,
         }
     }
 
@@ -334,9 +349,9 @@ impl<P> RpcClient<P>
         self.inner_connection.recv_packet(resp).await
     }
 
-    /// Manually send ping by the send request
+    /// Manaully send ping by the send request
     /// The inner can not start two loop, because the stream is unsafe
-    /// we need to start the loop in the client or higher level manually
+    /// we need to start the loop in the client or higher level manaully
     pub async fn ping(&self) -> Result<(), RpcError<String>> {
         self.inner_connection.ping().await
     }
@@ -345,7 +360,7 @@ impl<P> RpcClient<P>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{common::TimeoutOptions, connect_timeout};
+    use crate::{common::ClientTimeoutOptions, connect_timeout};
     use std::time::Duration;
 
     #[derive(Debug, Clone)]
@@ -408,10 +423,11 @@ mod tests {
         .expect("Failed to set tracing subscriber");
 
         let addr = "127.0.0.1:2789";
-        let timeout_options = TimeoutOptions {
+        let timeout_options = ClientTimeoutOptions {
             read_timeout: Duration::from_secs(20),
             write_timeout: Duration::from_secs(20),
             idle_timeout: Duration::from_secs(20),
+            keep_alive_timeout: Duration::from_secs(20),
         };
 
         // Create a fake server, will directly return the request

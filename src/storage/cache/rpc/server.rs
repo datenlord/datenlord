@@ -9,7 +9,7 @@ use tokio::{
 };
 
 use crate::{
-    common::TimeoutOptions, error::RpcError, message::{
+    common::ServerTimeoutOptions, error::RpcError, message::{
         decode_file_block_request, FileBlockRequest,
         FileBlockResponse, ReqType, RespType, StatusCode,
     }, packet::{Decode, Encode, ReqHeader, RespHeader, REQ_HEADER_SIZE}, read_exact_timeout, workerpool::{Job, WorkerPool}, write_all_timeout
@@ -160,7 +160,7 @@ where
     /// The worker pool for the connection.
     worker_pool: Arc<WorkerPool>,
     /// Options for the timeout of the connection
-    timeout_options: TimeoutOptions,
+    timeout_options: ServerTimeoutOptions,
     /// The handler for the connection
     dispatch_handler: T,
     /// Response buffer, try to reuse same buffer to reduce memory allocation
@@ -189,7 +189,7 @@ where
     pub fn new(
         stream: net::TcpStream,
         worker_pool: Arc<WorkerPool>,
-        timeout_options: TimeoutOptions,
+        timeout_options: ServerTimeoutOptions,
         dispatch_handler: T,
     ) -> Self {
         Self {
@@ -231,11 +231,11 @@ where
         match read_exact_timeout!(reader, &mut req_buffer, self.timeout_options.read_timeout).await
         {
             Ok(size) => {
-                debug!("{:?} Received request body: {:?}", self, size);
+                debug!("Received request body: {:?}", size);
                 return Ok(());
             }
             Err(err) => {
-                debug!("{:?} Failed to receive request: {:?}", self, err);
+                debug!("Failed to receive request: {:?}", err);
                 return Err(RpcError::InternalError(err.to_string()));
             }
         }
@@ -263,12 +263,6 @@ where
         // Current implementation is safe because the stream is only accessed by one thread
         unsafe { std::mem::transmute(self.stream.get()) }
     }
-
-    /// Get stream with immutable reference
-    #[inline(always)]
-    fn get_stream(&self) -> &net::TcpStream {
-        unsafe { std::mem::transmute(self.stream.get()) }
-    }
 }
 
 impl<T> RpcServerConnection<T>
@@ -279,7 +273,7 @@ where
     pub fn new(
         stream: net::TcpStream,
         worker_pool: Arc<WorkerPool>,
-        timeout_options: TimeoutOptions,
+        timeout_options: ServerTimeoutOptions,
         dispatch_handler: T,
     ) -> Self {
         let inner = Arc::new(RpcServerConnectionInner::new(
@@ -433,7 +427,7 @@ where
     T: RpcServerConnectionHandler + Send + Sync + Clone + 'static,
 {
     /// Options for the timeout of the server connection
-    timeout_options: TimeoutOptions,
+    timeout_options: ServerTimeoutOptions,
     /// Main worker for the server
     main_worker: Option<task::JoinHandle<()>>,
     /// The worker factory for the RPC connection
@@ -446,7 +440,7 @@ where
 {
     /// Create a new RPC server.
     pub fn new(
-        timeout_options: TimeoutOptions,
+        timeout_options: ServerTimeoutOptions,
         max_workers: usize,
         max_jobs: usize,
         dispatch_handler: T,
@@ -532,7 +526,7 @@ mod tests {
         let addr = "127.0.0.1:2788";
         let pool = Arc::new(WorkerPool::new(4, 100));
         let handler = FileBlockRpcServerHandler::new(pool.clone());
-        let mut server = RpcServer::new(TimeoutOptions::default(), 4, 100, handler);
+        let mut server = RpcServer::new(ServerTimeoutOptions::default(), 4, 100, handler);
         server.listen(addr).await.unwrap();
         time::sleep(Duration::from_secs(1)).await;
         assert!(is_port_in_use(addr));

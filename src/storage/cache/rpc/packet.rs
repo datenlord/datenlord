@@ -204,7 +204,7 @@ impl<P: Packet + Send + Sync> PacketsKeeper<P> {
     }
 
     /// Add a task to the packets
-    pub async fn add_task(&mut self, packet: P) {
+    pub fn add_task(&mut self, packet: P) {
         let seq = packet.seq();
         self.packets.insert(seq, packet);
         // Get current timestamp
@@ -214,7 +214,7 @@ impl<P: Packet + Send + Sync> PacketsKeeper<P> {
     }
 
     /// Clean pending tasks as timeout
-    pub async fn clean_timeout_tasks(&mut self) {
+    pub fn clean_timeout_tasks(&mut self) {
         let mut timeout_packets = Vec::new();
         let current_timestamp = tokio::time::Instant::now().elapsed().as_secs();
         for (seq, packet) in self.packets.iter_mut() {
@@ -242,7 +242,7 @@ impl<P: Packet + Send + Sync> PacketsKeeper<P> {
     }
 
     /// Get a task from the packets and remove it
-    pub async fn consume_task(&mut self, seq: u64) -> Option<P> {
+    pub fn consume_task(&mut self, seq: u64) -> Option<P> {
         if let Some(packet) = self.packets.remove(&seq) {
             self.timestamp.remove(&seq);
             return Some(packet);
@@ -252,7 +252,7 @@ impl<P: Packet + Send + Sync> PacketsKeeper<P> {
     }
 
     /// Get a task from the packets
-    pub async fn take_task_mut(&mut self, seq: u64) -> Option<&mut P> {
+    pub fn get_task_mut(&mut self, seq: u64) -> Option<&mut P> {
         if let Some(packet) = self.packets.get_mut(&seq) {
             match packet.status() {
                 // TODO: Only used for check status, we will not modify the status here
