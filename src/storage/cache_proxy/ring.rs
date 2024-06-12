@@ -12,7 +12,7 @@ use tracing::warn;
 use crate::async_fuse::util::usize_to_u64;
 
 /// The default slot size
-/// We use u64::MAX as the default slot size
+/// We use `u64::MAX` as the default slot size
 /// And we do not need to worry about the overflow
 const DEFAULT_SLOT_SIZE: u64 = std::u64::MAX;
 
@@ -127,7 +127,7 @@ impl Default for DefaultHashBuilder {
 pub struct Ring<T, S = DefaultHashBuilder>
 where
     T: NodeType,
-    S: BuildHasher,
+    S: BuildHasher + Clone,
 {
     /// The hash builder
     #[serde(skip)]
@@ -158,9 +158,10 @@ where
 impl<T, S> Ring<T, S>
 where
     T: NodeType,
-    S: BuildHasher,
+    S: BuildHasher + Clone,
 {
     /// Create a new hash ring with a given hash builder and capacity
+    #[must_use]
     pub fn new(hash_builder: S) -> Self {
         Self {
             hash_builder,
@@ -170,22 +171,34 @@ where
         }
     }
 
+    /// Update the ring with a given ring
+    /// It will node update the hash builder
+    pub fn update(&mut self, ring: &Ring<T, S>) {
+        self.slots = ring.slots.clone();
+        self.capacity = ring.capacity;
+        self.version = ring.version;
+    }
+
     /// Get the slot length
+    #[must_use]
     pub fn len_slots(&self) -> usize {
         self.slots.len()
     }
 
     /// Get the slot at a given index
+    #[must_use]
     pub fn capacity(&self) -> u64 {
         self.capacity
     }
 
     /// Get version
+    #[must_use]
     pub fn version(&self) -> u64 {
         self.version
     }
 
     /// Check if the ring is empty
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.slots.is_empty()
     }
@@ -199,7 +212,7 @@ where
 impl<T, S: BuildHasher> Ring<T, S>
 where
     T: NodeType,
-    S: BuildHasher,
+    S: BuildHasher + Clone,
 {
     /// Add a node to a slot
     /// We will create a new slot and update slot mapping, then add to the ring
