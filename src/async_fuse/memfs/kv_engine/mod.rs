@@ -1,8 +1,10 @@
 use core::fmt::Debug;
 use std::fmt;
+use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use tokio::sync::mpsc;
 
 use crate::common::async_fuse_error::KVEngineError;
 use crate::common::error::{DatenLordError, DatenLordResult};
@@ -33,6 +35,14 @@ pub trait MetaTxn: Send {
     fn set(&mut self, key: &KeyType, value: &ValueType);
     /// Delete the value by the key.
     fn delete(&mut self, key: &KeyType);
+    /// Try to make campaign leader with the key.
+    /// Use String as val can be easily compared.
+    async fn campaign(
+        &self,
+        key: &KeyType,
+        val: String,
+        lease_id: i64,
+    ) -> DatenLordResult<(bool, Option<String>)>;
     /// Commit the transaction.
     /// Only when commit is called, the write operations will be executed.
     /// If the commit is successful, return true, else return false.
@@ -198,6 +208,9 @@ impl KeyRange {
 /// K/V storage engine.
 #[async_trait]
 pub trait KVEngine: Send + Sync + Debug + Sized {
+    /// The session type for keep alive
+    type Session: Send + Sync;
+
     /// create a new KVEngine.
     async fn new(end_points: Vec<String>) -> DatenLordResult<Self>;
     /// Create a new transaction.
@@ -222,11 +235,17 @@ pub trait KVEngine: Send + Sync + Debug + Sized {
         option: Option<DeleteOption>,
     ) -> DatenLordResult<Option<ValueType>>;
 
-    /// Lease grant
-    async fn lease_grant(&self, ttl: i64) -> DatenLordResult<i64>;
+    /// Lease keep alive
+    async fn create_session(&self, lease_id: i64, ttl: u64) -> DatenLordResult<Arc<Self::Session>>;
 
     /// Range get, return all key-value pairs start with prefix
     async fn range(&self, prefix: &KeyType) -> DatenLordResult<Vec<ValueType>>;
+
+    /// Watch the key, return a receiver to receive the value
+    async fn watch(
+        &self,
+        key: &KeyType,
+    ) -> DatenLordResult<mpsc::Receiver<(String, Option<ValueType>)>>;
 }
 
 /// The version of the key.

@@ -1,8 +1,33 @@
-use std::sync::{Arc, Mutex};
+use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 
 use super::ring::NodeType;
+
+/// Master node info
+///
+/// The master node info is used to store the master node information
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MasterNodeInfo {
+    /// The ip of the master node
+    pub node_ip: String,
+    /// The port of the master node
+    pub node_port: u16,
+    /// The version of the hash ring
+    pub hash_ring_version: u64,
+}
+
+impl MasterNodeInfo {
+    /// Create a new master node info
+    #[must_use]
+    pub fn new(node_ip: String, node_port: u16, hash_ring_version: u64) -> Self {
+        Self {
+            node_ip,
+            node_port,
+            hash_ring_version,
+        }
+    }
+}
 
 /// Physical node struct
 ///
@@ -17,6 +42,8 @@ pub struct Node {
     port: u16,
     /// The weight of the node
     weight: u32,
+    /// The status of the node
+    status: NodeStatus,
 }
 
 impl NodeType for Node {}
@@ -37,66 +64,100 @@ impl std::hash::Hash for Node {
     }
 }
 
+impl Default for Node {
+    fn default() -> Self {
+        Self {
+            ip: String::new(),
+            port: 0,
+            weight: 0,
+            status: NodeStatus::Initializing,
+        }
+    }
+}
+
 impl Node {
     /// Create a new node
-    pub fn new(ip: String, port: u16, weight: u32) -> Self {
-        Self { ip, port, weight }
+    #[must_use]
+    pub fn new(ip: String, port: u16, weight: u32, status: NodeStatus) -> Self {
+        Self {
+            ip,
+            port,
+            weight,
+            status,
+        }
     }
 
     /// Get the ip of the node
+    #[must_use]
     pub fn ip(&self) -> &str {
         &self.ip
     }
 
     /// Get the port of the node
+    #[must_use]
     pub fn port(&self) -> u16 {
         self.port
     }
 
     /// Get the weight of the node
+    #[must_use]
     pub fn weight(&self) -> u32 {
         self.weight
     }
+
+    /// Set the ip of the node
+    pub fn set_ip(&mut self, ip: String) {
+        self.ip = ip;
+    }
+
+    /// Set the port of the node
+    pub fn set_port(&mut self, port: u16) {
+        self.port = port;
+    }
+
+    /// Set the weight of the node
+    pub fn set_weight(&mut self, weight: u32) {
+        self.weight = weight;
+    }
+
+    /// Get the status of the node
+    #[must_use]
+    pub fn status(&self) -> NodeStatus {
+        self.status.clone()
+    }
+
+    /// Change the status of the node
+    /// We export this function to change the status of the node,
+    /// The state machine is managed by the cluster manager
+    pub fn set_status(&mut self, status: NodeStatus) {
+        self.status = status;
+    }
 }
 
-/// Node list
-///
-/// Node list is used to manage the physical nodes
-#[derive(Debug)]
-pub struct NodeList {
-    inner: Arc<Mutex<Vec<Node>>>,
+/// Node status
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum NodeStatus {
+    /// The node is preparing
+    Initializing,
+    /// The node is registering
+    Registering,
+    /// The node is serve as slave
+    Slave,
+    /// The node is serve as master
+    Master,
 }
 
-impl NodeList {
-    /// Create a new node list
-    pub fn new() -> Self {
-        Self {
-            inner: Arc::new(Mutex::new(Vec::new())),
+impl FromStr for NodeStatus {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let s = s.to_lowercase();
+        match s.as_str() {
+            "initializing" => Ok(NodeStatus::Initializing),
+            "registering" => Ok(NodeStatus::Registering),
+            "slave" => Ok(NodeStatus::Slave),
+            "master" => Ok(NodeStatus::Master),
+            _ => Err(format!("Unknown node status: {s}")),
         }
-    }
-
-    /// Add a node to the list
-    pub fn add(&self, node: Node) {
-        self.inner.lock().unwrap().push(node);
-    }
-
-    /// Get the node list
-    pub fn list(&self) -> Vec<Node> {
-        self.inner.lock().unwrap().clone()
-    }
-
-    /// Remove a node from the list by ip
-    pub fn remove(&self, ip: &str) {
-        let mut list = self.inner.lock().unwrap();
-        list.retain(|node| node.ip() != ip);
-    }
-
-    /// Get the node by ip
-    pub fn get(&self, ip: &str) -> Option<Node> {
-        let list = match self.inner.lock() {
-            Ok(lock) => lock,
-            Err(_) => return None,
-        };
-        list.iter().find(|node| node.ip() == ip).cloned()
     }
 }
