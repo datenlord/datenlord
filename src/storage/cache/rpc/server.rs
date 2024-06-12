@@ -4,15 +4,16 @@ use std::{
 
 use async_trait::async_trait;
 use bytes::BytesMut;
-use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt}, net, sync::mpsc, task, time::timeout
-};
+use tokio::{net, sync::mpsc, task};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-use crate::{
+use crate::{read_exact_timeout, write_all_timeout};
+
+use super::{
     common::ServerTimeoutOptions, error::RpcError, message::{
         decode_file_block_request, FileBlockRequest,
         FileBlockResponse, ReqType, RespType, StatusCode,
-    }, packet::{Decode, Encode, ReqHeader, RespHeader, REQ_HEADER_SIZE}, read_exact_timeout, workerpool::{Job, WorkerPool}, write_all_timeout
+    }, packet::{Decode, Encode, ReqHeader, RespHeader, REQ_HEADER_SIZE}, workerpool::{Job, WorkerPool}
 };
 
 use tracing::{debug, error, info};
@@ -261,7 +262,7 @@ where
     #[inline(always)]
     fn get_stream_mut(&self) -> &mut net::TcpStream {
         // Current implementation is safe because the stream is only accessed by one thread
-        unsafe { std::mem::transmute(self.stream.get()) }
+        unsafe { transmute(self.stream.get()) }
     }
 }
 
@@ -396,7 +397,7 @@ pub struct RpcConnWorkerFactory<T>
 where
     T: RpcServerConnectionHandler + Send + Sync + 'static,
 {
-    /// Globa worker pool for the RPC connection, shared by all connections.
+    /// Global worker pool for the RPC connection, shared by all connections.
     worker_pool: Arc<WorkerPool>,
     /// The handler for the connection
     dispatch_handler: T,

@@ -4,7 +4,8 @@ use async_trait::async_trait;
 use tokio::task;
 use tracing::debug;
 
-use crate::error::RpcError;
+use super::error::RpcError;
+
 
 type JobImpl = Box<dyn Job + Send + Sync + 'static>;
 

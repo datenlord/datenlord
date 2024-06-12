@@ -1,4 +1,4 @@
-use crate::{error::RpcError, packet::{Decode, Encode, Packet, PacketStatus}};
+use super::{error::RpcError, packet::{Decode, Encode, Packet, PacketStatus}};
 
 /// Impl the keep alive request for Packet trait
 #[derive(Debug, Clone)]

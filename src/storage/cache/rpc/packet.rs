@@ -1,8 +1,8 @@
-use std::{collections::{HashMap, VecDeque}, fmt::Debug};
+use std::{collections::HashMap, fmt::Debug};
 
 use tracing::debug;
 
-use crate::error::RpcError;
+use super::error::RpcError;
 
 /// The size of the request header.
 pub const REQ_HEADER_SIZE: u64 = 17;
