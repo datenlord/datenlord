@@ -32,6 +32,8 @@ pub enum TaskName {
     WriteBack,
     /// The scheduler extender.
     SchedulerExtender,
+    /// The task for etcd keep alive
+    EtcdKeepAlive,
 }
 
 /// The task handle(s) of the current task node.
@@ -185,10 +187,11 @@ impl Task {
 }
 
 /// Edges of the dependency graph of the tasks.
-pub(super) const EDGES: [(TaskName, TaskName); 9] = [
+pub(super) const EDGES: [(TaskName, TaskName); 10] = [
     (TaskName::Root, TaskName::Metrics),
     (TaskName::Root, TaskName::BlockFlush),
     (TaskName::Root, TaskName::SchedulerExtender),
+    (TaskName::Root, TaskName::EtcdKeepAlive),
     (TaskName::BlockFlush, TaskName::AsyncFuse),
     (TaskName::BlockFlush, TaskName::FuseRequest),
     (TaskName::FuseRequest, TaskName::AsyncFuse),
