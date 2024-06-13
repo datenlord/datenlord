@@ -248,8 +248,9 @@ impl<'a> ReplyRaw<'a> {
                 };
                 self.send_error_code(*error_code).await
             }
-            err => {
-                panic!("should not send non-internal error to FUSE kernel ,the error is : {err}",);
+            _ => {
+                // panic!("should not send non-internal error to FUSE kernel ,the error is : {err}",);
+                self.send_error_code(Errno::ENOENT).await
             }
         }
     }
