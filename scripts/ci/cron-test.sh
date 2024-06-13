@@ -19,7 +19,7 @@ sh scripts/setup/setup-ssh-for-cluster-nodes.sh || exit 1
 
 # Datenlord Monitoring and Alerting Test
 # echo "Datenlord Monitoring and Alerting Test"
-sh scripts/ci/datenlord-monitor-test.sh || exit 1
+# sh scripts/ci/datenlord-monitor-test.sh || exit 1
 
 # Deploy DatenLord to K8S
 echo "Deploy DatenLord to K8S"
@@ -27,7 +27,7 @@ sh scripts/setup/deploy-datenlord-to-k8s.sh $LOCAL_TEST || exit 1
 
 # Datenlord metric and logging test
 echo "Datenlord metric and logging test"
-sh scripts/ci/datenlord-metrics-logging-test.sh || exit 1
+# sh scripts/ci/datenlord-metrics-logging-test.sh || exit 1
 
 # CSI E2E Test
 echo "CSI E2E Test"

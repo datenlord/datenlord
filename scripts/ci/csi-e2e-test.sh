@@ -37,7 +37,8 @@ fi
 kubectl config view --raw > $K8S_CONFIG
 echo "Ginkgo test"
 # kubernetes/test/bin/ginkgo -v -failOnPending -debug -focus='External.Storage' -skip='\[Feature:|\[Disruptive\]|\[Serial\]' kubernetes/test/bin/e2e.test -- -v=5 -kubectl-path=`which kubectl` -kubeconfig=`realpath $K8S_CONFIG` -storage.testdriver=`realpath $E2E_TEST_CONFIG`
-kubernetes/test/bin/ginkgo -v -failOnPending -debug -focus='should be able to unmount after the subpath directory is deleted' -skip='\[Feature:|\[Disruptive\]|\[Serial\]' kubernetes/test/bin/e2e.test -- -v=5 -kubectl-path=`which kubectl` -kubeconfig=`realpath $K8S_CONFIG` -storage.testdriver=`realpath $E2E_TEST_CONFIG`
+# kubernetes/test/bin/ginkgo -v -failOnPending -debug -focus='should be able to unmount after the subpath directory is deleted' -skip='\[Feature:|\[Disruptive\]|\[Serial\]' kubernetes/test/bin/e2e.test -- -v=5 -kubectl-path=`which kubectl` -kubeconfig=`realpath $K8S_CONFIG` -storage.testdriver=`realpath $E2E_TEST_CONFIG`
+kubernetes/test/bin/ginkgo -v -failOnPending -debug -focus='\[Driver: csi.datenlord.io\].*should be able to unmount after the subpath directory is deleted' -skip='\[Feature:|\[Disruptive\]|\[Serial\]' kubernetes/test/bin/e2e.test -- -v=5 -kubectl-path=$(which kubectl) -kubeconfig=$(realpath $K8S_CONFIG) -storage.testdriver=$(realpath $E2E_TEST_CONFIG)
 /bin/sh /tmp/clean_up_mount_dir.sh $CONFIG_KIND $NODE_APP_LABEL $DATENLORD_NAMESPACE true
 # Run [Disruptive] test in serial and separately
 # kubernetes/test/bin/ginkgo -v -failFast -failOnPending -debug -focus='External.Storage.*(\[Feature:|\[Disruptive\]|\[Serial\])' kubernetes/test/bin/e2e.test -- -v=5 -kubectl-path=`which kubectl` -kubeconfig=`realpath $K8S_CONFIG` -storage.testdriver=`realpath $E2E_TEST_CONFIG`
