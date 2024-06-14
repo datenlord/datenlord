@@ -179,11 +179,6 @@ impl S3Node {
         self.set_attr(attr);
     }
 
-    /// Increase node lookup count
-    fn inc_lookup_count(&self) -> i64 {
-        self.lookup_count.fetch_add(1, Ordering::AcqRel)
-    }
-
     /// Open root node
     #[allow(clippy::unnecessary_wraps)]
     pub(crate) async fn open_root_node(
@@ -321,9 +316,7 @@ impl Node for S3Node {
 
     /// Get node attribute and increase lookup count
     fn lookup_attr(&self) -> FileAttr {
-        let attr = self.get_attr();
-        self.inc_lookup_count();
-        attr
+        self.get_attr()
     }
 
     /// Get node lookup count

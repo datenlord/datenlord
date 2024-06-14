@@ -14,5 +14,5 @@ for pod in ${NODE_POD_NAMES}; do
 echo "SHOW LOGS OF $NODE_CONTAINER_NAME IN ${pod}"
 kubectl logs ${pod} -n ${DATENLORD_NAMESPACE} -c ${NODE_CONTAINER_NAME}
 done
-kubectl describe pod metrics-datenlord-test
+# kubectl describe pod metrics-datenlord-test
 kubectl cluster-info dump

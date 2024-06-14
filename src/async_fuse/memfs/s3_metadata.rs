@@ -99,6 +99,7 @@ impl MetaData for S3MetaData {
         offset: i64,
         reply: &mut ReplyDirectory,
     ) -> DatenLordResult<()> {
+        info!("readdir() ino={} offset={} reply={:?}", ino, offset, reply);
         let inode = self
             .get_node_from_kv_engine(ino)
             .await?
@@ -145,6 +146,7 @@ impl MetaData for S3MetaData {
 
     #[instrument(skip(self))]
     async fn readlink(&self, ino: u64) -> DatenLordResult<Vec<u8>> {
+        info!("readlink() ino={}", ino);
         let node = self
             .get_node_from_kv_engine(ino)
             .await?
@@ -154,6 +156,7 @@ impl MetaData for S3MetaData {
 
     #[instrument(skip(self), err, ret)]
     async fn statfs(&self, context: ReqContext, ino: u64) -> DatenLordResult<StatFsParam> {
+        info!("statfs() ino={}", ino);
         let node = self
             .get_node_from_kv_engine(ino)
             .await?
@@ -259,6 +262,7 @@ impl MetaData for S3MetaData {
             return Ok((Duration::new(MY_TTL_SEC, 0), attr));
         }
 
+        info!("getattr() ino={}", ino);
         // If the file is not open, return the attr in kv engine
         let inode = self
             .get_node_from_kv_engine(ino)
@@ -280,31 +284,9 @@ impl MetaData for S3MetaData {
     }
 
     #[instrument(skip(self))]
-    async fn forget(&self, ino: u64, nlookup: u64) -> DatenLordResult<bool> {
-        let (res, retry) = retry_txn!(TXN_RETRY_LIMIT, {
-            let mut txn = self.kv_engine.new_meta_txn().await;
-            let mut result = false;
-            let inode = self.get_inode_from_txn(txn.as_mut(), ino).await?;
-            inode.dec_lookup_count_by(nlookup);
-            let is_deleted = inode.get_lookup_count() == 0;
-            if is_deleted {
-                // FIXME: rename should also rename the node's name and reset the parent ino
-                txn.delete(&KeyType::DirEntryKey((
-                    inode.get_parent_ino(),
-                    inode.get_name().to_owned(),
-                )));
-                txn.delete(&KeyType::INum2Node(ino));
-                result = true;
-            } else {
-                txn.set(
-                    &KeyType::INum2Node(ino),
-                    &ValueType::Node(inode.to_serial_node()),
-                );
-            }
-            (txn.commit().await, result)
-        });
-        FILESYSTEM_METRICS.observe_storage_operation_throughput(retry, "forget");
-        res
+    async fn forget(&self, _ino: u64, _nlookup: u64) -> DatenLordResult<bool> {
+        FILESYSTEM_METRICS.observe_storage_operation_throughput(0_i32, "forget");
+        Ok(false)
     }
 
     #[instrument(skip(self), err, ret)]
@@ -418,26 +400,16 @@ impl MetaData for S3MetaData {
                 }
             }
 
-            // Ready to unlink
-            let deferred_deletion = child_node.get_lookup_count() > 0;
             // Deferred deletion is for inode ,not for dir entry
             // So we will remove the dir entry immediately
             txn.delete(&KeyType::DirEntryKey((parent, name.into())));
             parent_node.update_mtime_ctime_to_now();
 
-            if deferred_deletion {
-                // `forget()` will remove the inode
-                child_node.mark_deferred_deletion();
-                txn.set(
-                    &KeyType::INum2Node(child_ino),
-                    &ValueType::Node(child_node.to_serial_node()),
-                );
-            } else {
-                if let SFlag::S_IFREG = child_node.get_type() {
-                    result = Some(child_ino);
-                }
-                txn.delete(&KeyType::INum2Node(child_ino));
+            if let SFlag::S_IFREG = child_node.get_type() {
+                result = Some(child_ino);
             }
+            txn.delete(&KeyType::INum2Node(child_ino));
+
             txn.set(
                 &KeyType::INum2Node(parent),
                 &ValueType::Node(parent_node.to_serial_node()),
@@ -866,6 +838,7 @@ impl S3MetaData {
         txn: &mut T,
         ino: INum,
     ) -> DatenLordResult<S3Node> {
+        info!("get_inode_from_txn() ino={}", ino);
         Ok(txn
             .get(&KeyType::INum2Node(ino))
             .await
