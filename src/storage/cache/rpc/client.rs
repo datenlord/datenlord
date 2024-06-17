@@ -1,20 +1,31 @@
 use std::{
-    cell::UnsafeCell, fmt::Debug, mem::transmute, sync::{atomic::AtomicU64, Arc}, u8
+    cell::UnsafeCell,
+    fmt::Debug,
+    mem::transmute,
+    sync::{
+        atomic::{AtomicU64, AtomicUsize},
+        Arc,
+    },
+    time::Duration,
+    u8,
 };
 
 use bytes::BytesMut;
+use hyper::client;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    net::TcpStream,
+    net::{self, TcpStream},
 };
 use tracing::debug;
 
-use crate::{read_exact_timeout, write_all_timeout};
-
-use super::{
-    common::ClientTimeoutOptions, error::RpcError, message::{ReqType, RespType}, packet::{
-        Decode, Encode, Packet, PacketsKeeper, ReqHeader, RespHeader, REQ_HEADER_SIZE
-    }
+use crate::{
+    common::ClientTimeoutOptions,
+    error::RpcError,
+    message::{ReqType, RespType},
+    packet::{
+        Decode, Encode, Packet, PacketStatus, PacketsKeeper, ReqHeader, RespHeader, REQ_HEADER_SIZE,
+    },
+    read_exact_timeout, write_all_timeout,
 };
 
 /// TODO: combine RpcClientConnectionInner and RpcClientConnection
@@ -23,7 +34,7 @@ where
     P: Packet + Clone + Send + Sync + 'static,
 {
     /// The TCP stream for the connection.
-    stream: UnsafeCell<TcpStream>,
+    stream: UnsafeCell<net::TcpStream>,
     /// Options for the timeout of the connection
     timeout_options: ClientTimeoutOptions,
     /// Stream auto increment sequence number, used to mark the request and response
@@ -45,7 +56,8 @@ where
 
 // TODO: Add markable id for this client
 impl<P> Debug for RpcClientConnectionInner<P>
-where P: Packet + Clone + Send + Sync + 'static,
+where
+    P: Packet + Clone + Send + Sync + 'static,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RpcClientConnectionInner")
@@ -56,15 +68,21 @@ where P: Packet + Clone + Send + Sync + 'static,
 
 impl<P> RpcClientConnectionInner<P>
 where
-    P: Packet + Clone + Send + Sync + 'static
+    P: Packet + Clone + Send + Sync + 'static,
 {
-    pub fn new(stream: TcpStream, timeout_options: ClientTimeoutOptions, client_id: u64) -> Self {
+    pub fn new(
+        stream: net::TcpStream,
+        timeout_options: ClientTimeoutOptions,
+        client_id: u64,
+    ) -> Self {
         Self {
             stream: UnsafeCell::new(stream),
             timeout_options: timeout_options.clone(),
             seq: AtomicU64::new(0),
             received_keepalive_timestamp: AtomicU64::new(0),
-            packets_keeper: UnsafeCell::new(PacketsKeeper::new(timeout_options.clone().idle_timeout.as_secs())),
+            packets_keeper: UnsafeCell::new(PacketsKeeper::new(
+                timeout_options.clone().idle_timeout.as_secs(),
+            )),
             resp_buf: UnsafeCell::new(BytesMut::with_capacity(8 * 1024 * 1024)),
             client_id,
         }
@@ -81,9 +99,7 @@ where
             }
         }
 
-        let buffer: &mut BytesMut = unsafe {
-            transmute(self.resp_buf.get())
-        };
+        let buffer: &mut BytesMut = unsafe { transmute(self.resp_buf.get()) };
         let req_header = RespHeader::decode(&buffer)?;
         debug!("Received response header: {:?}", req_header);
 
@@ -92,9 +108,7 @@ where
 
     /// Receive request body from the server.
     pub async fn recv_len(&self, len: u64) -> Result<(), RpcError<String>> {
-        let mut req_buffer: &mut BytesMut = unsafe {
-            transmute(self.resp_buf.get())
-        };
+        let mut req_buffer: &mut BytesMut = unsafe { transmute(self.resp_buf.get()) };
         req_buffer.resize(len as usize, 0);
         let reader = self.get_stream_mut();
         match read_exact_timeout!(reader, &mut req_buffer, self.timeout_options.read_timeout).await
@@ -102,7 +116,7 @@ where
             Ok(size) => {
                 debug!("{:?} Received response body len: {:?}", self, size);
                 return Ok(());
-            },
+            }
             Err(err) => {
                 debug!("{:?} Failed to receive response header: {:?}", self, err);
                 return Err(RpcError::InternalError(err.to_string()));
@@ -135,8 +149,12 @@ where
         let current_seq = self.next_seq();
         let current_timestamp = tokio::time::Instant::now().elapsed().as_secs();
         // Check keepalive is valid
-        let received_keepalive_timestamp = self.received_keepalive_timestamp.load(std::sync::atomic::Ordering::Acquire);
-        if current_timestamp - received_keepalive_timestamp > self.timeout_options.keep_alive_timeout.as_secs() {
+        let received_keepalive_timestamp = self
+            .received_keepalive_timestamp
+            .load(std::sync::atomic::Ordering::Acquire);
+        if current_timestamp - received_keepalive_timestamp
+            > self.timeout_options.keep_alive_timeout.as_secs()
+        {
             debug!("{:?} keep alive timeout, close the connection", self);
             return Err(RpcError::InternalError("Keep alive timeout".to_string()));
         }
@@ -146,14 +164,17 @@ where
             seq: current_seq,
             op: ReqType::KeepAliveRequest.to_u8(),
             len: 0,
-        }.encode();
+        }
+        .encode();
 
-        if let Ok(_) =  self.send_data(&keep_alive_msg).await {
+        if let Ok(_) = self.send_data(&keep_alive_msg).await {
             debug!("{:?} Success to sent keep alive message", self);
             Ok(())
         } else {
             debug!("{:?} Failed to send keep alive message", self);
-            Err(RpcError::InternalError("Failed to send keep alive message".to_string()))
+            Err(RpcError::InternalError(
+                "Failed to send keep alive message".to_string(),
+            ))
         }
     }
 
@@ -169,7 +190,8 @@ where
                 seq: req_packet.seq(),
                 op: req_packet.op(),
                 len: req_buffer.len() as u64,
-            }.encode();
+            }
+            .encode();
 
             // concate req_header and req_buffer
             req_header.extend_from_slice(&req_buffer);
@@ -183,11 +205,19 @@ where
                 Ok(())
             } else {
                 debug!("{:?} Failed to send request: {:?}", self, req_packet.seq());
-                Err(RpcError::InternalError("Failed to send request".to_string()))
+                Err(RpcError::InternalError(
+                    "Failed to send request".to_string(),
+                ))
             }
         } else {
-            debug!("{:?} Failed to serialize request: {:?}", self, req_packet.seq());
-            Err(RpcError::InternalError("Failed to serialize request".to_string()))
+            debug!(
+                "{:?} Failed to serialize request: {:?}",
+                self,
+                req_packet.seq()
+            );
+            Err(RpcError::InternalError(
+                "Failed to serialize request".to_string(),
+            ))
         }
     }
 
@@ -221,7 +251,8 @@ where
                     let header_seq = header.seq;
                     debug!("{:?} Received keep alive response or other response.", self);
                     let current_timestamp = tokio::time::Instant::now().elapsed().as_secs();
-                    self.received_keepalive_timestamp.store(current_timestamp, std::sync::atomic::Ordering::Release);
+                    self.received_keepalive_timestamp
+                        .store(current_timestamp, std::sync::atomic::Ordering::Release);
                     // Update the received keep alive seq
                     if let Ok(resp_type) = RespType::from_u8(header.op) {
                         match resp_type {
@@ -234,19 +265,26 @@ where
                                 match self.recv_len(header.len).await {
                                     Ok(_) => {}
                                     Err(err) => {
-                                        debug!("{:?} Failed to receive request header: {:?}", self, err);
+                                        debug!(
+                                            "{:?} Failed to receive request header: {:?}",
+                                            self, err
+                                        );
                                         break;
                                     }
                                 }
 
                                 // Take the packet task and recv the response
-                                let packets_keeper: &mut PacketsKeeper<P> = self.get_packets_keeper_mut();
+                                let packets_keeper: &mut PacketsKeeper<P> =
+                                    self.get_packets_keeper_mut();
                                 if let Some(body) = packets_keeper.get_task_mut(header_seq) {
                                     // Try to fill the packet with the response
-                                    debug!("{:?} Find response body in current client: {:?}", self, body.seq());
-                                    let resp_buffer: &mut BytesMut = unsafe {
-                                        transmute(self.resp_buf.get())
-                                    };
+                                    debug!(
+                                        "{:?} Find response body in current client: {:?}",
+                                        self,
+                                        body.seq()
+                                    );
+                                    let resp_buffer: &mut BytesMut =
+                                        unsafe { transmute(self.resp_buf.get()) };
 
                                     // Update status data
                                     // Try to set result code in `set_resp_data`
@@ -272,30 +310,27 @@ where
 
     /// Get stream with mutable reference
     #[inline(always)]
-    fn get_stream_mut(&self) -> &mut TcpStream {
+    fn get_stream_mut(&self) -> &mut net::TcpStream {
         // Current implementation is safe because the stream is only accessed by one thread
-        unsafe { transmute(self.stream.get()) }
+        unsafe { std::mem::transmute(self.stream.get()) }
     }
 
     /// Get packet task with mutable reference
     #[inline(always)]
     fn get_packets_keeper_mut(&self) -> &mut PacketsKeeper<P> {
         // Current implementation is safe because the packet task is only accessed by one thread
-        unsafe { transmute(self.packets_keeper.get()) }
+        unsafe { std::mem::transmute(self.packets_keeper.get()) }
     }
 }
 
-unsafe impl<P> Send for RpcClientConnectionInner<P>
-    where P: Packet + Clone + Send + Sync + 'static
-{}
+unsafe impl<P> Send for RpcClientConnectionInner<P> where P: Packet + Clone + Send + Sync + 'static {}
 
-unsafe impl<P> Sync for RpcClientConnectionInner<P>
-    where P: Packet + Clone + Send + Sync + 'static
-{}
+unsafe impl<P> Sync for RpcClientConnectionInner<P> where P: Packet + Clone + Send + Sync + 'static {}
 
 /// The RPC client definition.
 pub struct RpcClient<P>
-where P: Packet + Clone + Send + Sync + 'static,
+where
+    P: Packet + Clone + Send + Sync + 'static,
 {
     /// Address of the server.
     // addr: String,
@@ -308,7 +343,8 @@ where P: Packet + Clone + Send + Sync + 'static,
 }
 
 impl<P> RpcClient<P>
-    where P: Packet + Clone + Send + Sync + 'static
+where
+    P: Packet + Clone + Send + Sync + 'static,
 {
     /// Create a new RPC client.
     ///
@@ -317,7 +353,11 @@ impl<P> RpcClient<P>
     /// When the stream is broken, the client will be closed, and we need to recreate a new client
     pub async fn new(stream: TcpStream, timeout_options: ClientTimeoutOptions) -> Self {
         let client_id = AtomicU64::new(0);
-        let inner_connection = RpcClientConnectionInner::new(stream, timeout_options.clone(), client_id.load(std::sync::atomic::Ordering::Acquire));
+        let inner_connection = RpcClientConnectionInner::new(
+            stream,
+            timeout_options.clone(),
+            client_id.load(std::sync::atomic::Ordering::Acquire),
+        );
 
         Self {
             timeout_options,
@@ -331,9 +371,7 @@ impl<P> RpcClient<P>
         // Create a receiver loop
         let inner_connection_clone = self.inner_connection.clone();
         tokio::spawn(async move {
-            inner_connection_clone
-                .recv_loop()
-                .await;
+            inner_connection_clone.recv_loop().await;
         });
     }
 
@@ -341,7 +379,10 @@ impl<P> RpcClient<P>
     /// Try to send data to channel, if the channel is full, return an error.
     /// Contains the request header and body.
     pub async fn send_request(&self, req: &mut P) -> Result<(), RpcError<String>> {
-        self.inner_connection.send_packet( req).await.map_err(|err| RpcError::InternalError(err.to_string()))
+        self.inner_connection
+            .send_packet(req)
+            .await
+            .map_err(|err| RpcError::InternalError(err.to_string()))
     }
 
     /// Get the response from the server.
@@ -360,13 +401,10 @@ impl<P> RpcClient<P>
 
 #[cfg(test)]
 mod tests {
-    use tokio::net::TcpListener;
-
-    use crate::connect_timeout;
-    use crate::storage::cache::rpc::packet::PacketStatus;
+    use net::TcpListener;
 
     use super::*;
-    use super::ClientTimeoutOptions;
+    use crate::{common::ClientTimeoutOptions, connect_timeout};
     use std::time::Duration;
 
     #[derive(Debug, Clone)]
@@ -438,7 +476,7 @@ mod tests {
 
         // Create a fake server, will directly return the request
         tokio::spawn(async move {
-            let listener = TcpListener::bind(addr).await.unwrap();
+            let listener = net::TcpListener::bind(addr).await.unwrap();
             loop {
                 let (stream, _) = listener.accept().await.unwrap();
                 let (mut reader, mut writer) = stream.into_split();
@@ -460,7 +498,9 @@ mod tests {
         // Wait for the server to start
         tokio::time::sleep(Duration::from_secs(2)).await;
 
-        let connect_stream = connect_timeout!(addr, timeout_options.read_timeout).await.unwrap();
+        let connect_stream = connect_timeout!(addr, timeout_options.read_timeout)
+            .await
+            .unwrap();
 
         let rpc_client = RpcClient::<TestPacket>::new(connect_stream, timeout_options).await;
 
@@ -470,5 +510,103 @@ mod tests {
         // Current implementation will send keep alive message every 20/3 seconds
         // let resp = rpc_client.recv_response().await;
         // assert!(resp.is_err());
+    }
+
+    // Helper function to setup a mock server
+    async fn setup_mock_server(response: Vec<u8>) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        tokio::spawn(async move {
+            if let Ok((mut socket, _)) = listener.accept().await {
+                let _ = socket.write_all(&response).await; // Send a predefined response
+                let _ = socket.flush().await;
+            }
+        });
+        addr
+    }
+
+    #[tokio::test]
+    async fn test_new_connection() {
+        let stream = TcpStream::connect("127.0.0.1:8080").await.unwrap();
+        let timeout_options = ClientTimeoutOptions {
+            read_timeout: Duration::from_secs(5),
+            write_timeout: Duration::from_secs(5),
+            idle_timeout: Duration::from_secs(60),
+            keep_alive_timeout: Duration::from_secs(30),
+        };
+        let client_id = 123;
+        let connection = RpcClientConnectionInner::new(stream, timeout_options, client_id);
+        assert_eq!(connection.client_id, client_id);
+    }
+
+    #[tokio::test]
+    async fn test_recv_header() {
+        let response = RespHeader {
+            seq: 1,
+            op: RespType::KeepAliveResponse.to_u8(),
+            len: 0,
+        }.encode();
+        let addr = setup_mock_server(response).await;
+        let stream = TcpStream::connect(addr).await.unwrap();
+        let timeout_options = ClientTimeoutOptions {
+            read_timeout: Duration::from_secs(5),
+            write_timeout: Duration::from_secs(5),
+            idle_timeout: Duration::from_secs(60),
+            keep_alive_timeout: Duration::from_secs(30),
+        };
+        let connection = RpcClientConnectionInner::new(stream, timeout_options, 123);
+        let header = connection.recv_header().await.unwrap();
+        assert_eq!(header.seq, 1);
+        assert_eq!(header.op, RespType::KeepAliveResponse.to_u8());
+    }
+
+    #[tokio::test]
+    async fn test_send_data() {
+        let addr = setup_mock_server(vec![]).await;
+        let stream = TcpStream::connect(addr).await.unwrap();
+        let timeout_options = ClientTimeoutOptions {
+            read_timeout: Duration::from_secs(5),
+            write_timeout: Duration::from_secs(5),
+            idle_timeout: Duration::from_secs(60),
+            keep_alive_timeout: Duration::from_secs(30),
+        };
+        let connection = RpcClientConnectionInner::new(stream, timeout_options, 123);
+        let data = b"Hello, world!";
+        assert!(connection.send_data(data).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_next_seq() {
+        let stream = TcpStream::connect("127.0.0.1:8080").await.unwrap();
+        let timeout_options = ClientTimeoutOptions {
+            read_timeout: Duration::from_secs(5),
+            write_timeout: Duration::from_secs(5),
+            idle_timeout: Duration::from_secs(60),
+            keep_alive_timeout: Duration::from_secs(30),
+        };
+        let client_id = 123;
+        let connection = RpcClientConnectionInner::new(stream, timeout_options, client_id);
+        let seq1 = connection.next_seq();
+        let seq2 = connection.next_seq();
+        assert_eq!(seq1 + 1, seq2);
+    }
+
+    #[tokio::test]
+    async fn test_ping() {
+        let response = RespHeader {
+            seq: 1,
+            op: RespType::KeepAliveResponse.to_u8(),
+            len: 0,
+        }.encode();
+        let addr = setup_mock_server(response).await;
+        let stream = TcpStream::connect(addr).await.unwrap();
+        let timeout_options = ClientTimeoutOptions {
+            read_timeout: Duration::from_secs(5),
+            write_timeout: Duration::from_secs(5),
+            idle_timeout: Duration::from_secs(60),
+            keep_alive_timeout: Duration::from_secs(30),
+        };
+        let connection = RpcClientConnectionInner::new(stream, timeout_options, 123);
+        assert!(connection.ping().await.is_ok());
     }
 }

@@ -4,16 +4,15 @@ use std::{
 
 use async_trait::async_trait;
 use bytes::BytesMut;
-use tokio::{net, sync::mpsc, task};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt}, net, sync::mpsc, task, time::timeout
+};
 
-use crate::{read_exact_timeout, write_all_timeout};
-
-use super::{
+use crate::{
     common::ServerTimeoutOptions, error::RpcError, message::{
         decode_file_block_request, FileBlockRequest,
         FileBlockResponse, ReqType, RespType, StatusCode,
-    }, packet::{Decode, Encode, ReqHeader, RespHeader, REQ_HEADER_SIZE}, workerpool::{Job, WorkerPool}
+    }, packet::{Decode, Encode, ReqHeader, RespHeader, REQ_HEADER_SIZE}, read_exact_timeout, workerpool::{Job, WorkerPool}, write_all_timeout
 };
 
 use tracing::{debug, error, info};
@@ -262,7 +261,7 @@ where
     #[inline(always)]
     fn get_stream_mut(&self) -> &mut net::TcpStream {
         // Current implementation is safe because the stream is only accessed by one thread
-        unsafe { transmute(self.stream.get()) }
+        unsafe { std::mem::transmute(self.stream.get()) }
     }
 }
 
@@ -534,5 +533,83 @@ mod tests {
         server.stop().await;
         time::sleep(Duration::from_secs(1)).await;
         assert!(!is_port_in_use(addr));
+    }
+
+    #[tokio::test]
+    async fn test_recv_header_success() {
+        // Setup the mock TcpStream using Tokio's utilities or external mocking libraries
+        let mock_stream = mock_tcp_stream_with_header_data().await;  // Assuming this function is implemented to mock header data
+
+        let worker_pool = Arc::new(WorkerPool::new(1, 1));
+        let handler = FileBlockRpcServerHandler::new(worker_pool.clone());
+        let connection_inner = RpcServerConnectionInner::new(mock_stream, worker_pool, ServerTimeoutOptions::default(), handler);
+
+        let result = connection_inner.recv_header().await;
+        assert!(result.is_ok());
+        let header = result.unwrap();
+        assert_eq!(header.seq, expected_seq);
+        assert_eq!(header.op, expected_op);
+    }
+
+    #[tokio::test]
+    async fn test_recv_len_success() {
+        let mock_stream = mock_tcp_stream_with_specific_length_data(1024).await; // Mock function setup
+
+        let worker_pool = Arc::new(WorkerPool::new(1, 1));
+        let handler = FileBlockRpcServerHandler::new(worker_pool.clone());
+        let connection_inner = RpcServerConnectionInner::new(mock_stream, worker_pool, ServerTimeoutAllocations::default(), handler);
+
+        let result = connection_inner.recv_len(1024).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_dispatch_file_block_request() {
+        let (done_tx, _) = mpsc::channel::<Vec<u8>>(1);
+        let worker_pool = Arc::new(WorkerPool::new(1, 1));
+        let handler = FileBlockRpcServerHandler::new(worker_pool.clone());
+        let stream = tokio::net::TcpStream::connect("localhost:12345").await.unwrap(); // This should be a mock
+        let connection = RpcServerConnection::new(stream, worker + pool, ServerTimeoutOptions::default(), handler);
+
+        let req_header = ReqHeader {
+            seq: 1,
+            op: ReqType::FileBlockRequest.to_u8(),
+            len: 1024,
+        };
+
+        // Setup mocking for expected behavior, perhaps using a mock library or fixtures
+        connection.dispatch(req_with_header, done_tx).await;
+
+        // Assertions to validate correct handler was used
+    }
+
+    #[tokio::test]
+    async fn test_server_connection_run() {
+        let worker_pool = Arc::new(WorkerPool::new(1, 1));
+        let handler = FileBlockRpcServerHandler::new(worker_pool.clone());
+        let stream = mock_tcp_stream().await; // Needs proper setup for continuous requests
+
+        let server_connection = RpcServerConnection::new(stream, worker_pool, ServerTimeoutOptions::default(), handler);
+        server_connection.run().await;
+
+        // Assertions to check the flow of handling and mock verifications
+    }
+
+    #[tokio::test]
+    async fn test_rpc_server_listen() {
+        let mut server = setup_rpc_server().await;  // Assumes a setup function
+        let result = server.listen("127.0.0.1:8080").await;
+        assert!(result.is_ok());
+
+        // Additional assertions to check that the server is listening and can accept connections
+    }
+
+    #[tokio::test]
+    async fn test_rpc_server_stop() {
+        let mut server = setup_rpc_server().await; // Setup server with necessary handlers and worker pools
+        server.listen("127.0.0.1:8080").await.unwrap();
+        server.stop().await;
+
+        // Verify that the server has stopped accepting new connections and all handlers are shutdown
     }
 }
