@@ -42,7 +42,7 @@ pub trait MetaTxn: Send {
         key: &KeyType,
         val: String,
         lease_id: i64,
-    ) -> DatenLordResult<(bool, Option<String>)>;
+    ) -> DatenLordResult<(bool, String)>;
     /// Commit the transaction.
     /// Only when commit is called, the write operations will be executed.
     /// If the commit is successful, return true, else return false.
