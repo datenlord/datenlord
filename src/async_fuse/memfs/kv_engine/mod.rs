@@ -4,7 +4,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use tokio::sync::mpsc;
 
 use crate::common::async_fuse_error::KVEngineError;
 use crate::common::error::{DatenLordError, DatenLordResult};
@@ -210,6 +209,8 @@ impl KeyRange {
 pub trait KVEngine: Send + Sync + Debug + Sized {
     /// The session type for keep alive
     type Session: Send + Sync;
+    /// The watch stream type
+    type KVEngineWatchStream;
 
     /// create a new KVEngine.
     async fn new(end_points: Vec<String>) -> DatenLordResult<Self>;
@@ -228,6 +229,8 @@ pub trait KVEngine: Send + Sync + Debug + Sized {
         value: &ValueType,
         option: Option<SetOption>,
     ) -> DatenLordResult<Option<ValueType>>;
+    /// Create a lease
+    async fn create_lease(&self, ttl: i64) -> DatenLordResult<i64>;
     /// Delete the kv pair by the key.
     async fn delete(
         &self,
@@ -245,7 +248,7 @@ pub trait KVEngine: Send + Sync + Debug + Sized {
     async fn watch(
         &self,
         key: &KeyType,
-    ) -> DatenLordResult<mpsc::Receiver<(String, Option<ValueType>)>>;
+    ) -> DatenLordResult<Self::KVEngineWatchStream>;
 }
 
 /// The version of the key.

@@ -1,5 +1,7 @@
 use std::fmt::Debug;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::task::Poll;
 use std::time::Duration;
 use std::vec;
 use std::{collections::HashMap, sync::Arc};
@@ -12,6 +14,7 @@ use etcd_client::{
     Compare, CompareOp, DeleteOptions, GetOptions, LockOptions, PutOptions, Txn, TxnOp,
     TxnOpResponse,
 };
+use futures::{task, Stream, StreamExt};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
@@ -214,24 +217,178 @@ impl SessionInner {
                         }
                         Ok(None) => {
                             error!("lease keep alive stream closed, because the sender is closed");
+                            self.close();
                             break;
                         }
                         Err(e) => {
                             error!("failed to keep alive lease, error={e:?}");
+                            self.close();
                             break;
                         }
                     }
                 }
                 _ = close_rx.recv() => {
                     info!("close the keep alive session, lease_id={lease_id}");
+                    self.close();
                     break;
                 }
                 () = token.cancelled() => {
-
+                    debug!("lease keep alive stream closed by token canceled");
+                    self.close();
                     break;
                 }
             }
         }
+
+        if self.is_closed() {
+            debug!("lease keep alive stream closed by is_closed flag");
+
+            // revoke the lease
+            revoke_lease!(client, lease_id);
+        }
+    }
+}
+
+/// The kvengine watch stream for etcd
+/// Try to receice message from etcd, and return key and value for each event,
+/// Wrap the etcd watch stream to support the `KVEngine` trait.
+#[derive(Debug)]
+pub struct KVEngineWatchStream {
+    /// The etcd client, used to cancel the watch stream
+    watcher: etcd_client::Watcher,
+    /// The etcd watch stream
+    watch_stream: etcd_client::WatchStream,
+}
+
+impl KVEngineWatchStream {
+    /// Create a new watch stream
+    #[must_use]
+    pub fn new(watcher: etcd_client::Watcher, watch_stream: etcd_client::WatchStream) -> Self {
+        Self {
+            watcher,
+            watch_stream,
+        }
+    }
+
+    /// Cancel the watch stream
+    #[inline]
+    pub async fn cancel(&mut self) -> DatenLordResult<()> {
+        match self.watcher.cancel().await {
+            Ok(o) => {
+                debug!("etcd watcher task canceled, {o:?}");
+                Ok(())
+            }
+            Err(e) => {
+                error!("failed to cancel etcd watcher, error={e:?}");
+                Err(crate::common::error::DatenLordError::EtcdClientErr {
+                    source: e,
+                    context: vec!["failed to cancel etcd watcher".to_owned()],
+                })
+            }
+        }
+    }
+
+    /// Get the message from the watch stream
+    #[inline]
+    pub async fn message(&mut self) -> DatenLordResult<Option<(String, Option<ValueType>)>> {
+        match self.watch_stream.message().await {
+            Ok(Some(watch_response)) => {
+                for event in watch_response.events() {
+                    // Get event data
+                    if let Some(kv) = event.kv() {
+                        // Get key and value
+                        let item_key = match kv.key_str() {
+                            Ok(key) => key.to_owned(),
+                            Err(e) => {
+                                error!("failed to get key from etcd watch event, error={e:?}");
+                                continue;
+                            }
+                        };
+                        let item_value = match serde_json::from_slice(kv.value()) {
+                            Ok(value) => value,
+                            Err(e) => {
+                                error!("failed to deserialize value from etcd watch event, error={e:?}");
+                                continue;
+                            }
+                        };
+                        match event.event_type() {
+                            etcd_client::EventType::Put => {
+                                return Ok(Some((item_key, Some(item_value))));
+                            }
+                            etcd_client::EventType::Delete => {
+                                return Ok(Some((item_key, None)));
+                            }
+                        }
+                    }
+                }
+                Ok(None)
+            }
+            Ok(None) => Ok(None),
+            Err(e) => {
+                error!("failed to get message from etcd watch stream, error={e:?}");
+                // Cancel the watch stream
+                match self.watcher.cancel().await {
+                    Ok(o) => {
+                        debug!("etcd watcher task canceled, {o:?}");
+                    }
+                    Err(e) => {
+                        error!("failed to cancel etcd watcher, error={e:?}");
+                    }
+                }
+                Err(crate::common::error::DatenLordError::EtcdClientErr {
+                    source: e,
+                    context: vec!["failed to get message from etcd watch stream".to_owned()],
+                })
+            }
+        }
+    }
+}
+
+// This impl is for WatchStream from etcd_client, does testing for the watch stream.
+impl Stream for KVEngineWatchStream {
+    type Item = DatenLordResult<(String, Option<ValueType>)>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut task::Context) -> Poll<Option<Self::Item>> {
+        self.get_mut()
+            .watch_stream
+            .poll_next_unpin(cx)
+            .map(|t| match t {
+                Some(Ok(resp)) => {
+                    let mut result = None;
+                    for event in resp.events() {
+                        // Get event data
+                        if let Some(kv) = event.kv() {
+                            // Get key and value
+                            let item_key = match kv.key_str() {
+                                Ok(key) => key.to_owned(),
+                                Err(e) => {
+                                    error!("failed to get key from etcd watch event, error={e:?}");
+                                    continue;
+                                }
+                            };
+                            let item_value = match serde_json::from_slice(kv.value()) {
+                                Ok(value) => value,
+                                Err(e) => {
+                                    error!("failed to deserialize value from etcd watch event, error={e:?}");
+                                    continue;
+                                }
+                            };
+                            match event.event_type() {
+                                etcd_client::EventType::Put => {
+                                    result = Some(Ok((item_key, Some(item_value))));
+                                }
+                                etcd_client::EventType::Delete => {
+                                    result = Some(Ok((item_key, None)));
+                                }
+                            }
+                        }
+                    }
+                    result
+                },
+                // TODO: Cancel watch when meet an error.
+                Some(Err(e)) => Some(Err(From::from(e))),
+                None => None,
+            })
     }
 }
 
@@ -284,6 +441,7 @@ impl EtcdKVEngine {
 #[async_trait]
 impl KVEngine for EtcdKVEngine {
     type Session = Session;
+    type KVEngineWatchStream = KVEngineWatchStream;
 
     async fn new(end_points: Vec<String>) -> DatenLordResult<Self> {
         let client = etcd_client::Client::connect(end_points, None).await?;
@@ -434,91 +592,32 @@ impl KVEngine for EtcdKVEngine {
         Ok(result)
     }
 
+    /// Create a lease
+    async fn create_lease(&self, ttl: i64) -> DatenLordResult<i64> {
+        let _timer = KV_METRICS.start_kv_operation_timer("lease");
+        let ttl = check_ttl(ttl).with_context(|| "failed to check ttl".to_owned())?;
+        let mut client = self.client.clone();
+        let resp = client
+            .lease_grant(ttl, None)
+            .await
+            .with_context(|| "failed to get lease at `MetaTxn::create_lease`".to_owned())?;
+        Ok(resp.id())
+    }
+
     /// Watch the key, return a receiver to receive the value
-    #[allow(clippy::pattern_type_mismatch)] // Raised by `tokio::select`
     async fn watch(
         &self,
         prefix: &KeyType,
-    ) -> DatenLordResult<mpsc::Receiver<(String, Option<ValueType>)>> {
-        // Create a mpsc channel, default capacity is 1024
-        let (tx, rx) = mpsc::channel::<(String, Option<ValueType>)>(1024);
-
+    ) -> DatenLordResult<KVEngineWatchStream> {
         let mut client = self.client.clone();
         // Try to watch the key prefix
         let opt = etcd_client::WatchOptions::new().with_prefix();
-        let (mut watcher, mut watch_stream) = client
+        let (watcher, watch_stream) = client
             .watch(prefix.to_string_key(), Some(opt.clone()))
             .await
             .with_context(|| "Failed to create watcher".to_owned())?;
 
-        let self_prefix = prefix.to_string_key();
-
-        // Spawn a new task to handle the watch stream
-        TASK_MANAGER.spawn(TaskName::EtcdKeepAlive, |token| async move {
-            loop {
-                tokio::select! {
-                    () = token.cancelled() => {
-                        // Cancel this watch stream
-                        match watcher.cancel().await.with_context(|| "failed to cancel etcd watcher") {
-                            Ok(o) => {
-                                debug!("etcd watcher task canceled, {o:?}");
-                            }
-                            Err(e) => {
-                                error!("failed to cancel etcd watcher, error={e:?}");
-                            }
-                        }
-                        break;
-                    }
-                    response = watch_stream.message() => {
-                        if let Ok(Some(watch_response)) = response {
-                            for event in watch_response.events() {
-                                // Get event data
-                                if let Some(kv) = event.kv() {
-                                    // Get key and value
-                                    let item_key = match kv.key_str() {
-                                        Ok(key) => if let Some(key) = key.strip_prefix(self_prefix.as_str()) { key.to_owned() } else {
-                                            error!("failed to strip prefix from key");
-                                            continue;
-                                        }
-                                        Err(e) => {
-                                            error!("failed to get key from etcd watch event, error={e:?}");
-                                            continue;
-                                        }
-                                    };
-                                    let item_value = match serde_json::from_slice(kv.value()) {
-                                        Ok(value) => value,
-                                        Err(e) => {
-                                            error!("failed to deserialize value from etcd watch event, error={e:?}");
-                                            continue;
-                                        }
-                                    };
-                                    match event.event_type() {
-                                        etcd_client::EventType::Put => {
-                                            if let Ok(o) = tx.send((item_key, Some(item_value))).await {
-                                                debug!("etcd watcher put event, res={o:?}");
-                                            } else {
-                                                // Ignore error here, because the receiver may be dropped
-                                            }
-                                        }
-                                        etcd_client::EventType::Delete => {
-                                            if let Ok(o) = tx.send((item_key, None)).await {
-                                                debug!("etcd watcher delete event, res={o:?}");
-                                            } else {
-                                                // Ignore error here, because the receiver may be dropped
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        } else {
-                            continue;
-                        }
-                    }
-                }
-            }
-        }).await.with_context(|| "failed to spawn etcd watcher task")?;
-
-        Ok(rx)
+        return Ok(KVEngineWatchStream::new(watcher, watch_stream));
     }
 }
 
@@ -945,5 +1044,111 @@ mod test {
             assert!(child_names.contains(&dir_entry.name()));
             assert_eq!(dir_entry.file_type(), FileType::Dir);
         }
+    }
+
+    #[tokio::test]
+    async fn test_watch() {
+        let client = EtcdKVEngine::new_for_local_test(vec![ETCD_ADDRESS.to_owned()])
+            .await
+            .unwrap();
+        // Create a new key
+        let client_clone = client.clone();
+        tokio::spawn(async move {
+            let key = KeyType::String("test_watch".to_owned());
+            let value = ValueType::String("test_watch_value".to_owned());
+            // Wait for watch message is ready()
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            client_clone.set(&key, &value, None).await.unwrap();
+        });
+        let key: KeyType = KeyType::String("test_watch".to_owned());
+        let value = ValueType::String("test_watch_value".to_owned());
+        let mut watch_stream = client.watch(&key).await.unwrap();
+        let watch_result = watch_stream.message().await.unwrap().unwrap();
+        assert_eq!(watch_result.0, key.to_string_key());
+        assert_eq!(watch_result.1.unwrap(), value);
+
+        // Update a key
+        let client_clone = client.clone();
+        tokio::spawn(async move {
+            let key = KeyType::String("test_watch".to_owned());
+            let value = ValueType::String("test_watch_value2".to_owned());
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            client_clone.set(&key, &value, None).await.unwrap();
+        });
+        let key = KeyType::String("test_watch".to_owned());
+        let value = ValueType::String("test_watch_value2".to_owned());
+        let watch_result = watch_stream.message().await.unwrap().unwrap();
+        assert_eq!(watch_result.0, key.to_string_key());
+        assert_eq!(watch_result.1.unwrap(), value);
+
+        // Delete a key
+        let client_clone = client.clone();
+        tokio::spawn(async move {
+            let key = KeyType::String("test_watch".to_owned());
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            client_clone.delete(&key, None).await.unwrap();
+        });
+        let key = KeyType::String("test_watch".to_owned());
+        client.delete(&key, None).await.unwrap();
+        let watch_result = watch_stream.message().await.unwrap();
+        assert!(watch_result.is_none());
+
+        // Close stream
+        let res = watch_stream.cancel().await.unwrap();
+        assert_eq!(res, ());
+    }
+
+    #[tokio::test]
+    async fn test_create_session() {
+        let client = EtcdKVEngine::new_for_local_test(vec![ETCD_ADDRESS.to_owned()])
+            .await
+            .unwrap();
+        let lease_id = client.create_lease(5).await.unwrap();
+        // Set a temp key for this lease
+        let key = KeyType::String("test_create_session".to_owned());
+        let value = ValueType::String("test_create_session_value".to_owned());
+        client.set(&key, &value, Some(SetOption::new().with_lease(lease_id)))
+            .await
+            .unwrap();
+
+        assert_eq!(client.get(&key).await.unwrap().unwrap(), value);
+
+        // Test keep alive
+        let session = client.create_session(lease_id, 5).await.unwrap();
+        tokio::time::sleep(Duration::from_secs(10)).await;
+        assert_eq!(client.get(&key).await.unwrap().unwrap(), value);
+
+        // Test cancel keepalive
+        drop(session);
+        tokio::time::sleep(Duration::from_secs(10)).await;
+        assert!(client.get(&key).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_campaign() {
+        let client = EtcdKVEngine::new_for_local_test(vec![ETCD_ADDRESS.to_owned()])
+            .await
+            .unwrap();
+        let txn = client.new_meta_txn().await;
+
+        let key = KeyType::String("test_campaign".to_owned());
+        let val = "test_campaign_val".to_owned();
+        let val2 = "test_campaign_val2".to_owned();
+        let lease_id = client.create_lease(5).await.unwrap();
+
+        // Campaign the key
+        let (campaign_status, campaign_val) = txn.campaign(&key, val.clone(), lease_id).await.unwrap();
+        assert_eq!(campaign_status, true);
+        assert_eq!(campaign_val, val);
+
+        // Recampaign the key
+        let (campaign_status, campaign_val) = txn.campaign(&key, val.clone(), lease_id).await.unwrap();
+        assert_eq!(campaign_status, true);
+        assert_eq!(campaign_val, val);
+
+        // Campaign the key with different value, campaign failed
+        let (campaign_status, campaign_val) = txn.campaign(&key, val2.clone(), lease_id).await.unwrap();
+        assert_eq!(campaign_status, false);
+        assert_eq!(campaign_val, val);
     }
 }
