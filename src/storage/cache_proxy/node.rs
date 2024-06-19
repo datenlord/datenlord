@@ -10,22 +10,42 @@ use super::ring::NodeType;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MasterNodeInfo {
     /// The ip of the master node
-    pub node_ip: String,
+    pub ip: String,
     /// The port of the master node
-    pub node_port: u16,
+    pub port: u16,
     /// The version of the hash ring
-    pub hash_ring_version: u64,
+    pub version: u64,
+}
+
+impl PartialEq for MasterNodeInfo {
+    fn eq(&self, other: &Self) -> bool {
+        self.ip == other.ip && self.port == other.port && self.version == other.version
+    }
 }
 
 impl MasterNodeInfo {
     /// Create a new master node info
     #[must_use]
-    pub fn new(node_ip: String, node_port: u16, hash_ring_version: u64) -> Self {
-        Self {
-            node_ip,
-            node_port,
-            hash_ring_version,
-        }
+    pub fn new(ip: String, port: u16, version: u64) -> Self {
+        Self { ip, port, version }
+    }
+
+    /// Get the ip of the master node
+    #[must_use]
+    pub fn ip(&self) -> &str {
+        &self.ip
+    }
+
+    /// Get the port of the master node
+    #[must_use]
+    pub fn port(&self) -> u16 {
+        self.port
+    }
+
+    /// Get the version of the hash ring
+    #[must_use]
+    pub fn version(&self) -> u64 {
+        self.version
     }
 }
 
@@ -42,7 +62,8 @@ pub struct Node {
     port: u16,
     /// The weight of the node
     weight: u32,
-    /// The status of the node
+    /// The status of the node, we do not serialize this field to reduce status sync cost
+    #[serde(skip)]
     status: NodeStatus,
 }
 
@@ -70,7 +91,7 @@ impl Default for Node {
             ip: String::new(),
             port: 0,
             weight: 0,
-            status: NodeStatus::Initializing,
+            status: NodeStatus::Slave,
         }
     }
 }
@@ -123,7 +144,7 @@ impl Node {
     /// Get the status of the node
     #[must_use]
     pub fn status(&self) -> NodeStatus {
-        self.status.clone()
+        self.status
     }
 
     /// Change the status of the node
@@ -135,13 +156,10 @@ impl Node {
 }
 
 /// Node status
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Copy)]
 pub enum NodeStatus {
-    /// The node is preparing
-    Initializing,
-    /// The node is registering
-    Registering,
     /// The node is serve as slave
+    #[default]
     Slave,
     /// The node is serve as master
     Master,
@@ -153,8 +171,6 @@ impl FromStr for NodeStatus {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let s = s.to_lowercase();
         match s.as_str() {
-            "initializing" => Ok(NodeStatus::Initializing),
-            "registering" => Ok(NodeStatus::Registering),
             "slave" => Ok(NodeStatus::Slave),
             "master" => Ok(NodeStatus::Master),
             _ => Err(format!("Unknown node status: {s}")),
