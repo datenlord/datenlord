@@ -27,7 +27,7 @@ pub enum KeyType {
     /// Distributed hash ring key
     CacheRing,
     /// Distributed cache node master key
-    CacheNodeMaster,
+    CacheMasterNode,
     /// Distribute cache cluster config
     CacheClusterConfig,
 }
@@ -44,7 +44,7 @@ pub enum LockKeyType {
     /// ETCD file node list lock
     FileNodeListLock(INum),
     /// Distributed cache node master key
-    CacheNodeMaster,
+    CacheMasterNode,
 }
 
 impl Display for KeyType {
@@ -60,7 +60,7 @@ impl Display for KeyType {
             KeyType::String(ref s) => write!(f, "String({s})"),
             KeyType::CacheNode(ref s) => write!(f, "CacheNode({s})"),
             KeyType::CacheRing => write!(f, "CacheRing/"), // CacheRing
-            KeyType::CacheNodeMaster => write!(f, "CacheNodeMaster"), // CacheNodeMaster
+            KeyType::CacheMasterNode => write!(f, "CacheMasterNode"), // CacheMasterNode
             KeyType::CacheClusterConfig => write!(f, "CacheClusterConfig/"), // CacheClusterConfig
         }
     }
@@ -78,8 +78,8 @@ impl Display for LockKeyType {
             LockKeyType::FileNodeListLock(ref inum) => {
                 write!(f, "FileNodeListLock({inum:?})")
             }
-            LockKeyType::CacheNodeMaster => {
-                write!(f, "CacheNodeMaster")
+            LockKeyType::CacheMasterNode => {
+                write!(f, "CacheMasterNode")
             }
         }
     }
@@ -109,7 +109,7 @@ impl KeyType {
             KeyType::FileNodeList(_) => "FileNodeList",
             KeyType::CacheNode(_) => "CacheNode",
             KeyType::CacheRing => "CacheRing",
-            KeyType::CacheNodeMaster => "CacheNodeMaster",
+            KeyType::CacheMasterNode => "CacheMasterNode",
             KeyType::CacheClusterConfig => "CacheClusterConfig",
         }
     }
@@ -139,7 +139,7 @@ impl KeyType {
             KeyType::CacheRing => {
                 write!(f, "").unwrap();
             }
-            KeyType::CacheNodeMaster => {
+            KeyType::CacheMasterNode => {
                 write!(f, "").unwrap();
             }
             KeyType::CacheClusterConfig => {
@@ -168,7 +168,7 @@ impl LockKeyType {
             LockKeyType::IdAllocatorLock(_) => "IdAllocLock",
             LockKeyType::VolumeInfoLock => "VolumeInfoLock",
             LockKeyType::FileNodeListLock(_) => "FileNodeListLock",
-            LockKeyType::CacheNodeMaster => "CacheNodeMaster",
+            LockKeyType::CacheMasterNode => "CacheMasterNode",
         }
     }
 
@@ -184,7 +184,7 @@ impl LockKeyType {
             LockKeyType::FileNodeListLock(ref inum) => {
                 write!(f, "{inum}").unwrap();
             }
-            LockKeyType::CacheNodeMaster => {
+            LockKeyType::CacheMasterNode => {
                 write!(f, "").unwrap();
             }
         }
