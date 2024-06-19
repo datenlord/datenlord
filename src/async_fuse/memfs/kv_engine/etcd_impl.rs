@@ -118,6 +118,11 @@ impl Session {
 impl Drop for Session {
     fn drop(&mut self) {
         // Set the close flag
+        debug!(
+            "drop the keep alive session, lease_id={lease_id}, ttl={ttl}",
+            lease_id = self.lease_id(),
+            ttl = self.ttl()
+        );
         self.close();
     }
 }
