@@ -253,9 +253,14 @@ where
 
         // Calculate the new ranges for the split
         let slot_to_split = self.slots.get_mut(index)?;
-        let mid_point = (slot_to_split.start + slot_to_split.end)
-            .overflowing_div(2)
-            .0;
+        let (mut sum, overflowed) = slot_to_split.start.overflowing_add(slot_to_split.end);
+        if overflowed {
+            sum = self.capacity;
+        }
+        let (mid_point, overflowed) = sum.overflowing_div(2);
+        if overflowed {
+            return None;
+        }
 
         // Create new slot with the second half of the range
         let new_slot = Slot::new(mid_point + 1, slot_to_split.end, node.clone());
