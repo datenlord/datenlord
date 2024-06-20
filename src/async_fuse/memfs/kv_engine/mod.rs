@@ -245,10 +245,7 @@ pub trait KVEngine: Send + Sync + Debug + Sized {
     async fn range(&self, prefix: &KeyType) -> DatenLordResult<Vec<ValueType>>;
 
     /// Watch the key, return a receiver to receive the value
-    async fn watch(
-        &self,
-        key: &KeyType,
-    ) -> DatenLordResult<Self::KVEngineWatchStream>;
+    async fn watch(&self, key: &KeyType) -> DatenLordResult<Self::KVEngineWatchStream>;
 }
 
 /// The version of the key.
