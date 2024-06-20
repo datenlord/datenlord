@@ -5,6 +5,7 @@ use std::cmp;
 use std::hash::BuildHasher;
 use std::hash::Hash;
 
+use clippy_utilities::OverflowArithmetic;
 use serde::{Deserialize, Serialize};
 use std::collections::hash_map::DefaultHasher;
 use tracing::warn;
@@ -253,14 +254,7 @@ where
 
         // Calculate the new ranges for the split
         let slot_to_split = self.slots.get_mut(index)?;
-        let (mut sum, overflowed) = slot_to_split.start.overflowing_add(slot_to_split.end);
-        if overflowed {
-            sum = self.capacity;
-        }
-        let (mid_point, overflowed) = sum.overflowing_div(2);
-        if overflowed {
-            return None;
-        }
+        let mid_point = Self::safe_midpoint(slot_to_split.start, slot_to_split.end);
 
         // Create new slot with the second half of the range
         let new_slot = Slot::new(mid_point + 1, slot_to_split.end, node.clone());
@@ -282,20 +276,30 @@ where
         Some(node.clone())
     }
 
+    fn safe_midpoint(a: u64, b: u64) -> u64 {
+        if a > b {
+            // if a > b and both u64, a - b and a / b will not overflow
+            let a_sub_b = a.overflow_sub(b);
+            let a_div_b = a_sub_b.overflow_div(2);
+            let sum = b.overflow_add(a_div_b);
+            sum
+        } else if a < b {
+            let b_sub_a = b.overflow_sub(a);
+            let b_div_a = b_sub_a.overflow_div(2);
+            let sum = a.overflow_add(b_div_a);
+            sum
+        } else {
+            a
+        }
+    }
+
     /// Add a batch of slots
     /// If must is true, the ring need to be rebalanced or expanded
     pub fn batch_add(&mut self, nodes: Vec<T>, must: bool) -> Option<Vec<T>> {
         // Store the success nodes
         let mut success_nodes = Vec::new();
 
-        // If must is true, we need to expand the ring
-        if must {
-            if !self.rebalance() {
-                warn!("Rebalance failed");
-
-                return None;
-            }
-        } else if usize_to_u64(self.slots.len() + nodes.len()) > self.capacity {
+        if usize_to_u64(self.slots.len() + nodes.len()) > self.capacity {
             // If not satisfy the expand condition but too many nodes, return None
             return None;
         } else {
@@ -312,6 +316,7 @@ where
             }
         }
 
+        // If must is true, we need to expand the ring
         // Try to rebalance the ring
         if must {
             self.rebalance();
@@ -456,16 +461,21 @@ where
 
         // calculate new slot size
         let total_range = self.capacity;
-        let new_slot_size = total_range
-            .overflowing_div(usize_to_u64(self.slots.len()))
-            .0;
+        let new_slot_size = total_range.overflow_div(usize_to_u64(self.slots.len()));
         let mut start = 1_u64;
 
         // update slot range
         for slot in &mut self.slots {
             slot.start = start;
-            start += new_slot_size;
-            slot.end = start - 1;
+            // prevent overflow
+            let (start_add, o) = start.overflowing_add(new_slot_size);
+            if o {
+                slot.end = self.capacity;
+                start = self.capacity;
+            } else {
+                slot.end = start_add.overflow_sub(1);
+                start = start_add;
+            }
         }
 
         // update the last slot
@@ -521,13 +531,13 @@ mod tests {
         ring.add(&node3.clone(), false);
 
         assert_eq!(ring.len_slots(), 3);
-        assert_eq!(ring.capacity(), 1024);
+        assert_eq!(ring.capacity(), DEFAULT_SLOT_SIZE);
         assert_eq!(ring.version(), 3);
 
         ring.remove(node2.clone(), false);
 
         assert_eq!(ring.len_slots(), 2);
-        assert_eq!(ring.capacity(), 1024);
+        assert_eq!(ring.capacity(), DEFAULT_SLOT_SIZE);
         assert_eq!(ring.version(), 4);
     }
 
@@ -539,40 +549,71 @@ mod tests {
 
         let mut ring = Ring::new(DefaultHashBuilder);
 
-        ring.batch_add(vec![node1.clone(), node2.clone(), node3.clone()], false);
+        let add_result = ring.batch_add(vec![node1.clone(), node2.clone(), node3.clone()], false);
+        assert!(add_result.is_some());
+        assert_eq!(add_result.unwrap().len(), 3);
 
         assert_eq!(ring.len_slots(), 3);
-        assert_eq!(ring.capacity(), 1024);
+        assert_eq!(ring.capacity(), DEFAULT_SLOT_SIZE);
         assert_eq!(ring.version(), 3);
 
         // node1
         assert_eq!(ring.get_slot(&1_i32).unwrap().start, 1);
-        assert_eq!(ring.get_slot(&1_i32).unwrap().end, 512);
+        assert_eq!(
+            ring.get_slot(&1_i32).unwrap().end,
+            DEFAULT_SLOT_SIZE.overflow_div(4).overflow_add(1)
+        );
         // node2
-        assert_eq!(ring.get_slot(&999_i32).unwrap().start, 769);
-        assert_eq!(ring.get_slot(&999_i32).unwrap().end, 1024);
+        assert_eq!(
+            ring.get_slot(&999_i32).unwrap().start,
+            DEFAULT_SLOT_SIZE.overflow_div(2).overflow_add(2)
+        );
+        assert_eq!(ring.get_slot(&999_i32).unwrap().end, DEFAULT_SLOT_SIZE);
         // node3
-        assert_eq!(ring.get_slot(&10_000_i32).unwrap().start, 513);
-        assert_eq!(ring.get_slot(&10_000_i32).unwrap().end, 768);
+        assert_eq!(
+            ring.get_slot(&90_002_i32).unwrap().start,
+            DEFAULT_SLOT_SIZE.overflow_div(4).overflow_add(2)
+        );
+        assert_eq!(
+            ring.get_slot(&90_002_i32).unwrap().end,
+            DEFAULT_SLOT_SIZE.overflow_div(2).overflow_add(1)
+        );
 
         ring.slots_clear();
         assert_eq!(ring.version(), 3);
 
-        ring.batch_add(vec![node1.clone(), node2.clone(), node3.clone()], true);
+        let add_result = ring.batch_add(vec![node1.clone(), node2.clone(), node3.clone()], true);
+        assert!(add_result.is_some());
+        assert_eq!(add_result.unwrap().len(), 3);
 
         assert_eq!(ring.len_slots(), 3);
-        assert_eq!(ring.capacity(), 1024);
+        assert_eq!(ring.capacity(), DEFAULT_SLOT_SIZE);
         assert_eq!(ring.version(), 7); // 3 + 3 + 1(rebalance)
 
         // node1
         assert_eq!(ring.get_slot(&1_i32).unwrap().start, 1);
-        assert_eq!(ring.get_slot(&1_i32).unwrap().end, 341);
+        assert_eq!(
+            ring.get_slot(&1_i32).unwrap().end,
+            DEFAULT_SLOT_SIZE.overflow_div(3)
+        );
         // node2
-        assert_eq!(ring.get_slot(&999_i32).unwrap().start, 683);
-        assert_eq!(ring.get_slot(&999_i32).unwrap().end, 1024);
+        assert_eq!(
+            ring.get_slot(&999_i32).unwrap().start,
+            DEFAULT_SLOT_SIZE.overflow_div(3).overflow_add(1)
+        );
+        assert_eq!(
+            ring.get_slot(&999_i32).unwrap().end,
+            DEFAULT_SLOT_SIZE.overflow_div(3).overflow_mul(2)
+        );
         // node3
-        assert_eq!(ring.get_slot(&10_000_i32).unwrap().start, 342);
-        assert_eq!(ring.get_slot(&10_000_i32).unwrap().end, 682);
+        assert_eq!(
+            ring.get_slot(&99_003_i32).unwrap().start,
+            DEFAULT_SLOT_SIZE
+                .overflow_div(3)
+                .overflow_mul(2)
+                .overflow_add(1)
+        );
+        assert_eq!(ring.get_slot(&99_003_i32).unwrap().end, DEFAULT_SLOT_SIZE);
     }
 
     #[test]
@@ -586,28 +627,34 @@ mod tests {
         ring.batch_add(vec![node1.clone(), node2.clone(), node3.clone()], true);
 
         assert_eq!(ring.len_slots(), 3);
-        assert_eq!(ring.capacity(), 1024);
+        assert_eq!(ring.capacity(), DEFAULT_SLOT_SIZE);
         assert_eq!(ring.version(), 4); // 3 + 1
 
         ring.batch_remove(&[node2.clone()], true);
 
         assert_eq!(ring.len_slots(), 2);
-        assert_eq!(ring.capacity(), 1024);
+        assert_eq!(ring.capacity(), DEFAULT_SLOT_SIZE);
         assert_eq!(ring.version(), 6); // 4 + 1 + 1(rebalance)
 
         assert_eq!(ring.get_slot(&1_i32).unwrap().start, 1);
-        assert_eq!(ring.get_slot(&1_i32).unwrap().end, 512);
-        assert_eq!(ring.get_slot(&10_000_i32).unwrap().start, 513);
-        assert_eq!(ring.get_slot(&10_000_i32).unwrap().end, 1024);
+        assert_eq!(
+            ring.get_slot(&1_i32).unwrap().end,
+            DEFAULT_SLOT_SIZE.overflow_div(2)
+        );
+        assert_eq!(
+            ring.get_slot(&90_000_i32).unwrap().start,
+            DEFAULT_SLOT_SIZE.overflow_div(2).overflow_add(1)
+        );
+        assert_eq!(ring.get_slot(&90_000_i32).unwrap().end, DEFAULT_SLOT_SIZE);
 
         ring.batch_remove(&[node3.clone()], true);
 
         assert_eq!(ring.len_slots(), 1);
-        assert_eq!(ring.capacity(), 1024);
+        assert_eq!(ring.capacity(), DEFAULT_SLOT_SIZE);
         assert_eq!(ring.version(), 8); // 6 + 1 + 1(rebalance)
 
         assert_eq!(ring.get_slot(&1_i32).unwrap().start, 1);
-        assert_eq!(ring.get_slot(&1_i32).unwrap().end, 1024);
+        assert_eq!(ring.get_slot(&1_i32).unwrap().end, DEFAULT_SLOT_SIZE);
     }
 
     /// Test the ring add and remove
@@ -638,9 +685,9 @@ mod tests {
         assert_eq!(slot.inner().id, 1);
 
         let slot = ring.get_slot(&999_i32).unwrap();
-        assert_eq!(slot.inner().id, 3);
-
-        let slot = ring.get_slot(&10_000_i32).unwrap();
         assert_eq!(slot.inner().id, 2);
+
+        let slot = ring.get_slot(&90_002_i32).unwrap();
+        assert_eq!(slot.inner().id, 3);
     }
 }
