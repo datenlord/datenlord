@@ -378,7 +378,11 @@ impl ClusterManagerInner {
                     }
 
                     // Block here, try to watch master
-                    self.watch_master(ring.clone()).await?;
+                    // If the master is down and return ok, the slave node will try to get the master lock
+                    // If watch_master failed, we will retry to watch master
+                    if let Ok(()) = self.watch_master(ring.clone()).await {
+                        return Ok(());
+                    }
                 }
             }
         }
@@ -409,9 +413,9 @@ impl ClusterManagerInner {
 
             // Do watch node list update task
             // This task will block until the master status changed
-            self
-                .watch_nodes(node.clone(), nodes.clone(), ring.clone())
-                .await.with_context(|| "Failed to watch the node list update, and update the ring")?;
+            self.watch_nodes(node.clone(), nodes.clone(), ring.clone())
+                .await
+                .with_context(|| "Failed to watch the node list update, and update the ring")?;
         }
     }
 
@@ -522,15 +526,27 @@ impl ClusterManagerInner {
                             info!("delete node list event with key: {:?}", key);
                             // Get ip from key
                             let key = key.to_owned();
-                            let key = key.replace("CacheNode", "");
+                            let key = key.replace(KeyType::CacheNode("".to_owned()).prefix(), "");
+
+                            {
+                                let node_read = nodes.read();
+                                let r = node_read.iter().find(|node| node.ip() == key);
+                                info!("Remove node from node list: {:?}", r);
+                            }
+
                             info!("delete node list event with key: {:?}", key);
 
                             // Try to remove the node from the node list and updated the ring
-                            if let Some(removed_node) =
-                                nodes.read().iter().find(|node| node.ip() == key)
-                            {
+                            let removed_node_opt = {
+                                let nodes_read = nodes.read();
+                                nodes_read.iter().find(|node| node.ip() == key).cloned()
+                            };
+
+                            // Try to remove the node from the node list and updated the ring
+                            if let Some(removed_node) = removed_node_opt {
                                 // Try to remove the node from the node list and get the node info
                                 // And remove node from the node list
+                                info!("Remove node from node list: {:?}", removed_node);
                                 let _ = nodes.write().retain(|n| n.ip() != removed_node.ip());
 
                                 info!("Remove node from node list: {:?}", removed_node);
@@ -540,6 +556,8 @@ impl ClusterManagerInner {
 
                                 // Update cluster topo
                                 self.update_cluster_topo(node.clone(), ring.clone()).await?;
+                            } else {
+                                error!("Failed to remove node from node list, can not find the {key} node");
                             }
                         }
                     }
@@ -632,6 +650,41 @@ impl ClusterManagerInner {
         let master_key = &KeyType::CacheMasterNode;
         let mut master_watch_stream = self.kv_engine.watch(master_key).await.unwrap();
 
+        // Check the master key is exist
+        // If the master key is not exist, the slave node will be blocked in watch stream and do nothing here
+        // We need to quickly return to the main loop and try to campaign master
+        // 1. Fetch the master node info
+        match self.kv_engine.get(master_key).await? {
+            Some(ValueType::Json(master_json)) => {
+                let master_node_info: MasterNodeInfo = serde_json::from_value(master_json)?;
+                info!("master node info: {:?}", master_node_info);
+
+                // Check ring version
+                let current_version = ring.read().version();
+                if master_node_info.hash_ring_version != current_version {
+                    // Fetch the latest ring from etcd
+                    let cache_ring_key = &KeyType::CacheRing;
+                    match self.kv_engine.get(cache_ring_key).await? {
+                        Some(ValueType::Json(ring_json)) => {
+                            let new_ring: Ring<Node> = serde_json::from_value(ring_json)?;
+                            ring.write().update(&new_ring);
+                            self.load_ring(ring.clone()).await?;
+                        }
+                        _ => {
+                            error!("Failed to deserialize ring");
+                            return Err(DatenLordError::CacheClusterErr {
+                                context: vec![format!("Failed to deserialize ring")],
+                            });
+                        }
+                    }
+                }
+            }
+            _ => {
+                debug!("Master is not existed, try to campaign master");
+                return Ok(());
+            }
+        }
+
         // Watch master key events
         // If master has changed, try to update the value
         // 1. If master ip changed, try to change the master node
@@ -650,8 +703,23 @@ impl ClusterManagerInner {
                             // Update event
                             debug!("Receive update ring event with key: {:?}", key);
 
+                            // When master update the hashring, we will try to fetch latest ring from etcd
                             // In this step, we just need to update the ring
-                            self.load_ring(ring.clone()).await?;
+                            // Fetch the latest ring from etcd
+                            let cache_ring_key = &KeyType::CacheRing;
+                            match self.kv_engine.get(cache_ring_key).await? {
+                                Some(ValueType::Json(ring_json)) => {
+                                    let new_ring: Ring<Node> = serde_json::from_value(ring_json)?;
+                                    ring.write().update(&new_ring);
+                                    self.load_ring(ring.clone()).await?;
+                                }
+                                _ => {
+                                    error!("Failed to deserialize ring");
+                                    return Err(DatenLordError::CacheClusterErr {
+                                        context: vec![format!("Failed to deserialize ring")],
+                                    });
+                                }
+                            }
                         }
                         None => {
                             // Delete event
@@ -757,7 +825,7 @@ mod tests {
     use crate::{
         async_fuse::memfs::kv_engine::{DeleteOption, KVEngine, KVEngineType, KeyType},
         storage::cache_proxy::{
-            cluster_manager::{ClusterManager, NODE_REGISTER_TIMEOUT_SEC},
+            cluster_manager::{ClusterManager, MASTER_LOCK_TIMEOUT_SEC, NODE_REGISTER_TIMEOUT_SEC},
             node::{Node, NodeStatus},
             ring::Ring,
         },
@@ -956,9 +1024,11 @@ mod tests {
         clean_up_etcd().await;
 
         // Setup initial state with multiple nodes
-        let test_master_node: Arc<parking_lot::lock_api::RwLock<parking_lot::RawRwLock, Node>> = create_node("192.168.3.2");
+        let test_master_node: Arc<parking_lot::lock_api::RwLock<parking_lot::RawRwLock, Node>> =
+            create_node("192.168.3.2");
         let test_master_ring: Arc<RwLock<Ring<Node>>> = Arc::new(RwLock::new(Ring::default()));
-        let test_slave_node: Arc<parking_lot::lock_api::RwLock<parking_lot::RawRwLock, Node>> = create_node("192.168.3.3");
+        let test_slave_node: Arc<parking_lot::lock_api::RwLock<parking_lot::RawRwLock, Node>> =
+            create_node("192.168.3.3");
         // let test_slave_nodes: Arc<RwLock<Vec<Node>>> = Arc::new(RwLock::new(vec![]));
         // let test_slave_ring: Arc<RwLock<Ring<Node>>> = Arc::new(RwLock::new(Ring::default()));
         // let test_master_nodes: Arc<RwLock<Vec<Node>>> = Arc::new(RwLock::new(vec![
@@ -975,19 +1045,21 @@ mod tests {
                 let master_cluster_manager = Arc::new(ClusterManager::new(master_client));
                 // Register node
                 let _ = master_cluster_manager
-                .register(test_master_node_clone.clone())
-                .await;
+                    .register(test_master_node_clone.clone())
+                    .await;
                 // Campaign
                 let _ = master_cluster_manager
                     .do_campaign(test_master_node_clone.clone(), 1)
                     .await
                     .unwrap();
                 // Run master
-                let res = master_cluster_manager.do_master_tasks(
-                    test_master_node_clone.clone(),
-                    test_master_nodes_clone.clone(),
-                    test_master_ring.clone(),
-                ).await;
+                let res = master_cluster_manager
+                    .do_master_tasks(
+                        test_master_node_clone.clone(),
+                        test_master_nodes_clone.clone(),
+                        test_master_ring.clone(),
+                    )
+                    .await;
                 info!("master_handle: {:?}", res);
             });
         });
@@ -1020,7 +1092,10 @@ mod tests {
         // Cancel the slave task
         drop(slave_cluster_manager);
         // Wait for slave key is deleted
-        tokio::time::sleep(std::time::Duration::from_secs(2 * NODE_REGISTER_TIMEOUT_SEC as u64)).await;
+        tokio::time::sleep(std::time::Duration::from_secs(
+            2 * NODE_REGISTER_TIMEOUT_SEC as u64,
+        ))
+        .await;
         info!("test_remove_slave_node: start to test remove slave node");
         info!("Get all nodes: {:?}", test_master_nodes.read());
 
@@ -1031,5 +1106,94 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_remove_master_node() {}
+    async fn test_remove_master_node() {
+        tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::INFO)
+            .init();
+        let client = Arc::new(
+            KVEngineType::new(vec![ETCD_ADDRESS.to_string()])
+                .await
+                .unwrap(),
+        );
+
+        // Clean up etcd
+        clean_up_etcd().await;
+
+        // Setup initial state with multiple nodes
+        let test_master_node: Arc<parking_lot::lock_api::RwLock<parking_lot::RawRwLock, Node>> =
+            create_node("192.168.3.2");
+        let test_slave_node: Arc<parking_lot::lock_api::RwLock<parking_lot::RawRwLock, Node>> =
+            create_node("192.168.3.3");
+        let test_slave_ring: Arc<RwLock<Ring<Node>>> = Arc::new(RwLock::new(Ring::default()));
+        // let test_master_nodes: Arc<RwLock<Vec<Node>>> = Arc::new(RwLock::new(vec![]));
+
+        // Run master
+        let master_client = client.clone();
+        let master_cluster_manager = Arc::new(ClusterManager::new(master_client));
+        // Register node
+        let _ = master_cluster_manager
+            .register(test_master_node.clone())
+            .await;
+        // Campaign
+        let _ = master_cluster_manager
+            .do_campaign(test_master_node.clone(), 1)
+            .await
+            .unwrap();
+
+        let slave_client = client.clone();
+        let test_slave_node_clone = test_slave_node.clone();
+        let slave_handle = tokio::task::spawn_blocking(move || {
+            tokio::runtime::Handle::current().block_on(async move {
+                let slave_cluster_manager = Arc::new(ClusterManager::new(slave_client));
+                // Register node
+                let _ = slave_cluster_manager
+                    .register(test_slave_node_clone.clone())
+                    .await;
+                // Campaign
+                let _ = slave_cluster_manager
+                    .do_campaign(test_slave_node_clone.clone(), 1)
+                    .await
+                    .unwrap();
+                // Run slave
+                let res = slave_cluster_manager
+                    .do_slave_tasks(test_slave_node_clone.clone(), test_slave_ring.clone())
+                    .await;
+                // Check the result is ok and ready for next campaign
+                assert!(res.is_ok());
+                // Campaign
+                let res = slave_cluster_manager
+                    .do_campaign(test_slave_node_clone.clone(), 1)
+                    .await
+                    .unwrap();
+                info!("slave_handle: {:?}", res);
+                assert!(res.0);
+                // Wait and keep
+                tokio::time::sleep(std::time::Duration::from_secs(
+                    NODE_REGISTER_TIMEOUT_SEC as u64,
+                ))
+                .await;
+            });
+        });
+
+        // Wait for the election to finish
+        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+        assert_eq!(test_master_node.read().status(), NodeStatus::Master);
+        assert_eq!(test_slave_node.read().status(), NodeStatus::Slave);
+
+        // Simulate master node removal
+        info!("Simulate master node removal");
+        drop(master_cluster_manager);
+        // Wait for the system to detect the master node removal
+        tokio::time::sleep(std::time::Duration::from_secs(
+            MASTER_LOCK_TIMEOUT_SEC as u64,
+        ))
+        .await;
+
+        // Check if the slave node has become the new master
+        let new_master_status = test_slave_node.read().status();
+        assert_eq!(new_master_status, NodeStatus::Master);
+
+        info!("test_remove_master_node: slave node has taken over as master");
+        slave_handle.abort();
+    }
 }
