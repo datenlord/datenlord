@@ -15,61 +15,40 @@ use super::node::{MasterNodeInfo, Node, NodeStatus};
 use super::ring::Ring;
 
 /// The timeout for the lock of updating the master node
-const MASTER_LOCK_TIMEOUT_SEC: i64 = 30;
+const MASTER_LOCK_TIMEOUT_SEC: u64 = 30;
 /// The timeout for the node register
-const NODE_REGISTER_TIMEOUT_SEC: i64 = 10;
+const NODE_REGISTER_TIMEOUT_SEC: u64 = 10;
 
-/// Node sessions
+/// Node session
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
-pub struct NodeSessions {
-    /// Register session
-    /// Used to store the register tasks,
-    /// so we can cancel the tasks when the node is down or role changed
-    register_session: Option<Arc<etcd_impl::Session>>,
-    /// Master session
-    /// Used to store the master tasks,
-    /// Ditto
-    master_session: Option<Arc<etcd_impl::Session>>,
+pub struct NodeSession {
+    /// Used to store the session,
+    /// so we can cancel the tasks when the session is not valid
+    session_inner: Option<Arc<etcd_impl::Session>>,
 }
 
-impl NodeSessions {
+impl NodeSession {
     /// Create a new node sessions
     pub fn new() -> Self {
         Self {
-            register_session: None,
-            master_session: None,
+            session_inner: None,
         }
     }
 
-    /// Get register session
-    pub fn register_session(&self) -> Option<Arc<etcd_impl::Session>> {
-        self.register_session.clone()
+    /// Get session
+    pub fn get_session(&self) -> Option<Arc<etcd_impl::Session>> {
+        self.session_inner.clone()
     }
 
-    /// Get master session
-    pub fn master_session(&self) -> Option<Arc<etcd_impl::Session>> {
-        self.master_session.clone()
+    /// Update session
+    pub fn update_session(&mut self, session: Option<Arc<etcd_impl::Session>>) {
+        self.session_inner = session;
     }
 
-    /// Update register session
-    pub fn update_register_session(&mut self, session: Option<Arc<etcd_impl::Session>>) {
-        self.register_session = session;
-    }
-
-    /// Update master session
-    pub fn update_master_session(&mut self, session: Option<Arc<etcd_impl::Session>>) {
-        self.master_session = session;
-    }
-
-    /// Delete register session
-    pub fn delete_register_session(&mut self) {
-        self.register_session = None;
-    }
-
-    /// Delete master session
-    pub fn delete_master_session(&mut self) {
-        self.master_session = None;
+    /// Delete session
+    pub fn delete_session(&mut self) {
+        self.session_inner = None;
     }
 }
 
@@ -154,17 +133,17 @@ pub struct ClusterManagerInner {
     /// Etcd client
     kv_engine: Arc<KVEngineType>,
     /// Node sessions, try to keep the session alive
-    node_sessions: Arc<RwLock<NodeSessions>>,
+    node_session: Arc<RwLock<NodeSession>>,
 }
 
 #[allow(dead_code)]
 impl ClusterManagerInner {
     /// Create a new cluster manager
     pub fn new(kv_engine: Arc<KVEngineType>) -> Self {
-        let node_sessions = Arc::new(RwLock::new(NodeSessions::new()));
+        let node_session = Arc::new(RwLock::new(NodeSession::new()));
         Self {
             kv_engine,
-            node_sessions,
+            node_session,
         }
     }
 
@@ -263,12 +242,14 @@ impl ClusterManagerInner {
         let node_dump = node.read().clone();
         info!("register: {} to etcd", node_dump.ip());
 
-        // Try to get lease for current node
-        let lease = self
+        // Try keep alive current node to clsuter
+        let session = self
             .kv_engine
-            .create_lease(NODE_REGISTER_TIMEOUT_SEC)
-            .await
-            .with_context(|| "Failed to get lease for current node")?;
+            .create_session(NODE_REGISTER_TIMEOUT_SEC)
+            .await?;
+        self.node_session
+            .write()
+            .update_session(Some(session.clone()));
 
         // Try to register current node to etcd
         self.kv_engine
@@ -277,7 +258,7 @@ impl ClusterManagerInner {
                 &ValueType::Json(serde_json::to_value(node_dump.clone())?),
                 Some(SetOption {
                     // Set lease
-                    lease: Some(lease),
+                    session: Some(session),
                     prev_kv: false,
                 }),
             )
@@ -288,15 +269,6 @@ impl ClusterManagerInner {
 
         // Set online status, default is slave
         node.write().set_status(NodeStatus::Slave);
-
-        // Try keep alive current node to clsuter
-        let register_session = self
-            .kv_engine
-            .create_session(lease, NODE_REGISTER_TIMEOUT_SEC as u64)
-            .await?;
-        self.node_sessions
-            .write()
-            .update_register_session(Some(register_session.clone()));
 
         Ok(())
     }
@@ -310,11 +282,15 @@ impl ClusterManagerInner {
         ring_version: u64,
     ) -> DatenLordResult<(bool, String)> {
         let client = self.kv_engine.clone();
-        let lease = self
-            .kv_engine
-            .create_lease(MASTER_LOCK_TIMEOUT_SEC)
-            .await
-            .with_context(|| "Failed to get lease for current node")?;
+
+        if let Some(session) = self.node_session.read().get_session() {
+            if session.is_closed() {
+                error!("Current session is invalid, return to endpoint");
+                return Err(DatenLordError::CacheClusterErr {
+                    context: vec![format!("Current session is invalid")],
+                });
+            }
+        }
 
         // Master key info
         let master_key = &KeyType::CacheMasterNode;
@@ -335,15 +311,6 @@ impl ClusterManagerInner {
         if campaign_status {
             // Serve as master node
             node.write().set_status(NodeStatus::Master);
-
-            // Try keep alive current master to clsuter
-            let master_session = self
-                .kv_engine
-                .create_session(lease, NODE_REGISTER_TIMEOUT_SEC as u64)
-                .await?;
-            self.node_sessions
-                .write()
-                .update_master_session(Some(master_session.clone()));
         } else {
             // Serve as slave node
             node.write().set_status(NodeStatus::Slave);
