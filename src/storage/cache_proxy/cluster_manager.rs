@@ -463,28 +463,20 @@ impl ClusterManagerInner {
         // Get all nodes with prefix and init hash ring list
         // TODO: Block cluster and do not add any new node when watch_nodes is synced.
         let cluster_nodes = self.get_nodes().await?;
-        let mut node_write = nodes.write();
-        let mut ring_write = ring.write();
-        info!("watch_nodes: init node list");
-        for cluster_node in cluster_nodes {
-            ring_write.add(&cluster_node.clone(), true);
-            node_write.push(cluster_node.clone());
+        {
+            let mut node_write = nodes.write();
+            let mut ring_write = ring.write();
+            info!("watch_nodes: init node list");
+            for cluster_node in cluster_nodes {
+                ring_write.add(&cluster_node.clone(), true);
+                node_write.push(cluster_node.clone());
+            }
         }
-        drop(node_write);
-        drop(ring_write);
-
-        info!("watch_nodes: init node list success");
-
         self.update_cluster_topo(node.clone(), ring.clone()).await?;
 
         // Get all nodes with prefix
         let key = &KeyType::CacheNode("".to_string());
         let mut nodes_watch_stream = self.kv_engine.watch(key).await.unwrap();
-
-        info!(
-            "watch_nodes: will watch the node list update with key: {:?}",
-            key
-        );
 
         // Wait for node list update
         loop {
@@ -1029,19 +1021,16 @@ mod tests {
         let test_master_ring: Arc<RwLock<Ring<Node>>> = Arc::new(RwLock::new(Ring::default()));
         let test_slave_node: Arc<parking_lot::lock_api::RwLock<parking_lot::RawRwLock, Node>> =
             create_node("192.168.3.3");
-        // let test_slave_nodes: Arc<RwLock<Vec<Node>>> = Arc::new(RwLock::new(vec![]));
-        // let test_slave_ring: Arc<RwLock<Ring<Node>>> = Arc::new(RwLock::new(Ring::default()));
-        // let test_master_nodes: Arc<RwLock<Vec<Node>>> = Arc::new(RwLock::new(vec![
-        //     test_master_node.read().clone(),
-        //     test_slave_node.read().clone(),
-        // ]));
+        let test_slave_ring: Arc<RwLock<Ring<Node>>> = Arc::new(RwLock::new(Ring::default()));
+        let test_slave_node_2: Arc<parking_lot::lock_api::RwLock<parking_lot::RawRwLock, Node>> =
+            create_node("192.168.3.4");
+        let test_slave_ring_2: Arc<RwLock<Ring<Node>>> = Arc::new(RwLock::new(Ring::default()));
         let test_master_nodes: Arc<RwLock<Vec<Node>>> = Arc::new(RwLock::new(vec![]));
 
         let master_client = client.clone();
         let test_master_node_clone = test_master_node.clone();
         let test_master_nodes_clone = test_master_nodes.clone();
-        let master_handle = tokio::task::spawn_blocking(move || {
-            tokio::runtime::Handle::current().block_on(async move {
+        let master_handle = tokio::task::spawn(async move {
                 let master_cluster_manager = Arc::new(ClusterManager::new(master_client));
                 // Register node
                 let _ = master_cluster_manager
@@ -1062,35 +1051,59 @@ mod tests {
                     .await;
                 info!("master_handle: {:?}", res);
             });
-        });
 
-        // Slave online
         let slave_client = client.clone();
         let test_slave_node_clone = test_slave_node.clone();
-        let slave_cluster_manager = Arc::new(ClusterManager::new(slave_client));
-        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-        // Register
-        let _ = slave_cluster_manager
-            .register(test_slave_node_clone.clone())
-            .await;
-        // Campaign
-        let _ = slave_cluster_manager
-            .do_campaign(test_slave_node_clone.clone(), 1)
-            .await
-            .unwrap();
+        let slave_handle_1 = tokio::task::spawn(async move {
+            let slave_cluster_manager = Arc::new(ClusterManager::new(slave_client));
+            // Register node
+            let _ = slave_cluster_manager
+                .register(test_slave_node_clone.clone())
+                .await;
+            // Campaign
+            let _ = slave_cluster_manager
+                .do_campaign(test_slave_node_clone.clone(), 1)
+                .await
+                .unwrap();
+            // Run slave
+            let res = slave_cluster_manager
+                .do_slave_tasks(test_slave_node_clone.clone(), test_slave_ring.clone())
+                .await;
+            info!("slave_handle_1: {:?}", res);
+        });
+        let slave_client = client.clone();
+        let test_slave_node_clone = test_slave_node_2.clone();
+        let slave_handle_2 = tokio::task::spawn(async move {
+            let slave_cluster_manager = Arc::new(ClusterManager::new(slave_client));
+            // Register node
+            let _ = slave_cluster_manager
+                .register(test_slave_node_clone.clone())
+                .await;
+            // Campaign
+            let _ = slave_cluster_manager
+                .do_campaign(test_slave_node_clone.clone(), 1)
+                .await
+                .unwrap();
+            // Run slave
+            let res = slave_cluster_manager
+                .do_slave_tasks(test_slave_node_clone.clone(), test_slave_ring_2.clone())
+                .await;
+            info!("slave_handle_2: {:?}", res);
+        });
 
         // Wait for the election to finish
         tokio::time::sleep(std::time::Duration::from_secs(10)).await;
         assert_eq!(test_master_node.read().status(), NodeStatus::Master);
         assert_eq!(test_slave_node.read().status(), NodeStatus::Slave);
+        assert_eq!(test_slave_node_2.read().status(), NodeStatus::Slave);
 
         tokio::time::sleep(std::time::Duration::from_secs(5)).await;
         info!("test_remove_slave_node: update node list");
         assert_eq!(test_master_node.read().status(), NodeStatus::Master);
-        assert_eq!(test_master_nodes.read().len(), 2);
+        assert_eq!(test_master_nodes.read().len(), 3);
 
         // Cancel the slave task
-        drop(slave_cluster_manager);
+        slave_handle_1.abort();
         // Wait for slave key is deleted
         tokio::time::sleep(std::time::Duration::from_secs(
             2 * NODE_REGISTER_TIMEOUT_SEC as u64,
@@ -1100,8 +1113,9 @@ mod tests {
         info!("Get all nodes: {:?}", test_master_nodes.read());
 
         assert_eq!(test_master_node.read().status(), NodeStatus::Master);
-        assert_eq!(test_master_nodes.read().len(), 1);
+        assert_eq!(test_master_nodes.read().len(), 2);
 
+        slave_handle_2.abort();
         master_handle.abort();
     }
 
