@@ -209,42 +209,41 @@ impl SessionInner {
                         Ok(Some(lease_alive_response)) => {
                             if lease_alive_response.ttl() == 0 {
                                 error!("lease keep alive stream closed, because ttl is 0");
-                                self.close();
+                                // revoke the lease
+                                revoke_lease!(client, lease_id);
                                 break;
                             }
                             continue
                         }
                         Ok(None) => {
                             error!("lease keep alive stream closed, because the sender is closed");
-                            self.close();
+                            // revoke the lease
+                            revoke_lease!(client, lease_id);
                             break;
                         }
                         Err(e) => {
                             error!("failed to keep alive lease, error={e:?}");
-                            self.close();
                             break;
                         }
                     }
                 }
                 _ = close_rx.recv() => {
                     info!("close the keep alive session, lease_id={lease_id}");
-                    self.close();
+                    // revoke the lease
+                    revoke_lease!(client, lease_id);
                     break;
                 }
                 () = token.cancelled() => {
                     debug!("lease keep alive stream closed by token canceled");
-                    self.close();
+                    // revoke the lease
+                    revoke_lease!(client, lease_id);
                     break;
                 }
             }
         }
 
-        if self.is_closed() {
-            debug!("lease keep alive stream closed by is_closed flag");
-
-            // revoke the lease
-            revoke_lease!(client, lease_id);
-        }
+        // Make sure the lease is revoked
+        self.close();
     }
 }
 
@@ -269,9 +268,9 @@ impl KVEngineWatchStream {
         }
     }
 
-    /// Cancel the watch stream
+    /// Cancel the watch stream, it will take over the ownership of the watch stream
     #[inline]
-    pub async fn cancel(&mut self) -> DatenLordResult<()> {
+    pub async fn cancel(mut self) -> DatenLordResult<()> {
         match self.watcher.cancel().await {
             Ok(o) => {
                 debug!("etcd watcher task canceled, {o:?}");
@@ -394,14 +393,20 @@ impl KVEngine for EtcdKVEngine {
         Ok(Self { client })
     }
 
-    async fn new_meta_txn(&self) -> Box<dyn MetaTxn + Send> {
+    async fn new_meta_txn(&self) -> Box<dyn MetaTxn<Session = Self::Session> + Send> {
         Box::new(EtcdTxn::new(self.client.clone()))
     }
 
-    /// Keep alive the lease
-    async fn create_session(&self, lease_id: i64, ttl: u64) -> DatenLordResult<Arc<Session>> {
-        let client = self.client.clone();
-        let session = Session::new(client.clone(), ttl, lease_id).await;
+    /// Create a lease with keepalive
+    async fn create_session(&self, ttl: u64) -> DatenLordResult<Arc<Session>> {
+        let _timer = KV_METRICS.start_kv_operation_timer("create_session");
+        let mut client = self.client.clone();
+        let resp = client
+            .lease_grant(conv_u64_sec_2_i64(ttl), None)
+            .await
+            .with_context(|| "failed to get lease at `KVEngine::create_session`".to_owned())?;
+
+        let session = Session::new(client.clone(), ttl, resp.id()).await;
 
         return session;
     }
@@ -475,8 +480,16 @@ impl KVEngine for EtcdKVEngine {
                 if option.prev_kv {
                     set_option = set_option.with_prev_key();
                 }
-                if let Some(lease) = option.lease {
-                    set_option = set_option.with_lease(lease);
+                if let Some(session) = option.session {
+                    if session.is_closed() {
+                        return Err(crate::common::error::DatenLordError::EtcdClientErr {
+                            source: etcd_client::Error::LeaseKeepAliveError(
+                                "session is invalid".to_owned(),
+                            ),
+                            context: vec![],
+                        });
+                    }
+                    set_option = set_option.with_lease(session.lease_id());
                 }
                 Some(set_option)
             }
@@ -538,18 +551,6 @@ impl KVEngine for EtcdKVEngine {
         Ok(result)
     }
 
-    /// Create a lease
-    async fn create_lease(&self, ttl: i64) -> DatenLordResult<i64> {
-        let _timer = KV_METRICS.start_kv_operation_timer("lease");
-        let ttl = check_ttl(ttl).with_context(|| "failed to check ttl".to_owned())?;
-        let mut client = self.client.clone();
-        let resp = client
-            .lease_grant(ttl, None)
-            .await
-            .with_context(|| "failed to get lease at `MetaTxn::create_lease`".to_owned())?;
-        Ok(resp.id())
-    }
-
     /// Watch the key, return a receiver to receive the value
     async fn watch(&self, prefix: &KeyType) -> DatenLordResult<KVEngineWatchStream> {
         let mut client = self.client.clone();
@@ -589,6 +590,8 @@ impl EtcdTxn {
 
 #[async_trait]
 impl MetaTxn for EtcdTxn {
+    type Session = Session;
+
     async fn get(&mut self, key_arg: &KeyType) -> DatenLordResult<Option<ValueType>> {
         let _timer = KV_METRICS.start_kv_operation_timer("get");
 
@@ -655,8 +658,15 @@ impl MetaTxn for EtcdTxn {
         &self,
         key: &KeyType,
         val: String,
-        lease_id: i64,
+        session: Arc<Session>,
     ) -> DatenLordResult<(bool, String)> {
+        if session.is_closed() {
+            return Err(crate::common::error::DatenLordError::EtcdClientErr {
+                source: etcd_client::Error::LeaseKeepAliveError("session is invalid".to_owned()),
+                context: vec![],
+            });
+        }
+
         let mut client = self.client.clone();
 
         // Try to get the key, if key is existed
@@ -677,7 +687,7 @@ impl MetaTxn for EtcdTxn {
             .or_else(vec![TxnOp::put(
                 key.to_string_key(),
                 val.clone(),
-                Some(PutOptions::new().with_lease(lease_id)),
+                Some(PutOptions::new().with_lease(session.lease_id())),
             )]);
 
         let (campaign_status, responses) = match client.txn(txn).await {
@@ -991,9 +1001,6 @@ mod test {
 
     #[tokio::test]
     async fn test_watch() {
-        tracing_subscriber::fmt()
-            .with_max_level(tracing::Level::INFO)
-            .init();
         let client = EtcdKVEngine::new_for_local_test(vec![ETCD_ADDRESS.to_owned()])
             .await
             .unwrap();
@@ -1048,19 +1055,23 @@ mod test {
         let client = EtcdKVEngine::new_for_local_test(vec![ETCD_ADDRESS.to_owned()])
             .await
             .unwrap();
-        let lease_id = client.create_lease(5).await.unwrap();
+        // Test keep alive
+        let session = client.create_session(5).await.unwrap();
         // Set a temp key for this lease
         let key = KeyType::String("test_create_session".to_owned());
         let value = ValueType::String("test_create_session_value".to_owned());
+        let session_opt = Arc::clone(&session);
         client
-            .set(&key, &value, Some(SetOption::new().with_lease(lease_id)))
+            .set(
+                &key,
+                &value,
+                Some(SetOption::new().with_session(session_opt)),
+            )
             .await
             .unwrap();
 
         assert_eq!(client.get(&key).await.unwrap().unwrap(), value);
 
-        // Test keep alive
-        let session = client.create_session(lease_id, 5).await.unwrap();
         tokio::time::sleep(Duration::from_secs(10)).await;
         assert_eq!(client.get(&key).await.unwrap().unwrap(), value);
 
@@ -1070,7 +1081,11 @@ mod test {
         assert!(client.get(&key).await.unwrap().is_none());
     }
 
-    async fn get_lease_id(etcd_address_vec: Vec<String>, key: &KeyType) -> DatenLordResult<i64> {
+    /// Utils function to get the lease id from etcd by key
+    async fn get_lease_id_from_key(
+        etcd_address_vec: Vec<String>,
+        key: &KeyType,
+    ) -> DatenLordResult<i64> {
         let mut client = etcd_client::Client::connect(etcd_address_vec.clone(), None)
             .await
             .with_context(|| {
@@ -1100,40 +1115,46 @@ mod test {
         let val = "test_campaign_val".to_owned();
         let val2 = "test_campaign_val2".to_owned();
 
-        let lease_id = client.create_lease(5).await.unwrap();
+        let session = client.create_session(5).await.unwrap();
         // Campaign the key
-        let (campaign_status, campaign_val) =
-            txn.campaign(&key, val.clone(), lease_id).await.unwrap();
-        assert!(campaign_status);
-        assert_eq!(campaign_val, val);
-        let result_lease_id = get_lease_id(vec![ETCD_ADDRESS.to_owned()], &key)
+        let (campaign_status, campaign_val) = txn
+            .campaign(&key, val.clone(), Arc::clone(&session))
             .await
             .unwrap();
-        assert_eq!(result_lease_id, lease_id);
+        assert!(campaign_status);
+        assert_eq!(campaign_val, val);
+        let result_lease_id = get_lease_id_from_key(vec![ETCD_ADDRESS.to_owned()], &key)
+            .await
+            .unwrap();
+        assert_eq!(result_lease_id, session.lease_id());
 
-        let lease_id = client.create_lease(5).await.unwrap();
-        let latest_lease_id = lease_id;
+        let session = client.create_session(5).await.unwrap();
+        let latest_lease_id = session.lease_id();
         // Recampaign the key
-        let (campaign_status, campaign_val) =
-            txn.campaign(&key, val.clone(), lease_id).await.unwrap();
+        let (campaign_status, campaign_val) = txn
+            .campaign(&key, val.clone(), Arc::clone(&session))
+            .await
+            .unwrap();
         assert!(campaign_status);
         assert_eq!(campaign_val, val);
         // Check the lease id from etcd
-        let result_lease_id = get_lease_id(vec![ETCD_ADDRESS.to_owned()], &key)
+        let result_lease_id = get_lease_id_from_key(vec![ETCD_ADDRESS.to_owned()], &key)
             .await
             .unwrap();
-        assert_eq!(result_lease_id, lease_id);
+        assert_eq!(result_lease_id, session.lease_id());
 
-        let lease_id = client.create_lease(5).await.unwrap();
+        let session = client.create_session(5).await.unwrap();
         // Campaign the key with different value, campaign failed
-        let (campaign_status, campaign_val) =
-            txn.campaign(&key, val2.clone(), lease_id).await.unwrap();
+        let (campaign_status, campaign_val) = txn
+            .campaign(&key, val2.clone(), Arc::clone(&session))
+            .await
+            .unwrap();
         assert!(!campaign_status);
         assert_eq!(campaign_val, val);
-        let result_lease_id = get_lease_id(vec![ETCD_ADDRESS.to_owned()], &key)
+        let result_lease_id = get_lease_id_from_key(vec![ETCD_ADDRESS.to_owned()], &key)
             .await
             .unwrap();
-        assert_ne!(result_lease_id, lease_id);
+        assert_ne!(result_lease_id, session.lease_id());
         assert_eq!(result_lease_id, latest_lease_id);
     }
 }
