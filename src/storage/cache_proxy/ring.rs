@@ -2,6 +2,7 @@
 
 use core::fmt;
 use std::cmp;
+use std::collections::HashSet;
 use std::hash::BuildHasher;
 use std::hash::Hash;
 
@@ -135,7 +136,8 @@ where
     hash_builder: S,
     /// The slots
     slots: Vec<Slot<T>>,
-    /// T to slot id mapping, accelerate finding the slot
+    /// T to slot id mapping, accelerate finding the slot and filter the same node
+    node_set: HashSet<T>,
     /// The slot step of the ring
     capacity: u64,
     /// The version of the ring
@@ -150,6 +152,7 @@ where
         Ring {
             hash_builder: DefaultHashBuilder,
             slots: Vec::new(),
+            node_set: HashSet::new(),
             capacity: DEFAULT_SLOT_SIZE,
             version: 0,
         }
@@ -167,6 +170,7 @@ where
         Self {
             hash_builder,
             slots: Vec::new(),
+            node_set: HashSet::new(),
             capacity: DEFAULT_SLOT_SIZE,
             version: 0,
         }
@@ -176,6 +180,7 @@ where
     /// It will node update the hash builder
     pub fn update(&mut self, ring: &Ring<T, S>) {
         self.slots = ring.slots.clone();
+        self.node_set = ring.node_set.clone();
         self.capacity = ring.capacity;
         self.version = ring.version;
     }
@@ -196,6 +201,12 @@ where
     #[must_use]
     pub fn version(&self) -> u64 {
         self.version
+    }
+
+    /// Get nodes
+    #[must_use]
+    pub fn nodes(&self) -> Vec<T> {
+        self.slots.iter().map(|slot| slot.inner.clone()).collect()
     }
 
     /// Check if the ring is empty
@@ -219,6 +230,10 @@ where
     /// We will create a new slot and update slot mapping, then add to the ring
     /// If must is true, the ring need to be rebalanced or expanded
     pub fn add(&mut self, node: &T, must: bool) -> Option<T> {
+        if self.node_set.contains(node) {
+            return Some(node.clone());
+        }
+
         // If the ring is full, return None
         if usize_to_u64(self.slots.len()) >= self.capacity {
             return None;
@@ -273,24 +288,54 @@ where
             return None;
         }
 
+        self.node_set.insert(node.clone());
+
         Some(node.clone())
     }
 
+    /// Calculate the safe midpoint
     fn safe_midpoint(a: u64, b: u64) -> u64 {
-        if a > b {
-            // if a > b and both u64, a - b and a / b will not overflow
-            let a_sub_b = a.overflow_sub(b);
-            let a_div_b = a_sub_b.overflow_div(2);
-            let sum = b.overflow_add(a_div_b);
-            sum
-        } else if a < b {
-            let b_sub_a = b.overflow_sub(a);
-            let b_div_a = b_sub_a.overflow_div(2);
-            let sum = a.overflow_add(b_div_a);
-            sum
-        } else {
-            a
+        match a.cmp(&b) {
+            cmp::Ordering::Greater => {
+                // if a > b and both u64, a - b and a / b will not overflow
+                let a_sub_b = a.overflow_sub(b);
+                let a_div_b = a_sub_b.overflow_div(2);
+                b.overflow_add(a_div_b)
+            }
+            cmp::Ordering::Less => {
+                let b_sub_a = b.overflow_sub(a);
+                let b_div_a = b_sub_a.overflow_div(2);
+                a.overflow_add(b_div_a)
+            }
+            cmp::Ordering::Equal => a,
         }
+    }
+
+    /// Batch replace
+    ///
+    /// Try to modify current ring and try the best to keep the old ring distribution
+    /// It will return removed nodes here
+    pub fn batch_replace(&mut self, nodes: Vec<T>, must: bool) -> Option<Vec<T>> {
+        let add_set: HashSet<T> = nodes.iter().cloned().collect();
+
+        // Iterate current node_set to find the nodes to remove
+        let remove_nodes: Vec<T> = self
+            .node_set
+            .iter()
+            .filter(|node| !add_set.contains(*node))
+            .cloned()
+            .collect();
+
+        // Add the new nodes
+        self.batch_add(nodes, must).as_ref()?;
+
+        // Remove the old nodes
+        self.batch_remove(&remove_nodes, must).as_ref()?;
+
+        // Update current node_set
+        self.node_set = add_set;
+
+        Some(remove_nodes)
     }
 
     /// Add a batch of slots
@@ -302,17 +347,16 @@ where
         if usize_to_u64(self.slots.len() + nodes.len()) > self.capacity {
             // If not satisfy the expand condition but too many nodes, return None
             return None;
-        } else {
-            // Try to modify the ring, so we need to increase the version
-            // TODO1: if the version is too large, we need to reset it
-            // if th slot allocation failed, we need to keep the version
+        }
 
-            // Iterate the nodes to add
-            for node in nodes {
-                // Try to rebalance it later
-                if let Some(n) = self.add(&node.clone(), false) {
-                    success_nodes.push(n);
-                }
+        // Try to modify the ring, so we need to increase the version
+        // TODO1: if the version is too large, we need to reset it
+        // if th slot allocation failed, we need to keep the version
+        // Iterate the nodes to add
+        for node in nodes {
+            // Try to rebalance it later
+            if let Some(n) = self.add(&node.clone(), false) {
+                success_nodes.push(n);
             }
         }
 
@@ -328,6 +372,10 @@ where
     /// Remove a slot
     /// If must is true, the ring need to be rebalanced
     pub fn remove(&mut self, node: T, must: bool) -> Option<T> {
+        if !self.node_set.contains(&node) {
+            return Some(node);
+        }
+
         // Find the slot to remove
         // TODO: Find the slot with faster way?
         // If the slot is not found, return None
@@ -340,6 +388,8 @@ where
         if must {
             self.rebalance();
         }
+
+        self.node_set.remove(&node);
 
         Some(node)
     }
@@ -359,6 +409,7 @@ where
 
         // Remove the slot, shift the rest of the slots
         let removed_slot = self.slots.remove(index);
+        self.node_set.remove(&removed_slot.inner);
 
         if self.slots.is_empty() {
             return None;
