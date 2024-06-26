@@ -123,7 +123,7 @@ impl Node {
     /// Get the status of the node
     #[must_use]
     pub fn status(&self) -> NodeStatus {
-        self.status.clone()
+        self.status
     }
 
     /// Change the status of the node
@@ -135,7 +135,7 @@ impl Node {
 }
 
 /// Node status
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Copy)]
 pub enum NodeStatus {
     /// The node is preparing
     Initializing,

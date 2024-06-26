@@ -392,6 +392,15 @@ impl ClusterManagerInner {
         let mut interval = tokio::time::interval(Duration::from_secs(SESSION_TIMEOUT_SEC));
         let mut watch_event = false;
         loop {
+            if !self.check_session_valid() {
+                let current_node = self.node.load();
+                error!(
+                    "Current {} session is invalid, return to endpoint",
+                    current_node.ip()
+                );
+                return;
+            };
+
             tokio::select! {
                 _ = interval.tick() => {
                     // Update cluster topo
@@ -431,10 +440,8 @@ impl ClusterManagerInner {
         let session = self.node_session.load();
         if let Some(session) = session.as_ref() {
             if session.is_closed() {
-                info!("Current session is valid");
                 return false;
             }
-
             return true;
         }
 
@@ -954,7 +961,8 @@ mod tests {
         ));
         let slave_cluster_manager_2_clone = Arc::clone(&slave_cluster_manager_2);
         let slave_handle_2 = tokio::task::spawn(async move {
-            let res = slave_cluster_manager_2_clone.run().await;
+            let res: Result<(), crate::common::error::DatenLordError> =
+                slave_cluster_manager_2_clone.run().await;
             info!("slave_handle_2: {:?}", res);
         });
 
@@ -1058,10 +1066,10 @@ mod tests {
 
         // Simulate master node removal
         info!("Simulate master node removal");
-        master_handle.abort();
         master_cluster_manager.stop();
+        master_handle.abort();
         // Wait for the system to detect the master node removal
-        tokio::time::sleep(std::time::Duration::from_secs(SESSION_TIMEOUT_SEC)).await;
+        tokio::time::sleep(std::time::Duration::from_secs(SESSION_TIMEOUT_SEC + 1)).await;
 
         // Check if the slave node has become the new master
         let new_master_status = slave_cluster_manager_1.get_node().status();
