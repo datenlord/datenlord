@@ -135,7 +135,7 @@ impl Node {
 }
 
 /// Node status
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Copy)]
 pub enum NodeStatus {
     /// The node is preparing
     Initializing,
