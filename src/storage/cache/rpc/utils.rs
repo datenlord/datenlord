@@ -10,9 +10,7 @@ macro_rules! read_exact_timeout {
                     Ok(size) => Ok(size),
                     Err(read_err) => Err(read_err),
                 },
-                Err(timeout_err) => {
-                    Err(timeout_err.into())
-                }
+                Err(timeout_err) => Err(timeout_err.into()),
             }
         }
     };
@@ -30,9 +28,7 @@ macro_rules! write_all_timeout {
                     Ok(size) => Ok(size),
                     Err(write_err) => Err(write_err),
                 },
-                Err(timeout_err) => {
-                    Err(timeout_err.into())
-                }
+                Err(timeout_err) => Err(timeout_err.into()),
             }
         }
     };
@@ -43,17 +39,15 @@ macro_rules! write_all_timeout {
 macro_rules! connect_timeout {
     ($addr:expr, $connect_timeout:expr) => {
         async move {
-            use tokio::time::timeout;
             use tokio::net::TcpStream;
+            use tokio::time::timeout;
 
             match timeout($connect_timeout, TcpStream::connect($addr)).await {
                 Ok(res) => match res {
                     Ok(stream) => Ok(stream),
                     Err(connect_err) => Err(connect_err),
                 },
-                Err(timeout_err) => {
-                    Err(timeout_err.into())
-                }
+                Err(timeout_err) => Err(timeout_err.into()),
             }
         }
     };

@@ -1,4 +1,7 @@
-use super::{error::RpcError, packet::{Decode, Encode, Packet, PacketStatus}};
+use super::{
+    error::RpcError,
+    packet::{Decode, Encode, Packet, PacketStatus},
+};
 
 /// Impl the keep alive request for Packet trait
 #[derive(Debug, Clone)]
@@ -14,47 +17,61 @@ pub struct KeepAlivePacket {
 impl KeepAlivePacket {
     /// Create a new keep alive packet.
     pub fn new() -> Self {
-        Self { seq: 0, op: 0, status: PacketStatus::Pending }
+        Self {
+            seq: 0,
+            op: 0,
+            status: PacketStatus::Pending,
+        }
     }
 }
 
 impl Packet for KeepAlivePacket {
+    /// Get the packet seq number
     fn seq(&self) -> u64 {
         self.seq
     }
 
+    /// Set the packet seq number
     fn set_seq(&mut self, seq: u64) {
         self.seq = seq;
     }
 
+    /// Get packet type
     fn op(&self) -> u8 {
         self.op
     }
 
+    /// Set packet type
     fn set_op(&mut self, op: u8) {
         self.op = op;
     }
 
+    /// Set the raw request data
     fn set_req_data(&mut self, _data: &[u8]) -> Result<(), RpcError<String>> {
         Ok(())
     }
 
+    /// Get the raw request data
     fn get_req_data(&self) -> Result<Vec<u8>, RpcError<String>> {
         Ok(Vec::new())
     }
 
+    /// Set the raw response data
     fn set_resp_data(&mut self, _data: &[u8]) -> Result<(), RpcError<String>> {
         Ok(())
     }
 
+    /// Get the raw response data
     fn get_resp_data(&self) -> Result<Vec<u8>, RpcError<String>> {
         Ok(Vec::new())
     }
 
+    /// Get the packet status
     fn status(&self) -> PacketStatus {
         self.status
     }
 
+    /// Set the packet status
     fn set_status(&mut self, status: PacketStatus) {
         self.status = status;
     }
@@ -63,11 +80,14 @@ impl Packet for KeepAlivePacket {
 /// The request type of the request.
 #[derive(Debug)]
 pub enum ReqType {
+    /// The keep alive request.
     KeepAliveRequest,
+    /// The file block request.
     FileBlockRequest,
 }
 
 impl ReqType {
+    /// Convert u8 to ReqType
     pub fn from_u8(op: u8) -> Result<Self, RpcError<String>> {
         match op {
             0 => Ok(Self::KeepAliveRequest),
@@ -79,6 +99,7 @@ impl ReqType {
         }
     }
 
+    /// Convert ReqType to u8
     pub fn to_u8(&self) -> u8 {
         match self {
             Self::KeepAliveRequest => 0,
@@ -90,11 +111,14 @@ impl ReqType {
 /// The operation type of the response.
 #[derive(Debug)]
 pub enum RespType {
-    FileBlockResponse,
+    /// The keep alive response.
     KeepAliveResponse,
+    /// The file block response.
+    FileBlockResponse,
 }
 
 impl RespType {
+    /// Convert u8 to RespType
     pub fn from_u8(op: u8) -> Result<Self, RpcError<String>> {
         match op {
             0 => Ok(Self::KeepAliveResponse),
@@ -106,6 +130,7 @@ impl RespType {
         }
     }
 
+    /// Convert RespType to u8
     pub fn to_u8(&self) -> u8 {
         match self {
             Self::KeepAliveResponse => 0,
@@ -128,12 +153,14 @@ pub struct FileBlockRequest {
 }
 
 impl Encode for FileBlockRequest {
+    /// Encode the file block request into a byte buffer.
     fn encode(&self) -> Vec<u8> {
         encode_file_block_request(self)
     }
 }
 
 impl Decode for FileBlockRequest {
+    /// Decode the byte buffer into a file block request.
     fn decode(buf: &[u8]) -> Result<Self, RpcError<String>> {
         decode_file_block_request(buf)
     }
@@ -185,12 +212,14 @@ pub struct FileBlockResponse {
 }
 
 impl Encode for FileBlockResponse {
+    /// Encode the file block response into a byte buffer.
     fn encode(&self) -> Vec<u8> {
         encode_file_block_response(self)
     }
 }
 
 impl Decode for FileBlockResponse {
+    //// Decode the byte buffer into a file block response.
     fn decode(buf: &[u8]) -> Result<Self, RpcError<String>> {
         decode_file_block_response(buf)
     }
@@ -271,6 +300,7 @@ pub enum StatusCode {
 }
 
 impl Default for StatusCode {
+    /// Get the default status code.
     fn default() -> Self {
         Self::Success
     }

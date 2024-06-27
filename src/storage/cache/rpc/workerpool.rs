@@ -1,11 +1,13 @@
-use std::sync::Arc;
+use std::{
+    fmt::{self, Debug},
+    sync::Arc,
+};
 
 use async_trait::async_trait;
 use tokio::task;
 use tracing::debug;
 
 use super::error::RpcError;
-
 
 type JobImpl = Box<dyn Job + Send + Sync + 'static>;
 
@@ -26,6 +28,16 @@ pub struct WorkerPool {
     job_sender: Arc<flume::Sender<JobImpl>>,
     /// The workers in the worker pool.
     worker_queue: Vec<Worker>,
+}
+
+impl Debug for WorkerPool {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("WorkerPool")
+            .field("max_workers", &self.max_workers)
+            .field("max_waiting_jobs", &self.max_waiting_jobs)
+            .field("worker_queue_len", &self.worker_queue.len())
+            .finish_non_exhaustive()
+    }
 }
 
 impl WorkerPool {
@@ -226,19 +238,16 @@ mod tests {
     #[tokio::test]
     async fn benchmark_worker_pool() {
         // Set the tracing log level to debug
-        tracing::subscriber::set_global_default(
-            tracing_subscriber::FmtSubscriber::builder()
-                .with_max_level(tracing::Level::INFO)
-                .finish(),
-        )
-        .expect("Failed to set tracing subscriber");
+        tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::DEBUG)
+            .init();
 
         // Test to use 4 workers to submit 1000 jobs, and calculate the time cost.
         let worker_pool = Arc::new(WorkerPool::new(10, 1000));
         let start = Instant::now();
         for _ in 0..1000 {
-            let worker_pool = worker_pool.clone();
-            let _ = worker_pool.submit_job(Box::new(TestJob));
+            let worker_pool = Arc::clone(&worker_pool);
+            worker_pool.submit_job(Box::new(TestJob)).unwrap();
         }
         let end = start.elapsed();
         info!("Workerpool time cost: {:?}", end);

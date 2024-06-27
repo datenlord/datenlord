@@ -9,15 +9,15 @@ pub const REQ_HEADER_SIZE: u64 = 17;
 /// The size of the response header.
 pub const RESP_HEADER_SIZE: u64 = 17;
 
-
-
 /// The Encode trait is used to encode a message structure into a byte buffer.
 pub trait Encode {
+    /// Encode the message into a byte buffer.
     fn encode(&self) -> Vec<u8>;
 }
 
 /// The Decode trait is used to message a byte buffer into a data structure.
 pub trait Decode {
+    /// Decode the byte buffer into a data structure.
     fn decode(buf: &[u8]) -> Result<Self, RpcError<String>>
     where
         Self: Sized;
@@ -50,12 +50,18 @@ impl Encode for ReqHeader {
 impl Decode for ReqHeader {
     fn decode(buf: &[u8]) -> Result<Self, RpcError<String>> {
         if buf.len() < REQ_HEADER_SIZE as usize {
-            return Err(RpcError::InvalidRequest("Invalid request header".to_string()));
+            return Err(RpcError::InvalidRequest(
+                "Invalid request header".to_string(),
+            ));
         }
 
-        let seq = u64::from_be_bytes([buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7]]);
+        let seq = u64::from_be_bytes([
+            buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7],
+        ]);
         let op = buf[8];
-        let len = u64::from_be_bytes([buf[9], buf[10], buf[11], buf[12], buf[13], buf[14], buf[15], buf[16]]);
+        let len = u64::from_be_bytes([
+            buf[9], buf[10], buf[11], buf[12], buf[13], buf[14], buf[15], buf[16],
+        ]);
 
         Ok(ReqHeader { seq, op, len })
     }
@@ -88,12 +94,18 @@ impl Encode for RespHeader {
 impl Decode for RespHeader {
     fn decode(buf: &[u8]) -> Result<Self, RpcError<String>> {
         if buf.len() < RESP_HEADER_SIZE as usize {
-            return Err(RpcError::InvalidResponse("Invalid response header".to_string()));
+            return Err(RpcError::InvalidResponse(
+                "Invalid response header".to_string(),
+            ));
         }
 
-        let seq = u64::from_be_bytes([buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7]]);
+        let seq = u64::from_be_bytes([
+            buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7],
+        ]);
         let op = buf[8];
-        let len = u64::from_be_bytes([buf[9], buf[10], buf[11], buf[12], buf[13], buf[14], buf[15], buf[16]]);
+        let len = u64::from_be_bytes([
+            buf[9], buf[10], buf[11], buf[12], buf[13], buf[14], buf[15], buf[16],
+        ]);
 
         Ok(RespHeader { seq, op, len })
     }
@@ -139,15 +151,21 @@ pub trait Packet: Sync + Send + Clone + Debug {
     fn set_status(&mut self, status: PacketStatus);
 }
 
+/// The PacketStatus enum is used to represent the status of a packet.
 #[derive(Debug, Clone, Copy)]
 pub enum PacketStatus {
+    /// The packet is pending.
     Pending,
+    /// The packet is successful.
     Success,
+    /// The packet is failed.
     Failed,
+    /// The packet is timeout.
     Timeout,
 }
 
 impl PacketStatus {
+    /// Convert the PacketStatus to u8
     pub fn to_u8(&self) -> u8 {
         match self {
             PacketStatus::Pending => 0,
@@ -157,6 +175,7 @@ impl PacketStatus {
         }
     }
 
+    /// Convert u8 to PacketStatus
     pub fn from_u8(status: u8) -> Self {
         match status {
             0 => PacketStatus::Pending,
@@ -168,11 +187,12 @@ impl PacketStatus {
     }
 }
 
-
 /// The PacketsKeeper struct is used to store the current and previous tasks.
 /// It will be modified by single task, so we don't need to share it.
+#[derive(Debug)]
 pub struct PacketsKeeper<P>
-    where P: Packet + Send + Sync
+where
+    P: Packet + Send + Sync,
 {
     /// current tasks, marked by the seq number
     packets: HashMap<u64, P>,

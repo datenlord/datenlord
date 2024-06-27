@@ -21,7 +21,6 @@ impl Default for ServerTimeoutOptions {
     }
 }
 
-
 /// Options for the timeout of the connection
 #[derive(Debug, Clone)]
 pub struct ClientTimeoutOptions {

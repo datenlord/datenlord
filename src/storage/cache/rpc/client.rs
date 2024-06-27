@@ -2,30 +2,24 @@ use std::{
     cell::UnsafeCell,
     fmt::Debug,
     mem::transmute,
-    sync::{
-        atomic::{AtomicU64, AtomicUsize},
-        Arc,
-    },
-    time::Duration,
+    sync::{atomic::AtomicU64, Arc},
     u8,
 };
 
 use bytes::BytesMut;
-use hyper::client;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    net::{self, TcpStream},
+    net::TcpStream,
 };
 use tracing::debug;
 
-use crate::{
+use crate::{read_exact_timeout, write_all_timeout};
+
+use super::{
     common::ClientTimeoutOptions,
     error::RpcError,
     message::{ReqType, RespType},
-    packet::{
-        Decode, Encode, Packet, PacketStatus, PacketsKeeper, ReqHeader, RespHeader, REQ_HEADER_SIZE,
-    },
-    read_exact_timeout, write_all_timeout,
+    packet::{Decode, Encode, Packet, PacketsKeeper, ReqHeader, RespHeader, REQ_HEADER_SIZE},
 };
 
 /// TODO: combine RpcClientConnectionInner and RpcClientConnection
@@ -34,7 +28,7 @@ where
     P: Packet + Clone + Send + Sync + 'static,
 {
     /// The TCP stream for the connection.
-    stream: UnsafeCell<net::TcpStream>,
+    stream: UnsafeCell<TcpStream>,
     /// Options for the timeout of the connection
     timeout_options: ClientTimeoutOptions,
     /// Stream auto increment sequence number, used to mark the request and response
@@ -70,11 +64,7 @@ impl<P> RpcClientConnectionInner<P>
 where
     P: Packet + Clone + Send + Sync + 'static,
 {
-    pub fn new(
-        stream: net::TcpStream,
-        timeout_options: ClientTimeoutOptions,
-        client_id: u64,
-    ) -> Self {
+    pub fn new(stream: TcpStream, timeout_options: ClientTimeoutOptions, client_id: u64) -> Self {
         Self {
             stream: UnsafeCell::new(stream),
             timeout_options: timeout_options.clone(),
@@ -310,16 +300,16 @@ where
 
     /// Get stream with mutable reference
     #[inline(always)]
-    fn get_stream_mut(&self) -> &mut net::TcpStream {
+    fn get_stream_mut(&self) -> &mut TcpStream {
         // Current implementation is safe because the stream is only accessed by one thread
-        unsafe { std::mem::transmute(self.stream.get()) }
+        unsafe { transmute(self.stream.get()) }
     }
 
     /// Get packet task with mutable reference
     #[inline(always)]
     fn get_packets_keeper_mut(&self) -> &mut PacketsKeeper<P> {
         // Current implementation is safe because the packet task is only accessed by one thread
-        unsafe { std::mem::transmute(self.packets_keeper.get()) }
+        unsafe { transmute(self.packets_keeper.get()) }
     }
 }
 
@@ -328,17 +318,20 @@ unsafe impl<P> Send for RpcClientConnectionInner<P> where P: Packet + Clone + Se
 unsafe impl<P> Sync for RpcClientConnectionInner<P> where P: Packet + Clone + Send + Sync + 'static {}
 
 /// The RPC client definition.
+#[derive(Debug)]
 pub struct RpcClient<P>
 where
     P: Packet + Clone + Send + Sync + 'static,
 {
-    /// Address of the server.
-    // addr: String,
     /// The timeout options for the client.
+    /// TODO:
+    #[allow(dead_code)]
     timeout_options: ClientTimeoutOptions,
     /// Inner connection for the client.
     inner_connection: Arc<RpcClientConnectionInner<P>>,
     /// Client ID for the connection
+    /// TODO:
+    #[allow(dead_code)]
     client_id: AtomicU64,
 }
 
@@ -401,10 +394,12 @@ where
 
 #[cfg(test)]
 mod tests {
-    use net::TcpListener;
+    use tokio::net::TcpListener;
+
+    use crate::connect_timeout;
+    use crate::storage::cache::rpc::packet::PacketStatus;
 
     use super::*;
-    use crate::{common::ClientTimeoutOptions, connect_timeout};
     use std::time::Duration;
 
     #[derive(Debug, Clone)]
@@ -476,7 +471,7 @@ mod tests {
 
         // Create a fake server, will directly return the request
         tokio::spawn(async move {
-            let listener = net::TcpListener::bind(addr).await.unwrap();
+            let listener = TcpListener::bind(addr).await.unwrap();
             loop {
                 let (stream, _) = listener.accept().await.unwrap();
                 let (mut reader, mut writer) = stream.into_split();
@@ -508,8 +503,13 @@ mod tests {
         tokio::time::sleep(Duration::from_secs(2)).await;
 
         // Current implementation will send keep alive message every 20/3 seconds
-        // let resp = rpc_client.recv_response().await;
-        // assert!(resp.is_err());
+        let mut test_packet = &mut TestPacket {
+            seq: 0,
+            op: ReqType::KeepAliveRequest.to_u8(),
+            status: PacketStatus::Pending,
+        };
+        let resp = rpc_client.recv_response(&mut test_packet).await;
+        assert!(resp.is_none());
     }
 
     // Helper function to setup a mock server
@@ -535,7 +535,8 @@ mod tests {
             keep_alive_timeout: Duration::from_secs(30),
         };
         let client_id = 123;
-        let connection = RpcClientConnectionInner::new(stream, timeout_options, client_id);
+        let connection =
+            RpcClientConnectionInner::<TestPacket>::new(stream, timeout_options, client_id);
         assert_eq!(connection.client_id, client_id);
     }
 
@@ -545,7 +546,8 @@ mod tests {
             seq: 1,
             op: RespType::KeepAliveResponse.to_u8(),
             len: 0,
-        }.encode();
+        }
+        .encode();
         let addr = setup_mock_server(response).await;
         let stream = TcpStream::connect(addr).await.unwrap();
         let timeout_options = ClientTimeoutOptions {
@@ -554,7 +556,7 @@ mod tests {
             idle_timeout: Duration::from_secs(60),
             keep_alive_timeout: Duration::from_secs(30),
         };
-        let connection = RpcClientConnectionInner::new(stream, timeout_options, 123);
+        let connection = RpcClientConnectionInner::<TestPacket>::new(stream, timeout_options, 123);
         let header = connection.recv_header().await.unwrap();
         assert_eq!(header.seq, 1);
         assert_eq!(header.op, RespType::KeepAliveResponse.to_u8());
@@ -570,7 +572,7 @@ mod tests {
             idle_timeout: Duration::from_secs(60),
             keep_alive_timeout: Duration::from_secs(30),
         };
-        let connection = RpcClientConnectionInner::new(stream, timeout_options, 123);
+        let connection = RpcClientConnectionInner::<TestPacket>::new(stream, timeout_options, 123);
         let data = b"Hello, world!";
         assert!(connection.send_data(data).await.is_ok());
     }
@@ -585,7 +587,8 @@ mod tests {
             keep_alive_timeout: Duration::from_secs(30),
         };
         let client_id = 123;
-        let connection = RpcClientConnectionInner::new(stream, timeout_options, client_id);
+        let connection =
+            RpcClientConnectionInner::<TestPacket>::new(stream, timeout_options, client_id);
         let seq1 = connection.next_seq();
         let seq2 = connection.next_seq();
         assert_eq!(seq1 + 1, seq2);
@@ -597,7 +600,8 @@ mod tests {
             seq: 1,
             op: RespType::KeepAliveResponse.to_u8(),
             len: 0,
-        }.encode();
+        }
+        .encode();
         let addr = setup_mock_server(response).await;
         let stream = TcpStream::connect(addr).await.unwrap();
         let timeout_options = ClientTimeoutOptions {
@@ -606,7 +610,7 @@ mod tests {
             idle_timeout: Duration::from_secs(60),
             keep_alive_timeout: Duration::from_secs(30),
         };
-        let connection = RpcClientConnectionInner::new(stream, timeout_options, 123);
+        let connection = RpcClientConnectionInner::<TestPacket>::new(stream, timeout_options, 123);
         assert!(connection.ping().await.is_ok());
     }
 }
