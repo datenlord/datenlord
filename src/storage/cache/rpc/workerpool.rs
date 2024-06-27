@@ -42,7 +42,7 @@ impl Debug for WorkerPool {
 
 impl WorkerPool {
     /// Create a new worker pool, which contains a number of max workers and max waiting jobs.
-    pub fn new(max_workers: usize, max_waiting_jobs: usize) -> Self {
+    #[must_use] pub fn new(max_workers: usize, max_waiting_jobs: usize) -> Self {
         let (job_sender, job_receiver) = flume::bounded::<JobImpl>(max_waiting_jobs);
         let mut worker_queue = Vec::new();
 
@@ -217,20 +217,20 @@ mod tests {
 
         let worker_pool = WorkerPool::new(4, 4);
         let res = worker_pool.submit_job(Box::new(TestJob));
-        assert!(res.is_ok());
+        res.unwrap();
         let res = worker_pool.submit_job(Box::new(TestJob));
-        assert!(res.is_ok());
+        res.unwrap();
         let res = worker_pool.submit_job(Box::new(TestJob));
-        assert!(res.is_ok());
+        res.unwrap();
         let res = worker_pool.submit_job(Box::new(TestJob));
-        assert!(res.is_ok());
+        res.unwrap();
 
         let res = worker_pool.submit_job(Box::new(TestJob));
         assert!(res.is_err());
 
         tokio::time::sleep(time::Duration::from_secs(1)).await;
         let res = worker_pool.submit_job(Box::new(TestJob));
-        assert!(res.is_ok());
+        res.unwrap();
 
         drop(worker_pool);
     }

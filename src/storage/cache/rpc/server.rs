@@ -1,7 +1,6 @@
 use std::{
     cell::UnsafeCell,
     fmt::{self, Debug},
-    mem::transmute,
     sync::Arc,
 };
 
@@ -38,7 +37,7 @@ pub struct FileBlockHandler {
 
 impl FileBlockHandler {
     /// Create a new file block handler.
-    pub fn new(request: FileBlockRequest, done_tx: mpsc::Sender<Vec<u8>>) -> Self {
+    #[must_use] pub fn new(request: FileBlockRequest, done_tx: mpsc::Sender<Vec<u8>>) -> Self {
         Self { request, done_tx }
     }
 }
@@ -58,7 +57,7 @@ impl Job for FileBlockHandler {
             block_id: self.request.block_id,
             block_size: size,
             status: StatusCode::Success,
-            data: vec![0u8; size as usize],
+            data: vec![0_u8; size as usize],
         };
         let resp_body = file_block_resp.encode();
         // Prepare response header
@@ -80,8 +79,15 @@ impl Job for FileBlockHandler {
 #[derive(Debug)]
 pub struct KeepAliveHandler {}
 
+impl Default for KeepAliveHandler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl KeepAliveHandler {
     /// Create a new keep-alive handler.
+    #[must_use]
     pub fn new() -> Self {
         Self {}
     }
@@ -116,6 +122,7 @@ pub struct FileBlockRpcServerHandler {
 
 impl FileBlockRpcServerHandler {
     /// Create a new file block RPC server handler.
+    #[must_use]
     pub fn new(worker_pool: Arc<WorkerPool>) -> Self {
         Self { worker_pool }
     }
@@ -135,7 +142,7 @@ impl RpcServerConnectionHandler for FileBlockRpcServerHandler {
                 ReqType::FileBlockRequest => {
                     // Try to read the request body
                     // Decode the request body
-                    let req_body = decode_file_block_request(&req_buffer)
+                    let req_body = decode_file_block_request(req_buffer)
                         .expect("Failed to decode file block request");
 
                     // File block request
@@ -143,7 +150,7 @@ impl RpcServerConnectionHandler for FileBlockRpcServerHandler {
                     // When the handler is done, send the response to the done channel
                     // Response need to contain the response header and body
                     let handler = FileBlockHandler::new(req_body, done_tx.clone());
-                    if let Ok(_) = self
+                    if let Ok(()) = self
                         .worker_pool
                         .submit_job(Box::new(handler))
                         .map_err(|err| {
@@ -232,15 +239,15 @@ where
     pub async fn recv_header(&self) -> Result<ReqHeader, RpcError<String>> {
         // Try to read to buffer
         match self.recv_len(REQ_HEADER_SIZE).await {
-            Ok(_) => {}
+            Ok(()) => {}
             Err(err) => {
                 debug!("Failed to receive request header: {:?}", err);
                 return Err(err);
             }
         }
 
-        let buffer: &mut BytesMut = unsafe { transmute(self.req_buf.get()) };
-        let req_header = ReqHeader::decode(&buffer)?;
+        let buffer: &mut BytesMut = unsafe { &mut *self.req_buf.get() };
+        let req_header = ReqHeader::decode(buffer)?;
         debug!("Received request header: {:?}", req_header);
 
         Ok(req_header)
@@ -248,18 +255,18 @@ where
 
     /// Recv request body from the stream
     pub async fn recv_len(&self, len: u64) -> Result<(), RpcError<String>> {
-        let mut req_buffer: &mut BytesMut = unsafe { transmute(self.req_buf.get()) };
+        let mut req_buffer: &mut BytesMut = unsafe { &mut *self.req_buf.get() };
         req_buffer.resize(len as usize, 0);
         let reader = self.get_stream_mut();
         match read_exact_timeout!(reader, &mut req_buffer, self.timeout_options.read_timeout).await
         {
             Ok(size) => {
                 debug!("Received request body: {:?}", size);
-                return Ok(());
+                Ok(())
             }
             Err(err) => {
                 debug!("Failed to receive request: {:?}", err);
-                return Err(RpcError::InternalError(err.to_string()));
+                Err(RpcError::InternalError(err.to_string()))
             }
         }
     }
@@ -269,13 +276,13 @@ where
     pub async fn send_response(&self, resp: &[u8]) -> Result<(), RpcError<String>> {
         let writer = self.get_stream_mut();
         match write_all_timeout!(writer, resp, self.timeout_options.write_timeout).await {
-            Ok(_) => {
+            Ok(()) => {
                 debug!("Sent response: {:?}", resp.len());
-                return Ok(());
+                Ok(())
             }
             Err(err) => {
                 debug!("Failed to send response: {:?}", err);
-                return Err(RpcError::InternalError(err.to_string()));
+                Err(RpcError::InternalError(err.to_string()))
             }
         }
     }
@@ -284,7 +291,7 @@ where
     #[inline(always)]
     fn get_stream_mut(&self) -> &mut net::TcpStream {
         // Current implementation is safe because the stream is only accessed by one thread
-        unsafe { transmute(self.stream.get()) }
+        unsafe { &mut *self.stream.get() }
     }
 }
 
@@ -339,7 +346,7 @@ where
                 _ => {
                     // Try to read the request body
                     match self.inner.recv_len(body_len).await {
-                        Ok(_) => {}
+                        Ok(()) => {}
                         Err(err) => {
                             error!("Failed to receive request body: {:?}", err);
                             return;
@@ -349,7 +356,7 @@ where
                         "Dispatched handler for the connection, seq: {:?}",
                         req_header.seq
                     );
-                    let req_buffer: &mut BytesMut = unsafe { transmute(self.inner.req_buf.get()) };
+                    let req_buffer: &mut BytesMut = unsafe { &mut *self.inner.req_buf.get() };
                     self.inner
                         .dispatch_handler
                         .dispatch(req_header, req_buffer, done_tx)

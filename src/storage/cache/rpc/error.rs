@@ -28,9 +28,9 @@ where
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::InvalidRequest(msg) => write!(f, "Invalid request: {}", msg),
-            Self::InvalidResponse(msg) => write!(f, "Invalid response: {}", msg),
-            Self::InternalError(msg) => write!(f, "Internal error: {}", msg),
+            Self::InvalidRequest(msg) => write!(f, "Invalid request: {msg}"),
+            Self::InvalidResponse(msg) => write!(f, "Invalid response: {msg}"),
+            Self::InternalError(msg) => write!(f, "Internal error: {msg}"),
         }
     }
 }

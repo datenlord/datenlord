@@ -14,9 +14,15 @@ pub struct KeepAlivePacket {
     pub status: PacketStatus,
 }
 
+impl Default for KeepAlivePacket {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl KeepAlivePacket {
     /// Create a new keep alive packet.
-    pub fn new() -> Self {
+    #[must_use] pub fn new() -> Self {
         Self {
             seq: 0,
             op: 0,
@@ -87,20 +93,19 @@ pub enum ReqType {
 }
 
 impl ReqType {
-    /// Convert u8 to ReqType
+    /// Convert u8 to `ReqType`
     pub fn from_u8(op: u8) -> Result<Self, RpcError<String>> {
         match op {
             0 => Ok(Self::KeepAliveRequest),
             1 => Ok(Self::FileBlockRequest),
             _ => Err(RpcError::InternalError(format!(
-                "Invalid operation type: {}",
-                op
+                "Invalid operation type: {op}"
             ))),
         }
     }
 
-    /// Convert ReqType to u8
-    pub fn to_u8(&self) -> u8 {
+    /// Convert `ReqType` to u8
+    #[must_use] pub fn to_u8(&self) -> u8 {
         match self {
             Self::KeepAliveRequest => 0,
             Self::FileBlockRequest => 1,
@@ -118,20 +123,19 @@ pub enum RespType {
 }
 
 impl RespType {
-    /// Convert u8 to RespType
+    /// Convert u8 to `RespType`
     pub fn from_u8(op: u8) -> Result<Self, RpcError<String>> {
         match op {
             0 => Ok(Self::KeepAliveResponse),
             1 => Ok(Self::FileBlockResponse),
             _ => Err(RpcError::InternalError(format!(
-                "Invalid operation type: {}",
-                op
+                "Invalid operation type: {op}"
             ))),
         }
     }
 
-    /// Convert RespType to u8
-    pub fn to_u8(&self) -> u8 {
+    /// Convert `RespType` to u8
+    #[must_use] pub fn to_u8(&self) -> u8 {
         match self {
             Self::KeepAliveResponse => 0,
             Self::FileBlockResponse => 1,
@@ -185,7 +189,7 @@ pub fn decode_file_block_request(buf: &[u8]) -> Result<FileBlockRequest, RpcErro
 }
 
 /// Encode the file block request into a buffer.
-pub fn encode_file_block_request(req: &FileBlockRequest) -> Vec<u8> {
+#[must_use] pub fn encode_file_block_request(req: &FileBlockRequest) -> Vec<u8> {
     let mut bytes = Vec::new();
     bytes.extend(req.seq.to_be_bytes());
     bytes.extend(req.file_id.to_be_bytes());
@@ -270,7 +274,7 @@ pub fn decode_file_block_response(buf: &[u8]) -> Result<FileBlockResponse, RpcEr
 }
 
 /// Encode the file block response into a buffer.
-pub fn encode_file_block_response(resp: &FileBlockResponse) -> Vec<u8> {
+#[must_use] pub fn encode_file_block_response(resp: &FileBlockResponse) -> Vec<u8> {
     let mut bytes = Vec::new();
     bytes.extend(resp.seq.to_be_bytes());
     bytes.extend(resp.file_id.to_be_bytes());

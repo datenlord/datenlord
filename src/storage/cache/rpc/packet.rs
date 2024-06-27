@@ -151,7 +151,7 @@ pub trait Packet: Sync + Send + Clone + Debug {
     fn set_status(&mut self, status: PacketStatus);
 }
 
-/// The PacketStatus enum is used to represent the status of a packet.
+/// The `PacketStatus` enum is used to represent the status of a packet.
 #[derive(Debug, Clone, Copy)]
 pub enum PacketStatus {
     /// The packet is pending.
@@ -165,7 +165,8 @@ pub enum PacketStatus {
 }
 
 impl PacketStatus {
-    /// Convert the PacketStatus to u8
+    /// Convert the `PacketStatus` to u8
+    #[must_use]
     pub fn to_u8(&self) -> u8 {
         match self {
             PacketStatus::Pending => 0,
@@ -175,7 +176,8 @@ impl PacketStatus {
         }
     }
 
-    /// Convert u8 to PacketStatus
+    /// Convert u8 to `PacketStatus`
+    #[must_use]
     pub fn from_u8(status: u8) -> Self {
         match status {
             0 => PacketStatus::Pending,
@@ -187,7 +189,7 @@ impl PacketStatus {
     }
 }
 
-/// The PacketsKeeper struct is used to store the current and previous tasks.
+/// The `PacketsKeeper` struct is used to store the current and previous tasks.
 /// It will be modified by single task, so we don't need to share it.
 #[derive(Debug)]
 pub struct PacketsKeeper<P>
@@ -212,15 +214,14 @@ where
 }
 
 impl<P: Packet + Send + Sync> PacketsKeeper<P> {
-    /// Create a new PacketsKeeper
+    /// Create a new `PacketsKeeper`
+    #[must_use]
     pub fn new(timeout: u64) -> Self {
-        let keeper = PacketsKeeper {
+        PacketsKeeper {
             packets: HashMap::new(),
             timestamp: HashMap::new(),
             timeout,
-        };
-
-        keeper
+        }
     }
 
     /// Add a task to the packets
@@ -237,7 +238,7 @@ impl<P: Packet + Send + Sync> PacketsKeeper<P> {
     pub fn clean_timeout_tasks(&mut self) {
         let mut timeout_packets = Vec::new();
         let current_timestamp = tokio::time::Instant::now().elapsed().as_secs();
-        for (seq, packet) in self.packets.iter_mut() {
+        for (seq, packet) in &mut self.packets {
             match packet.status() {
                 PacketStatus::Pending => {
                     // Check if the task is timeout
