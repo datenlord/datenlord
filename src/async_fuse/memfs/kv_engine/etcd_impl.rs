@@ -118,7 +118,7 @@ impl Session {
 impl Drop for Session {
     fn drop(&mut self) {
         // Set the close flag
-        info!(
+        debug!(
             "drop the keep alive session, lease_id={lease_id}, ttl={ttl}",
             lease_id = self.lease_id(),
             ttl = self.ttl()
@@ -1006,9 +1006,6 @@ mod test {
 
     #[tokio::test]
     async fn test_watch() {
-        tracing_subscriber::fmt()
-            .with_max_level(tracing::Level::INFO)
-            .init();
         let client = EtcdKVEngine::new_for_local_test(vec![ETCD_ADDRESS.to_owned()])
             .await
             .unwrap();

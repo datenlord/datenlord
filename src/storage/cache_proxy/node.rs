@@ -10,22 +10,42 @@ use super::ring::NodeType;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MasterNodeInfo {
     /// The ip of the master node
-    pub node_ip: String,
+    pub ip: String,
     /// The port of the master node
-    pub node_port: u16,
+    pub port: u16,
     /// The version of the hash ring
-    pub hash_ring_version: u64,
+    pub version: u64,
+}
+
+impl PartialEq for MasterNodeInfo {
+    fn eq(&self, other: &Self) -> bool {
+        self.ip == other.ip && self.port == other.port && self.version == other.version
+    }
 }
 
 impl MasterNodeInfo {
     /// Create a new master node info
     #[must_use]
-    pub fn new(node_ip: String, node_port: u16, hash_ring_version: u64) -> Self {
-        Self {
-            node_ip,
-            node_port,
-            hash_ring_version,
-        }
+    pub fn new(ip: String, port: u16, version: u64) -> Self {
+        Self { ip, port, version }
+    }
+
+    /// Get the ip of the master node
+    #[must_use]
+    pub fn ip(&self) -> &str {
+        &self.ip
+    }
+
+    /// Get the port of the master node
+    #[must_use]
+    pub fn port(&self) -> u16 {
+        self.port
+    }
+
+    /// Get the version of the hash ring
+    #[must_use]
+    pub fn version(&self) -> u64 {
+        self.version
     }
 }
 
