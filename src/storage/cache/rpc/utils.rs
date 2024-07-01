@@ -1,3 +1,5 @@
+use super::error::RpcError;
+
 /// Read with timeout options from the environment variables
 #[macro_export]
 macro_rules! read_exact_timeout {
@@ -51,4 +53,25 @@ macro_rules! connect_timeout {
             }
         }
     };
+}
+
+/// Try to get data from buffer with range
+pub fn get_from_buf(buf: &[u8], start: usize) -> Result<u64, RpcError<String>> {
+    buf.get(start..start + 8)
+        .ok_or_else(|| RpcError::InternalError("Buffer slice out of bounds".to_owned()))
+        .and_then(|bytes| {
+            bytes
+                .try_into()
+                .map_err(|_foo| RpcError::InternalError("Slice conversion failed".to_owned()))
+        })
+        .map(u64::from_be_bytes)
+}
+
+/// Converts [`u64`] to [`usize`], and panic when the conversion fails.
+#[allow(clippy::missing_const_for_fn)] // <- false positive
+#[allow(clippy::expect_used)] // We can ensure that this method won't panic if we followed the hints above
+#[inline]
+#[must_use]
+pub fn u64_to_usize(x: u64) -> usize {
+    usize::try_from(x).expect("number cast failed")
 }

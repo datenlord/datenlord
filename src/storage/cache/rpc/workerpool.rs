@@ -9,6 +9,7 @@ use tracing::debug;
 
 use super::error::RpcError;
 
+/// A job that can be executed by a worker.
 type JobImpl = Box<dyn Job + Send + Sync + 'static>;
 
 /// A worker that can execute async jobs.
@@ -42,14 +43,15 @@ impl Debug for WorkerPool {
 
 impl WorkerPool {
     /// Create a new worker pool, which contains a number of max workers and max waiting jobs.
-    #[must_use] pub fn new(max_workers: usize, max_waiting_jobs: usize) -> Self {
+    #[must_use]
+    pub fn new(max_workers: usize, max_waiting_jobs: usize) -> Self {
         let (job_sender, job_receiver) = flume::bounded::<JobImpl>(max_waiting_jobs);
         let mut worker_queue = Vec::new();
 
         // In current implementation, we create a fixed number of workers.
         let receiver = Arc::new(job_receiver);
         for _ in 0..max_workers {
-            let worker: Worker = Worker::new(receiver.clone());
+            let worker = Worker::new(Arc::clone(&receiver));
             worker_queue.push(worker);
         }
 
@@ -66,35 +68,17 @@ impl WorkerPool {
         }
     }
 
-    /// Dispatch a job to the worker pool.
-    /// Currently, we just check if the worker pool is shutdown or full.
-    async fn _dispatch_workers(max_workers: usize, receiver: Arc<flume::Receiver<JobImpl>>) {
-        loop {
-            debug!("Worker count: {}", receiver.receiver_count() - 1); // Exclude the main receiver.
-
-            // Check current worker count.
-            if receiver.receiver_count() == 1 {
-                debug!("Worker pool is empty, waiting for new jobs...");
-            }
-
-            if receiver.receiver_count() < max_workers + 1 {
-                // Create a new worker.
-                // let _ = Worker::new(receiver.clone());
-            }
-        }
-    }
-
     /// Submit a job to the worker pool asynchronously, and return a future that resolves when the job is completed.
     pub fn submit_job(&self, job: JobImpl) -> Result<(), RpcError<String>> {
         // If current running worker count is more than max workers, and the job queue is full, return false.
         if self.job_sender.is_full() {
-            return Err(RpcError::InternalError("Job queue is full".to_string()));
+            return Err(RpcError::InternalError("Job queue is full".to_owned()));
         }
 
         // Submit the job to the job queue.
         self.job_sender
             .try_send(job)
-            .map_err(|_| RpcError::InternalError("Failed to submit job".to_string()))?;
+            .map_err(|_foo| RpcError::InternalError("Failed to submit job".to_owned()))?;
 
         Ok(())
     }
@@ -102,12 +86,11 @@ impl WorkerPool {
     /// Submit a job to the worker pool synchronously, and block until the job is completed.
     /// Other process will be blocked until the job is completed.
     /// If all job try to submit the job, the process will be blocked.
-    pub async fn submit_job_wait(&self, job: JobImpl) -> Result<(), RpcError<String>> {
+    pub fn submit_job_wait(&self, job: JobImpl) -> Result<(), RpcError<String>> {
         // Submit the job to the job queue.
-        let _ = self
-            .job_sender
+        self.job_sender
             .send(job)
-            .map_err(|_| RpcError::InternalError("Failed to submit job".to_string()));
+            .map_err(|_foo| RpcError::InternalError("Failed to submit job".to_owned()))?;
 
         Ok(())
     }
@@ -204,12 +187,9 @@ mod tests {
     #[tokio::test]
     async fn test_worker_pool() {
         // Set the tracing log level to debug
-        tracing::subscriber::set_global_default(
-            tracing_subscriber::FmtSubscriber::builder()
-                .with_max_level(tracing::Level::DEBUG)
-                .finish(),
-        )
-        .expect("Failed to set tracing subscriber");
+        tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::DEBUG)
+            .init();
 
         let worker_pool = WorkerPool::new(4, 0);
         let res = worker_pool.submit_job(Box::new(TestJob));
@@ -245,7 +225,7 @@ mod tests {
         // Test to use 4 workers to submit 1000 jobs, and calculate the time cost.
         let worker_pool = Arc::new(WorkerPool::new(10, 1000));
         let start = Instant::now();
-        for _ in 0..1000 {
+        for _ in 0_i32..1_000_i32 {
             let worker_pool = Arc::clone(&worker_pool);
             worker_pool.submit_job(Box::new(TestJob)).unwrap();
         }
@@ -255,7 +235,7 @@ mod tests {
         // Test direct spawn 1000 tasks, and calculate the time cost.
         let start = Instant::now();
         let mut tasks: Vec<task::JoinHandle<()>> = Vec::new();
-        for _ in 0..1000 {
+        for _ in 0_i32..1_000_i32 {
             let task = task::spawn(TestJob.run());
             tasks.push(task);
         }

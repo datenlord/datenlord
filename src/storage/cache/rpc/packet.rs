@@ -1,8 +1,12 @@
 use std::{collections::HashMap, fmt::Debug};
 
+use bytes::{BufMut, BytesMut};
 use tracing::debug;
 
-use super::error::RpcError;
+use super::{
+    error::RpcError,
+    utils::{get_from_buf, u64_to_usize},
+};
 
 /// The size of the request header.
 pub const REQ_HEADER_SIZE: u64 = 17;
@@ -39,29 +43,32 @@ pub struct ReqHeader {
 
 impl Encode for ReqHeader {
     fn encode(&self) -> Vec<u8> {
-        let mut buf = Vec::with_capacity(REQ_HEADER_SIZE as usize);
-        buf.extend_from_slice(&self.seq.to_be_bytes());
-        buf.push(self.op);
-        buf.extend_from_slice(&self.len.to_be_bytes());
-        buf
+        let mut buf = BytesMut::with_capacity(u64_to_usize(REQ_HEADER_SIZE));
+        buf.put_u64(self.seq.to_be());
+        buf.put_u8(self.op);
+        buf.put_u64(self.len.to_be());
+        buf.to_vec()
     }
 }
 
 impl Decode for ReqHeader {
     fn decode(buf: &[u8]) -> Result<Self, RpcError<String>> {
-        if buf.len() < REQ_HEADER_SIZE as usize {
+        if buf.len() < u64_to_usize(REQ_HEADER_SIZE) {
             return Err(RpcError::InvalidRequest(
-                "Invalid request header".to_string(),
+                "Invalid request header".to_owned(),
             ));
         }
 
-        let seq = u64::from_be_bytes([
-            buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7],
-        ]);
-        let op = buf[8];
-        let len = u64::from_be_bytes([
-            buf[9], buf[10], buf[11], buf[12], buf[13], buf[14], buf[15], buf[16],
-        ]);
+        let seq = get_from_buf(buf, 0)?;
+        let op = buf.get(8).map_or_else(
+            || {
+                Err(RpcError::InvalidRequest(
+                    "Invalid request header".to_owned(),
+                ))
+            },
+            |&x| Ok(x),
+        )?;
+        let len = get_from_buf(buf, 9)?;
 
         Ok(ReqHeader { seq, op, len })
     }
@@ -83,29 +90,32 @@ pub struct RespHeader {
 
 impl Encode for RespHeader {
     fn encode(&self) -> Vec<u8> {
-        let mut buf = Vec::with_capacity(RESP_HEADER_SIZE as usize);
-        buf.extend_from_slice(&self.seq.to_be_bytes());
-        buf.push(self.op);
-        buf.extend_from_slice(&self.len.to_be_bytes());
-        buf
+        let mut buf = BytesMut::with_capacity(u64_to_usize(RESP_HEADER_SIZE));
+        buf.put_u64(self.seq.to_be());
+        buf.put_u8(self.op);
+        buf.put_u64(self.len.to_be());
+        buf.to_vec()
     }
 }
 
 impl Decode for RespHeader {
     fn decode(buf: &[u8]) -> Result<Self, RpcError<String>> {
-        if buf.len() < RESP_HEADER_SIZE as usize {
+        if buf.len() < u64_to_usize(RESP_HEADER_SIZE) {
             return Err(RpcError::InvalidResponse(
-                "Invalid response header".to_string(),
+                "Invalid response header".to_owned(),
             ));
         }
 
-        let seq = u64::from_be_bytes([
-            buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7],
-        ]);
-        let op = buf[8];
-        let len = u64::from_be_bytes([
-            buf[9], buf[10], buf[11], buf[12], buf[13], buf[14], buf[15], buf[16],
-        ]);
+        let seq = get_from_buf(buf, 0)?;
+        let op = buf.get(8).map_or_else(
+            || {
+                Err(RpcError::InvalidResponse(
+                    "Invalid response header".to_owned(),
+                ))
+            },
+            |&x| Ok(x),
+        )?;
+        let len = get_from_buf(buf, 9)?;
 
         Ok(RespHeader { seq, op, len })
     }
@@ -168,7 +178,7 @@ impl PacketStatus {
     /// Convert the `PacketStatus` to u8
     #[must_use]
     pub fn to_u8(&self) -> u8 {
-        match self {
+        match *self {
             PacketStatus::Pending => 0,
             PacketStatus::Success => 1,
             PacketStatus::Failed => 2,
@@ -182,7 +192,6 @@ impl PacketStatus {
         match status {
             0 => PacketStatus::Pending,
             1 => PacketStatus::Success,
-            2 => PacketStatus::Failed,
             3 => PacketStatus::Timeout,
             _ => PacketStatus::Failed,
         }
@@ -239,19 +248,16 @@ impl<P: Packet + Send + Sync> PacketsKeeper<P> {
         let mut timeout_packets = Vec::new();
         let current_timestamp = tokio::time::Instant::now().elapsed().as_secs();
         for (seq, packet) in &mut self.packets {
-            match packet.status() {
-                PacketStatus::Pending => {
-                    // Check if the task is timeout
-                    if let Some(timestamp) = self.timestamp.get(seq) {
-                        if current_timestamp - timestamp > self.timeout {
-                            // Set the task as timeout
-                            debug!("Task {} is timeout", seq);
-                            packet.set_status(PacketStatus::Timeout);
-                            timeout_packets.push(*seq);
-                        }
+            if let PacketStatus::Pending = packet.status() {
+                // Check if the task is timeout
+                if let Some(timestamp) = self.timestamp.get(seq) {
+                    if current_timestamp - timestamp > self.timeout {
+                        // Set the task as timeout
+                        debug!("Task {} is timeout", seq);
+                        packet.set_status(PacketStatus::Timeout);
+                        timeout_packets.push(*seq);
                     }
                 }
-                _ => {}
             }
         }
 
@@ -292,9 +298,8 @@ impl<P: Packet + Send + Sync> PacketsKeeper<P> {
                         }
 
                         return Some(packet);
-                    } else {
-                        return None;
                     }
+                    return None;
                 }
             }
         }

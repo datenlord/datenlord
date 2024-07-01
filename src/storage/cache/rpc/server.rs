@@ -13,7 +13,7 @@ use tokio::{
     task,
 };
 
-use crate::{read_exact_timeout, write_all_timeout};
+use crate::{async_fuse::util::usize_to_u64, read_exact_timeout, write_all_timeout};
 
 use super::{
     common::ServerTimeoutOptions,
@@ -23,6 +23,7 @@ use super::{
         StatusCode,
     },
     packet::{Decode, Encode, ReqHeader, RespHeader, REQ_HEADER_SIZE},
+    utils::u64_to_usize,
     workerpool::{Job, WorkerPool},
 };
 
@@ -31,13 +32,16 @@ use tracing::{debug, error, info};
 /// The handler for the RPC file block request.
 #[derive(Debug)]
 pub struct FileBlockHandler {
+    /// The file block request.
     request: FileBlockRequest,
+    /// The channel for sending the response.
     done_tx: mpsc::Sender<Vec<u8>>,
 }
 
 impl FileBlockHandler {
     /// Create a new file block handler.
-    #[must_use] pub fn new(request: FileBlockRequest, done_tx: mpsc::Sender<Vec<u8>>) -> Self {
+    #[must_use]
+    pub fn new(request: FileBlockRequest, done_tx: mpsc::Sender<Vec<u8>>) -> Self {
         Self { request, done_tx }
     }
 }
@@ -57,48 +61,28 @@ impl Job for FileBlockHandler {
             block_id: self.request.block_id,
             block_size: size,
             status: StatusCode::Success,
-            data: vec![0_u8; size as usize],
+            data: vec![0_u8; u64_to_usize(size)],
         };
         let resp_body = file_block_resp.encode();
         // Prepare response header
         let resp_header = RespHeader {
             seq: self.request.seq,
             op: RespType::FileBlockResponse.to_u8(),
-            len: resp_body.len() as u64,
+            len: usize_to_u64(resp_body.len()),
         };
         let mut resp_buffer = resp_header.encode();
         // Combine response header and body
         resp_buffer.extend_from_slice(&resp_body);
 
         // Send response to the done channel
-        self.done_tx.send(resp_buffer).await.unwrap();
-    }
-}
-
-/// The handler for the RPC keep-alive request.
-#[derive(Debug)]
-pub struct KeepAliveHandler {}
-
-impl Default for KeepAliveHandler {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl KeepAliveHandler {
-    /// Create a new keep-alive handler.
-    #[must_use]
-    pub fn new() -> Self {
-        Self {}
-    }
-}
-
-#[async_trait]
-impl Job for KeepAliveHandler {
-    /// Create a run function for the keep-alive handler.
-    async fn run(&self) {
-        // TODO: serve request and send response
-        debug!("RpcServerHandler::run");
+        match self.done_tx.send(resp_buffer).await {
+            Ok(()) => {
+                debug!("Sent response to done channel");
+            }
+            Err(err) => {
+                error!("Failed to send response to done channel: {:?}", err);
+            }
+        }
     }
 }
 
@@ -117,6 +101,7 @@ pub trait RpcServerConnectionHandler {
 /// The file block handler for the RPC server.
 #[derive(Clone, Debug)]
 pub struct FileBlockRpcServerHandler {
+    /// The worker pool for the RPC server.
     worker_pool: Arc<WorkerPool>,
 }
 
@@ -138,34 +123,36 @@ impl RpcServerConnectionHandler for FileBlockRpcServerHandler {
     ) {
         // Dispatch the handler for the connection
         if let Ok(req_type) = ReqType::from_u8(req_header.op) {
-            match req_type {
-                ReqType::FileBlockRequest => {
-                    // Try to read the request body
-                    // Decode the request body
-                    let req_body = decode_file_block_request(req_buffer)
-                        .expect("Failed to decode file block request");
-
-                    // File block request
-                    // Submit the handler to the worker pool
-                    // When the handler is done, send the response to the done channel
-                    // Response need to contain the response header and body
-                    let handler = FileBlockHandler::new(req_body, done_tx.clone());
-                    if let Ok(()) = self
-                        .worker_pool
-                        .submit_job(Box::new(handler))
-                        .map_err(|err| {
-                            debug!("Failed to submit job: {:?}", err);
-                        })
-                    {
-                        debug!("Submitted job to worker pool");
+            if let ReqType::KeepAliveRequest = req_type {
+                // Try to read the request body
+                // Decode the request body
+                let req_body = match decode_file_block_request(req_buffer) {
+                    Ok(req) => req,
+                    Err(err) => {
+                        debug!("Failed to decode file block request: {:?}", err);
+                        return;
                     }
+                };
+
+                // File block request
+                // Submit the handler to the worker pool
+                // When the handler is done, send the response to the done channel
+                // Response need to contain the response header and body
+                let handler = FileBlockHandler::new(req_body, done_tx.clone());
+                if let Ok(()) = self
+                    .worker_pool
+                    .submit_job(Box::new(handler))
+                    .map_err(|err| {
+                        debug!("Failed to submit job: {:?}", err);
+                    })
+                {
+                    debug!("Submitted job to worker pool");
                 }
-                _ => {
-                    debug!(
-                        "FileBlockRpcServerHandler: Inner request type is not matched: {:?}",
-                        req_header.op
-                    );
-                }
+            } else {
+                debug!(
+                    "FileBlockRpcServerHandler: Inner request type is not matched: {:?}",
+                    req_header.op
+                );
             }
         }
     }
@@ -256,7 +243,7 @@ where
     /// Recv request body from the stream
     pub async fn recv_len(&self, len: u64) -> Result<(), RpcError<String>> {
         let mut req_buffer: &mut BytesMut = unsafe { &mut *self.req_buf.get() };
-        req_buffer.resize(len as usize, 0);
+        req_buffer.resize(u64_to_usize(len), 0);
         let reader = self.get_stream_mut();
         match read_exact_timeout!(reader, &mut req_buffer, self.timeout_options.read_timeout).await
         {
@@ -288,7 +275,7 @@ where
     }
 
     /// Get stream with mutable reference
-    #[inline(always)]
+    #[allow(clippy::mut_from_ref)]
     fn get_stream_mut(&self) -> &mut net::TcpStream {
         // Current implementation is safe because the stream is only accessed by one thread
         unsafe { &mut *self.stream.get() }
@@ -325,43 +312,39 @@ where
                 "Dispatch request with header type: {:?}, seq: {:?}, body_len: {:?}",
                 req_type, seq, body_len
             );
-            match req_type {
-                ReqType::KeepAliveRequest => {
-                    // Keep-alive request
-                    // Directly send keepalive response to client, do not need to submit to worker pool.
-                    let _ = KeepAliveHandler::new();
-                    // In current implementation, we just send keepalive header to the client stream
-                    let resp_header = RespHeader {
-                        seq,
-                        op: RespType::KeepAliveResponse.to_u8(),
-                        len: 0,
-                    };
-                    let resp_buffer = RespHeader::encode(&resp_header);
-                    if let Ok(res) = self.inner.send_response(&resp_buffer).await {
-                        debug!("Sent keepalive response: {:?}", res);
-                    } else {
-                        error!("Failed to send keepalive response");
+            if let ReqType::KeepAliveRequest = req_type {
+                // Keep-alive request
+                // Directly send keepalive response to client, do not need to submit to worker pool.
+                // In current implementation, we just send keepalive header to the client stream
+                let resp_header = RespHeader {
+                    seq,
+                    op: RespType::KeepAliveResponse.to_u8(),
+                    len: 0,
+                };
+                let resp_buffer = RespHeader::encode(&resp_header);
+                if let Ok(res) = self.inner.send_response(&resp_buffer).await {
+                    debug!("Sent keepalive response: {:?}", res);
+                } else {
+                    error!("Failed to send keepalive response");
+                }
+            } else {
+                // Try to read the request body
+                match self.inner.recv_len(body_len).await {
+                    Ok(()) => {}
+                    Err(err) => {
+                        error!("Failed to receive request body: {:?}", err);
+                        return;
                     }
-                }
-                _ => {
-                    // Try to read the request body
-                    match self.inner.recv_len(body_len).await {
-                        Ok(()) => {}
-                        Err(err) => {
-                            error!("Failed to receive request body: {:?}", err);
-                            return;
-                        }
-                    };
-                    debug!(
-                        "Dispatched handler for the connection, seq: {:?}",
-                        req_header.seq
-                    );
-                    let req_buffer: &mut BytesMut = unsafe { &mut *self.inner.req_buf.get() };
-                    self.inner
-                        .dispatch_handler
-                        .dispatch(req_header, req_buffer, done_tx)
-                        .await;
-                }
+                };
+                debug!(
+                    "Dispatched handler for the connection, seq: {:?}",
+                    req_header.seq
+                );
+                let req_buffer: &mut BytesMut = unsafe { &mut *self.inner.req_buf.get() };
+                self.inner
+                    .dispatch_handler
+                    .dispatch(req_header, req_buffer, done_tx)
+                    .await;
             }
         } else {
             debug!("Inner request type is not matched: {:?}", req_header.op);
@@ -378,26 +361,21 @@ where
 
         // Send response to the stream from the worker pool
         // Worker pool will handle the response sending
-        let inner_conn = self.inner.clone();
+        let inner_conn = Arc::clone(&self.inner);
         tokio::spawn(async move {
             debug!("Start to send response to the stream from client");
             loop {
-                match done_rx.recv().await {
-                    Some(resp_buffer) => {
-                        debug!(
-                            "Recv buffer from done_tx channel, try to send response to the stream"
-                        );
-                        // Send response to the stream
-                        if let Ok(res) = inner_conn.send_response(&resp_buffer).await {
-                            debug!("Sent file block response: {:?}", res);
-                        } else {
-                            error!("Failed to send file block response");
-                        }
+                if let Some(resp_buffer) = done_rx.recv().await {
+                    debug!("Recv buffer from done_tx channel, try to send response to the stream");
+                    // Send response to the stream
+                    if let Ok(res) = inner_conn.send_response(&resp_buffer).await {
+                        debug!("Sent file block response: {:?}", res);
+                    } else {
+                        error!("Failed to send file block response");
                     }
-                    None => {
-                        info!("done_rx channel is closed, stop sending response to the stream");
-                        break;
-                    }
+                } else {
+                    info!("done_rx channel is closed, stop sending response to the stream");
+                    break;
                 }
             }
         });
@@ -487,7 +465,7 @@ where
 {
     /// Create a new RPC server.
     pub fn new(
-        timeout_options: ServerTimeoutOptions,
+        timeout_options: &ServerTimeoutOptions,
         max_workers: usize,
         max_jobs: usize,
         dispatch_handler: T,
@@ -509,7 +487,7 @@ where
         let listener = tokio::net::TcpListener::bind(addr)
             .await
             .map_err(|err| RpcError::InternalError(err.to_string()))?;
-        info!("listening on {:?}", addr.to_string());
+        info!("listening on {:?}", addr.to_owned());
 
         // Accept incoming connections
         let timeout_options = self.timeout_options.clone();
@@ -519,10 +497,18 @@ where
                 let conn_timeout_options = timeout_options.clone();
                 match listener.accept().await {
                     Ok((stream, _)) => {
-                        debug!("Accepted connection from {:?}", stream.peer_addr().unwrap());
+                        match stream.peer_addr() {
+                            Ok(addr) => {
+                                debug!("Accepted connection from {:?}", addr);
+                            }
+                            Err(err) => {
+                                debug!("Failed to get peer address: {:?}", err);
+                                break;
+                            }
+                        }
                         factory.serve(RpcServerConnection::<T>::new(
                             stream,
-                            factory.worker_pool.clone(),
+                            Arc::clone(&factory.worker_pool),
                             conn_timeout_options,
                             factory.dispatch_handler.clone(),
                         ));
@@ -540,7 +526,7 @@ where
     }
 
     /// Stop the RPC server.
-    pub async fn stop(&mut self) {
+    pub fn stop(&mut self) {
         // TODO: Gracefully stop the server?
         if let Some(handle) = self.main_worker.take() {
             handle.abort();
@@ -549,6 +535,7 @@ where
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use tokio::time;
 
@@ -572,12 +559,12 @@ mod tests {
     async fn test_rpc_server() {
         let addr = "127.0.0.1:2788";
         let pool = Arc::new(WorkerPool::new(4, 100));
-        let handler = FileBlockRpcServerHandler::new(pool.clone());
-        let mut server = RpcServer::new(ServerTimeoutOptions::default(), 4, 100, handler);
+        let handler = FileBlockRpcServerHandler::new(Arc::clone(&pool));
+        let mut server = RpcServer::new(&ServerTimeoutOptions::default(), 4, 100, handler);
         server.listen(addr).await.unwrap();
         time::sleep(Duration::from_secs(1)).await;
         assert!(is_port_in_use(addr));
-        server.stop().await;
+        server.stop();
         time::sleep(Duration::from_secs(1)).await;
         assert!(!is_port_in_use(addr));
     }

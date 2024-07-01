@@ -1,6 +1,9 @@
+use bytes::{BufMut, BytesMut};
+
 use super::{
     error::RpcError,
     packet::{Decode, Encode, Packet, PacketStatus},
+    utils::get_from_buf,
 };
 
 /// Impl the keep alive request for Packet trait
@@ -22,7 +25,8 @@ impl Default for KeepAlivePacket {
 
 impl KeepAlivePacket {
     /// Create a new keep alive packet.
-    #[must_use] pub fn new() -> Self {
+    #[must_use]
+    pub fn new() -> Self {
         Self {
             seq: 0,
             op: 0,
@@ -105,8 +109,9 @@ impl ReqType {
     }
 
     /// Convert `ReqType` to u8
-    #[must_use] pub fn to_u8(&self) -> u8 {
-        match self {
+    #[must_use]
+    pub fn to_u8(&self) -> u8 {
+        match *self {
             Self::KeepAliveRequest => 0,
             Self::FileBlockRequest => 1,
         }
@@ -135,8 +140,9 @@ impl RespType {
     }
 
     /// Convert `RespType` to u8
-    #[must_use] pub fn to_u8(&self) -> u8 {
-        match self {
+    #[must_use]
+    pub fn to_u8(&self) -> u8 {
+        match *self {
             Self::KeepAliveResponse => 0,
             Self::FileBlockResponse => 1,
         }
@@ -173,12 +179,12 @@ impl Decode for FileBlockRequest {
 /// Decode the file block request from the buffer.
 pub fn decode_file_block_request(buf: &[u8]) -> Result<FileBlockRequest, RpcError<String>> {
     if buf.len() < 32 {
-        return Err(RpcError::InternalError("Insufficient bytes".to_string()));
+        return Err(RpcError::InternalError("Insufficient bytes".to_owned()));
     }
-    let seq = u64::from_be_bytes(buf[0..8].try_into().unwrap());
-    let file_id = u64::from_be_bytes(buf[8..16].try_into().unwrap());
-    let block_id = u64::from_be_bytes(buf[16..24].try_into().unwrap());
-    let block_size = u64::from_be_bytes(buf[24..32].try_into().unwrap());
+    let seq = get_from_buf(buf, 0)?;
+    let file_id = get_from_buf(buf, 8)?;
+    let block_id = get_from_buf(buf, 16)?;
+    let block_size = get_from_buf(buf, 24)?;
 
     Ok(FileBlockRequest {
         seq,
@@ -189,13 +195,14 @@ pub fn decode_file_block_request(buf: &[u8]) -> Result<FileBlockRequest, RpcErro
 }
 
 /// Encode the file block request into a buffer.
-#[must_use] pub fn encode_file_block_request(req: &FileBlockRequest) -> Vec<u8> {
-    let mut bytes = Vec::new();
-    bytes.extend(req.seq.to_be_bytes());
-    bytes.extend(req.file_id.to_be_bytes());
-    bytes.extend(req.block_id.to_be_bytes());
-    bytes.extend(req.block_size.to_be_bytes());
-    bytes
+#[must_use]
+pub fn encode_file_block_request(req: &FileBlockRequest) -> Vec<u8> {
+    let mut buf = BytesMut::new();
+    buf.put_u64(req.seq.to_be());
+    buf.put_u64(req.file_id.to_be());
+    buf.put_u64(req.block_id.to_be());
+    buf.put_u64(req.block_size.to_be());
+    buf.to_vec()
 }
 
 /// The response to a file block request.
@@ -232,36 +239,20 @@ impl Decode for FileBlockResponse {
 /// Decode the file block response from the buffer.
 pub fn decode_file_block_response(buf: &[u8]) -> Result<FileBlockResponse, RpcError<String>> {
     if buf.len() < 32 {
-        return Err(RpcError::InternalError("Insufficient bytes".to_string()));
+        return Err(RpcError::InternalError("Insufficient bytes".to_owned()));
     }
-    let seq = u64::from_be_bytes(
-        buf[0..8]
-            .try_into()
-            .map_err(|_| RpcError::InternalError("Failed to convert bytes".to_string()))?,
-    );
-    let file_id = u64::from_be_bytes(
-        buf[8..16]
-            .try_into()
-            .map_err(|_| RpcError::InternalError("Failed to convert bytes".to_string()))?,
-    );
-    let block_id = u64::from_be_bytes(
-        buf[16..24]
-            .try_into()
-            .map_err(|_| RpcError::InternalError("Failed to convert bytes".to_string()))?,
-    );
-    let status = match buf[24] {
-        0 => StatusCode::Success,
-        1 => StatusCode::NotFound,
-        2 => StatusCode::InternalError,
-        3 => StatusCode::VersionMismatch,
-        _ => return Err(RpcError::InternalError("Invalid status code".to_string())),
+    let seq = get_from_buf(buf, 0)?;
+    let file_id = get_from_buf(buf, 8)?;
+    let block_id = get_from_buf(buf, 16)?;
+    let status = match buf.get(24) {
+        Some(&0) => StatusCode::Success,
+        Some(&1) => StatusCode::NotFound,
+        Some(&2) => StatusCode::InternalError,
+        Some(&3) => StatusCode::VersionMismatch,
+        _ => return Err(RpcError::InternalError("Invalid status code".to_owned())),
     };
-    let block_size = u64::from_be_bytes(
-        buf[25..33]
-            .try_into()
-            .map_err(|_| RpcError::InternalError("Failed to convert bytes".to_string()))?,
-    );
-    let data = buf[33..].to_vec();
+    let block_size = get_from_buf(buf, 25)?;
+    let data = buf.get(33..).unwrap_or(&[]).to_vec();
 
     Ok(FileBlockResponse {
         seq,
@@ -274,20 +265,21 @@ pub fn decode_file_block_response(buf: &[u8]) -> Result<FileBlockResponse, RpcEr
 }
 
 /// Encode the file block response into a buffer.
-#[must_use] pub fn encode_file_block_response(resp: &FileBlockResponse) -> Vec<u8> {
-    let mut bytes = Vec::new();
-    bytes.extend(resp.seq.to_be_bytes());
-    bytes.extend(resp.file_id.to_be_bytes());
-    bytes.extend(resp.block_id.to_be_bytes());
+#[must_use]
+pub fn encode_file_block_response(resp: &FileBlockResponse) -> Vec<u8> {
+    let mut buf = BytesMut::new();
+    buf.put_u64(resp.seq.to_be());
+    buf.put_u64(resp.file_id.to_be());
+    buf.put_u64(resp.block_id.to_be());
     match resp.status {
-        StatusCode::Success => bytes.push(0),
-        StatusCode::NotFound => bytes.push(1),
-        StatusCode::InternalError => bytes.push(2),
-        StatusCode::VersionMismatch => bytes.push(3),
+        StatusCode::Success => buf.put_u8(0),
+        StatusCode::NotFound => buf.put_u8(1),
+        StatusCode::InternalError => buf.put_u8(2),
+        StatusCode::VersionMismatch => buf.put_u8(3),
     }
-    bytes.extend(resp.block_size.to_be_bytes());
-    bytes.extend(&resp.data);
-    bytes
+    buf.put_u64(resp.block_size.to_be());
+    buf.extend(&resp.data);
+    buf.to_vec()
 }
 
 /// The status code of the response.
