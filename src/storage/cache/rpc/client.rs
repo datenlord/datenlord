@@ -232,80 +232,80 @@ where
                     let packets_keeper: &mut PacketsKeeper<P> = self.get_packets_keeper_mut();
                     packets_keeper.clean_timeout_tasks();
                 }
-            }
+                resp_header = self.recv_header() =>{
+                    // Try to receive the response from the server
+                    debug!("{:?} Waiting for response...", self);
+                    match resp_header {
+                        Ok(header) => {
+                            let header_seq = header.seq;
+                            debug!("{:?} Received keep alive response or other response.", self);
+                            let current_timestamp = tokio::time::Instant::now().elapsed().as_secs();
+                            self.received_keepalive_timestamp
+                                .store(current_timestamp, std::sync::atomic::Ordering::Release);
+                            // Update the received keep alive seq
+                            if let Ok(resp_type) = RespType::from_u8(header.op) {
+                                if let RespType::FileBlockResponse = resp_type {
+                                    debug!("{:?} Received response header: {:?}", self, header);
+                                    // Try to read to buffer
+                                    match self.recv_len(header.len).await {
+                                        Ok(()) => {}
+                                        Err(err) => {
+                                            debug!(
+                                                "{:?} Failed to receive request header: {:?}",
+                                                self, err
+                                            );
+                                            break;
+                                        }
+                                    }
 
-            // Try to receive the response from the server
-            debug!("{:?} Waiting for response...", self);
-            let resp_header = self.recv_header().await;
-            match resp_header {
-                Ok(header) => {
-                    let header_seq = header.seq;
-                    debug!("{:?} Received keep alive response or other response.", self);
-                    let current_timestamp = tokio::time::Instant::now().elapsed().as_secs();
-                    self.received_keepalive_timestamp
-                        .store(current_timestamp, std::sync::atomic::Ordering::Release);
-                    // Update the received keep alive seq
-                    if let Ok(resp_type) = RespType::from_u8(header.op) {
-                        if let RespType::FileBlockResponse = resp_type {
-                            debug!("{:?} Received response header: {:?}", self, header);
-                            // Try to read to buffer
-                            match self.recv_len(header.len).await {
-                                Ok(()) => {}
-                                Err(err) => {
-                                    debug!(
-                                        "{:?} Failed to receive request header: {:?}",
-                                        self, err
-                                    );
-                                    break;
-                                }
-                            }
-
-                            // Take the packet task and recv the response
-                            let packets_keeper: &mut PacketsKeeper<P> =
-                                self.get_packets_keeper_mut();
-                            if let Some(body) = packets_keeper.get_task_mut(header_seq) {
-                                // Try to fill the packet with the response
-                                debug!(
-                                    "{:?} Find response body in current client: {:?}",
-                                    self,
-                                    body.seq()
-                                );
-                                let resp_buffer: &mut BytesMut =
-                                    unsafe { &mut *self.resp_buf.get() };
-
-                                // Update status data
-                                // Try to set result code in `set_resp_data`
-                                match body.set_resp_data(resp_buffer) {
-                                    Ok(()) => {
+                                    // Take the packet task and recv the response
+                                    let packets_keeper: &mut PacketsKeeper<P> =
+                                        self.get_packets_keeper_mut();
+                                    if let Some(body) = packets_keeper.get_task_mut(header_seq) {
+                                        // Try to fill the packet with the response
                                         debug!(
-                                            "{:?} Success to set response data: {:?}",
+                                            "{:?} Find response body in current client: {:?}",
                                             self,
                                             body.seq()
                                         );
-                                    }
-                                    Err(err) => {
-                                        debug!(
-                                            "{:?} Failed to set response data: {:?} with error {:?}",
-                                            self,
-                                            body.seq(),
-                                            err
-                                        );
+                                        let resp_buffer: &mut BytesMut =
+                                            unsafe { &mut *self.resp_buf.get() };
+
+                                        // Update status data
+                                        // Try to set result code in `set_resp_data`
+                                        match body.set_resp_data(resp_buffer) {
+                                            Ok(()) => {
+                                                debug!(
+                                                    "{:?} Success to set response data: {:?}",
+                                                    self,
+                                                    body.seq()
+                                                );
+                                            }
+                                            Err(err) => {
+                                                debug!(
+                                                    "{:?} Failed to set response data: {:?} with error {:?}",
+                                                    self,
+                                                    body.seq(),
+                                                    err
+                                                );
+                                                break;
+                                            }
+                                        }
+                                    } else {
+                                        debug!("{:?} Failed to get packet task", self);
                                         break;
                                     }
                                 }
                             } else {
-                                debug!("{:?} Failed to get packet task", self);
+                                debug!("{:?} Invalid response type: {:?}", self, header.op);
                                 break;
                             }
                         }
-                    } else {
-                        debug!("{:?} Invalid response type: {:?}", self, header.op);
-                        break;
+                        Err(err) => {
+                            debug!("{:?} Failed to receive request header: {:?}", self, err);
+                            break;
+                        }
                     }
-                }
-                Err(err) => {
-                    debug!("{:?} Failed to receive request header: {:?}", self, err);
-                    break;
                 }
             }
         }
@@ -586,6 +586,23 @@ mod tests {
         let header = connection.recv_header().await.unwrap();
         assert_eq!(header.seq, 1);
         assert_eq!(header.op, RespType::KeepAliveResponse.to_u8());
+    }
+
+    #[tokio::test]
+    async fn test_recv_len() {
+        setup();
+        // Create a 10 len vector
+        let response = vec![0; 10];
+        let addr = setup_mock_server(response).await;
+        let stream = TcpStream::connect(addr).await.unwrap();
+        let timeout_options = ClientTimeoutOptions {
+            read_timeout: Duration::from_secs(5),
+            write_timeout: Duration::from_secs(5),
+            idle_timeout: Duration::from_secs(60),
+            keep_alive_timeout: Duration::from_secs(30),
+        };
+        let connection = RpcClientConnectionInner::<TestPacket>::new(stream, &timeout_options, 123);
+        connection.recv_len(10).await.unwrap();
     }
 
     #[tokio::test]
