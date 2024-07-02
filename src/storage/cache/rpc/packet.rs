@@ -5,7 +5,7 @@ use tracing::debug;
 
 use super::{
     error::RpcError,
-    utils::{get_from_buf, u64_to_usize},
+    utils::{get_u64_from_buf, get_u8_from_buf, u64_to_usize},
 };
 
 /// The size of the request header.
@@ -45,7 +45,7 @@ impl Encode for ReqHeader {
     fn encode(&self) -> Vec<u8> {
         let mut buf = BytesMut::with_capacity(u64_to_usize(REQ_HEADER_SIZE));
         buf.put_u64(self.seq.to_be());
-        buf.put_u8(self.op);
+        buf.put_u8(self.op.to_be());
         buf.put_u64(self.len.to_be());
         buf.to_vec()
     }
@@ -59,16 +59,9 @@ impl Decode for ReqHeader {
             ));
         }
 
-        let seq = get_from_buf(buf, 0)?;
-        let op = buf.get(8).map_or_else(
-            || {
-                Err(RpcError::InvalidRequest(
-                    "Invalid request header".to_owned(),
-                ))
-            },
-            |&x| Ok(x),
-        )?;
-        let len = get_from_buf(buf, 9)?;
+        let seq = get_u64_from_buf(buf, 0)?;
+        let op = get_u8_from_buf(buf, 8)?;
+        let len = get_u64_from_buf(buf, 9)?;
 
         Ok(ReqHeader { seq, op, len })
     }
@@ -106,16 +99,9 @@ impl Decode for RespHeader {
             ));
         }
 
-        let seq = get_from_buf(buf, 0)?;
-        let op = buf.get(8).map_or_else(
-            || {
-                Err(RpcError::InvalidResponse(
-                    "Invalid response header".to_owned(),
-                ))
-            },
-            |&x| Ok(x),
-        )?;
-        let len = get_from_buf(buf, 9)?;
+        let seq = get_u64_from_buf(buf, 0)?;
+        let op = get_u8_from_buf(buf, 8)?;
+        let len = get_u64_from_buf(buf, 9)?;
 
         Ok(RespHeader { seq, op, len })
     }
@@ -305,5 +291,43 @@ impl<P: Packet + Send + Sync> PacketsKeeper<P> {
         }
 
         None
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_req_header_encode_and_decode() {
+        let header = ReqHeader {
+            seq: 1,
+            op: 2,
+            len: 3,
+        };
+        let buf = header.encode();
+        assert_eq!(buf.len(), u64_to_usize(REQ_HEADER_SIZE));
+
+        let header_decoded = ReqHeader::decode(&buf).unwrap();
+        assert_eq!(header_decoded.seq, 1);
+        assert_eq!(header_decoded.op, 2);
+        assert_eq!(header_decoded.len, 3);
+    }
+
+    #[test]
+    fn test_resp_header_encode_and_decode() {
+        let header = RespHeader {
+            seq: 1,
+            op: 2,
+            len: 3,
+        };
+        let buf = header.encode();
+        assert_eq!(buf.len(), u64_to_usize(RESP_HEADER_SIZE));
+
+        let header_decoded = RespHeader::decode(&buf).unwrap();
+        assert_eq!(header_decoded.seq, 1);
+        assert_eq!(header_decoded.op, 2);
+        assert_eq!(header_decoded.len, 3);
     }
 }

@@ -3,7 +3,7 @@ use bytes::{BufMut, BytesMut};
 use super::{
     error::RpcError,
     packet::{Decode, Encode, Packet, PacketStatus},
-    utils::get_from_buf,
+    utils::get_u64_from_buf,
 };
 
 /// Impl the keep alive request for Packet trait
@@ -181,10 +181,10 @@ pub fn decode_file_block_request(buf: &[u8]) -> Result<FileBlockRequest, RpcErro
     if buf.len() < 32 {
         return Err(RpcError::InternalError("Insufficient bytes".to_owned()));
     }
-    let seq = get_from_buf(buf, 0)?;
-    let file_id = get_from_buf(buf, 8)?;
-    let block_id = get_from_buf(buf, 16)?;
-    let block_size = get_from_buf(buf, 24)?;
+    let seq = get_u64_from_buf(buf, 0)?;
+    let file_id = get_u64_from_buf(buf, 8)?;
+    let block_id = get_u64_from_buf(buf, 16)?;
+    let block_size = get_u64_from_buf(buf, 24)?;
 
     Ok(FileBlockRequest {
         seq,
@@ -241,9 +241,9 @@ pub fn decode_file_block_response(buf: &[u8]) -> Result<FileBlockResponse, RpcEr
     if buf.len() < 32 {
         return Err(RpcError::InternalError("Insufficient bytes".to_owned()));
     }
-    let seq = get_from_buf(buf, 0)?;
-    let file_id = get_from_buf(buf, 8)?;
-    let block_id = get_from_buf(buf, 16)?;
+    let seq = get_u64_from_buf(buf, 0)?;
+    let file_id = get_u64_from_buf(buf, 8)?;
+    let block_id = get_u64_from_buf(buf, 16)?;
     let status = match buf.get(24) {
         Some(&0) => StatusCode::Success,
         Some(&1) => StatusCode::NotFound,
@@ -251,7 +251,7 @@ pub fn decode_file_block_response(buf: &[u8]) -> Result<FileBlockResponse, RpcEr
         Some(&3) => StatusCode::VersionMismatch,
         _ => return Err(RpcError::InternalError("Invalid status code".to_owned())),
     };
-    let block_size = get_from_buf(buf, 25)?;
+    let block_size = get_u64_from_buf(buf, 25)?;
     let data = buf.get(33..).unwrap_or(&[]).to_vec();
 
     Ok(FileBlockResponse {

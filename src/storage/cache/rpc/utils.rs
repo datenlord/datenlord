@@ -1,3 +1,5 @@
+use bytes::Buf;
+
 use super::error::RpcError;
 
 /// Read with timeout options from the environment variables
@@ -55,16 +57,18 @@ macro_rules! connect_timeout {
     };
 }
 
-/// Try to get data from buffer with range
-pub fn get_from_buf(buf: &[u8], start: usize) -> Result<u64, RpcError<String>> {
+/// Try to get u64 data from buffer with range
+pub fn get_u64_from_buf(buf: &[u8], start: usize) -> Result<u64, RpcError<String>> {
     buf.get(start..start + 8)
-        .ok_or_else(|| RpcError::InternalError("Buffer slice out of bounds".to_owned()))
-        .and_then(|bytes| {
-            bytes
-                .try_into()
-                .map_err(|_foo| RpcError::InternalError("Slice conversion failed".to_owned()))
-        })
-        .map(u64::from_be_bytes)
+        .ok_or_else(|| RpcError::InternalError("Invalid range data".to_owned()))
+        .map(|mut slice| u64::from_be(slice.get_u64()))
+}
+
+/// Try to get u8 data from buffer with range
+pub fn get_u8_from_buf(buf: &[u8], start: usize) -> Result<u8, RpcError<String>> {
+    buf.get(start)
+        .ok_or_else(|| RpcError::InternalError("Invalid range data".to_owned()))
+        .map(|&byte| u8::from_be(byte))
 }
 
 /// Converts [`u64`] to [`usize`], and panic when the conversion fails.

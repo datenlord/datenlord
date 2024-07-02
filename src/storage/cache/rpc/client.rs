@@ -422,6 +422,15 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
+    fn setup() {
+        // Set the tracing log level to debug
+        let filter =
+            filter::Targets::new().with_target("datenlord::storage::cache", LevelFilter::DEBUG);
+        tracing_subscriber::registry()
+            .with(layer().with_filter(filter))
+            .init();
+    }
+
     #[derive(Debug, Clone)]
     pub struct TestPacket {
         pub seq: u64,
@@ -473,12 +482,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_rpc_client() {
-        // Set the tracing log level to debug
-        let filter = filter::Targets::new()
-            .with_target("datenlord::storage::cache::rpc", LevelFilter::DEBUG);
-        tracing_subscriber::registry()
-            .with(layer().with_filter(filter))
-            .init();
+        setup();
 
         let addr = "127.0.0.1:2789";
         let timeout_options = ClientTimeoutOptions {
@@ -533,7 +537,7 @@ mod tests {
 
     // Helper function to setup a mock server
     async fn setup_mock_server(response: Vec<u8>) -> String {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let listener = TcpListener::bind("127.0.0.1:8080").await.unwrap();
         let addr = listener.local_addr().unwrap().to_string();
         tokio::spawn(async move {
             if let Ok((mut socket, _)) = listener.accept().await {
@@ -546,7 +550,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_new_connection() {
-        let stream = TcpStream::connect("127.0.0.1:8080").await.unwrap();
+        setup();
+        let local_addr = setup_mock_server(vec![]).await;
+        let stream = TcpStream::connect(local_addr).await.unwrap();
         let timeout_options = ClientTimeoutOptions {
             read_timeout: Duration::from_secs(5),
             write_timeout: Duration::from_secs(5),
@@ -561,6 +567,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_recv_header() {
+        setup();
         let response = RespHeader {
             seq: 1,
             op: RespType::KeepAliveResponse.to_u8(),
@@ -583,6 +590,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_send_data() {
+        setup();
         let addr = setup_mock_server(vec![]).await;
         let stream = TcpStream::connect(addr).await.unwrap();
         let timeout_options = ClientTimeoutOptions {
@@ -598,7 +606,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_next_seq() {
-        let stream = TcpStream::connect("127.0.0.1:8080").await.unwrap();
+        setup();
+        let addr = setup_mock_server(vec![]).await;
+        let stream = TcpStream::connect(addr).await.unwrap();
         let timeout_options = ClientTimeoutOptions {
             read_timeout: Duration::from_secs(5),
             write_timeout: Duration::from_secs(5),
@@ -615,6 +625,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_ping() {
+        setup();
         let response = RespHeader {
             seq: 1,
             op: RespType::KeepAliveResponse.to_u8(),
