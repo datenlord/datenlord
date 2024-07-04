@@ -255,6 +255,12 @@ pub enum DatenLordError {
         /// Context of the error
         context: Vec<String>,
     },
+    /// Distribute cache manager
+    #[error("Distribute cache manager error, context is {:#?}.", .context)]
+    DistributeCacheManagerErr {
+        /// Context of the error
+        context: Vec<String>,
+    },
     // /// Error when doing s3 operation.
     // #[error("S3 error: {0}")]
     // S3Error(s3_wrapper::S3Error),
@@ -347,7 +353,8 @@ impl DatenLordError {
                 InternalErr,
                 Unimplemented,
                 InconsistentFS,
-                CacheClusterErr
+                CacheClusterErr,
+                DistributeCacheManagerErr
             ]
         );
         self
@@ -410,7 +417,8 @@ impl From<DatenLordError> for RpcStatusCode {
             | DatenLordError::KVEngineErr { .. }
             | DatenLordError::JoinErr { .. }
             | DatenLordError::InconsistentFS { .. }
-            | DatenLordError::CacheClusterErr { .. } => Self::INTERNAL,
+            | DatenLordError::CacheClusterErr { .. }
+            | DatenLordError::DistributeCacheManagerErr { .. } => Self::INTERNAL,
             DatenLordError::GrpcioErr { source, .. } => match source {
                 grpcio::Error::RpcFailure(ref status) => status.code(),
                 grpcio::Error::Codec(..)

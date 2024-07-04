@@ -9,7 +9,7 @@ pub struct MetaData {
     /// File attr inum
     inum: u64,
     /// Block write time, generated with snowflake
-    version: i64,
+    version: u64,
     /// Block offset in file
     offset: u64,
     /// Block size
@@ -38,12 +38,12 @@ impl Hash for MetaData {
 
 impl MetaData {
     /// Create a new MetaData instance
-    pub fn new() -> Self {
+    pub fn new(inum: u64, version: u64, offset: u64, size: u64) -> Self {
         MetaData {
-            inum: 0,
-            version: 0,
-            offset: 0,
-            size: 0,
+            inum,
+            version,
+            offset,
+            size,
         }
     }
 
@@ -53,7 +53,7 @@ impl MetaData {
     }
 
     /// Get the version of the MetaData
-    pub fn get_version(&self) -> i64 {
+    pub fn get_version(&self) -> u64 {
         self.version
     }
 

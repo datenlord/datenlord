@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     sync::{Arc, RwLock},
 };
 
@@ -76,9 +76,7 @@ where
 #[derive(Debug)]
 pub struct BlockManager {
     /// CacheManager to manage blocks and metadata
-    cache: CacheManager<MetaData, LRUPolicy<MetaData>>,
-    /// Metadata to store block metadata
-    metasets: Arc<RwLock<HashSet<MetaData>>>,
+    cache: Arc<RwLock<CacheManager<MetaData, LRUPolicy<MetaData>>>>,
     /// Backend to interact with the storage, default is FSBackend
     backend: Arc<dyn Backend>,
 }
@@ -90,13 +88,8 @@ impl BlockManager {
         // It will evict the least recently used block when the cache is full
         // TODO: Support mem limit and block size limit， current is block count limit
         let policy = LRUPolicy::new(1000);
-        let cache = CacheManager::new(policy);
-        let metasets = Arc::new(RwLock::new(HashSet::new()));
-        BlockManager {
-            cache,
-            backend,
-            metasets,
-        }
+        let cache = Arc::new(RwLock::new(CacheManager::new(policy)));
+        BlockManager { cache, backend }
     }
 
     /// Create a new BlockManager with default FSBackend
@@ -110,59 +103,60 @@ impl BlockManager {
     /// If the version is old, we need to read the block from the storage
     /// If the version is the latest, client need to fetch the latest version
     #[allow(dead_code)]
-    async fn read(&mut self, meta_data: MetaData) -> StorageResult<Option<Block>> {
-        if let Some(block_ref) = self.cache.cache.get(&meta_data) {
-            let block = block_ref.read().unwrap();
-            Ok(Some(block.clone()))
-        } else {
-            // Try to read the block from current meta data
-            // which means the block is not in the cache but in the storage
-            // the version of the block is the latest
-            if self.metasets.read().unwrap().contains(&meta_data) {
-                // Try to read file from fs backend
-                let relative_path = meta_data.to_id();
-                let mut buf = [0; BLOCK_SIZE];
-                let size = self
-                    .backend
-                    .read(&relative_path, &mut buf)
+    pub async fn read(&self, meta_data: MetaData) -> StorageResult<Option<Block>> {
+        // Try to read the block from the cache
+        {
+            if let Some(block_ref) = self.cache.read().unwrap().get(&meta_data) {
+                let block = block_ref.read().unwrap();
+                return Ok(Some(block.clone()));
+            }
+        }
+
+        // Try to fetch data and update local cache
+        {
+            // Try to read file from fs backend
+            let relative_path = meta_data.to_id();
+            let mut buf = [0; BLOCK_SIZE];
+            let size = self
+                .backend
+                .read(&relative_path, &mut buf)
+                .await
+                .unwrap_or_default();
+
+            // If the size is not equal to BLOCK_SIZE, the block is invalid
+            if size != BLOCK_SIZE {
+                // Remove the invalid block from fs backend
+                self.backend
+                    .remove(&relative_path)
                     .await
                     .unwrap_or_default();
 
-                // If the size is not equal to BLOCK_SIZE, the block is invalid
-                if size != BLOCK_SIZE {
-                    // Remove the invalid block from fs backend
-                    self.backend
-                        .remove(&relative_path)
-                        .await
-                        .unwrap_or_default();
-
-                    return Ok(None);
-                }
-
-                let block = Block::new(meta_data.clone(), buf.to_vec());
-
-                // Write the block to the cache
-                let block_ref = Arc::new(RwLock::new(block.clone()));
-                self.cache.put(meta_data.clone(), block_ref);
-
-                return Ok(Some(block));
-            } else {
-                // TODO: Read the block from the s3 backend storage
                 return Ok(None);
             }
+
+            let block = Block::new(meta_data.clone(), buf.to_vec());
+
+            // Write the block to the cache
+            let block_ref = Arc::new(RwLock::new(block.clone()));
+            self.cache
+                .write()
+                .unwrap()
+                .put(meta_data.clone(), block_ref);
+
+            return Ok(Some(block));
         }
     }
 
     /// Write the block to the cache
     /// TODO: Now this operation only support store block to cache and fs storage
     #[allow(dead_code)]
-    async fn write(&mut self, block: &Block) -> StorageResult<()> {
+    pub async fn write(&mut self, block: &Block) -> StorageResult<()> {
         let meta = block.get_meta_data();
         let relative_path = meta.to_id();
 
         // Write the block to the cache
         let block_ref = Arc::new(RwLock::new(block.clone()));
-        self.cache.put(meta.clone(), block_ref);
+        self.cache.write().unwrap().put(meta.clone(), block_ref);
 
         // Write the block to the storage
         let _ = self
@@ -171,17 +165,14 @@ impl BlockManager {
             .await
             .map_err(|e| format!("Failed to write block: {}", e));
 
-        // Add the meta data to the meta sets
-        self.metasets.write().unwrap().insert(meta.clone());
-
         Ok(())
     }
 
     /// Invalidate the block
     #[allow(dead_code)]
-    async fn invalid(&mut self, meta_data: MetaData) -> StorageResult<()> {
+    pub async fn invalid(&mut self, meta_data: MetaData) -> StorageResult<()> {
         // Remove the block from the cache
-        self.cache.remove(&meta_data);
+        self.cache.write().unwrap().remove(&meta_data);
 
         // Remove the block from the storage
         let relative_path = meta_data.to_id();
@@ -190,9 +181,6 @@ impl BlockManager {
             .remove(&relative_path)
             .await
             .map_err(|e| format!("Failed to remove block: {}", e));
-
-        // Remove the meta data from the meta sets
-        self.metasets.write().unwrap().remove(&meta_data);
 
         Ok(())
     }

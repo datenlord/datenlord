@@ -383,6 +383,7 @@ where
         // Accept incoming connections
         let timeout_options = self.timeout_options.clone();
         let factory = self.rpc_conn_worker_factory.clone();
+        // TODO: move to task manager
         let handle = tokio::task::spawn(async move {
             loop {
                 let conn_timeout_options = timeout_options.clone();

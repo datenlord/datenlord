@@ -166,7 +166,7 @@ mod tests {
     use tokio::{task, time::Instant};
     use tracing::info;
 
-    use crate::storage::cache::rpc::setup;
+    use crate::storage::distribute_cache::rpc::setup;
 
     use super::*;
 

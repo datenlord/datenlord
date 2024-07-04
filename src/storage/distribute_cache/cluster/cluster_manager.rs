@@ -808,7 +808,7 @@ mod tests {
 
     use crate::{
         async_fuse::memfs::kv_engine::{DeleteOption, KVEngine, KVEngineType, KeyType},
-        storage::cache_proxy::{
+        storage::distribute_cache::cluster::{
             cluster_manager::{ClusterManager, ClusterManagerInner, SESSION_TIMEOUT_SEC},
             node::{Node, NodeStatus},
         },

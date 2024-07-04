@@ -4,6 +4,7 @@ use std::{
     pin::Pin,
     sync::{atomic::AtomicU64, Arc},
     task::{Context, Poll},
+    u8,
 };
 
 use bytes::BytesMut;
@@ -15,7 +16,7 @@ use tokio::{
 };
 use tracing::debug;
 
-use crate::{read_exact_timeout, write_all_timeout};
+use crate::{async_fuse::util::usize_to_u64, read_exact_timeout, write_all_timeout};
 
 use super::{
     common::ClientTimeoutOptions,
@@ -43,14 +44,12 @@ where
     /// If we receive other response, we will update the received_keepalive_timestamp too, just treat it as a keep alive response.
     received_keepalive_timestamp: AtomicU64,
     /// Send packet task
-    packets_keeper: PacketsKeeper<P>,
+    packets_keeper: UnsafeCell<PacketsKeeper<P>>,
     /// Response buffer, try to reuse same buffer to reduce memory allocation
     /// In case of the response is too large, we need to consider the buffer size
     /// Init size is 4MB
     /// Besides, we want to reduce memory copy, and read/write the response to the same data buffer
     resp_buf: UnsafeCell<BytesMut>,
-    /// Request encode buffer
-    req_buf: UnsafeCell<BytesMut>,
     /// The Client ID for the connection
     client_id: u64,
 }
@@ -63,6 +62,7 @@ where
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RpcClientConnectionInner")
             .field("client id", &self.client_id)
+            .field("timeout options", &self.timeout_options)
             .finish_non_exhaustive()
     }
 }
@@ -79,15 +79,16 @@ where
             seq: AtomicU64::new(0),
             clock_instant: Instant::now(),
             received_keepalive_timestamp: AtomicU64::new(0),
-            packets_keeper: PacketsKeeper::new(timeout_options.clone().task_timeout.as_secs()),
+            packets_keeper: UnsafeCell::new(PacketsKeeper::new(
+                timeout_options.clone().idle_timeout.as_secs(),
+            )),
             resp_buf: UnsafeCell::new(BytesMut::with_capacity(8 * 1024 * 1024)),
-            req_buf: UnsafeCell::new(BytesMut::with_capacity(8 * 1024 * 1024)),
             client_id,
         }
     }
 
     /// Recv request header from the stream
-    pub async fn recv_header(&self) -> Result<RespHeader, RpcError> {
+    pub async fn recv_header(&self) -> Result<RespHeader, RpcError<String>> {
         // Try to read to buffer
         match self.recv_len(REQ_HEADER_SIZE).await {
             Ok(()) => {}
@@ -105,7 +106,7 @@ where
     }
 
     /// Receive request body from the server.
-    pub async fn recv_len(&self, len: u64) -> Result<(), RpcError> {
+    pub async fn recv_len(&self, len: u64) -> Result<(), RpcError<String>> {
         let mut req_buffer: &mut BytesMut = unsafe { &mut *self.resp_buf.get() };
         req_buffer.resize(u64_to_usize(len), 0);
         let reader = self.get_stream_mut();
@@ -123,27 +124,13 @@ where
     }
 
     /// Send a request to the server.
-    /// We need to make sure
-    /// Current send packet need to be in one task, so if we need to send ping and packet
-    /// we need to make sure only one operation is running, like select.
-    pub async fn send_data(
-        &self,
-        req_header: &dyn Encode,
-        req_body: Option<&dyn Encode>,
-    ) -> Result<(), RpcError> {
-        let buf = unsafe { &mut *self.req_buf.get() };
-        buf.clear();
-        // encode just need to append to buffer, do not clear buffer
-        req_header.encode(buf);
-        // Append the body to the buffer
-        if let Some(body) = req_body {
-            // encode just need to append to buffer, do not clear buffer
-            body.encode(buf);
-        }
-        debug!("{:?} Sent data with length: {:?}", self, buf.len());
+    pub async fn send_data(&self, data: &[u8]) -> Result<(), RpcError<String>> {
         let writer = self.get_stream_mut();
-        match write_all_timeout!(writer, buf, self.timeout_options.write_timeout).await {
-            Ok(()) => Ok(()),
+        match write_all_timeout!(writer, data, self.timeout_options.write_timeout).await {
+            Ok(()) => {
+                debug!("{:?} Sent data with length: {:?}", self, data.len());
+                Ok(())
+            }
             Err(err) => {
                 debug!("{:?} Failed to send data: {:?}", self, err);
                 Err(RpcError::InternalError(err.to_string()))
@@ -157,7 +144,7 @@ where
     }
 
     /// Send keep alive message to the server
-    pub async fn ping(&self) -> Result<(), RpcError> {
+    pub async fn ping(&self) -> Result<(), RpcError<String>> {
         // Send keep alive message
         let current_seq = self.next_seq();
         let current_timestamp = self.clock_instant.elapsed().as_secs();
@@ -177,9 +164,10 @@ where
             seq: current_seq,
             op: ReqType::KeepAliveRequest.to_u8(),
             len: 0,
-        };
+        }
+        .encode();
 
-        if let Ok(()) = self.send_data(&keep_alive_msg, None).await {
+        if let Ok(()) = self.send_data(&keep_alive_msg).await {
             debug!("{:?} Success to sent keep alive message", self);
             Ok(())
         } else {
@@ -191,31 +179,51 @@ where
     }
 
     /// Send packet by the client.
-    pub async fn send_packet(&self, req_packet: &mut P) -> Result<(), RpcError> {
+    pub async fn send_packet(&self, req_packet: &mut P) -> Result<(), RpcError<String>> {
         let current_seq = self.next_seq();
         req_packet.set_seq(current_seq);
         debug!("{:?} Try to send request: {:?}", self, current_seq);
 
         // Send may be used in different threads, so we need to create local buffer to store the request data
-        let req_len = req_packet.get_req_len(); // Try to get request buffer
-        let req_header = ReqHeader {
-            seq: req_packet.seq(),
-            op: req_packet.op(),
-            len: req_len,
-        };
+        if let Ok(req_buffer) = req_packet.get_req_data() {
+            let mut req_header = ReqHeader {
+                seq: req_packet.seq(),
+                op: req_packet.op(),
+                len: usize_to_u64(req_buffer.len()),
+            }
+            .encode();
 
-        // concate req_header and req_buffer
-        if let Ok(()) = self.send_data(&req_header, Some(req_packet)).await {
-            debug!("{:?} Sent request success: {:?}", self, req_packet.seq());
-            // We have set a copy to keeper and manage the status for the packets keeper
-            // Set to packet task with clone
-            self.packets_keeper.add_task(req_packet)?;
+            // concate req_header and req_buffer
+            req_header.extend_from_slice(&req_buffer);
 
-            Ok(())
+            if let Ok(()) = self.send_data(&req_header).await {
+                debug!("{:?} Sent request success: {:?}", self, req_packet.seq());
+                // We have set a copy to keeper and manage the status for the packets keeper
+                // Set to packet task with clone
+                self.get_packets_keeper_mut().add_task(req_packet.clone())?;
+
+                Ok(())
+            } else {
+                debug!("{:?} Failed to send request: {:?}", self, req_packet.seq());
+                Err(RpcError::InternalError("Failed to send request".to_owned()))
+            }
         } else {
-            debug!("{:?} Failed to send request: {:?}", self, req_packet.seq());
-            Err(RpcError::InternalError("Failed to send request".to_owned()))
+            debug!(
+                "{:?} Failed to serialize request: {:?}",
+                self,
+                req_packet.seq()
+            );
+            Err(RpcError::InternalError(
+                "Failed to serialize request".to_owned(),
+            ))
         }
+    }
+
+    /// Receive packet by the client
+    pub fn recv_packet(&self, resp_packet: &P) -> Option<P> {
+        // Try to receive the response from innner keeper
+        let packets_keeper: &mut PacketsKeeper<P> = self.get_packets_keeper_mut();
+        packets_keeper.consume_task(resp_packet.seq())
     }
 
     /// Receive loop for the client.
@@ -224,7 +232,7 @@ where
         // The timeout data will be cleaned by the get function
         // We don't need to clean the timeout data radically
         let mut tickers = Box::pin(tokio::time::interval(
-            self.timeout_options.task_timeout.div_f32(2.0),
+            self.timeout_options.idle_timeout * 100,
         ));
         loop {
             debug!("{:?} Start to receive loop", self);
@@ -257,8 +265,10 @@ where
                             }
 
                             // Take the packet task and recv the response
+                            let packets_keeper: &mut PacketsKeeper<P> =
+                                self.get_packets_keeper_mut();
                             let resp_buffer: &mut BytesMut = unsafe { &mut *self.resp_buf.get() };
-                            match self.packets_keeper.take_task(header_seq, resp_buffer).await {
+                            match packets_keeper.update_task_mut(header_seq, resp_buffer) {
                                 Ok(()) => {
                                     debug!("{:?} Received response: {:?}", self, header_seq);
                                 }
@@ -285,6 +295,13 @@ where
     fn get_stream_mut(&self) -> &mut TcpStream {
         // Current implementation is safe because the stream is only accessed by one thread
         unsafe { &mut *self.stream.get() }
+    }
+
+    /// Get packet task with mutable reference
+    #[allow(clippy::mut_from_ref)]
+    fn get_packets_keeper_mut(&self) -> &mut PacketsKeeper<P> {
+        // Current implementation is safe because the packet task is only accessed by one thread
+        unsafe { &mut *self.packets_keeper.get() }
     }
 }
 
@@ -346,19 +363,32 @@ where
     /// Send a request to the server.
     /// Try to send data to channel, if the channel is full, return an error.
     /// Contains the rezquest header and body.
-    /// WARN: this function does not support concurrent call
-    pub async fn send_request(&self, req: &mut P) -> Result<(), RpcError> {
+    pub async fn send_request(&self, req: &mut P) -> Result<(), RpcError<String>> {
         self.inner_connection
             .send_packet(req)
             .await
             .map_err(|err| RpcError::InternalError(err.to_string()))
     }
 
+    /// Get the response from the server.
+    pub fn recv_response(&self, resp: &mut P) -> Result<(), RpcError<String>> {
+        // Try to receive the response from innner keeper
+        debug!("{:?} Try to receive response: {:?}", self, resp.seq());
+        if let Some(resp_packet) = self.inner_connection.recv_packet(resp) {
+            debug!("{:?} Received response seq: {:?}", self, resp_packet.seq());
+            resp.set_resp_data(&resp_packet.get_resp_data()?)?;
+            return Ok(());
+        }
+
+        Err(RpcError::InternalError(
+            "Failed to receive response".to_owned(),
+        ))
+    }
+
     /// Manually send ping by the send request
     /// The inner can not start two loop, because the stream is unsafe
     /// we need to start the loop in the client or higher level manually
-    /// WARN: this function does not support concurrent call
-    pub async fn ping(&self) -> Result<(), RpcError> {
+    pub async fn ping(&self) -> Result<(), RpcError<String>> {
         self.inner_connection.ping().await
     }
 }
@@ -369,7 +399,7 @@ where
 struct ReceiveHeaderFuture<'a, P, F>
 where
     P: Packet + Clone + Send + Sync + 'static,
-    F: Future<Output = Result<RespHeader, RpcError>> + Unpin,
+    F: Future<Output = Result<RespHeader, RpcError<String>>> + Unpin,
 {
     /// The inner connection for the client.
     client_inner: &'a RpcClientConnectionInner<P>,
@@ -382,7 +412,7 @@ where
 impl<'a, P, F> ReceiveHeaderFuture<'a, P, F>
 where
     P: Packet + Clone + Send + Sync + 'static,
-    F: Future<Output = Result<RespHeader, RpcError>> + Unpin,
+    F: Future<Output = Result<RespHeader, RpcError<String>>> + Unpin,
 {
     /// Create a new receive header stream.
     fn new(
@@ -401,9 +431,9 @@ where
 impl<'a, P, F> Future for ReceiveHeaderFuture<'a, P, F>
 where
     P: Packet + Clone + Send + Sync + 'static,
-    F: Future<Output = Result<RespHeader, RpcError>> + Unpin,
+    F: Future<Output = Result<RespHeader, RpcError<String>>> + Unpin,
 {
-    type Output = Result<RespHeader, RpcError>;
+    type Output = Result<RespHeader, RpcError<String>>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let self_mut: &mut ReceiveHeaderFuture<'a, P, F> = self.get_mut();
@@ -415,13 +445,9 @@ where
             // consume all ticks in once call
             tick_ready = true;
         }
-        while tick_ready {
-            let clean_future = client_inner.packets_keeper.clean_timeout_tasks();
-            pin_mut!(clean_future);
-            match clean_future.poll(cx) {
-                Poll::Ready(()) => tick_ready = false,
-                Poll::Pending => return Poll::Pending,
-            }
+        if tick_ready {
+            let packets_keeper: &mut PacketsKeeper<P> = client_inner.get_packets_keeper_mut();
+            packets_keeper.clean_timeout_tasks();
         }
 
         // recv header data
@@ -433,52 +459,21 @@ where
 #[allow(clippy::unwrap_used)]
 #[allow(clippy::indexing_slicing)]
 mod tests {
-    use async_trait::async_trait;
-    use bytes::BufMut;
     use tokio::net::TcpListener;
 
-    use crate::{async_fuse::util::usize_to_u64, storage::cache::rpc::utils::get_u64_from_buf};
+    use crate::storage::distribute_cache::rpc::packet::PacketStatus;
+    use crate::storage::distribute_cache::rpc::setup;
 
     use super::*;
-    use std::{mem, time::Duration};
-
-    /// Request struct for test
-    #[derive(Debug, Default, Clone)]
-    pub struct TestRequest {
-        pub id: u64,
-    }
-
-    impl Encode for TestRequest {
-        fn encode(&self, buf: &mut BytesMut) {
-            buf.put_u64(self.id.to_le());
-        }
-    }
-
-    impl Decode for TestRequest {
-        fn decode(buf: &[u8]) -> Result<Self, RpcError> {
-            if buf.len() < 8 {
-                return Err(RpcError::InternalError("Insufficient bytes".to_owned()));
-            }
-            let id = get_u64_from_buf(buf, 0)?;
-            Ok(TestRequest { id })
-        }
-    }
+    use std::time::Duration;
 
     #[derive(Debug, Clone)]
     pub struct TestPacket {
         pub seq: u64,
         pub op: u8,
-        pub request: TestRequest,
-        pub timestamp: u64,
+        pub status: PacketStatus,
     }
 
-    impl Encode for TestPacket {
-        fn encode(&self, buf: &mut BytesMut) {
-            self.request.encode(buf);
-        }
-    }
-
-    #[async_trait]
     impl Packet for TestPacket {
         fn seq(&self) -> u64 {
             self.seq
@@ -496,22 +491,28 @@ mod tests {
             self.op = op;
         }
 
-        fn set_timestamp(&mut self, timestamp: u64) {
-            self.timestamp = timestamp;
-        }
-
-        fn get_timestamp(&self) -> u64 {
-            self.timestamp
-        }
-
-        fn set_resp_data(&mut self, _data: &[u8]) -> Result<(), RpcError> {
+        fn set_req_data(&mut self, _data: &[u8]) -> Result<(), RpcError<String>> {
             Ok(())
         }
 
-        async fn set_result(self, _status: Result<(), RpcError>) {}
+        fn get_req_data(&self) -> Result<Vec<u8>, RpcError<String>> {
+            Ok(Vec::new())
+        }
 
-        fn get_req_len(&self) -> u64 {
-            usize_to_u64(mem::size_of_val(&self.request))
+        fn set_resp_data(&mut self, _data: &[u8]) -> Result<(), RpcError<String>> {
+            Ok(())
+        }
+
+        fn get_resp_data(&self) -> Result<Vec<u8>, RpcError<String>> {
+            Ok(Vec::new())
+        }
+
+        fn status(&self) -> PacketStatus {
+            self.status
+        }
+
+        fn set_status(&mut self, status: PacketStatus) {
+            self.status = status;
         }
     }
 
@@ -530,13 +531,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_new_connection() {
-        // setup();
+        setup();
         let local_addr = setup_mock_server("127.0.0.1:50050".to_owned(), vec![]).await;
         let stream = TcpStream::connect(local_addr).await.unwrap();
         let timeout_options = ClientTimeoutOptions {
             read_timeout: Duration::from_secs(5),
             write_timeout: Duration::from_secs(5),
-            task_timeout: Duration::from_secs(60),
+            idle_timeout: Duration::from_secs(60),
             keep_alive_timeout: Duration::from_secs(30),
         };
         let client_id = 123;
@@ -547,20 +548,19 @@ mod tests {
 
     #[tokio::test]
     async fn test_recv_header() {
-        // setup();
-        let mut buf = BytesMut::new();
-        RespHeader {
+        setup();
+        let response = RespHeader {
             seq: 1,
             op: RespType::KeepAliveResponse.to_u8(),
             len: 0,
         }
-        .encode(&mut buf);
-        let addr = setup_mock_server("127.0.0.1:50052".to_owned(), buf.to_vec()).await;
+        .encode();
+        let addr = setup_mock_server("127.0.0.1:50052".to_owned(), response).await;
         let stream = TcpStream::connect(addr).await.unwrap();
         let timeout_options = ClientTimeoutOptions {
             read_timeout: Duration::from_secs(5),
             write_timeout: Duration::from_secs(5),
-            task_timeout: Duration::from_secs(60),
+            idle_timeout: Duration::from_secs(60),
             keep_alive_timeout: Duration::from_secs(30),
         };
         let connection = RpcClientConnectionInner::<TestPacket>::new(stream, &timeout_options, 123);
@@ -571,7 +571,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_recv_len() {
-        // setup();
+        setup();
         // Create a 10 len vector
         let response = vec![0; 10];
         let addr = setup_mock_server("127.0.0.1:50053".to_owned(), response).await;
@@ -579,54 +579,38 @@ mod tests {
         let timeout_options = ClientTimeoutOptions {
             read_timeout: Duration::from_secs(5),
             write_timeout: Duration::from_secs(5),
-            task_timeout: Duration::from_secs(60),
+            idle_timeout: Duration::from_secs(60),
             keep_alive_timeout: Duration::from_secs(30),
         };
         let connection = RpcClientConnectionInner::<TestPacket>::new(stream, &timeout_options, 123);
         connection.recv_len(10).await.unwrap();
     }
 
-    struct TestData;
-    impl Encode for TestData {
-        fn encode(&self, buf: &mut BytesMut) {
-            let data = b"Hello, world!";
-            buf.extend_from_slice(data);
-        }
-    }
-
     #[tokio::test]
     async fn test_send_data() {
-        // setup();
+        setup();
         let addr = setup_mock_server("127.0.0.1:50054".to_owned(), vec![]).await;
         let stream = TcpStream::connect(addr).await.unwrap();
         let timeout_options = ClientTimeoutOptions {
             read_timeout: Duration::from_secs(5),
             write_timeout: Duration::from_secs(5),
-            task_timeout: Duration::from_secs(60),
+            idle_timeout: Duration::from_secs(60),
             keep_alive_timeout: Duration::from_secs(30),
         };
         let connection = RpcClientConnectionInner::<TestPacket>::new(stream, &timeout_options, 123);
-        let req_header = ReqHeader {
-            seq: 1,
-            op: ReqType::KeepAliveRequest.to_u8(),
-            len: 0,
-        };
-
-        connection
-            .send_data(&req_header, Some(&TestData {}))
-            .await
-            .unwrap();
+        let data = b"Hello, world!";
+        connection.send_data(data).await.unwrap();
     }
 
     #[tokio::test]
     async fn test_next_seq() {
-        // setup();
+        setup();
         let addr = setup_mock_server("127.0.0.1:50055".to_owned(), vec![]).await;
         let stream = TcpStream::connect(addr).await.unwrap();
         let timeout_options = ClientTimeoutOptions {
             read_timeout: Duration::from_secs(5),
             write_timeout: Duration::from_secs(5),
-            task_timeout: Duration::from_secs(60),
+            idle_timeout: Duration::from_secs(60),
             keep_alive_timeout: Duration::from_secs(30),
         };
         let client_id = 123;
@@ -639,20 +623,19 @@ mod tests {
 
     #[tokio::test]
     async fn test_ping() {
-        // setup();
-        let mut buf = BytesMut::new();
-        RespHeader {
+        setup();
+        let response = RespHeader {
             seq: 1,
             op: RespType::KeepAliveResponse.to_u8(),
             len: 0,
         }
-        .encode(&mut buf);
-        let addr = setup_mock_server("127.0.0.1:50056".to_owned(), buf.to_vec()).await;
+        .encode();
+        let addr = setup_mock_server("127.0.0.1:50056".to_owned(), response).await;
         let stream = TcpStream::connect(addr).await.unwrap();
         let timeout_options = ClientTimeoutOptions {
             read_timeout: Duration::from_secs(5),
             write_timeout: Duration::from_secs(5),
-            task_timeout: Duration::from_secs(60),
+            idle_timeout: Duration::from_secs(60),
             keep_alive_timeout: Duration::from_secs(30),
         };
         let connection = RpcClientConnectionInner::<TestPacket>::new(stream, &timeout_options, 123);

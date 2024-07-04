@@ -67,6 +67,3 @@ pub mod common;
 /// Configurations
 pub mod config;
 pub mod metrics;
-
-/// Cache node
-pub mod cache_node;
