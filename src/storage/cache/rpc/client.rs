@@ -227,6 +227,7 @@ where
             self.timeout_options.task_timeout.div_f32(2.0),
         ));
         loop {
+            debug!("{:?} Start to receive loop", self);
             // Clean timeout tasks, will block here
             let recv_header_f = self.recv_header();
             pin_mut!(recv_header_f);

@@ -166,6 +166,8 @@ mod tests {
     use tokio::{task, time::Instant};
     use tracing::info;
 
+    use crate::storage::cache::rpc::setup;
+
     use super::*;
 
     struct TestJob;
