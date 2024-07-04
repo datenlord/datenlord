@@ -1,91 +1,12 @@
 use bytes::{BufMut, BytesMut};
 
+use crate::async_fuse::util::usize_to_u64;
+
 use super::{
     error::RpcError,
-    packet::{Decode, Encode, Packet, PacketStatus},
+    packet::{Decode, Encode},
     utils::get_u64_from_buf,
 };
-
-/// Impl the keep alive request for Packet trait
-#[derive(Debug, Clone)]
-pub struct KeepAlivePacket {
-    /// The sequence number of the request.
-    pub seq: u64,
-    /// The operation type of the request.
-    pub op: u8,
-    /// The status of the request.
-    pub status: PacketStatus,
-}
-
-impl Default for KeepAlivePacket {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl KeepAlivePacket {
-    /// Create a new keep alive packet.
-    #[must_use]
-    pub fn new() -> Self {
-        Self {
-            seq: 0,
-            op: 0,
-            status: PacketStatus::Pending,
-        }
-    }
-}
-
-impl Packet for KeepAlivePacket {
-    /// Get the packet seq number
-    fn seq(&self) -> u64 {
-        self.seq
-    }
-
-    /// Set the packet seq number
-    fn set_seq(&mut self, seq: u64) {
-        self.seq = seq;
-    }
-
-    /// Get packet type
-    fn op(&self) -> u8 {
-        self.op
-    }
-
-    /// Set packet type
-    fn set_op(&mut self, op: u8) {
-        self.op = op;
-    }
-
-    /// Set the raw request data
-    fn set_req_data(&mut self, _data: &[u8]) -> Result<(), RpcError<String>> {
-        Ok(())
-    }
-
-    /// Get the raw request data
-    fn get_req_data(&self) -> Result<Vec<u8>, RpcError<String>> {
-        Ok(Vec::new())
-    }
-
-    /// Set the raw response data
-    fn set_resp_data(&mut self, _data: &[u8]) -> Result<(), RpcError<String>> {
-        Ok(())
-    }
-
-    /// Get the raw response data
-    fn get_resp_data(&self) -> Result<Vec<u8>, RpcError<String>> {
-        Ok(Vec::new())
-    }
-
-    /// Get the packet status
-    fn status(&self) -> PacketStatus {
-        self.status
-    }
-
-    /// Set the packet status
-    fn set_status(&mut self, status: PacketStatus) {
-        self.status = status;
-    }
-}
 
 /// The request type of the request.
 #[derive(Debug)]
@@ -152,8 +73,6 @@ impl RespType {
 /// Common data structures shared between the client and server.
 #[derive(Debug, Default)]
 pub struct FileBlockRequest {
-    /// The sequence number of the request.
-    pub seq: u64,
     /// The file ID.
     pub file_id: u64,
     /// The block ID.
@@ -178,16 +97,14 @@ impl Decode for FileBlockRequest {
 
 /// Decode the file block request from the buffer.
 pub fn decode_file_block_request(buf: &[u8]) -> Result<FileBlockRequest, RpcError<String>> {
-    if buf.len() < 32 {
+    if buf.len() < 24 {
         return Err(RpcError::InternalError("Insufficient bytes".to_owned()));
     }
-    let seq = get_u64_from_buf(buf, 0)?;
-    let file_id = get_u64_from_buf(buf, 8)?;
-    let block_id = get_u64_from_buf(buf, 16)?;
-    let block_size = get_u64_from_buf(buf, 24)?;
+    let file_id = get_u64_from_buf(buf, 0)?;
+    let block_id = get_u64_from_buf(buf, 8)?;
+    let block_size = get_u64_from_buf(buf, 16)?;
 
     Ok(FileBlockRequest {
-        seq,
         file_id,
         block_id,
         block_size,
@@ -198,7 +115,6 @@ pub fn decode_file_block_request(buf: &[u8]) -> Result<FileBlockRequest, RpcErro
 #[must_use]
 pub fn encode_file_block_request(req: &FileBlockRequest) -> Vec<u8> {
     let mut buf = BytesMut::new();
-    buf.put_u64(req.seq.to_be());
     buf.put_u64(req.file_id.to_be());
     buf.put_u64(req.block_id.to_be());
     buf.put_u64(req.block_size.to_be());
@@ -208,8 +124,6 @@ pub fn encode_file_block_request(req: &FileBlockRequest) -> Vec<u8> {
 /// The response to a file block request.
 #[derive(Debug, Default)]
 pub struct FileBlockResponse {
-    /// The sequence number of the response.
-    pub seq: u64,
     /// The file ID.
     pub file_id: u64,
     /// The block ID.
@@ -238,24 +152,28 @@ impl Decode for FileBlockResponse {
 
 /// Decode the file block response from the buffer.
 pub fn decode_file_block_response(buf: &[u8]) -> Result<FileBlockResponse, RpcError<String>> {
-    if buf.len() < 32 {
+    if buf.len() < 17 {
         return Err(RpcError::InternalError("Insufficient bytes".to_owned()));
     }
-    let seq = get_u64_from_buf(buf, 0)?;
-    let file_id = get_u64_from_buf(buf, 8)?;
-    let block_id = get_u64_from_buf(buf, 16)?;
-    let status = match buf.get(24) {
+    let file_id = get_u64_from_buf(buf, 0)?;
+    let block_id = get_u64_from_buf(buf, 8)?;
+    let status = match buf.get(16) {
         Some(&0) => StatusCode::Success,
         Some(&1) => StatusCode::NotFound,
         Some(&2) => StatusCode::InternalError,
         Some(&3) => StatusCode::VersionMismatch,
         _ => return Err(RpcError::InternalError("Invalid status code".to_owned())),
     };
-    let block_size = get_u64_from_buf(buf, 25)?;
-    let data = buf.get(33..).unwrap_or(&[]).to_vec();
+    let block_size = get_u64_from_buf(buf, 17)?;
+    let data = buf.get(25..).unwrap_or(&[]).to_vec();
+    let data_len = usize_to_u64(data.len());
+    if data_len != block_size {
+        return Err(RpcError::InternalError(format!(
+            "Insufficient block size {data_len}"
+        )));
+    }
 
     Ok(FileBlockResponse {
-        seq,
         file_id,
         block_id,
         block_size,
@@ -268,7 +186,6 @@ pub fn decode_file_block_response(buf: &[u8]) -> Result<FileBlockResponse, RpcEr
 #[must_use]
 pub fn encode_file_block_response(resp: &FileBlockResponse) -> Vec<u8> {
     let mut buf = BytesMut::new();
-    buf.put_u64(resp.seq.to_be());
     buf.put_u64(resp.file_id.to_be());
     buf.put_u64(resp.block_id.to_be());
     match resp.status {
@@ -278,12 +195,13 @@ pub fn encode_file_block_response(resp: &FileBlockResponse) -> Vec<u8> {
         StatusCode::VersionMismatch => buf.put_u8(3),
     }
     buf.put_u64(resp.block_size.to_be());
-    buf.extend(&resp.data);
+    buf.put_slice(&resp.data);
+
     buf.to_vec()
 }
 
 /// The status code of the response.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum StatusCode {
     /// The request is successful.
     Success,

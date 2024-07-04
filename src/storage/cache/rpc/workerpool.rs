@@ -186,10 +186,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_worker_pool() {
-        // Set the tracing log level to debug
-        tracing_subscriber::fmt()
-            .with_max_level(tracing::Level::DEBUG)
-            .init();
+        // setup();
 
         let worker_pool = WorkerPool::new(4, 0);
         let res = worker_pool.submit_job(Box::new(TestJob));
@@ -217,10 +214,7 @@ mod tests {
 
     #[tokio::test]
     async fn benchmark_worker_pool() {
-        // Set the tracing log level to debug
-        tracing_subscriber::fmt()
-            .with_max_level(tracing::Level::DEBUG)
-            .init();
+        // setup();
 
         // Test to use 4 workers to submit 1000 jobs, and calculate the time cost.
         let worker_pool = Arc::new(WorkerPool::new(10, 1000));
