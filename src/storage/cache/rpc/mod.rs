@@ -193,7 +193,7 @@ mod tests {
                     let handler = FileBlockHandler::new(req_header, req_body, done_tx.clone());
                     if let Ok(()) = self
                         .worker_pool
-                        .submit_job(Box::new(handler))
+                        .try_submit_job(Box::new(handler))
                         .map_err(|err| {
                             debug!("Failed to submit job: {:?}", err);
                         })
@@ -215,6 +215,7 @@ mod tests {
         pub seq: u64,
         pub op: u8,
         pub status: PacketStatus,
+        pub timestamp: u64,
         pub buffer: BytesMut,
     }
 
@@ -229,6 +230,7 @@ mod tests {
                 // Set operation
                 op: ReqType::FileBlockRequest.to_u8(),
                 status: PacketStatus::Pending,
+                timestamp: 0,
                 buffer,
             }
         }
@@ -249,6 +251,14 @@ mod tests {
 
         fn set_op(&mut self, op: u8) {
             self.op = op;
+        }
+
+        fn set_timestamp(&mut self, timestamp: u64) {
+            self.timestamp = timestamp;
+        }
+
+        fn get_timestamp(&self) -> u64 {
+            self.timestamp
         }
 
         fn set_req_data(&mut self, _data: &[u8]) -> Result<(), RpcError<String>> {

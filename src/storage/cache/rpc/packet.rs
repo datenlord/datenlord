@@ -46,9 +46,9 @@ pub struct ReqHeader {
 impl Encode for ReqHeader {
     fn encode(&self) -> Vec<u8> {
         let mut buf = BytesMut::with_capacity(u64_to_usize(REQ_HEADER_SIZE));
-        buf.put_u64(self.seq.to_be());
-        buf.put_u8(self.op.to_be());
-        buf.put_u64(self.len.to_be());
+        buf.put_u64(self.seq.to_le());
+        buf.put_u8(self.op.to_le());
+        buf.put_u64(self.len.to_le());
         buf.to_vec()
     }
 }
@@ -86,9 +86,9 @@ pub struct RespHeader {
 impl Encode for RespHeader {
     fn encode(&self) -> Vec<u8> {
         let mut buf = BytesMut::with_capacity(u64_to_usize(RESP_HEADER_SIZE));
-        buf.put_u64(self.seq.to_be());
+        buf.put_u64(self.seq.to_le());
         buf.put_u8(self.op);
-        buf.put_u64(self.len.to_be());
+        buf.put_u64(self.len.to_le());
         buf.to_vec()
     }
 }
@@ -129,6 +129,11 @@ pub trait Packet: Sync + Send + Clone + Debug {
     fn op(&self) -> u8;
     /// Set packet type
     fn set_op(&mut self, op: u8);
+
+    /// Set timestamp
+    fn set_timestamp(&mut self, timestamp: u64);
+    /// Get timestamp
+    fn get_timestamp(&self) -> u64;
 
     /// Serialize request data to bytes
     fn set_req_data(&mut self, data: &[u8]) -> Result<(), RpcError<String>>;
@@ -194,8 +199,6 @@ where
 {
     /// current tasks, marked by the seq number
     packets: HashMap<u64, P>,
-    /// timestamp of seq number, marked by the seq number
-    timestamp: HashMap<u64, u64>,
 }
 
 impl<P: Packet + Send + Sync> PacketsInner<P> {
@@ -204,20 +207,16 @@ impl<P: Packet + Send + Sync> PacketsInner<P> {
     pub fn new() -> Self {
         PacketsInner {
             packets: HashMap::new(),
-            timestamp: HashMap::new(),
         }
     }
 
     /// Add a task to the packets
-    pub fn add_task(&mut self, seq: u64, timestamp: u64, packet: P) {
+    pub fn add_task(&mut self, seq: u64, packet: P) {
         self.packets.insert(seq, packet);
-        self.timestamp.insert(seq, timestamp);
     }
 
     /// Get a task from the packets and remove it
     pub fn remove_task(&mut self, seq: u64) -> Option<P> {
-        self.timestamp.remove(&seq);
-
         // remove packet and return it
         self.packets.remove(&seq)
     }
@@ -232,21 +231,19 @@ impl<P: Packet + Send + Sync> PacketsInner<P> {
             // Mark last timeout packets
             if current_status == PacketStatus::Timeout {
                 // Check if the task is timeout
-                if let Some(timestamp) = self.timestamp.get(seq) {
-                    if current_timestamp - timestamp > 10 * timeout {
-                        last_timeout_packets.push(*seq);
-                    }
+                let timestamp = packet.get_timestamp();
+                if current_timestamp - timestamp > 10 * timeout {
+                    last_timeout_packets.push(*seq);
                 }
             }
 
             if current_status == PacketStatus::Pending {
                 // Check if the task is timeout
-                if let Some(timestamp) = self.timestamp.get(seq) {
-                    if current_timestamp - timestamp > timeout {
-                        // Set the task as timeout
-                        debug!("Task {} is timeout", seq);
-                        packet.set_status(PacketStatus::Timeout);
-                    }
+                let timestamp = packet.get_timestamp();
+                if current_timestamp - timestamp > timeout {
+                    // Set the task as timeout
+                    debug!("Task {} is timeout", seq);
+                    packet.set_status(PacketStatus::Timeout);
                 }
             }
         }
@@ -254,22 +251,13 @@ impl<P: Packet + Send + Sync> PacketsInner<P> {
         // clean the timeout packets
         for seq in last_timeout_packets {
             self.packets.remove(&seq);
-            self.timestamp.remove(&seq);
         }
     }
 
     /// Get task from the packets
-    pub fn get_task_mut(&mut self, seq: u64) -> Option<(&mut P, u64)> {
-        if let Some(packet) = self.packets.get_mut(&seq) {
-            if let Some(timestamp) = self.timestamp.get(&seq) {
-                return Some((packet, *timestamp));
-            }
-
-            // Do not need to remove the packet if the timestamp is not found
-            return None;
-        }
-
-        None
+    pub fn get_task_mut(&mut self, seq: u64) -> Option<&mut P> {
+        // Do not need to remove the packet if the timestamp is not found
+        self.packets.get_mut(&seq)
     }
 }
 
@@ -283,9 +271,9 @@ where
     /// current tasks, marked by the seq number
     inner: Arc<RwLock<PacketsInner<P>>>,
     /// buffer sender
-    buffer_packets_sender: flume::Sender<(u64, P)>,
+    buffer_packets_sender: flume::Sender<P>,
     /// buffer receiver
-    buffer_packets_receiver: flume::Receiver<(u64, P)>,
+    buffer_packets_receiver: flume::Receiver<P>,
     /// The maximum number of tasks that can be stored in the previous_tasks
     /// We will mark the task as timeout if it is in the previous_tasks and the previous_tasks is full
     timeout: u64,
@@ -297,7 +285,7 @@ impl<P: Packet + Send + Sync> PacketsKeeper<P> {
     /// Create a new `PacketsKeeper`
     #[must_use]
     pub fn new(timeout: u64) -> Self {
-        let (buffer_packets_sender, buffer_packets_receiver) = flume::bounded::<(u64, P)>(1000);
+        let (buffer_packets_sender, buffer_packets_receiver) = flume::bounded::<P>(1000);
         let packets_inner = Arc::new(RwLock::new(PacketsInner::new()));
         let current_time = tokio::time::Instant::now();
 
@@ -311,11 +299,12 @@ impl<P: Packet + Send + Sync> PacketsKeeper<P> {
     }
 
     /// Add a task to the packets
-    pub fn add_task(&mut self, packet: P) -> Result<(), RpcError<String>> {
+    pub fn add_task(&mut self, packet: &mut P) -> Result<(), RpcError<String>> {
         // TODO: use a global atomic ticker(updated by check_loop) or read current time?
         let timestamp = self.current_time.elapsed().as_secs();
+        packet.set_timestamp(timestamp);
         self.buffer_packets_sender
-            .send((timestamp, packet))
+            .send(packet.clone())
             .map_err(|e| {
                 RpcError::InternalError(format!("Failed to send packet to buffer: {e:?}"))
             })?;
@@ -335,9 +324,9 @@ impl<P: Packet + Send + Sync> PacketsKeeper<P> {
     /// Clean pending tasks as timeout
     pub fn clean_timeout_tasks(&mut self) {
         let mut packets_inner = self.inner.write();
-        while let Ok((timestamp, packet)) = self.buffer_packets_receiver.try_recv() {
+        while let Ok(packet) = self.buffer_packets_receiver.try_recv() {
             let seq = packet.seq();
-            packets_inner.add_task(seq, timestamp, packet);
+            packets_inner.add_task(seq, packet);
         }
 
         let current_timestamp = self.current_time.elapsed().as_secs();
@@ -352,12 +341,12 @@ impl<P: Packet + Send + Sync> PacketsKeeper<P> {
     ) -> Result<(), RpcError<String>> {
         // Try to sync from buffer
         let mut packets_inner = self.inner.write();
-        while let Ok((timestamp, packet)) = self.buffer_packets_receiver.try_recv() {
+        while let Ok(packet) = self.buffer_packets_receiver.try_recv() {
             let seq = packet.seq();
-            packets_inner.add_task(seq, timestamp, packet);
+            packets_inner.add_task(seq, packet);
         }
 
-        if let Some((packet, _)) = packets_inner.get_task_mut(seq) {
+        if let Some(packet) = packets_inner.get_task_mut(seq) {
             // Update status data
             // Try to set result code in `set_resp_data`
             match packet.set_resp_data(resp_buffer) {
@@ -399,6 +388,7 @@ mod tests {
         pub seq: u64,
         pub op: u8,
         pub status: PacketStatus,
+        pub timestamp: u64,
     }
 
     impl Packet for TestPacket {
@@ -416,6 +406,14 @@ mod tests {
 
         fn set_op(&mut self, op: u8) {
             self.op = op;
+        }
+
+        fn set_timestamp(&mut self, timestamp: u64) {
+            self.timestamp = timestamp;
+        }
+
+        fn get_timestamp(&self) -> u64 {
+            self.timestamp
         }
 
         fn set_req_data(&mut self, _data: &[u8]) -> Result<(), RpcError<String>> {
@@ -484,8 +482,9 @@ mod tests {
             seq: 1,
             op: 2,
             status: PacketStatus::Pending,
+            timestamp: 0,
         };
-        packets_keeper.add_task(packet.clone()).unwrap();
+        packets_keeper.add_task(&mut packet.clone()).unwrap();
         packets_keeper
             .update_task_mut(packet.seq(), &mut BytesMut::new())
             .unwrap();
@@ -499,8 +498,9 @@ mod tests {
             seq: 2,
             op: 2,
             status: PacketStatus::Pending,
+            timestamp: 0,
         };
-        packets_keeper.add_task(packet_2.clone()).unwrap();
+        packets_keeper.add_task(&mut packet_2.clone()).unwrap();
         sleep(time::Duration::from_secs(2));
         packets_keeper.clean_timeout_tasks();
         let packet_2 = packets_keeper.consume_task(packet_2.seq()).unwrap();
@@ -511,8 +511,9 @@ mod tests {
             seq: 2,
             op: 2,
             status: PacketStatus::Pending,
+            timestamp: 0,
         };
-        packets_keeper.add_task(packet_3.clone()).unwrap();
+        packets_keeper.add_task(&mut packet_3.clone()).unwrap();
         sleep(time::Duration::from_secs(11));
         // First clean, will mark the task as timeout
         packets_keeper.clean_timeout_tasks();

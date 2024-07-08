@@ -69,7 +69,7 @@ impl WorkerPool {
     }
 
     /// Submit a job to the worker pool asynchronously, and return a future that resolves when the job is completed.
-    pub fn submit_job(&self, job: JobImpl) -> Result<(), RpcError<String>> {
+    pub fn try_submit_job(&self, job: JobImpl) -> Result<(), RpcError<String>> {
         // If current running worker count is more than max workers, and the job queue is full, return false.
         if self.job_sender.is_full() {
             return Err(RpcError::InternalError("Job queue is full".to_owned()));
@@ -86,7 +86,7 @@ impl WorkerPool {
     /// Submit a job to the worker pool synchronously, and block until the job is completed.
     /// Other process will be blocked until the job is completed.
     /// If all job try to submit the job, the process will be blocked.
-    pub fn submit_job_wait(&self, job: JobImpl) -> Result<(), RpcError<String>> {
+    pub fn submit_job(&self, job: JobImpl) -> Result<(), RpcError<String>> {
         // Submit the job to the job queue.
         self.job_sender
             .send(job)
@@ -95,23 +95,12 @@ impl WorkerPool {
         Ok(())
     }
 
-    /// Wait for all workers to complete.
+    /// Wait for all the jobs are consumed
     pub async fn wait_for_completion(&self) {
         // Check the sender channel is empty and all workers are completed.
         while !self.job_sender.is_empty() {
             tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
         }
-    }
-
-    /// Delete the worker pool and shutdown all workers.
-    pub fn shutdown(&self) {
-        debug!("Shutting down worker pool...");
-    }
-}
-
-impl Drop for WorkerPool {
-    fn drop(&mut self) {
-        self.shutdown();
     }
 }
 
@@ -189,24 +178,24 @@ mod tests {
         // setup();
 
         let worker_pool = WorkerPool::new(4, 0);
-        let res = worker_pool.submit_job(Box::new(TestJob));
+        let res = worker_pool.try_submit_job(Box::new(TestJob));
         assert!(res.is_err());
 
         let worker_pool = WorkerPool::new(4, 4);
-        let res = worker_pool.submit_job(Box::new(TestJob));
+        let res = worker_pool.try_submit_job(Box::new(TestJob));
         res.unwrap();
-        let res = worker_pool.submit_job(Box::new(TestJob));
+        let res = worker_pool.try_submit_job(Box::new(TestJob));
         res.unwrap();
-        let res = worker_pool.submit_job(Box::new(TestJob));
+        let res = worker_pool.try_submit_job(Box::new(TestJob));
         res.unwrap();
-        let res = worker_pool.submit_job(Box::new(TestJob));
+        let res = worker_pool.try_submit_job(Box::new(TestJob));
         res.unwrap();
 
-        let res = worker_pool.submit_job(Box::new(TestJob));
+        let res = worker_pool.try_submit_job(Box::new(TestJob));
         assert!(res.is_err());
 
         tokio::time::sleep(time::Duration::from_secs(1)).await;
-        let res = worker_pool.submit_job(Box::new(TestJob));
+        let res = worker_pool.try_submit_job(Box::new(TestJob));
         res.unwrap();
 
         drop(worker_pool);
@@ -221,7 +210,7 @@ mod tests {
         let start = Instant::now();
         for _ in 0_i32..1_000_i32 {
             let worker_pool = Arc::clone(&worker_pool);
-            worker_pool.submit_job(Box::new(TestJob)).unwrap();
+            worker_pool.try_submit_job(Box::new(TestJob)).unwrap();
         }
         let end = start.elapsed();
         info!("Workerpool time cost: {:?}", end);

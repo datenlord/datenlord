@@ -200,7 +200,7 @@ where
                 debug!("{:?} Sent request success: {:?}", self, req_packet.seq());
                 // We have set a copy to keeper and manage the status for the packets keeper
                 // Set to packet task with clone
-                self.get_packets_keeper_mut().add_task(req_packet.clone())?;
+                self.get_packets_keeper_mut().add_task(&mut req_packet.clone())?;
 
                 Ok(())
             } else {
@@ -471,6 +471,7 @@ mod tests {
         pub seq: u64,
         pub op: u8,
         pub status: PacketStatus,
+        pub timestamp: u64,
     }
 
     impl Packet for TestPacket {
@@ -488,6 +489,14 @@ mod tests {
 
         fn set_op(&mut self, op: u8) {
             self.op = op;
+        }
+
+        fn set_timestamp(&mut self, timestamp: u64) {
+            self.timestamp = timestamp;
+        }
+
+        fn get_timestamp(&self) -> u64 {
+            self.timestamp
         }
 
         fn set_req_data(&mut self, _data: &[u8]) -> Result<(), RpcError<String>> {

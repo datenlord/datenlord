@@ -115,9 +115,9 @@ pub fn decode_file_block_request(buf: &[u8]) -> Result<FileBlockRequest, RpcErro
 #[must_use]
 pub fn encode_file_block_request(req: &FileBlockRequest) -> Vec<u8> {
     let mut buf = BytesMut::new();
-    buf.put_u64(req.file_id.to_be());
-    buf.put_u64(req.block_id.to_be());
-    buf.put_u64(req.block_size.to_be());
+    buf.put_u64(req.file_id.to_le());
+    buf.put_u64(req.block_id.to_le());
+    buf.put_u64(req.block_size.to_le());
     buf.to_vec()
 }
 
@@ -186,15 +186,15 @@ pub fn decode_file_block_response(buf: &[u8]) -> Result<FileBlockResponse, RpcEr
 #[must_use]
 pub fn encode_file_block_response(resp: &FileBlockResponse) -> Vec<u8> {
     let mut buf = BytesMut::new();
-    buf.put_u64(resp.file_id.to_be());
-    buf.put_u64(resp.block_id.to_be());
+    buf.put_u64(resp.file_id.to_le());
+    buf.put_u64(resp.block_id.to_le());
     match resp.status {
         StatusCode::Success => buf.put_u8(0),
         StatusCode::NotFound => buf.put_u8(1),
         StatusCode::InternalError => buf.put_u8(2),
         StatusCode::VersionMismatch => buf.put_u8(3),
     }
-    buf.put_u64(resp.block_size.to_be());
+    buf.put_u64(resp.block_size.to_le());
     buf.put_slice(&resp.data);
 
     buf.to_vec()

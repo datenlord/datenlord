@@ -309,6 +309,11 @@ where
         }
     }
 
+    /// Get dispatch handler for the connection.
+    pub fn get_dispatch_handler(&self) -> T {
+        self.dispatch_handler.clone()
+    }
+
     /// Serve the connection.
     pub fn serve(&self, conn: RpcServerConnection<T>) {
         // Run the connection
@@ -394,7 +399,7 @@ where
                             stream,
                             Arc::clone(&factory.worker_pool),
                             conn_timeout_options,
-                            factory.dispatch_handler.clone(),
+                            factory.get_dispatch_handler(),
                         ));
                     }
                     Err(err) => {

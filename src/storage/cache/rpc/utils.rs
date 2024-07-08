@@ -72,10 +72,9 @@ pub fn get_u8_from_buf(buf: &[u8], start: usize) -> Result<u8, RpcError<String>>
 }
 
 /// Converts [`u64`] to [`usize`], and panic when the conversion fails.
-#[allow(clippy::missing_const_for_fn)] // <- false positive
 #[allow(clippy::expect_used)] // We can ensure that this method won't panic if we followed the hints above
 #[inline]
 #[must_use]
-pub fn u64_to_usize(x: u64) -> usize {
-    usize::try_from(x).expect("number cast failed")
+pub const fn u64_to_usize(x: u64) -> usize {
+    x as usize
 }
