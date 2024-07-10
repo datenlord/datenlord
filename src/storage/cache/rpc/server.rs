@@ -104,7 +104,7 @@ where
     }
 
     /// Recv request header from the stream
-    pub async fn recv_header(&self) -> Result<ReqHeader, RpcError<String>> {
+    pub async fn recv_header(&self) -> Result<ReqHeader, RpcError> {
         // Try to read to buffer
         match self.recv_len(REQ_HEADER_SIZE).await {
             Ok(()) => {}
@@ -122,7 +122,7 @@ where
     }
 
     /// Recv request body from the stream
-    pub async fn recv_len(&self, len: u64) -> Result<(), RpcError<String>> {
+    pub async fn recv_len(&self, len: u64) -> Result<(), RpcError> {
         let mut req_buffer: &mut BytesMut = unsafe { &mut *self.req_buf.get() };
         req_buffer.resize(u64_to_usize(len), 0);
         let reader = self.get_stream_mut();
@@ -141,7 +141,7 @@ where
 
     /// Send response to the stream
     /// The response is a byte array, contains the response header and body.
-    pub async fn send_response(&self, resp: &[u8]) -> Result<(), RpcError<String>> {
+    pub async fn send_response(&self, resp: &[u8]) -> Result<(), RpcError> {
         let writer = self.get_stream_mut();
         match write_all_timeout!(writer, resp, self.timeout_options.write_timeout).await {
             Ok(()) => {
@@ -202,7 +202,9 @@ where
                     op: RespType::KeepAliveResponse.to_u8(),
                     len: 0,
                 };
-                let resp_buffer = RespHeader::encode(&resp_header);
+                // Only one process will access this buffer, so we can use this buffer directly.
+                let resp_buffer: &mut BytesMut = unsafe { &mut *self.inner.req_buf.get() };
+                RespHeader::encode(&resp_header, resp_buffer);
                 if let Ok(res) = self.inner.send_response(&resp_buffer).await {
                     debug!("Sent keepalive response: {:?}", res);
                 } else {
@@ -371,7 +373,7 @@ where
     }
 
     /// Start the RPC server.
-    pub async fn listen(&mut self, addr: &str) -> Result<(), RpcError<String>> {
+    pub async fn listen(&mut self, addr: &str) -> Result<(), RpcError> {
         // Start the server
         let listener = tokio::net::TcpListener::bind(addr)
             .await

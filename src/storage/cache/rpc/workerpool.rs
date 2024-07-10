@@ -69,7 +69,7 @@ impl WorkerPool {
     }
 
     /// Submit a job to the worker pool asynchronously, and return a future that resolves when the job is completed.
-    pub fn try_submit_job(&self, job: JobImpl) -> Result<(), RpcError<String>> {
+    pub fn try_submit_job(&self, job: JobImpl) -> Result<(), RpcError> {
         // If current running worker count is more than max workers, and the job queue is full, return false.
         if self.job_sender.is_full() {
             return Err(RpcError::InternalError("Job queue is full".to_owned()));
@@ -86,7 +86,7 @@ impl WorkerPool {
     /// Submit a job to the worker pool synchronously, and block until the job is completed.
     /// Other process will be blocked until the job is completed.
     /// If all job try to submit the job, the process will be blocked.
-    pub fn submit_job(&self, job: JobImpl) -> Result<(), RpcError<String>> {
+    pub fn submit_job(&self, job: JobImpl) -> Result<(), RpcError> {
         // Submit the job to the job queue.
         self.job_sender
             .send(job)

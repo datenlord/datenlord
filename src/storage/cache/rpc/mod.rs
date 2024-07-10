@@ -76,7 +76,6 @@ mod tests {
     use workerpool::{Job, WorkerPool};
 
     use crate::async_fuse::util::usize_to_u64;
-    use crate::storage::cache::rpc::packet::PacketStatus;
 
     use super::*;
 
@@ -122,19 +121,21 @@ mod tests {
                 status: StatusCode::Success,
                 data: vec![0_u8; u64_to_usize(size)],
             };
-            let resp_body = file_block_resp.encode();
+            let mut resp_body_buffer = BytesMut::new();
+            file_block_resp.encode(&mut resp_body_buffer);
             // Prepare response header
             let resp_header = RespHeader {
                 seq: self.header.seq,
                 op: RespType::FileBlockResponse.to_u8(),
-                len: usize_to_u64(resp_body.len()),
+                len: usize_to_u64(resp_body_buffer.len()),
             };
-            let mut resp_buffer = resp_header.encode();
+            let mut resp_header_buffer = BytesMut::new();
+            resp_header.encode(&mut resp_header_buffer);
             // Combine response header and body
-            resp_buffer.extend_from_slice(&resp_body);
+            resp_header_buffer.extend_from_slice(&resp_body_buffer);
 
             // Send response to the done channel
-            match self.done_tx.send(resp_buffer).await {
+            match self.done_tx.send(resp_header_buffer.to_vec()).await {
                 Ok(()) => {
                     debug!("Sent response to done channel");
                 }
@@ -214,24 +215,23 @@ mod tests {
     pub struct TestFilePacket {
         pub seq: u64,
         pub op: u8,
-        pub status: PacketStatus,
         pub timestamp: u64,
         pub buffer: BytesMut,
+        sender: flume::Sender<Result<FileBlockResponse, RpcError>>
     }
 
     impl TestFilePacket {
-        pub fn new(block_request: &FileBlockRequest) -> Self {
-            let block_request_buf = block_request.encode();
+        pub fn new(block_request: &FileBlockRequest, sender: flume::Sender<Result<FileBlockResponse, RpcError>>) -> Self {
             let mut buffer = BytesMut::new();
-            buffer.extend_from_slice(block_request_buf.as_slice());
+            block_request.encode(&mut buffer);
             Self {
                 // Will be auto set by client
                 seq: 0,
                 // Set operation
                 op: ReqType::FileBlockRequest.to_u8(),
-                status: PacketStatus::Pending,
                 timestamp: 0,
                 buffer,
+                sender,
             }
         }
     }
@@ -261,43 +261,30 @@ mod tests {
             self.timestamp
         }
 
-        fn set_req_data(&mut self, _data: &[u8]) -> Result<(), RpcError<String>> {
-            // Try to set the request data
+        fn set_req_data(&mut self, _req: &dyn Encode) -> Result<(), RpcError> {
             Ok(())
         }
 
-        fn get_req_data(&self) -> Result<Vec<u8>, RpcError<String>> {
-            // Try to get the request data
-            // check current buffer is req
-            let req = FileBlockRequest::decode(&self.buffer)?;
-
-            // Return a 4MB vec
-            Ok(req.encode())
+        fn get_buf(&self) -> &[u8] {
+            self.buffer.as_ref()
         }
 
-        fn set_resp_data(&mut self, data: &[u8]) -> Result<(), RpcError<String>> {
-            // Try to set the response data
+        fn set_resp_data(&mut self, data: &[u8]) -> Result<(), RpcError> {
             self.buffer.clear();
             self.buffer.put(data);
-            // Make sure the padding data is invisible
-
             Ok(())
         }
 
-        fn get_resp_data(&self) -> Result<Vec<u8>, RpcError<String>> {
-            // Try to get the response data, check current data is ready
-            let resp = FileBlockResponse::decode(&self.buffer)?;
-            // Return a 4MB vec
-            let resp_vec = resp.encode();
-            Ok(resp_vec)
-        }
-
-        fn status(&self) -> PacketStatus {
-            self.status
-        }
-
-        fn set_status(&mut self, status: PacketStatus) {
-            self.status = status;
+        fn set_result(&self, status: Result<(), RpcError>) {
+            match status {
+                Ok(()) => {
+                    let file_block_resp = FileBlockResponse::decode(&self.buffer);
+                    self.sender.send(file_block_resp).unwrap();
+                }
+                Err(err) => {
+                    self.sender.send(Err(err)).unwrap();
+                }
+            }
         }
     }
 
@@ -330,7 +317,7 @@ mod tests {
         let timeout_options = ClientTimeoutOptions {
             read_timeout: Duration::from_secs(100),
             write_timeout: Duration::from_secs(100),
-            idle_timeout: Duration::from_secs(100),
+            task_timeout: Duration::from_secs(100),
             keep_alive_timeout: Duration::from_secs(20),
         };
         let connect_stream = connect_timeout!(addr, timeout_options.read_timeout)
@@ -342,19 +329,20 @@ mod tests {
         // Send ping
         rpc_client.ping().await.unwrap();
 
+        let (tx, rx) = flume::unbounded::<Result<FileBlockResponse, RpcError>>();
         // Send file block request
         let block_request = FileBlockRequest {
             block_id: 0,
             block_size: 4096,
             file_id: 0,
         };
-        let mut packet = TestFilePacket::new(&block_request);
+        let mut packet = TestFilePacket::new(&block_request, tx.clone());
         rpc_client.send_request(&mut packet).await.unwrap();
 
         loop {
-            match rpc_client.recv_response(&mut packet) {
-                Ok(()) => {
-                    let resp = FileBlockResponse::decode(&packet.get_resp_data().unwrap()).unwrap();
+            match rx.recv() {
+                Ok(resp) => {
+                    let resp = resp.unwrap();
 
                     assert_eq!(resp.file_id, 0);
                     assert_eq!(resp.block_id, 0);

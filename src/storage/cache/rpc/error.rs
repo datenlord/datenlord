@@ -1,42 +1,25 @@
-use std::fmt::{self, Error};
+use std::fmt;
 
 /// Error types for the RPC server and client
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum RpcError<T> {
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RpcError {
     /// The request is invalid.
-    InvalidRequest(T),
+    InvalidRequest(String),
     /// The response is invalid.
-    InvalidResponse(T),
+    InvalidResponse(String),
     /// The server/client meet an internal error.
-    InternalError(T),
+    InternalError(String),
+    /// The request is timeout
+    Timeout(String),
 }
 
-impl<T> RpcError<T> {
-    /// Convert the error to a string.
-    pub fn to_string(self) -> T {
-        match self {
-            Self::InvalidRequest(msg) | Self::InvalidResponse(msg) | Self::InternalError(msg) => {
-                msg
-            }
-        }
-    }
-}
-
-impl<T> fmt::Display for RpcError<T>
-where
-    T: fmt::Display,
-{
+impl fmt::Display for RpcError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
             Self::InvalidRequest(ref msg) => write!(f, "Invalid request: {msg}"),
             Self::InvalidResponse(ref msg) => write!(f, "Invalid response: {msg}"),
             Self::InternalError(ref msg) => write!(f, "Internal error: {msg}"),
+            Self::Timeout(ref msg) => write!(f, "Timeout: {msg}"),
         }
-    }
-}
-
-impl From<Error> for RpcError<String> {
-    fn from(err: Error) -> Self {
-        Self::InternalError(err.to_string())
     }
 }

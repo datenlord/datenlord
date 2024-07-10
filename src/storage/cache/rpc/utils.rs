@@ -58,23 +58,27 @@ macro_rules! connect_timeout {
 }
 
 /// Try to get u64 data from buffer with range
-pub fn get_u64_from_buf(buf: &[u8], start: usize) -> Result<u64, RpcError<String>> {
+pub fn get_u64_from_buf(buf: &[u8], start: usize) -> Result<u64, RpcError> {
     buf.get(start..start + 8)
         .ok_or_else(|| RpcError::InternalError("Invalid range data".to_owned()))
-        .map(|mut slice| u64::from_be(slice.get_u64()))
+        .map(|mut slice| u64::from_le(slice.get_u64()))
 }
 
 /// Try to get u8 data from buffer with range
-pub fn get_u8_from_buf(buf: &[u8], start: usize) -> Result<u8, RpcError<String>> {
+pub fn get_u8_from_buf(buf: &[u8], start: usize) -> Result<u8, RpcError> {
     buf.get(start)
-        .ok_or_else(|| RpcError::InternalError("Invalid range data".to_owned()))
-        .map(|&byte| u8::from_be(byte))
+        .ok_or_else(|| RpcError::InternalError("In valid range data".to_owned()))
+        .map(|&byte| u8::from_le(byte))
 }
 
 /// Converts [`u64`] to [`usize`], and panic when the conversion fails.
-#[allow(clippy::expect_used)] // We can ensure that this method won't panic if we followed the hints above
 #[inline]
 #[must_use]
 pub const fn u64_to_usize(x: u64) -> usize {
-    x as usize
+    #[allow(clippy::as_conversions)]
+    #[allow(clippy::cast_possible_truncation)]
+    #[cfg(not(target_pointer_width = "16"))]
+    {
+        x as usize
+    }
 }

@@ -8,7 +8,7 @@ pub struct ServerTimeoutOptions {
     /// The timeout for writing data to the connection
     pub write_timeout: Duration,
     /// The timeout for the idle connection
-    pub idle_timeout: Duration,
+    pub task_timeout: Duration,
 }
 
 impl Default for ServerTimeoutOptions {
@@ -16,7 +16,7 @@ impl Default for ServerTimeoutOptions {
         Self {
             read_timeout: Duration::from_secs(20),
             write_timeout: Duration::from_secs(20),
-            idle_timeout: Duration::from_secs(120),
+            task_timeout: Duration::from_secs(120),
         }
     }
 }
@@ -29,7 +29,7 @@ pub struct ClientTimeoutOptions {
     /// The timeout for writing data to the connection
     pub write_timeout: Duration,
     /// The timeout for the idle connection
-    pub idle_timeout: Duration,
+    pub task_timeout: Duration,
     /// The timeout for keep-alive connection
     pub keep_alive_timeout: Duration,
 }
@@ -39,7 +39,7 @@ impl Default for ClientTimeoutOptions {
         Self {
             read_timeout: Duration::from_secs(20),
             write_timeout: Duration::from_secs(20),
-            idle_timeout: Duration::from_secs(120),
+            task_timeout: Duration::from_secs(120),
             keep_alive_timeout: Duration::from_secs(60),
         }
     }

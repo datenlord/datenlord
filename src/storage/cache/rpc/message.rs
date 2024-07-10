@@ -19,7 +19,7 @@ pub enum ReqType {
 
 impl ReqType {
     /// Convert u8 to `ReqType`
-    pub fn from_u8(op: u8) -> Result<Self, RpcError<String>> {
+    pub fn from_u8(op: u8) -> Result<Self, RpcError> {
         match op {
             0 => Ok(Self::KeepAliveRequest),
             1 => Ok(Self::FileBlockRequest),
@@ -50,7 +50,7 @@ pub enum RespType {
 
 impl RespType {
     /// Convert u8 to `RespType`
-    pub fn from_u8(op: u8) -> Result<Self, RpcError<String>> {
+    pub fn from_u8(op: u8) -> Result<Self, RpcError> {
         match op {
             0 => Ok(Self::KeepAliveResponse),
             1 => Ok(Self::FileBlockResponse),
@@ -83,20 +83,20 @@ pub struct FileBlockRequest {
 
 impl Encode for FileBlockRequest {
     /// Encode the file block request into a byte buffer.
-    fn encode(&self) -> Vec<u8> {
-        encode_file_block_request(self)
+    fn encode(&self, buf: &mut BytesMut) {
+        encode_file_block_request(self, buf)
     }
 }
 
 impl Decode for FileBlockRequest {
     /// Decode the byte buffer into a file block request.
-    fn decode(buf: &[u8]) -> Result<Self, RpcError<String>> {
+    fn decode(buf: &[u8]) -> Result<Self, RpcError> {
         decode_file_block_request(buf)
     }
 }
 
 /// Decode the file block request from the buffer.
-pub fn decode_file_block_request(buf: &[u8]) -> Result<FileBlockRequest, RpcError<String>> {
+pub fn decode_file_block_request(buf: &[u8]) -> Result<FileBlockRequest, RpcError> {
     if buf.len() < 24 {
         return Err(RpcError::InternalError("Insufficient bytes".to_owned()));
     }
@@ -113,12 +113,11 @@ pub fn decode_file_block_request(buf: &[u8]) -> Result<FileBlockRequest, RpcErro
 
 /// Encode the file block request into a buffer.
 #[must_use]
-pub fn encode_file_block_request(req: &FileBlockRequest) -> Vec<u8> {
-    let mut buf = BytesMut::new();
+pub fn encode_file_block_request(req: &FileBlockRequest, buf: &mut BytesMut) {
+    buf.clear();
     buf.put_u64(req.file_id.to_le());
     buf.put_u64(req.block_id.to_le());
     buf.put_u64(req.block_size.to_le());
-    buf.to_vec()
 }
 
 /// The response to a file block request.
@@ -138,20 +137,20 @@ pub struct FileBlockResponse {
 
 impl Encode for FileBlockResponse {
     /// Encode the file block response into a byte buffer.
-    fn encode(&self) -> Vec<u8> {
-        encode_file_block_response(self)
+    fn encode(&self, buf: &mut BytesMut){
+        encode_file_block_response(self, buf)
     }
 }
 
 impl Decode for FileBlockResponse {
     //// Decode the byte buffer into a file block response.
-    fn decode(buf: &[u8]) -> Result<Self, RpcError<String>> {
+    fn decode(buf: &[u8]) -> Result<Self, RpcError> {
         decode_file_block_response(buf)
     }
 }
 
 /// Decode the file block response from the buffer.
-pub fn decode_file_block_response(buf: &[u8]) -> Result<FileBlockResponse, RpcError<String>> {
+pub fn decode_file_block_response(buf: &[u8]) -> Result<FileBlockResponse, RpcError> {
     if buf.len() < 17 {
         return Err(RpcError::InternalError("Insufficient bytes".to_owned()));
     }
@@ -184,8 +183,7 @@ pub fn decode_file_block_response(buf: &[u8]) -> Result<FileBlockResponse, RpcEr
 
 /// Encode the file block response into a buffer.
 #[must_use]
-pub fn encode_file_block_response(resp: &FileBlockResponse) -> Vec<u8> {
-    let mut buf = BytesMut::new();
+pub fn encode_file_block_response(resp: &FileBlockResponse, buf: &mut BytesMut) {
     buf.put_u64(resp.file_id.to_le());
     buf.put_u64(resp.block_id.to_le());
     match resp.status {
@@ -196,8 +194,6 @@ pub fn encode_file_block_response(resp: &FileBlockResponse) -> Vec<u8> {
     }
     buf.put_u64(resp.block_size.to_le());
     buf.put_slice(&resp.data);
-
-    buf.to_vec()
 }
 
 /// The status code of the response.
