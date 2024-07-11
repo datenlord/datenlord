@@ -205,7 +205,7 @@ where
                 // Only one process will access this buffer, so we can use this buffer directly.
                 let resp_buffer: &mut BytesMut = unsafe { &mut *self.inner.req_buf.get() };
                 RespHeader::encode(&resp_header, resp_buffer);
-                if let Ok(res) = self.inner.send_response(&resp_buffer).await {
+                if let Ok(res) = self.inner.send_response(resp_buffer).await {
                     debug!("Sent keepalive response: {:?}", res);
                 } else {
                     error!("Failed to send keepalive response");

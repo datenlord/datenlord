@@ -15,7 +15,7 @@ use tokio::{
 };
 use tracing::debug;
 
-use crate::{async_fuse::util::usize_to_u64, read_exact_timeout, write_all_timeout};
+use crate::{read_exact_timeout, write_all_timeout};
 
 use super::{
     common::ClientTimeoutOptions,
@@ -129,20 +129,24 @@ where
     /// We need to make sure
     /// Current send packet need to be in one task, so if we need to send ping and packet
     /// we need to make sure only one operation is running, like select.
-    pub async fn send_data(&self, req_header: &dyn Encode, req_body: Option<&[u8]>) -> Result<(), RpcError> {
+    pub async fn send_data(
+        &self,
+        req_header: &dyn Encode,
+        req_body: Option<&dyn Encode>,
+    ) -> Result<(), RpcError> {
         let buf = unsafe { &mut *self.req_buf.get() };
         buf.clear();
+        // encode just need to append to buffer, do not clear buffer
         req_header.encode(buf);
         // Append the body to the buffer
         if let Some(body) = req_body {
-            buf.extend_from_slice(body);
+            // encode just need to append to buffer, do not clear buffer
+            body.encode(buf);
         }
         debug!("{:?} Sent data with length: {:?}", self, buf.len());
         let writer = self.get_stream_mut();
         match write_all_timeout!(writer, buf, self.timeout_options.write_timeout).await {
-            Ok(()) => {
-                Ok(())
-            }
+            Ok(()) => Ok(()),
             Err(err) => {
                 debug!("{:?} Failed to send data: {:?}", self, err);
                 Err(RpcError::InternalError(err.to_string()))
@@ -196,19 +200,20 @@ where
         debug!("{:?} Try to send request: {:?}", self, current_seq);
 
         // Send may be used in different threads, so we need to create local buffer to store the request data
-        let req_buffer= req_packet.get_buf(); // Try to get reqeust buffer
+        let req_len = req_packet.get_req_len(); // Try to get reqeust buffer
         let req_header = ReqHeader {
             seq: req_packet.seq(),
             op: req_packet.op(),
-            len: usize_to_u64(req_buffer.len()),
+            len: req_len,
         };
 
         // concate req_header and req_buffer
-        if let Ok(()) = self.send_data(&req_header, Some(req_buffer)).await {
+        if let Ok(()) = self.send_data(&req_header, Some(req_packet)).await {
             debug!("{:?} Sent request success: {:?}", self, req_packet.seq());
             // We have set a copy to keeper and manage the status for the packets keeper
             // Set to packet task with clone
-            self.get_packets_keeper_mut().add_task(&mut req_packet.clone())?;
+            self.get_packets_keeper_mut()
+                .add_task(&mut req_packet.clone())?;
 
             Ok(())
         } else {
@@ -354,6 +359,7 @@ where
     /// Send a request to the server.
     /// Try to send data to channel, if the channel is full, return an error.
     /// Contains the rezquest header and body.
+    /// WARN: this function does not support concurrent call
     pub async fn send_request(&self, req: &mut P) -> Result<(), RpcError> {
         self.inner_connection
             .send_packet(req)
@@ -364,6 +370,7 @@ where
     /// Manually send ping by the send request
     /// The inner can not start two loop, because the stream is unsafe
     /// we need to start the loop in the client or higher level manually
+    /// WARN: this function does not support concurrent call
     pub async fn ping(&self) -> Result<(), RpcError> {
         self.inner_connection.ping().await
     }
@@ -447,6 +454,10 @@ mod tests {
         pub timestamp: u64,
     }
 
+    impl Encode for TestPacket {
+        fn encode(&self, _buf: &mut BytesMut) {}
+    }
+
     impl Packet for TestPacket {
         fn seq(&self) -> u64 {
             self.seq
@@ -472,19 +483,14 @@ mod tests {
             self.timestamp
         }
 
-        fn set_req_data(&mut self, _req: &dyn Encode) -> Result<(), RpcError> {
-            Ok(())
-        }
-
-        fn get_buf(&self) -> &[u8] {
-            &mut []
-        }
-
         fn set_resp_data(&mut self, _data: &[u8]) -> Result<(), RpcError> {
             Ok(())
         }
 
-        fn set_result(&self, _status: Result<(), RpcError>) {
+        fn set_result(&self, _status: Result<(), RpcError>) {}
+
+        fn get_req_len(&self) -> u64 {
+            0
         }
     }
 
@@ -559,6 +565,14 @@ mod tests {
         connection.recv_len(10).await.unwrap();
     }
 
+    struct TestData;
+    impl Encode for TestData {
+        fn encode(&self, buf: &mut BytesMut) {
+            let data = b"Hello, world!";
+            buf.extend_from_slice(data);
+        }
+    }
+
     #[tokio::test]
     async fn test_send_data() {
         // setup();
@@ -576,8 +590,11 @@ mod tests {
             op: ReqType::KeepAliveRequest.to_u8(),
             len: 0,
         };
-        let data = b"Hello, world!";
-        connection.send_data(&req_header, Some(data)).await.unwrap();
+
+        connection
+            .send_data(&req_header, Some(&TestData {}))
+            .await
+            .unwrap();
     }
 
     #[tokio::test]

@@ -71,7 +71,7 @@ impl RespType {
 }
 
 /// Common data structures shared between the client and server.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct FileBlockRequest {
     /// The file ID.
     pub file_id: u64,
@@ -84,7 +84,7 @@ pub struct FileBlockRequest {
 impl Encode for FileBlockRequest {
     /// Encode the file block request into a byte buffer.
     fn encode(&self, buf: &mut BytesMut) {
-        encode_file_block_request(self, buf)
+        encode_file_block_request(self, buf);
     }
 }
 
@@ -112,16 +112,14 @@ pub fn decode_file_block_request(buf: &[u8]) -> Result<FileBlockRequest, RpcErro
 }
 
 /// Encode the file block request into a buffer.
-#[must_use]
 pub fn encode_file_block_request(req: &FileBlockRequest, buf: &mut BytesMut) {
-    buf.clear();
     buf.put_u64(req.file_id.to_le());
     buf.put_u64(req.block_id.to_le());
     buf.put_u64(req.block_size.to_le());
 }
 
 /// The response to a file block request.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct FileBlockResponse {
     /// The file ID.
     pub file_id: u64,
@@ -137,8 +135,8 @@ pub struct FileBlockResponse {
 
 impl Encode for FileBlockResponse {
     /// Encode the file block response into a byte buffer.
-    fn encode(&self, buf: &mut BytesMut){
-        encode_file_block_response(self, buf)
+    fn encode(&self, buf: &mut BytesMut) {
+        encode_file_block_response(self, buf);
     }
 }
 
@@ -182,7 +180,6 @@ pub fn decode_file_block_response(buf: &[u8]) -> Result<FileBlockResponse, RpcEr
 }
 
 /// Encode the file block response into a buffer.
-#[must_use]
 pub fn encode_file_block_response(resp: &FileBlockResponse, buf: &mut BytesMut) {
     buf.put_u64(resp.file_id.to_le());
     buf.put_u64(resp.block_id.to_le());

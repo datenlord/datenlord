@@ -54,9 +54,9 @@ fn setup() {
 #[allow(clippy::unwrap_used)]
 #[allow(clippy::indexing_slicing)]
 mod tests {
-    use std::net::TcpStream;
     use std::sync::Arc;
     use std::time::Duration;
+    use std::{mem, net::TcpStream};
 
     use async_trait::async_trait;
     use bytes::{BufMut, BytesMut};
@@ -194,7 +194,7 @@ mod tests {
                     let handler = FileBlockHandler::new(req_header, req_body, done_tx.clone());
                     if let Ok(()) = self
                         .worker_pool
-                        .try_submit_job(Box::new(handler))
+                        .submit_job(Box::new(handler))
                         .map_err(|err| {
                             debug!("Failed to submit job: {:?}", err);
                         })
@@ -216,12 +216,16 @@ mod tests {
         pub seq: u64,
         pub op: u8,
         pub timestamp: u64,
+        pub request: FileBlockRequest,
         pub buffer: BytesMut,
-        sender: flume::Sender<Result<FileBlockResponse, RpcError>>
+        pub sender: flume::Sender<Result<FileBlockResponse, FileBlockRequest>>,
     }
 
     impl TestFilePacket {
-        pub fn new(block_request: &FileBlockRequest, sender: flume::Sender<Result<FileBlockResponse, RpcError>>) -> Self {
+        pub fn new(
+            block_request: &FileBlockRequest,
+            sender: flume::Sender<Result<FileBlockResponse, FileBlockRequest>>,
+        ) -> Self {
             let mut buffer = BytesMut::new();
             block_request.encode(&mut buffer);
             Self {
@@ -229,10 +233,17 @@ mod tests {
                 seq: 0,
                 // Set operation
                 op: ReqType::FileBlockRequest.to_u8(),
+                request: block_request.clone(),
                 timestamp: 0,
                 buffer,
                 sender,
             }
+        }
+    }
+
+    impl Encode for TestFilePacket {
+        fn encode(&self, buffer: &mut BytesMut) {
+            self.request.encode(buffer);
         }
     }
 
@@ -261,14 +272,6 @@ mod tests {
             self.timestamp
         }
 
-        fn set_req_data(&mut self, _req: &dyn Encode) -> Result<(), RpcError> {
-            Ok(())
-        }
-
-        fn get_buf(&self) -> &[u8] {
-            self.buffer.as_ref()
-        }
-
         fn set_resp_data(&mut self, data: &[u8]) -> Result<(), RpcError> {
             self.buffer.clear();
             self.buffer.put(data);
@@ -278,13 +281,18 @@ mod tests {
         fn set_result(&self, status: Result<(), RpcError>) {
             match status {
                 Ok(()) => {
-                    let file_block_resp = FileBlockResponse::decode(&self.buffer);
-                    self.sender.send(file_block_resp).unwrap();
+                    let file_block_resp = FileBlockResponse::decode(&self.buffer).unwrap();
+                    self.sender.send(Ok(file_block_resp)).unwrap();
                 }
                 Err(err) => {
-                    self.sender.send(Err(err)).unwrap();
+                    error!("Failed to set result: {:?}", err);
+                    self.sender.send(Err(self.request.clone())).unwrap();
                 }
             }
+        }
+
+        fn get_req_len(&self) -> u64 {
+            usize_to_u64(mem::size_of_val(&self.request))
         }
     }
 
@@ -329,7 +337,7 @@ mod tests {
         // Send ping
         rpc_client.ping().await.unwrap();
 
-        let (tx, rx) = flume::unbounded::<Result<FileBlockResponse, RpcError>>();
+        let (tx, rx) = flume::unbounded::<Result<FileBlockResponse, FileBlockRequest>>();
         // Send file block request
         let block_request = FileBlockRequest {
             block_id: 0,

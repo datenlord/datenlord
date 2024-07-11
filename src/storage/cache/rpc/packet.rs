@@ -17,13 +17,14 @@ pub const RESP_HEADER_SIZE: u64 = 17;
 
 /// The Encode trait is used to encode a message structure into a byte buffer.
 pub trait Encode {
-    /// Encode the message into a byte buffer.
+    /// Encode the message into a byte buffer, this operation will append to buffer
+    /// If you need to encode from start, you should clear the buffer first
     fn encode(&self, buf: &mut BytesMut);
 }
 
 /// The Decode trait is used to message a byte buffer into a data structure.
 pub trait Decode {
-    /// Decode the byte buffer into a data structure.
+    /// Decode the byte buffer into a data structure
     fn decode(buf: &[u8]) -> Result<Self, RpcError>
     where
         Self: Sized;
@@ -45,7 +46,6 @@ pub struct ReqHeader {
 
 impl Encode for ReqHeader {
     fn encode(&self, buf: &mut BytesMut) {
-        buf.clear();
         buf.put_u64(self.seq.to_le());
         buf.put_u8(self.op.to_le());
         buf.put_u64(self.len.to_le());
@@ -84,7 +84,6 @@ pub struct RespHeader {
 
 impl Encode for RespHeader {
     fn encode(&self, buf: &mut BytesMut) {
-        buf.clear();
         buf.put_u64(self.seq.to_le());
         buf.put_u8(self.op);
         buf.put_u64(self.len.to_le());
@@ -117,7 +116,7 @@ impl Decode for RespHeader {
 ///
 /// Client will receive the response packet and deserialize it to a packet struct.
 /// and check the status of the packet and the response.
-pub trait Packet: Sync + Send + Clone + Debug {
+pub trait Packet: Sync + Send + Clone + Debug + Encode {
     /// Get the packet seq number
     fn seq(&self) -> u64;
     /// Set the packet seq number
@@ -133,13 +132,9 @@ pub trait Packet: Sync + Send + Clone + Debug {
     /// Get timestamp
     fn get_timestamp(&self) -> u64;
 
-    /// Serialize request data to bytes
-    /// We will get the serialized request data by accessing the property of the Packet
-    /// we can serialize the req data in inner buffer
-    fn set_req_data(&mut self, req: &dyn Encode) -> Result<(), RpcError>;
-
-    /// Get request buf
-    fn get_buf(&self) -> &[u8];
+    /// Get request buf length
+    /// This function is used to get the length of the request size for join header
+    fn get_req_len(&self) -> u64;
 
     /// Serialize response data to bytes
     /// We will get the serialized response data by accessing the property of the Packet
@@ -191,7 +186,7 @@ impl<P: Packet + Send + Sync> PacketsInner<P> {
                 // Set the task as timeout
                 last_timeout_packets.push(*seq);
                 debug!("Task {} is timeout", seq);
-                packet.set_result(Err(RpcError::Timeout(format!("Task {} is timeout", seq))));
+                packet.set_result(Err(RpcError::Timeout(format!("Task {seq} is timeout"))));
             }
         }
 
@@ -210,7 +205,7 @@ impl<P: Packet + Send + Sync> PacketsInner<P> {
     /// Purge the outdated tasks when connection is timeout
     pub fn purge_outdated_tasks(&mut self) {
         for (seq, packet) in &mut self.packets {
-            packet.set_result(Err(RpcError::Timeout(format!("Task {} is timeout", seq))));
+            packet.set_result(Err(RpcError::Timeout(format!("Task {seq} is timeout"))));
         }
 
         self.packets.clear();
@@ -287,11 +282,7 @@ impl<P: Packet + Send + Sync> PacketsKeeper<P> {
     }
 
     /// Get a task from the packets, and update data in the task
-    pub fn take_task(
-        &self,
-        seq: u64,
-        resp_buffer: &mut BytesMut,
-    ) -> Result<(), RpcError> {
+    pub fn take_task(&self, seq: u64, resp_buffer: &mut BytesMut) -> Result<(), RpcError> {
         // Try to sync from buffer
         let mut packets_inner = self.inner.write();
         while let Ok(packet) = self.buffer_packets_receiver.try_recv() {
@@ -306,23 +297,16 @@ impl<P: Packet + Send + Sync> PacketsKeeper<P> {
             let set_result = packet.set_resp_data(resp_buffer);
             match set_result {
                 Ok(()) => {
-                    debug!(
-                        "{:?} Success to set response data, seq: {:?}",
-                        self,
-                        seq
-                    );
+                    debug!("{:?} Success to set response data, seq: {:?}", self, seq);
                     packet.set_result(Ok(()));
                 }
                 Err(err) => {
                     debug!(
                         "{:?} Failed to set response data: {:?} with error {:?}",
-                        self,
-                        seq,
-                        err
+                        self, seq, err
                     );
                     packet.set_result(Err(RpcError::InternalError(format!(
-                        "Failed to set response data: {:?} with error {:?}",
-                        seq, err
+                        "Failed to set response data: {seq:?} with error {err:?}"
                     ))));
                 }
             }
@@ -337,18 +321,37 @@ impl<P: Packet + Send + Sync> PacketsKeeper<P> {
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
+#[allow(dead_code)]
 mod tests {
-    use std::{thread::sleep, time};
+    use std::{mem, thread::sleep, time};
+
+    use crate::async_fuse::util::usize_to_u64;
 
     use super::*;
+
+    #[derive(Debug, Clone)]
+    struct TestRequest {
+        pub mock: u64,
+    }
+
+    impl Encode for TestRequest {
+        fn encode(&self, _buf: &mut BytesMut) {}
+    }
 
     #[derive(Debug, Clone)]
     struct TestPacket {
         pub seq: u64,
         pub op: u8,
         pub timestamp: u64,
+        pub request: TestRequest,
         pub buf: BytesMut,
-        sender: flume::Sender<Result<(), RpcError>>,
+        pub sender: flume::Sender<Result<(), RpcError>>,
+    }
+
+    impl Encode for TestPacket {
+        fn encode(&self, buf: &mut BytesMut) {
+            self.request.encode(buf);
+        }
     }
 
     impl Packet for TestPacket {
@@ -376,12 +379,8 @@ mod tests {
             self.timestamp
         }
 
-        fn set_req_data(&mut self, _req: &dyn Encode) -> Result<(), RpcError> {
-            Ok(())
-        }
-
-        fn get_buf(&self) -> &[u8] {
-            &self.buf
+        fn get_req_len(&self) -> u64 {
+            usize_to_u64(mem::size_of_val(&self.request))
         }
 
         fn set_resp_data(&mut self, _data: &[u8]) -> Result<(), RpcError> {
@@ -431,6 +430,7 @@ mod tests {
     fn test_packets_keeper() {
         let mut packets_keeper = PacketsKeeper::<TestPacket>::new(1);
 
+        // You can control what is need to be send.
         let (tx, rx) = flume::unbounded::<Result<(), RpcError>>();
 
         // Success
@@ -440,6 +440,7 @@ mod tests {
             timestamp: 0,
             buf: BytesMut::new(),
             sender: tx.clone(),
+            request: TestRequest { mock: 0 },
         };
         packets_keeper.add_task(&mut packet.clone()).unwrap();
         packets_keeper
@@ -457,13 +458,14 @@ mod tests {
             timestamp: 0,
             buf: BytesMut::new(),
             sender: tx.clone(),
+            request: TestRequest { mock: 0 },
         };
         packets_keeper.add_task(&mut packet_2.clone()).unwrap();
         sleep(time::Duration::from_secs(2));
         packets_keeper.clean_timeout_tasks();
         match rx.recv() {
             Ok(res) => {
-                assert!(res.is_err())
+                assert!(res.is_err());
             }
             _ => panic!("Failed to get response"),
         }
@@ -475,6 +477,7 @@ mod tests {
             timestamp: 0,
             buf: BytesMut::new(),
             sender: tx.clone(),
+            request: TestRequest { mock: 0 },
         };
         packets_keeper.add_task(&mut packet_3.clone()).unwrap();
         sleep(time::Duration::from_secs(11));
@@ -482,7 +485,7 @@ mod tests {
         packets_keeper.purge_outdated_tasks();
         match rx.recv() {
             Ok(res) => {
-                assert!(res.is_err())
+                assert!(res.is_err());
             }
             _ => panic!("Failed to get response"),
         }
