@@ -85,6 +85,68 @@ impl Backend for FSBackend {
     }
 }
 
+/// The `S3Backend` struct represents a backend storage system that uses S3.
+#[derive(Debug)]
+pub struct S3Backend {
+    operator: Operator,
+}
+
+impl S3Backend {
+    /// Creates a new `S3Backend` instance with the given `Operator`.
+    /// You need to create a s3 operator and pass it to this function.
+    pub fn new(operator: Operator) -> Self {
+        Self { operator }
+    }
+}
+
+#[async_trait]
+impl Backend for S3Backend {
+    /// TODO: Add rate limit for s3
+    /// Reads data from the storage system into the given buffer.
+    #[inline]
+    async fn read(&self, path: &str, buf: &mut [u8]) -> StorageResult<usize> {
+        let mut reader = self.operator.reader(path).await?;
+        let mut read_size = 0;
+
+        loop {
+            // Read data and catch the size
+            let result = reader.read(buf).await;
+            match result {
+                Ok(size) => {
+                    if size == 0 {
+                        break;
+                    }
+                    read_size += size;
+                }
+                Err(e) => {
+                    // If not found just return 0.
+                    if e.kind() == ErrorKind::NotFound {
+                        break;
+                    }
+                }
+            }
+        }
+
+        Ok(read_size)
+    }
+
+    /// Stores data from the given buffer into the storage system.
+    #[inline]
+    async fn store(&self, path: &str, buf: &[u8]) -> StorageResult<()> {
+        let mut writer = self.operator.writer(path).await?;
+        writer.write_all(buf).await?;
+        writer.close().await?;
+        Ok(())
+    }
+
+    /// Removes the data from the storage system.
+    #[inline]
+    async fn remove(&self, path: &str) -> StorageResult<()> {
+        self.operator.remove_all(path).await?;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
