@@ -200,7 +200,7 @@ where
         debug!("{:?} Try to send request: {:?}", self, current_seq);
 
         // Send may be used in different threads, so we need to create local buffer to store the request data
-        let req_len = req_packet.get_req_len(); // Try to get reqeust buffer
+        let req_len = req_packet.get_req_len(); // Try to get request buffer
         let req_header = ReqHeader {
             seq: req_packet.seq(),
             op: req_packet.op(),
