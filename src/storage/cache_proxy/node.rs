@@ -62,7 +62,8 @@ pub struct Node {
     port: u16,
     /// The weight of the node
     weight: u32,
-    /// The status of the node
+    /// The status of the node, we do not serialize this field to reduce status sync cost
+    #[serde(skip)]
     status: NodeStatus,
 }
 
@@ -90,7 +91,7 @@ impl Default for Node {
             ip: String::new(),
             port: 0,
             weight: 0,
-            status: NodeStatus::Initializing,
+            status: NodeStatus::Slave,
         }
     }
 }
@@ -155,13 +156,10 @@ impl Node {
 }
 
 /// Node status
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Copy)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, Copy)]
 pub enum NodeStatus {
-    /// The node is preparing
-    Initializing,
-    /// The node is registering
-    Registering,
     /// The node is serve as slave
+    #[default]
     Slave,
     /// The node is serve as master
     Master,
@@ -173,8 +171,6 @@ impl FromStr for NodeStatus {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let s = s.to_lowercase();
         match s.as_str() {
-            "initializing" => Ok(NodeStatus::Initializing),
-            "registering" => Ok(NodeStatus::Registering),
             "slave" => Ok(NodeStatus::Slave),
             "master" => Ok(NodeStatus::Master),
             _ => Err(format!("Unknown node status: {s}")),
