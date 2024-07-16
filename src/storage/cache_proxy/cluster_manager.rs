@@ -1,5 +1,6 @@
 //! The utilities of distribute cache cluster management
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -23,7 +24,7 @@ const SESSION_TIMEOUT_SEC: u64 = 10;
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub struct ClusterManager {
-    /// inner struct
+    /// Inner struct
     inner: Arc<ClusterManagerInner>,
 }
 
@@ -55,6 +56,19 @@ impl ClusterManager {
     pub fn stop(&self) {
         // In this step, we just to clean session and force down the cluster manager
         self.inner.clean_sessions();
+
+        // Set the shutdown flag
+        self.inner.shutdown_flag.store(true, Ordering::Release);
+
+        // Force shutdown
+        match self.inner.shutdown_tx.send(()) {
+            Ok(()) => {
+                debug!("Cluster manager is stopped");
+            }
+            Err(e) => {
+                warn!("Failed to stop cluster manager: {:?}", e);
+            }
+        }
     }
 
     /// Run the cluster manager as state machine
@@ -62,24 +76,18 @@ impl ClusterManager {
     /// We need to perpare current node info, current node list and generate hash ring info
     pub async fn run(&self) -> DatenLordResult<()> {
         loop {
+            // Check the shutdown flag, if current flag is set, we need return to the caller
+            if self.inner.shutdown_flag.load(Ordering::Acquire) {
+                return Ok(());
+            }
+
             // 0. Prepare for the session
             self.inner.prepare().await?;
 
-            // 1. Init cluster manager
-            debug!(
-                "Cluster manager start to run in node: {:?}",
-                self.inner.get_node().ip()
-            );
+            // 1. Init cluster manager and register to etcd
             let mut current_node_info = self.inner.get_node();
-            // Next step is to register the node
-            current_node_info.set_status(NodeStatus::Registering);
-            self.inner.update_node(current_node_info);
-            self.inner.update_node_in_cluster().await?;
-
-            let mut current_node_info = self.inner.get_node();
-            // 2. Register node to etcd
             debug!(
-                "Current node {:?} status: {:?}",
+                "Cluster manager start to run in node: {:?} status: {:?}",
                 current_node_info.ip(),
                 current_node_info.status()
             );
@@ -88,19 +96,8 @@ impl ClusterManager {
                 // Try to register node to etcd
                 tokio::time::sleep(Duration::from_secs(5)).await;
             }
-            // Update node status to Registering
-            current_node_info.set_status(NodeStatus::Slave);
-            self.inner.update_node(current_node_info);
-            self.inner.update_node_in_cluster().await?;
 
-            // 2. Register node to etcd
-            let mut current_node_info = self.inner.get_node();
-            debug!(
-                "Current node {:?} status: {:?}",
-                current_node_info.ip(),
-                current_node_info.status()
-            );
-            // 3. Do campaign
+            // 2. Do campaign
             let (campaign_status, campaign_val) = self.inner.do_campaign().await?;
             debug!(
                 "Node: {:?} Campaign status: {:?} val: {:?}",
@@ -112,10 +109,9 @@ impl ClusterManager {
                 // Update node status to Master
                 current_node_info.set_status(NodeStatus::Master);
                 self.inner.update_node(current_node_info);
-                self.inner.update_node_in_cluster().await?;
             }
 
-            // 4. Serve as normal status
+            // 3. Serve as normal status
             let current_node_info = self.inner.get_node();
             match current_node_info.status() {
                 // Serve as slave node
@@ -144,11 +140,6 @@ impl ClusterManager {
                         warn!("Failed to do master tasks: {:?}", e);
                     }
                 },
-                // Other parts can not
-                NodeStatus::Initializing | NodeStatus::Registering => {
-                    // Clean up tasks
-                    self.inner.clean_sessions();
-                }
             }
         }
     }
@@ -229,6 +220,12 @@ pub struct ClusterManagerInner {
     /// current hash ring, we will set the session in run method
     hash_ring: ArcSwap<Ring<Node>>,
     // TODO: Support distribute cluster config here
+    /// Shutdown flag
+    shutdown_flag: AtomicBool,
+    /// Controller for shutdown
+    shutdown_tx: flume::Sender<()>,
+    /// Receiver for shutdown
+    shutdown_rx: flume::Receiver<()>,
 }
 
 #[allow(dead_code)]
@@ -239,6 +236,8 @@ impl ClusterManagerInner {
         let node = ArcSwap::<Node>::new(Arc::new(node));
         let node_list = ArcSwap::<Vec<Node>>::new(Arc::new(Vec::new()));
         let hash_ring = ArcSwap::<Ring<Node>>::new(Arc::new(Ring::default()));
+        let shutdown_flag = AtomicBool::new(false);
+        let (shutdown_tx, shutdown_rx) = flume::bounded::<()>(1);
 
         Self {
             kv_engine,
@@ -246,6 +245,49 @@ impl ClusterManagerInner {
             node,
             node_list,
             hash_ring,
+            shutdown_flag,
+            shutdown_tx,
+            shutdown_rx,
+        }
+    }
+
+    /// Get shutdown tx
+    pub fn get_shutdown_tx(&self) -> flume::Sender<()> {
+        self.shutdown_tx.clone()
+    }
+
+    /// Get shutdown rx
+    pub fn get_shutdown_rx(&self) -> flume::Receiver<()> {
+        self.shutdown_rx.clone()
+    }
+
+    /// Get valid session
+    pub fn get_valid_session(&self) -> DatenLordResult<Arc<Session>> {
+        let node_session = self.node_session.load();
+        if let Some(session) = node_session.as_ref().cloned() {
+            if session.is_closed() {
+                let current_node = self.node.load();
+                warn!(
+                    "Current {} session is invalid, return to endpoint",
+                    current_node.ip()
+                );
+                return Err(DatenLordError::CacheClusterErr {
+                    context: vec![format!("Current {} session is invalid", current_node.ip())],
+                });
+            }
+            Ok(session)
+        } else {
+            let current_node = self.node.load();
+            warn!(
+                "Current {} session is not existed, return to endpoint",
+                current_node.ip()
+            );
+            Err(DatenLordError::CacheClusterErr {
+                context: vec![format!(
+                    "Current {} session is not existed",
+                    current_node.ip()
+                )],
+            })
         }
     }
 
@@ -261,53 +303,13 @@ impl ClusterManagerInner {
         Ok(())
     }
 
-    /// Update node info
-    pub async fn update_node_in_cluster(&self) -> DatenLordResult<()> {
-        let node = self.node.load();
-        let key = &KeyType::CacheNode(node.ip().to_owned());
-        let node_session = self.node_session.load();
-        let Some(current_session) = node_session.as_ref().cloned() else {
-            let current_node = self.node.load();
-            warn!(
-                "Current {} session is invalid, return to endpoint",
-                current_node.ip()
-            );
-            return Err(DatenLordError::CacheClusterErr {
-                context: vec![format!("Current {} session is invalid", current_node.ip())],
-            });
-        };
-
-        self.kv_engine
-            .set(
-                key,
-                &ValueType::Json(serde_json::to_value(node.as_ref())?),
-                Some(SetOption {
-                    session: Some(current_session),
-                    prev_kv: false,
-                }),
-            )
-            .await
-            .with_context(|| "Failed to register node to etcd".to_owned())?;
-
-        Ok(())
-    }
-
     /// Register current node to etcd and keep alive
     pub async fn register(&self) -> DatenLordResult<()> {
         // Get current node info
         let current_node_info = self.node.load();
         debug!("register: {} to etcd", current_node_info.ip());
-        let node_session = self.node_session.load();
-        let Some(current_session) = node_session.as_ref().cloned() else {
-            let current_node = self.node.load();
-            warn!(
-                "Current {} session is invalid, return to endpoint",
-                current_node.ip()
-            );
-            return Err(DatenLordError::CacheClusterErr {
-                context: vec![format!("Current {} session is invalid", current_node.ip())],
-            });
-        };
+        // Check session
+        let current_session = self.get_valid_session()?;
 
         // Try to register current node to etcd
         self.kv_engine
@@ -334,30 +336,7 @@ impl ClusterManagerInner {
     pub async fn do_campaign(&self) -> DatenLordResult<(bool, String)> {
         let node = self.get_node();
         let hash_ring = self.get_ring(false).await?;
-
-        let node_session = self.node_session.load();
-        let session = if let Some(session) = node_session.as_ref().cloned() {
-            if session.is_closed() {
-                let current_node = self.node.load();
-                warn!(
-                    "Current {} session is invalid, return to endpoint",
-                    current_node.ip()
-                );
-                return Err(DatenLordError::CacheClusterErr {
-                    context: vec![format!("Current {} session is invalid", current_node.ip())],
-                });
-            }
-            session
-        } else {
-            let current_node = self.node.load();
-            warn!(
-                "Current {} session is invalid, return to endpoint",
-                current_node.ip()
-            );
-            return Err(DatenLordError::CacheClusterErr {
-                context: vec![format!("Current {} session is invalid", current_node.ip())],
-            });
-        };
+        let session = self.get_valid_session()?;
 
         // Master key info
         let master_key = &KeyType::CacheMasterNode;
@@ -429,6 +408,11 @@ impl ClusterManagerInner {
 
             // Check event
             tokio::select! {
+                // Shutdown event
+                _ = self.shutdown_rx.recv_async() => {
+                    debug!("Receive shutdown event, return to endpoint");
+                    return Ok(());
+                }
                 // Write event
                 // This future will write all changed events in one task
                 _ = interval.tick() => {
@@ -491,46 +475,25 @@ impl ClusterManagerInner {
     /// Try to fetch latest nodes and hashring, and update cluster by current master node
     async fn update_cluster_topo(&self) -> DatenLordResult<()> {
         // Check session
-        let node_session = self.node_session.load();
-        if let Some(session) = node_session.as_ref().cloned() {
-            if session.is_closed() {
-                let current_node = self.node.load();
-                warn!(
-                    "Current {} session is invalid, return to endpoint",
-                    current_node.ip()
-                );
-                return Err(DatenLordError::CacheClusterErr {
-                    context: vec![format!("Current {} session is invalid", current_node.ip())],
-                });
-            }
+        self.get_valid_session()?;
 
-            // 1. Update node list
-            let node_list = self.get_nodes(true).await?;
-            // We want to update the hashring base on etcd hashring value and version
-            let mut hash_ring = self.get_ring(true).await?;
-            // Try to replace current hashring with new node list
-            // TODO: It will cause a lot of copy, we need to update it in next PR.
-            let ring_res = hash_ring.batch_replace(node_list.clone(), true);
-            if ring_res.is_none() {
-                warn!("Failed to update hash ring");
-                return Err(DatenLordError::CacheClusterErr {
-                    context: vec![format!("Failed to update hash ring")],
-                });
-            }
-            self.hash_ring.store(Arc::new(hash_ring));
-
-            // 2. Update hashring data and current master version to etcd with txn
-            self.save_ring().await?;
-        } else {
-            let current_node = self.node.load();
-            warn!(
-                "Current {} session is invalid, return to endpoint",
-                current_node.ip()
-            );
+        // 1. Update node list
+        let node_list = self.get_nodes(true).await?;
+        // We want to update the hashring base on etcd hashring value and version
+        let mut hash_ring = self.get_ring(true).await?;
+        // Try to replace current hashring with new node list
+        // TODO: It will cause a lot of copy, we need to update it in next PR.
+        let ring_res = hash_ring.batch_replace(node_list.clone(), true);
+        if ring_res.is_none() {
+            warn!("Failed to update hash ring");
             return Err(DatenLordError::CacheClusterErr {
-                context: vec![format!("Current {} session is invalid", current_node.ip())],
+                context: vec![format!("Failed to update hash ring")],
             });
         }
+        self.hash_ring.store(Arc::new(hash_ring));
+
+        // 2. Update hashring data and current master version to etcd with txn
+        self.save_ring().await?;
 
         Ok(())
     }
@@ -569,41 +532,62 @@ impl ClusterManagerInner {
         // In current case, we just need to detect master key change and update hashring.
         // 2. If the master key is auto deleted, exit and change current status to slave.
         loop {
-            match master_watch_stream.next().await {
-                Some(Ok(event)) => {
-                    let key = event.0;
-                    let value = event.1;
-                    if value.is_some() {
-                        // Update event
-                        debug!(
-                            "Receive update ring event with key: {:?} value: {:?}",
-                            key, value
-                        );
+            if !self.check_session_valid() {
+                let current_node = self.node.load();
+                warn!(
+                    "Current {} session is invalid, return to endpoint",
+                    current_node.ip()
+                );
+                return Err(DatenLordError::CacheClusterErr {
+                    context: vec![format!("Current {} session is invalid", current_node.ip())],
+                });
+            };
 
-                        // When master update the hashring, we will try to fetch latest ring from etcd
-                        // In this step, we just need to update the ring
-                        // Fetch the latest ring from etcd
-                        // We just ignore the update event in current step
-                    } else {
-                        // Delete event
-                        debug!("delete master event with key: {:?}", key);
-                        // Master has down, try to campaign master
-                        // Return to main loop
-                        return Ok(());
+            // Check event
+            tokio::select! {
+                // Shutdown event
+                _ = self.shutdown_rx.recv_async() => {
+                    debug!("Receive shutdown event, return to endpoint");
+                    return Ok(());
+                }
+                e =  master_watch_stream.next() => {
+                    match e {
+                        Some(Ok(event)) => {
+                            let key = event.0;
+                            let value = event.1;
+                            if value.is_some() {
+                                // Update event
+                                debug!(
+                                    "Receive update ring event with key: {:?} value: {:?}",
+                                    key, value
+                                );
+
+                                // When master update the hashring, we will try to fetch latest ring from etcd
+                                // In this step, we just need to update the ring
+                                // Fetch the latest ring from etcd
+                                // We just ignore the update event in current step
+                            } else {
+                                // Delete event
+                                debug!("delete master event with key: {:?}", key);
+                                // Master has down, try to campaign master
+                                // Return to main loop
+                                return Ok(());
+                            }
+                        }
+                        None => {
+                            warn!("Failed to get event from watch stream, because of stream channel is closed");
+                            return Err(DatenLordError::CacheClusterErr {
+                                context: vec![format!("Failed to get event from watch stream, because of stream channel is closed")],
+                            });
+                        }
+                        Some(Err(e)) => {
+                            // Raise error and return to upper level, try to rewatch master again
+                            warn!("Failed to watch master key: {:?}", e);
+                            return Err(DatenLordError::CacheClusterErr {
+                                context: vec![format!("Failed to watch master key")],
+                            });
+                        }
                     }
-                }
-                None => {
-                    warn!("Failed to get event from watch stream, because of stream channel is closed");
-                    return Err(DatenLordError::CacheClusterErr {
-                        context: vec![format!("Failed to get event from watch stream, because of stream channel is closed")],
-                    });
-                }
-                Some(Err(e)) => {
-                    // Raise error and return to upper level, try to rewatch master again
-                    warn!("Failed to watch master key: {:?}", e);
-                    return Err(DatenLordError::CacheClusterErr {
-                        context: vec![format!("Failed to watch master key")],
-                    });
                 }
             }
         }
