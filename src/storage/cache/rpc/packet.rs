@@ -278,6 +278,11 @@ impl<P: Packet + Send + Sync> PacketsKeeper<P> {
     /// Purge the outdated tasks when connection is timeout
     pub fn purge_outdated_tasks(&mut self) {
         let mut packets_inner = self.inner.write();
+        while let Ok(packet) = self.buffer_packets_receiver.try_recv() {
+            let seq = packet.seq();
+            packets_inner.add_task(seq, packet);
+        }
+
         packets_inner.purge_outdated_tasks();
     }
 
@@ -447,7 +452,9 @@ mod tests {
             .take_task(packet.seq(), &mut BytesMut::new())
             .unwrap();
         match rx.recv() {
-            Ok(Ok(())) => {}
+            Ok(Ok(())) => {
+                debug!("Success to get response");
+            }
             _ => panic!("Failed to get response"),
         }
 
@@ -465,6 +472,7 @@ mod tests {
         packets_keeper.clean_timeout_tasks();
         match rx.recv() {
             Ok(res) => {
+                debug!("Task is timeout {:?}", res);
                 assert!(res.is_err());
             }
             _ => panic!("Failed to get response"),
@@ -472,7 +480,7 @@ mod tests {
 
         // Purge the timeout task
         let packet_3 = TestPacket {
-            seq: 2,
+            seq: 3,
             op: 2,
             timestamp: 0,
             buf: BytesMut::new(),
@@ -480,11 +488,10 @@ mod tests {
             request: TestRequest { mock: 0 },
         };
         packets_keeper.add_task(&mut packet_3.clone()).unwrap();
-        sleep(time::Duration::from_secs(11));
-        // Second clean, will remove outdated tasks
         packets_keeper.purge_outdated_tasks();
         match rx.recv() {
             Ok(res) => {
+                debug!("Task is timeout {:?}", res);
                 assert!(res.is_err());
             }
             _ => panic!("Failed to get response"),

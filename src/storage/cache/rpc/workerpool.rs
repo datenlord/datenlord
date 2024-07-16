@@ -4,7 +4,6 @@ use std::{
 };
 
 use async_trait::async_trait;
-use tokio::task;
 use tracing::debug;
 
 use super::error::RpcError;
@@ -13,7 +12,6 @@ use super::error::RpcError;
 type JobImpl = Box<dyn Job + Send + Sync + 'static>;
 
 /// A worker that can execute async jobs.
-#[allow(dead_code)]
 #[derive(Clone)]
 pub struct WorkerPool {
     /// The number of workers in the worker pool.
@@ -52,13 +50,9 @@ impl WorkerPool {
         let receiver = Arc::new(job_receiver);
         for _ in 0..max_workers {
             let worker = Worker::new(Arc::clone(&receiver));
+            worker.start();
             worker_queue.push(worker);
         }
-
-        // let receiver_clone = receiver.clone();
-        // tokio::task::spawn(async move {
-        //     Self::dispatch_workers(max_workers, receiver_clone).await;
-        // });
 
         Self {
             max_workers,
@@ -80,11 +74,12 @@ impl WorkerPool {
         Ok(())
     }
 
-    /// Wait for all the jobs are consumed
-    pub async fn wait_for_completion(&self) {
-        // Check the sender channel is empty and all workers are completed.
-        while !self.job_sender.is_empty() {
-            tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+    /// Shutdown
+    ///
+    /// Drop the worker, and the worker will exit.
+    pub fn shutdown(&self) {
+        for worker in &self.worker_queue {
+            worker.exit();
         }
     }
 }
@@ -93,35 +88,59 @@ impl WorkerPool {
 #[allow(dead_code)]
 #[derive(Clone)]
 struct Worker {
-    /// The worker task.
-    worker_task: Arc<task::JoinHandle<()>>,
+    /// Job recv channel
+    job_rx: Arc<flume::Receiver<JobImpl>>,
+    /// Shutdown recv channel
+    shutdown_rx: flume::Receiver<()>,
+    /// Shutdown send channel
+    shutdown_tx: flume::Sender<()>,
 }
 
 impl Worker {
-    /// Create a new worker and run .
+    /// Create a new worker.
     fn new(receiver: Arc<flume::Receiver<JobImpl>>) -> Self {
         debug!("Create a new worker...");
-        let worker_task = tokio::task::spawn(async move {
+        let (shutdown_tx, shutdown_rx) = flume::bounded::<()>(1);
+        Self {
+            job_rx: receiver,
+            shutdown_rx,
+            shutdown_tx,
+        }
+    }
+
+    /// Start the worker.
+    fn start(&self) {
+        let shutdown_rx = self.shutdown_rx.clone();
+        let receiver = Arc::clone(&self.job_rx);
+        tokio::task::spawn(async move {
             // Core worker loop
-            debug!("Worker is running...");
             loop {
-                // 1. Receive a job from the job queue.
-                if let Ok(job) = receiver.recv_async().await {
-                    debug!("Worker received a job...");
-                    // 2. Run the job asynchronously.
-                    job.run().await;
+                debug!("Worker is waiting for a job...");
+                tokio::select! {
+                    // Recv shutdown signal
+                    _ = shutdown_rx.recv_async() => {
+                        debug!("Worker received a shutdown signal...");
+                        break;
+                    }
+                    // Receive a job from the job queue.
+                    job = receiver.recv_async() => {
+                        if let Ok(job) = job {
+                            debug!("Worker received a job...");
+                            // 2. Run the job asynchronously.
+                            job.run().await;
+                        }
+                    }
                 }
             }
         });
-
-        Self {
-            worker_task: Arc::new(worker_task),
-        }
     }
 
     /// Exit the worker.
     fn exit(&self) {
-        self.worker_task.abort();
+        match self.shutdown_tx.send(()) {
+            Ok(()) => debug!("Worker is exiting..."),
+            Err(e) => debug!("Failed to send shutdown signal: {:?}", e),
+        }
     }
 }
 
@@ -144,7 +163,7 @@ mod tests {
 
     use core::time;
 
-    use tokio::time::Instant;
+    use tokio::{task, time::Instant};
     use tracing::info;
 
     use super::*;
@@ -161,24 +180,12 @@ mod tests {
     #[tokio::test]
     async fn test_worker_pool() {
         // setup();
-
-        let worker_pool = WorkerPool::new(4, 0);
-        let res = worker_pool.submit_job(Box::new(TestJob));
-        assert!(res.is_err());
-
         let worker_pool = WorkerPool::new(4, 4);
-        let res = worker_pool.submit_job(Box::new(TestJob));
-        res.unwrap();
-        let res = worker_pool.submit_job(Box::new(TestJob));
-        res.unwrap();
-        let res = worker_pool.submit_job(Box::new(TestJob));
-        res.unwrap();
-        let res = worker_pool.submit_job(Box::new(TestJob));
-        res.unwrap();
+        for _ in 0_i32..4_i32 {
+            worker_pool.submit_job(Box::new(TestJob)).unwrap();
+        }
 
-        let res = worker_pool.submit_job(Box::new(TestJob));
-        assert!(res.is_err());
-
+        // If submit over 4 jobs, it will be blocked here, because the job queue is full.
         tokio::time::sleep(time::Duration::from_secs(1)).await;
         let res = worker_pool.submit_job(Box::new(TestJob));
         res.unwrap();

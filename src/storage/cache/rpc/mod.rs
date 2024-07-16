@@ -310,7 +310,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_send_and_recv_packet() {
-        // setup();
+        setup();
         // Setup server
         let addr = "127.0.0.1:2788";
         let pool = Arc::new(WorkerPool::new(4, 100));
