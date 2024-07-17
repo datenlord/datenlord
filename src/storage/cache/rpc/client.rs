@@ -213,7 +213,7 @@ where
             // We have set a copy to keeper and manage the status for the packets keeper
             // Set to packet task with clone
             self.get_packets_keeper_mut()
-                .add_task(&mut req_packet.clone())?;
+                .add_task(req_packet)?;
 
             Ok(())
         } else {
@@ -442,20 +442,48 @@ where
 #[allow(clippy::unwrap_used)]
 #[allow(clippy::indexing_slicing)]
 mod tests {
+    use bytes::BufMut;
     use tokio::net::TcpListener;
 
+    use crate::{async_fuse::util::usize_to_u64, storage::cache::rpc::utils::get_u64_from_buf};
+
     use super::*;
-    use std::time::Duration;
+    use std::{mem, time::Duration};
+
+    /// Request struct for test
+    #[derive(Debug, Default, Clone)]
+    pub struct TestRequest {
+        pub id: u64,
+    }
+
+    impl Encode for TestRequest {
+        fn encode(&self, buf: &mut BytesMut) {
+            buf.put_u64(self.id.to_le());
+        }
+    }
+
+    impl Decode for TestRequest {
+        fn decode(buf: &[u8]) -> Result<Self, RpcError> {
+            if buf.len() < 8 {
+                return Err(RpcError::InternalError("Insufficient bytes".to_owned()));
+            }
+            let id = get_u64_from_buf(buf, 0)?;
+            Ok(TestRequest { id })
+        }
+    }
 
     #[derive(Debug, Clone)]
     pub struct TestPacket {
         pub seq: u64,
         pub op: u8,
+        pub request: TestRequest,
         pub timestamp: u64,
     }
 
     impl Encode for TestPacket {
-        fn encode(&self, _buf: &mut BytesMut) {}
+        fn encode(&self, buf: &mut BytesMut) {
+            self.request.encode(buf);
+        }
     }
 
     impl Packet for TestPacket {
@@ -490,7 +518,7 @@ mod tests {
         fn set_result(&self, _status: Result<(), RpcError>) {}
 
         fn get_req_len(&self) -> u64 {
-            0
+            usize_to_u64(mem::size_of_val(&self.request))
         }
     }
 

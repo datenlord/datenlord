@@ -133,7 +133,7 @@ pub trait Packet: Sync + Send + Clone + Debug + Encode {
     fn get_timestamp(&self) -> u64;
 
     /// Get request buf length
-    /// This function is used to get the length of the request size for join header
+    /// This function is used to get the length of the request body size.
     fn get_req_len(&self) -> u64;
 
     /// Serialize response data to bytes
@@ -250,12 +250,12 @@ impl<P: Packet + Send + Sync> PacketsKeeper<P> {
     }
 
     /// Add a task to the packets
-    pub fn add_task(&mut self, packet: &mut P) -> Result<(), RpcError> {
+    pub fn add_task(&self, packet: &mut P) -> Result<(), RpcError> {
         // TODO: use a global atomic ticker(updated by check_loop) or read current time?
         let timestamp = self.current_time.elapsed().as_secs();
         packet.set_timestamp(timestamp);
         self.buffer_packets_sender
-            .send(packet.clone())
+            .send(packet.to_owned())
             .map_err(|e| {
                 RpcError::InternalError(format!("Failed to send packet to buffer: {e:?}"))
             })?;
@@ -264,7 +264,7 @@ impl<P: Packet + Send + Sync> PacketsKeeper<P> {
     }
 
     /// Clean pending tasks as timeout
-    pub fn clean_timeout_tasks(&mut self) {
+    pub fn clean_timeout_tasks(&self) {
         let mut packets_inner = self.inner.write();
         while let Ok(packet) = self.buffer_packets_receiver.try_recv() {
             let seq = packet.seq();
@@ -276,7 +276,7 @@ impl<P: Packet + Send + Sync> PacketsKeeper<P> {
     }
 
     /// Purge the outdated tasks when connection is timeout
-    pub fn purge_outdated_tasks(&mut self) {
+    pub fn purge_outdated_tasks(&self) {
         let mut packets_inner = self.inner.write();
         while let Ok(packet) = self.buffer_packets_receiver.try_recv() {
             let seq = packet.seq();
@@ -433,7 +433,7 @@ mod tests {
 
     #[test]
     fn test_packets_keeper() {
-        let mut packets_keeper = PacketsKeeper::<TestPacket>::new(1);
+        let packets_keeper = PacketsKeeper::<TestPacket>::new(1);
 
         // You can control what is need to be send.
         let (tx, rx) = flume::unbounded::<Result<(), RpcError>>();
