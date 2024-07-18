@@ -237,7 +237,7 @@ where
     /// Keep the connection and get the handler for the connection.
     pub async fn run(&self) {
         // Dispatch the handler for the connection
-        debug!("RpcServerConnection::run");
+        debug!("RpcServerConnection::Received a new TcpStream.");
 
         // TODO: copy done_tx to the worker pool
         let (done_tx, mut done_rx) = mpsc::channel::<Vec<u8>>(10000);
@@ -431,12 +431,11 @@ mod tests {
     use tokio::time;
 
     use super::*;
-    use std::net::TcpStream;
     use std::time::Duration;
 
     /// Check if the port is in use
-    fn is_port_in_use(addr: &str) -> bool {
-        if let Ok(stream) = TcpStream::connect(addr) {
+    async fn is_port_in_use(addr: &str) -> bool {
+        if let Ok(stream) = tokio::net::TcpStream::connect(addr).await {
             // Port is in use
             drop(stream);
             true
@@ -477,9 +476,9 @@ mod tests {
         let mut server = RpcServer::new(&ServerTimeoutOptions::default(), 4, 100, handler);
         server.listen(addr).await.unwrap();
         time::sleep(Duration::from_secs(1)).await;
-        assert!(is_port_in_use(addr));
+        assert!(is_port_in_use(addr).await);
         server.stop();
         time::sleep(Duration::from_secs(1)).await;
-        assert!(!is_port_in_use(addr));
+        assert!(!is_port_in_use(addr).await);
     }
 }

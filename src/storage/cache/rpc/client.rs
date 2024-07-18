@@ -43,7 +43,7 @@ where
     /// If we receive other response, we will update the received_keepalive_timestamp too, just treat it as a keep alive response.
     received_keepalive_timestamp: AtomicU64,
     /// Send packet task
-    packets_keeper: UnsafeCell<PacketsKeeper<P>>,
+    packets_keeper: PacketsKeeper<P>,
     /// Response buffer, try to reuse same buffer to reduce memory allocation
     /// In case of the response is too large, we need to consider the buffer size
     /// Init size is 4MB
@@ -63,7 +63,6 @@ where
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RpcClientConnectionInner")
             .field("client id", &self.client_id)
-            .field("timeout options", &self.timeout_options)
             .finish_non_exhaustive()
     }
 }
@@ -80,9 +79,7 @@ where
             seq: AtomicU64::new(0),
             clock_instant: Instant::now(),
             received_keepalive_timestamp: AtomicU64::new(0),
-            packets_keeper: UnsafeCell::new(PacketsKeeper::new(
-                timeout_options.clone().task_timeout.as_secs(),
-            )),
+            packets_keeper: PacketsKeeper::new(timeout_options.clone().task_timeout.as_secs()),
             resp_buf: UnsafeCell::new(BytesMut::with_capacity(8 * 1024 * 1024)),
             req_buf: UnsafeCell::new(BytesMut::with_capacity(8 * 1024 * 1024)),
             client_id,
@@ -212,8 +209,7 @@ where
             debug!("{:?} Sent request success: {:?}", self, req_packet.seq());
             // We have set a copy to keeper and manage the status for the packets keeper
             // Set to packet task with clone
-            self.get_packets_keeper_mut()
-                .add_task(req_packet)?;
+            self.packets_keeper.add_task(req_packet)?;
 
             Ok(())
         } else {
@@ -231,7 +227,6 @@ where
             self.timeout_options.task_timeout.div_f32(2.0),
         ));
         loop {
-            debug!("{:?} Start to receive loop", self);
             // Clean timeout tasks, will block here
             let recv_header_f = self.recv_header();
             pin_mut!(recv_header_f);
@@ -261,10 +256,8 @@ where
                             }
 
                             // Take the packet task and recv the response
-                            let packets_keeper: &mut PacketsKeeper<P> =
-                                self.get_packets_keeper_mut();
                             let resp_buffer: &mut BytesMut = unsafe { &mut *self.resp_buf.get() };
-                            match packets_keeper.take_task(header_seq, resp_buffer) {
+                            match self.packets_keeper.take_task(header_seq, resp_buffer).await {
                                 Ok(()) => {
                                     debug!("{:?} Received response: {:?}", self, header_seq);
                                 }
@@ -291,13 +284,6 @@ where
     fn get_stream_mut(&self) -> &mut TcpStream {
         // Current implementation is safe because the stream is only accessed by one thread
         unsafe { &mut *self.stream.get() }
-    }
-
-    /// Get packet task with mutable reference
-    #[allow(clippy::mut_from_ref)]
-    fn get_packets_keeper_mut(&self) -> &mut PacketsKeeper<P> {
-        // Current implementation is safe because the packet task is only accessed by one thread
-        unsafe { &mut *self.packets_keeper.get() }
     }
 }
 
@@ -428,9 +414,13 @@ where
             // consume all ticks in once call
             tick_ready = true;
         }
-        if tick_ready {
-            let packets_keeper: &mut PacketsKeeper<P> = client_inner.get_packets_keeper_mut();
-            packets_keeper.clean_timeout_tasks();
+        while tick_ready {
+            let clean_future = client_inner.packets_keeper.clean_timeout_tasks();
+            pin_mut!(clean_future);
+            match clean_future.poll(cx) {
+                Poll::Ready(()) => tick_ready = false,
+                Poll::Pending => return Poll::Pending,
+            }
         }
 
         // recv header data
@@ -442,6 +432,7 @@ where
 #[allow(clippy::unwrap_used)]
 #[allow(clippy::indexing_slicing)]
 mod tests {
+    use async_trait::async_trait;
     use bytes::BufMut;
     use tokio::net::TcpListener;
 
@@ -486,6 +477,7 @@ mod tests {
         }
     }
 
+    #[async_trait]
     impl Packet for TestPacket {
         fn seq(&self) -> u64 {
             self.seq
@@ -515,7 +507,7 @@ mod tests {
             Ok(())
         }
 
-        fn set_result(&self, _status: Result<(), RpcError>) {}
+        async fn set_result(self, _status: Result<(), RpcError>) {}
 
         fn get_req_len(&self) -> u64 {
             usize_to_u64(mem::size_of_val(&self.request))

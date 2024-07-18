@@ -1,8 +1,8 @@
 use std::{collections::HashMap, fmt::Debug, sync::Arc};
 
+use async_trait::async_trait;
 use bytes::{BufMut, BytesMut};
-use parking_lot::RwLock;
-use tokio::time::Instant;
+use tokio::{sync::Mutex, time::Instant};
 use tracing::debug;
 
 use super::{
@@ -116,6 +116,7 @@ impl Decode for RespHeader {
 ///
 /// Client will receive the response packet and deserialize it to a packet struct.
 /// and check the status of the packet and the response.
+#[async_trait]
 pub trait Packet: Sync + Send + Clone + Debug + Encode {
     /// Get the packet seq number
     fn seq(&self) -> u64;
@@ -142,7 +143,7 @@ pub trait Packet: Sync + Send + Clone + Debug + Encode {
 
     /// Set the packet result, and we will send the response buffer to caller, caller and directly decode this buffer
     /// The buffer is different in req and resp, so we can not hold one buffer in packet
-    fn set_result(&self, status: Result<(), RpcError>);
+    async fn set_result(self, status: Result<(), RpcError>);
 }
 /// The `PacketsInner` struct is used to store the current tasks.
 #[derive(Debug)]
@@ -177,7 +178,7 @@ impl<P: Packet + Send + Sync> PacketsInner<P> {
     /// Clean pending tasks as timeout
     /// In first step, we will try to mark the task as timeout if it is pending and timeout
     /// In 10 * timeout time, we will force to remove the task if the task is not consumed
-    pub fn clean_timeout_tasks(&mut self, current_timestamp: u64, timeout: u64) {
+    pub async fn clean_timeout_tasks(&mut self, current_timestamp: u64, timeout: u64) {
         let mut last_timeout_packets = Vec::new();
         for (seq, packet) in &mut self.packets {
             // Check if the task is timeout
@@ -185,27 +186,30 @@ impl<P: Packet + Send + Sync> PacketsInner<P> {
             if current_timestamp - timestamp > timeout {
                 // Set the task as timeout
                 last_timeout_packets.push(*seq);
-                debug!("Task {} is timeout", seq);
-                packet.set_result(Err(RpcError::Timeout(format!("Task {seq} is timeout"))));
             }
         }
 
         // clean the timeout packets
         for seq in last_timeout_packets {
-            self.packets.remove(&seq);
+            if let Some(packet) = self.packets.remove(&seq) {
+                debug!("Task {} is timeout", seq);
+                packet
+                    .set_result(Err(RpcError::Timeout(format!("Task {seq} is timeout"))))
+                    .await;
+            } else {
+                debug!("Task {} is timeout, but not found in the packets", seq);
+                continue;
+            }
         }
     }
 
-    /// Get task from the packets
-    pub fn get_task_mut(&mut self, seq: u64) -> Option<&mut P> {
-        // Do not need to remove the packet if the timestamp is not found
-        self.packets.get_mut(&seq)
-    }
-
     /// Purge the outdated tasks when connection is timeout
-    pub fn purge_outdated_tasks(&mut self) {
-        for (seq, packet) in &mut self.packets {
-            packet.set_result(Err(RpcError::Timeout(format!("Task {seq} is timeout"))));
+    pub async fn purge_outdated_tasks(&mut self) {
+        // Take ownership and pass it to the caller
+        for (seq, packet) in self.packets.drain() {
+            packet
+                .set_result(Err(RpcError::Timeout(format!("Task {seq} is timeout"))))
+                .await;
         }
 
         self.packets.clear();
@@ -220,7 +224,7 @@ where
     P: Packet + Send + Sync,
 {
     /// current tasks, marked by the seq number
-    inner: Arc<RwLock<PacketsInner<P>>>,
+    inner: Arc<Mutex<PacketsInner<P>>>,
     /// buffer sender
     buffer_packets_sender: flume::Sender<P>,
     /// buffer receiver
@@ -237,7 +241,7 @@ impl<P: Packet + Send + Sync> PacketsKeeper<P> {
     #[must_use]
     pub fn new(timeout: u64) -> Self {
         let (buffer_packets_sender, buffer_packets_receiver) = flume::bounded::<P>(1000);
-        let packets_inner = Arc::new(RwLock::new(PacketsInner::new()));
+        let packets_inner = Arc::new(Mutex::new(PacketsInner::new()));
         let current_time = tokio::time::Instant::now();
 
         PacketsKeeper {
@@ -264,60 +268,68 @@ impl<P: Packet + Send + Sync> PacketsKeeper<P> {
     }
 
     /// Clean pending tasks as timeout
-    pub fn clean_timeout_tasks(&self) {
-        let mut packets_inner = self.inner.write();
-        while let Ok(packet) = self.buffer_packets_receiver.try_recv() {
-            let seq = packet.seq();
-            packets_inner.add_task(seq, packet);
-        }
+    pub async fn clean_timeout_tasks(&self) {
+        {
+            let mut packets_inner = self.inner.lock().await;
+            while let Ok(packet) = self.buffer_packets_receiver.try_recv() {
+                let seq = packet.seq();
+                packets_inner.add_task(seq, packet);
+            }
 
-        let current_timestamp = self.current_time.elapsed().as_secs();
-        packets_inner.clean_timeout_tasks(current_timestamp, self.timeout);
+            let current_timestamp = self.current_time.elapsed().as_secs();
+            packets_inner
+                .clean_timeout_tasks(current_timestamp, self.timeout)
+                .await;
+        }
     }
 
     /// Purge the outdated tasks when connection is timeout
-    pub fn purge_outdated_tasks(&self) {
-        let mut packets_inner = self.inner.write();
+    pub async fn purge_outdated_tasks(&self) {
+        let mut packets_inner = self.inner.lock().await;
         while let Ok(packet) = self.buffer_packets_receiver.try_recv() {
             let seq = packet.seq();
             packets_inner.add_task(seq, packet);
         }
 
-        packets_inner.purge_outdated_tasks();
+        packets_inner.purge_outdated_tasks().await;
     }
 
     /// Get a task from the packets, and update data in the task
-    pub fn take_task(&self, seq: u64, resp_buffer: &mut BytesMut) -> Result<(), RpcError> {
+    pub async fn take_task(&self, seq: u64, resp_buffer: &mut BytesMut) -> Result<(), RpcError> {
         // Try to sync from buffer
-        let mut packets_inner = self.inner.write();
-        while let Ok(packet) = self.buffer_packets_receiver.try_recv() {
-            let seq = packet.seq();
-            packets_inner.add_task(seq, packet);
-        }
-
-        if let Some(packet) = packets_inner.get_task_mut(seq) {
-            let seq = packet.seq();
-            // Update status data
-            // Try to set result code in `set_resp_data`
-            let set_result = packet.set_resp_data(resp_buffer);
-            match set_result {
-                Ok(()) => {
-                    debug!("{:?} Success to set response data, seq: {:?}", self, seq);
-                    packet.set_result(Ok(()));
-                }
-                Err(err) => {
-                    debug!(
-                        "{:?} Failed to set response data: {:?} with error {:?}",
-                        self, seq, err
-                    );
-                    packet.set_result(Err(RpcError::InternalError(format!(
-                        "Failed to set response data: {seq:?} with error {err:?}"
-                    ))));
-                }
+        {
+            let mut packets_inner = self.inner.lock().await;
+            while let Ok(packet) = self.buffer_packets_receiver.try_recv() {
+                let seq = packet.seq();
+                packets_inner.add_task(seq, packet);
             }
-            packets_inner.remove_task(seq);
 
-            return Ok(());
+            if let Some(mut packet) = packets_inner.remove_task(seq) {
+                let seq = packet.seq();
+                // Update status data
+                // Try to set result code in `set_resp_data`
+                let set_result = packet.set_resp_data(resp_buffer);
+                match set_result {
+                    Ok(()) => {
+                        debug!("{:?} Success to set response data, seq: {:?}", self, seq);
+                        packet.set_result(Ok(())).await;
+                    }
+                    Err(err) => {
+                        debug!(
+                            "{:?} Failed to set response data: {:?} with error {:?}",
+                            self, seq, err
+                        );
+                        packet
+                            .set_result(Err(RpcError::InternalError(format!(
+                                "Failed to set response data: {seq:?} with error {err:?}"
+                            ))))
+                            .await;
+                    }
+                }
+                packets_inner.remove_task(seq);
+
+                return Ok(());
+            }
         }
 
         Err(RpcError::InvalidRequest(format!("can not find seq: {seq}")))
@@ -359,6 +371,7 @@ mod tests {
         }
     }
 
+    #[async_trait]
     impl Packet for TestPacket {
         fn seq(&self) -> u64 {
             self.seq
@@ -392,7 +405,7 @@ mod tests {
             Ok(())
         }
 
-        fn set_result(&self, status: Result<(), RpcError>) {
+        async fn set_result(self, status: Result<(), RpcError>) {
             self.sender.send(status).unwrap();
         }
     }
@@ -431,8 +444,8 @@ mod tests {
         assert_eq!(header_decoded.len, 3);
     }
 
-    #[test]
-    fn test_packets_keeper() {
+    #[tokio::test]
+    async fn test_packets_keeper() {
         let packets_keeper = PacketsKeeper::<TestPacket>::new(1);
 
         // You can control what is need to be send.
@@ -450,6 +463,7 @@ mod tests {
         packets_keeper.add_task(&mut packet.clone()).unwrap();
         packets_keeper
             .take_task(packet.seq(), &mut BytesMut::new())
+            .await
             .unwrap();
         match rx.recv() {
             Ok(Ok(())) => {
@@ -469,7 +483,7 @@ mod tests {
         };
         packets_keeper.add_task(&mut packet_2.clone()).unwrap();
         sleep(time::Duration::from_secs(2));
-        packets_keeper.clean_timeout_tasks();
+        packets_keeper.clean_timeout_tasks().await;
         match rx.recv() {
             Ok(res) => {
                 debug!("Task is timeout {:?}", res);
@@ -488,7 +502,7 @@ mod tests {
             request: TestRequest { mock: 0 },
         };
         packets_keeper.add_task(&mut packet_3.clone()).unwrap();
-        packets_keeper.purge_outdated_tasks();
+        packets_keeper.purge_outdated_tasks().await;
         match rx.recv() {
             Ok(res) => {
                 debug!("Task is timeout {:?}", res);

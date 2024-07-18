@@ -1,5 +1,6 @@
 use std::mem;
 
+use async_trait::async_trait;
 use bytes::{BufMut, BytesMut};
 use tracing::error;
 
@@ -211,14 +212,15 @@ pub struct FileBlockPacket {
     /// The buffer of the packet, used to store response data.
     pub response: Option<FileBlockResponse>,
     /// The sender to send response back to caller.
-    pub sender: flume::Sender<Result<FileBlockResponse, FileBlockRequest>>,
+    pub done_tx: flume::Sender<Result<FileBlockResponse, FileBlockRequest>>,
 }
 
 impl FileBlockPacket {
     /// Create a new file block packet.
+    #[must_use]
     pub fn new(
         block_request: &FileBlockRequest,
-        sender: flume::Sender<Result<FileBlockResponse, FileBlockRequest>>,
+        done_tx: flume::Sender<Result<FileBlockResponse, FileBlockRequest>>,
     ) -> Self {
         Self {
             // Will be auto set by client
@@ -228,7 +230,7 @@ impl FileBlockPacket {
             request: block_request.clone(),
             timestamp: 0,
             response: None,
-            sender,
+            done_tx,
         }
     }
 }
@@ -240,6 +242,7 @@ impl Encode for FileBlockPacket {
     }
 }
 
+#[async_trait]
 impl Packet for FileBlockPacket {
     /// Get the sequence number of the packet.
     fn seq(&self) -> u64 {
@@ -278,39 +281,34 @@ impl Packet for FileBlockPacket {
     }
 
     /// Get the response data of the packet.
-    fn set_result(&self, status: Result<(), RpcError>) {
+    async fn set_result(self, status: Result<(), RpcError>) {
         match status {
             Ok(()) => {
-                match self.response {
-                    Some(ref resp) => {
-                        let file_block_resp = FileBlockResponse {
-                            file_id: resp.file_id,
-                            block_id: resp.block_id,
-                            block_size: resp.block_size,
-                            status: StatusCode::Success,
-                            data: resp.data.clone(),
-                        };
-                        match self.sender.send(Ok(file_block_resp)) {
-                            Ok(()) => {}
-                            Err(err) => {
-                                error!("Failed to set result: {:?}", err);
-                            }
+                if let Some(resp) = self.response {
+                    match self.done_tx.send_async(Ok(resp)).await {
+                        Ok(()) => {}
+                        Err(err) => {
+                            error!("Failed to set result: {:?}", err);
                         }
                     }
-                    None => {
-                        error!("Failed to set result: response is None");
-                        match self.sender.send(Err(self.request.clone())) {
-                            Ok(()) => {}
-                            Err(err) => {
-                                error!("Failed to set result: {:?}", err);
-                            }
+                } else {
+                    error!("Failed to set result: response is None");
+                    match self.done_tx.send_async(Err(self.request.clone())).await {
+                        Ok(()) => {}
+                        Err(err) => {
+                            error!("Failed to set result: {:?}", err);
                         }
                     }
                 }
             }
             Err(err) => {
                 error!("Failed to set result: {:?}", err);
-                self.sender.send(Err(self.request.clone())).unwrap();
+                match self.done_tx.send_async(Err(self.request.clone())).await {
+                    Ok(()) => {}
+                    Err(err) => {
+                        error!("Failed to set result: {:?}", err);
+                    }
+                }
             }
         }
     }

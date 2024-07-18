@@ -29,23 +29,22 @@ fn setup() {
 mod tests {
     use std::sync::Arc;
     use std::time::Duration;
-    use std::net::TcpStream;
 
-    use async_trait::async_trait;
-    use bytes::BytesMut;
     use crate::connect_timeout;
     use crate::storage::cache::rpc::client::RpcClient;
     use crate::storage::cache::rpc::common::{ClientTimeoutOptions, ServerTimeoutOptions};
     use crate::storage::cache::rpc::message::{
-        FileBlockPacket, FileBlockRequest, FileBlockResponse, ReqType, RespType, StatusCode
+        FileBlockPacket, FileBlockRequest, FileBlockResponse, ReqType, RespType, StatusCode,
     };
     use crate::storage::cache::rpc::packet::{Decode, Encode, ReqHeader, RespHeader};
     use crate::storage::cache::rpc::server::{RpcServer, RpcServerConnectionHandler};
+    use crate::storage::cache::rpc::utils::u64_to_usize;
+    use crate::storage::cache::rpc::workerpool::{Job, WorkerPool};
+    use async_trait::async_trait;
+    use bytes::BytesMut;
     use tokio::sync::mpsc;
     use tokio::time;
     use tracing::{debug, error};
-    use crate::storage::cache::rpc::utils::u64_to_usize;
-    use crate::storage::cache::rpc::workerpool::{Job, WorkerPool};
 
     use crate::async_fuse::util::usize_to_u64;
 
@@ -184,8 +183,8 @@ mod tests {
     }
 
     /// Check if the port is in use
-    fn is_port_in_use(addr: &str) -> bool {
-        if let Ok(stream) = TcpStream::connect(addr) {
+    async fn is_port_in_use(addr: &str) -> bool {
+        if let Ok(stream) = tokio::net::TcpStream::connect(addr).await {
             // Port is in use
             drop(stream);
             true
@@ -205,7 +204,7 @@ mod tests {
         let mut server = RpcServer::new(&ServerTimeoutOptions::default(), 4, 100, handler);
         server.listen(addr).await.unwrap();
         time::sleep(Duration::from_secs(1)).await;
-        assert!(is_port_in_use(addr));
+        assert!(is_port_in_use(addr).await);
         time::sleep(Duration::from_secs(1)).await;
 
         // Create a client
@@ -218,8 +217,11 @@ mod tests {
         let connect_stream = connect_timeout!(addr, timeout_options.read_timeout)
             .await
             .unwrap();
+
         let rpc_client = RpcClient::<FileBlockPacket>::new(connect_stream, &timeout_options);
         rpc_client.start_recv();
+
+        time::sleep(Duration::from_secs(1)).await;
 
         // Send ping
         rpc_client.ping().await.unwrap();
@@ -235,15 +237,17 @@ mod tests {
         rpc_client.send_request(&mut packet).await.unwrap();
 
         loop {
-            match rx.recv() {
+            match rx.recv_async().await {
                 Ok(resp) => {
                     let resp = resp.unwrap();
+                    debug!("Received response ok with len: {:?}", resp.data.len());
 
                     assert_eq!(resp.file_id, 0);
                     assert_eq!(resp.block_id, 0);
                     assert_eq!(resp.block_size, 4096);
                     assert_eq!(resp.status, StatusCode::Success);
                     assert_eq!(resp.data.len(), 4096);
+                    debug!("Received response ok with len: {:?}", resp.data.len());
                     break;
                 }
                 Err(err) => {
@@ -252,6 +256,81 @@ mod tests {
                 }
             }
         }
+
+        server.stop();
+    }
+
+    #[tokio::test]
+    async fn test_request_timeout() {
+        setup();
+        // Setup server
+        let addr = "127.0.0.1:2791";
+        let pool = Arc::new(WorkerPool::new(4, 100));
+        let handler = FileBlockRpcServerHandler::new(Arc::clone(&pool));
+        let mut server = RpcServer::new(&ServerTimeoutOptions::default(), 4, 100, handler);
+        server.listen(addr).await.unwrap();
+        time::sleep(Duration::from_secs(1)).await;
+        assert!(is_port_in_use(addr).await);
+        time::sleep(Duration::from_secs(1)).await;
+
+        // Create a client with short timeout
+        let timeout_options = ClientTimeoutOptions {
+            read_timeout: Duration::from_secs(1),
+            write_timeout: Duration::from_secs(1),
+            task_timeout: Duration::from_secs(1),
+            keep_alive_timeout: Duration::from_secs(1),
+        };
+        let connect_stream = connect_timeout!(addr, timeout_options.read_timeout)
+            .await
+            .unwrap();
+
+        let rpc_client = RpcClient::<FileBlockPacket>::new(connect_stream, &timeout_options);
+        rpc_client.start_recv();
+
+        time::sleep(Duration::from_secs(5)).await;
+
+        // Send ping, and current response is error
+        assert!(rpc_client.ping().await.is_err());
+
+        server.stop();
+    }
+
+    #[tokio::test]
+    async fn test_client_drop() {
+        setup();
+        // Setup server
+        let addr = "127.0.0.1:2792";
+        let pool = Arc::new(WorkerPool::new(4, 100));
+        let handler = FileBlockRpcServerHandler::new(Arc::clone(&pool));
+        let mut server = RpcServer::new(&ServerTimeoutOptions::default(), 4, 100, handler);
+        server.listen(addr).await.unwrap();
+        time::sleep(Duration::from_secs(1)).await;
+        assert!(is_port_in_use(addr).await);
+        time::sleep(Duration::from_secs(1)).await;
+
+        // Create a client
+        let timeout_options = ClientTimeoutOptions {
+            read_timeout: Duration::from_secs(1),
+            write_timeout: Duration::from_secs(1),
+            task_timeout: Duration::from_secs(1),
+            keep_alive_timeout: Duration::from_secs(1),
+        };
+        let connect_stream = connect_timeout!(addr, timeout_options.read_timeout)
+            .await
+            .unwrap();
+
+        let rpc_client = RpcClient::<FileBlockPacket>::new(connect_stream, &timeout_options);
+        rpc_client.start_recv();
+
+        // Drop client
+        drop(rpc_client);
+
+        // Wait some time to ensure the client has dropped, wait for tcp read timeout. default is 20 second
+        time::sleep(Duration::from_secs(20)).await;
+
+        // Check if the server has detected the dropped connection
+        // For example, check the connection count, logs, etc.
+        // done_rx channel is closed, stop sending response to the str
 
         server.stop();
     }
