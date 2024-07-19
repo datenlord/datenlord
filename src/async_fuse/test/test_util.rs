@@ -60,8 +60,10 @@ fn test_storage_config(is_s3: bool) -> StorageConfig {
 
 async fn run_fs(mount_point: &Path, is_s3: bool, token: CancellationToken) -> anyhow::Result<()> {
     let storage_config = test_storage_config(is_s3);
-    let kv_engine: Arc<memfs::kv_engine::etcd_impl::EtcdKVEngine> =
-        Arc::new(KVEngineType::new(vec![TEST_ETCD_ENDPOINT.to_owned()]).await?);
+    // let kv_engine: Arc<memfs::kv_engine::etcd_impl::EtcdKVEngine> =
+    //     Arc::new(KVEngineType::new(vec![TEST_ETCD_ENDPOINT.to_owned()]).await?);
+    let kv_engine: Arc<memfs::kv_engine::xline_impl::XlineKVEngine> =
+    Arc::new(KVEngineType::new(vec![TEST_ETCD_ENDPOINT.to_owned()]).await?);
 
     let storage = {
         let storage_param = &storage_config.params;
