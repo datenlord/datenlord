@@ -48,8 +48,6 @@ mod tests {
 
     use crate::async_fuse::util::usize_to_u64;
 
-    use super::*;
-
     /// The handler for the RPC file block request.
     #[derive(Debug)]
     pub struct FileBlockHandler {
@@ -196,7 +194,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_send_and_recv_packet() {
-        setup();
+        // setup();
         // Setup server
         let addr = "127.0.0.1:2788";
         let pool = Arc::new(WorkerPool::new(4, 100));
@@ -262,7 +260,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_request_timeout() {
-        setup();
+        // setup();
         // Setup server
         let addr = "127.0.0.1:2791";
         let pool = Arc::new(WorkerPool::new(4, 100));
@@ -297,7 +295,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_client_drop() {
-        setup();
+        // setup();
         // Setup server
         let addr = "127.0.0.1:2792";
         let pool = Arc::new(WorkerPool::new(4, 100));
