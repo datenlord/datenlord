@@ -7,6 +7,7 @@ use std::time::Duration;
 use anyhow::Context;
 use arc_swap::{ArcSwap, ArcSwapOption};
 use futures::StreamExt;
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
 use crate::async_fuse::memfs::kv_engine::etcd_impl::Session;
@@ -52,29 +53,10 @@ impl ClusterManager {
         self.inner.get_nodes(false).await
     }
 
-    ///  Stop the cluster manager
-    pub fn stop(&self) {
-        // In this step, we just to clean session and force down the cluster manager
-        self.inner.clean_sessions();
-
-        // Set the shutdown flag
-        self.inner.shutdown_flag.store(true, Ordering::Release);
-
-        // Force shutdown
-        match self.inner.shutdown_tx.send(()) {
-            Ok(()) => {
-                debug!("Cluster manager is stopped");
-            }
-            Err(e) => {
-                warn!("Failed to stop cluster manager: {:?}", e);
-            }
-        }
-    }
-
     /// Run the cluster manager as state machine
     ///
     /// We need to perpare current node info, current node list and generate hash ring info
-    pub async fn run(&self) -> DatenLordResult<()> {
+    pub async fn run(&self, token: CancellationToken) -> DatenLordResult<()> {
         loop {
             // Check the shutdown flag, if current flag is set, we need return to the caller
             if self.inner.shutdown_flag.load(Ordering::Acquire) {
@@ -115,7 +97,7 @@ impl ClusterManager {
             let current_node_info = self.inner.get_node();
             match current_node_info.status() {
                 // Serve as slave node
-                NodeStatus::Slave => match self.do_slave_tasks().await {
+                NodeStatus::Slave => match self.do_slave_tasks(token.clone()).await {
                     Ok(()) => {
                         debug!(
                             "Current node {:?} status: {:?} will change to campaign",
@@ -128,7 +110,7 @@ impl ClusterManager {
                     }
                 },
                 // Serve as master node
-                NodeStatus::Master => match self.do_master_tasks().await {
+                NodeStatus::Master => match self.do_master_tasks(token.clone()).await {
                     Ok(()) => {
                         debug!(
                             "Current node {:?} status: {:?} will change to campaign",
@@ -148,7 +130,7 @@ impl ClusterManager {
     ///
     /// 1. Master node will watch the node list update, and update the ring
     /// 2. Master will check self
-    async fn do_master_tasks(&self) -> DatenLordResult<()> {
+    async fn do_master_tasks(&self, token: CancellationToken) -> DatenLordResult<()> {
         let current_node_info = self.inner.get_node();
         debug!(
             "do_master_tasks: {:?} will watch the node list update, and update the ring",
@@ -169,7 +151,7 @@ impl ClusterManager {
 
         // Do watch node list update task
         // This task will block until the master status changed
-        self.inner.watch_nodes().await.with_context(|| {
+        self.inner.watch_nodes(token).await.with_context(|| {
             format!(
                 "Current node {:?} Failed to watch the node list update, and update the ring",
                 current_node_info.ip()
@@ -183,7 +165,7 @@ impl ClusterManager {
     ///
     /// Slave node will watch the ring update and campaign master
     #[allow(clippy::arithmetic_side_effects, clippy::pattern_type_mismatch)] // The `select!` macro will generate code that goes against these rules.
-    async fn do_slave_tasks(&self) -> DatenLordResult<()> {
+    async fn do_slave_tasks(&self, token: CancellationToken) -> DatenLordResult<()> {
         // Try to watch master and hashring
         // Wait for status update
         let current_node_info = self.inner.get_node();
@@ -199,7 +181,7 @@ impl ClusterManager {
         // Block here, try to watch master
         // If the master is down and return ok, the slave node will try to get the master lock
         // If watch_master failed, we will retry to watch master
-        self.inner.watch_master().await?;
+        self.inner.watch_master(token).await?;
 
         Ok(())
     }
@@ -222,10 +204,6 @@ pub struct ClusterManagerInner {
     // TODO: Support distribute cluster config here
     /// Shutdown flag
     shutdown_flag: AtomicBool,
-    /// Controller for shutdown
-    shutdown_tx: flume::Sender<()>,
-    /// Receiver for shutdown
-    shutdown_rx: flume::Receiver<()>,
 }
 
 #[allow(dead_code)]
@@ -237,7 +215,6 @@ impl ClusterManagerInner {
         let node_list = ArcSwap::<Vec<Node>>::new(Arc::new(Vec::new()));
         let hash_ring = ArcSwap::<Ring<Node>>::new(Arc::new(Ring::default()));
         let shutdown_flag = AtomicBool::new(false);
-        let (shutdown_tx, shutdown_rx) = flume::bounded::<()>(1);
 
         Self {
             kv_engine,
@@ -246,19 +223,7 @@ impl ClusterManagerInner {
             node_list,
             hash_ring,
             shutdown_flag,
-            shutdown_tx,
-            shutdown_rx,
         }
-    }
-
-    /// Get shutdown tx
-    pub fn get_shutdown_tx(&self) -> flume::Sender<()> {
-        self.shutdown_tx.clone()
-    }
-
-    /// Get shutdown rx
-    pub fn get_shutdown_rx(&self) -> flume::Receiver<()> {
-        self.shutdown_rx.clone()
     }
 
     /// Get valid session
@@ -377,7 +342,7 @@ impl ClusterManagerInner {
     }
 
     /// Master node will watch the node list update, and update the ring
-    pub async fn watch_nodes(&self) -> DatenLordResult<()> {
+    pub async fn watch_nodes(&self, token: CancellationToken) -> DatenLordResult<()> {
         debug!(
             "Node: {:?} watch_nodes: will watch the node list update",
             self.get_node().ip()
@@ -409,8 +374,10 @@ impl ClusterManagerInner {
             // Check event
             tokio::select! {
                 // Shutdown event
-                _ = self.shutdown_rx.recv_async() => {
+                _ = token.cancelled() => {
                     debug!("Receive shutdown event, return to endpoint");
+                    self.clean_sessions();
+                    self.shutdown_flag.store(true, Ordering::Release);
                     return Ok(());
                 }
                 // Write event
@@ -501,7 +468,7 @@ impl ClusterManagerInner {
     /// Try to watch the master node
     /// If the master node is down, the slave node will try to get the master lock
     /// Then current node will become the master node if operation is successful
-    pub async fn watch_master(&self) -> DatenLordResult<()> {
+    pub async fn watch_master(&self, token: CancellationToken) -> DatenLordResult<()> {
         debug!(
             "Node: {:?} watch_master: will watch the master node and try to update master hashring",
             self.get_node().ip()
@@ -544,10 +511,13 @@ impl ClusterManagerInner {
             };
 
             // Check event
+            debug!("111");
             tokio::select! {
                 // Shutdown event
-                _ = self.shutdown_rx.recv_async() => {
+                () = token.cancelled() => {
                     debug!("Receive shutdown event, return to endpoint");
+                    self.clean_sessions();
+                    self.shutdown_flag.store(true, Ordering::Release);
                     return Ok(());
                 }
                 e =  master_watch_stream.next() => {
@@ -785,6 +755,7 @@ impl ClusterManagerInner {
 mod tests {
     use std::sync::Arc;
 
+    use tokio_util::sync::CancellationToken;
     use tracing::{debug, level_filters::LevelFilter};
     use tracing_subscriber::{
         self, filter, fmt::layer, layer::SubscriberExt, util::SubscriberInitExt, Layer,
@@ -898,7 +869,7 @@ mod tests {
         assert!(!slave_2_res.0);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn test_remove_slave_node() {
         let filter = filter::Targets::new().with_target(
             "datenlord::storage::cache_proxy::cluster_manager",
@@ -912,6 +883,11 @@ mod tests {
                 .await
                 .unwrap(),
         );
+
+        let master_cancel_token = CancellationToken::new();
+        let slave_cancel_token_1 = CancellationToken::new();
+        let slave_cancel_token_2 = CancellationToken::new();
+
 
         // Clean up etcd
         clean_up_etcd().await;
@@ -928,10 +904,12 @@ mod tests {
             test_master_node_clone.clone(),
         ));
         let master_cluster_manager_clone = Arc::clone(&master_cluster_manager);
+        let master_cancel_token_clone = master_cancel_token.clone();
         let master_handle = tokio::task::spawn(async move {
-            let res = master_cluster_manager_clone.run().await;
+            let res = master_cluster_manager_clone.run(master_cancel_token_clone).await;
             debug!("master_handle: {:?}", res);
         });
+
 
         // Wait for election
         tokio::time::sleep(std::time::Duration::from_secs(5)).await;
@@ -943,8 +921,9 @@ mod tests {
             test_slave_node_clone.clone(),
         ));
         let slave_cluster_manager_1_clone = Arc::clone(&slave_cluster_manager_1);
+        let slave_cancel_token_1_clone = slave_cancel_token_1.clone();
         let slave_handle_1 = tokio::task::spawn(async move {
-            let res = slave_cluster_manager_1_clone.run().await;
+            let res = slave_cluster_manager_1_clone.run(slave_cancel_token_1_clone).await;
             debug!("slave_handle_1: {:?}", res);
         });
 
@@ -955,15 +934,15 @@ mod tests {
             test_slave_node_clone.clone(),
         ));
         let slave_cluster_manager_2_clone = Arc::clone(&slave_cluster_manager_2);
+        let slave_cancel_token_2_clone = slave_cancel_token_2.clone();
         let slave_handle_2 = tokio::task::spawn(async move {
             let res: Result<(), crate::common::error::DatenLordError> =
-                slave_cluster_manager_2_clone.run().await;
+                slave_cluster_manager_2_clone.run(slave_cancel_token_2_clone).await;
             debug!("slave_handle_2: {:?}", res);
         });
 
         // Wait for node online
-        tokio::time::sleep(std::time::Duration::from_secs(SESSION_TIMEOUT_SEC)).await;
-
+        tokio::time::sleep(std::time::Duration::from_secs(SESSION_TIMEOUT_SEC+1)).await;
         assert_eq!(
             Arc::clone(&master_cluster_manager).get_node().status(),
             NodeStatus::Master
@@ -980,10 +959,10 @@ mod tests {
 
         debug!("test_remove_slave_node: update node list");
         // Cancel the slave task
+        slave_cancel_token_1.cancel();
         slave_handle_1.abort();
-        slave_cluster_manager_1.stop();
         // Wait for slave key is deleted
-        tokio::time::sleep(std::time::Duration::from_secs(2 * SESSION_TIMEOUT_SEC)).await;
+        tokio::time::sleep(std::time::Duration::from_secs(SESSION_TIMEOUT_SEC+1)).await;
 
         debug!("test_remove_slave_node: start to test remove slave node");
         debug!(
@@ -997,6 +976,8 @@ mod tests {
         );
         assert_eq!(master_cluster_manager.get_nodes().await.unwrap().len(), 2);
 
+        slave_cancel_token_2.cancel();
+        master_cancel_token.cancel();
         slave_handle_2.abort();
         master_handle.abort();
     }
@@ -1016,6 +997,9 @@ mod tests {
                 .unwrap(),
         );
 
+        let master_cancel_token = CancellationToken::new();
+        let slave_cancel_token_1 = CancellationToken::new();
+
         // Clean up etcd
         clean_up_etcd().await;
 
@@ -1031,8 +1015,9 @@ mod tests {
             test_master_node_clone.clone(),
         ));
         let master_cluster_manager_clone = Arc::clone(&master_cluster_manager);
+        let master_cancel_token_clone = master_cancel_token.clone();
         let master_handle = tokio::task::spawn(async move {
-            let res = master_cluster_manager_clone.run().await;
+            let res = master_cluster_manager_clone.run(master_cancel_token_clone).await;
             debug!("master_handle: {:?}", res);
         });
 
@@ -1046,8 +1031,9 @@ mod tests {
             test_slave_node_clone.clone(),
         ));
         let slave_cluster_manager_1_clone = Arc::clone(&slave_cluster_manager_1);
+        let slave_cancel_token_1_clone = slave_cancel_token_1.clone();
         let slave_handle_1 = tokio::task::spawn(async move {
-            let res = slave_cluster_manager_1_clone.run().await;
+            let res = slave_cluster_manager_1_clone.run(slave_cancel_token_1_clone).await;
             debug!("slave_handle_1: {:?}", res);
         });
 
@@ -1065,7 +1051,7 @@ mod tests {
 
         // Simulate master node removal
         debug!("Simulate master node removal");
-        master_cluster_manager.stop();
+        master_cancel_token.cancel();
         master_handle.abort();
         // Wait for the system to detect the master node removal
         tokio::time::sleep(std::time::Duration::from_secs(SESSION_TIMEOUT_SEC + 1)).await;
@@ -1075,6 +1061,7 @@ mod tests {
         assert_eq!(new_master_status, NodeStatus::Master);
 
         debug!("test_remove_master_node: slave node has taken over as master");
+        slave_cancel_token_1.cancel();
         slave_handle_1.abort();
     }
 }
