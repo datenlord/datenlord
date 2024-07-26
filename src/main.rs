@@ -87,6 +87,7 @@ use csi::scheduler_extender::SchedulerExtender;
 use datenlord::common::task_manager::{self, TaskName, TASK_MANAGER};
 use datenlord::config::{InnerConfig, NodeRole, StorageConfig};
 use datenlord::{config, metrics};
+use storage::distribute_cache;
 
 use crate::common::error::DatenLordResult;
 use crate::common::etcd_delegate::EtcdDelegate;
@@ -105,6 +106,8 @@ pub struct AsyncFuseArgs {
     pub mount_dir: String,
     /// Storage config
     pub storage_config: StorageConfig,
+    /// Distribute cache config
+    pub enable_distribute_cache: bool,
 }
 /// Parse config from command line arguments, and return the created `MetaData`
 async fn parse_metadata(config: &InnerConfig) -> DatenLordResult<MetaData> {
@@ -163,7 +166,26 @@ async fn main() -> anyhow::Result<()> {
                 server_port: config.server_port,
                 mount_dir: mount_dir.clone(),
                 storage_config: config.storage,
+                enable_distribute_cache: config.distribute_cache_config.is_some(),
             };
+
+            // TODO: separate the distribute cache task to new node role.
+            if let Some(distribute_cache_config) = config.distribute_cache_config.clone() {
+                let distribute_cache_config_inner =
+                    distribute_cache::config::DistributeCacheConfig::new(
+                        distribute_cache_config.bind_ip,
+                        distribute_cache_config.bind_port,
+                    );
+                let kv_engine = Arc::new(KVEngineType::new(config.kv_addrs.clone()).await?);
+                let distribute_cache_manager =
+                    distribute_cache::manager::DistributeCacheManager::new(
+                        kv_engine,
+                        &distribute_cache_config_inner,
+                    );
+                distribute_cache_manager.start().await?;
+            }
+
+            // Start local distribute cache config
 
             TASK_MANAGER
                 .spawn(TaskName::AsyncFuse, |token| async {
@@ -218,6 +240,7 @@ async fn main() -> anyhow::Result<()> {
                 server_port: config.server_port,
                 mount_dir: mount_dir.clone(),
                 storage_config: config.storage,
+                enable_distribute_cache: config.distribute_cache_config.is_some(),
             };
 
             TASK_MANAGER

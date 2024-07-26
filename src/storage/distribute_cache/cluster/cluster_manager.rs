@@ -6,6 +6,7 @@ use std::time::Duration;
 use anyhow::Context;
 use arc_swap::{ArcSwap, ArcSwapOption};
 use futures::StreamExt;
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
 use crate::async_fuse::memfs::kv_engine::etcd_impl::Session;
@@ -27,7 +28,6 @@ pub struct ClusterManager {
     inner: Arc<ClusterManagerInner>,
 }
 
-#[allow(dead_code)]
 impl ClusterManager {
     /// Create new cluster manager
     pub fn new(kv_engine: Arc<KVEngineType>, node: Node) -> Self {
@@ -37,8 +37,8 @@ impl ClusterManager {
 
     /// Get current node
     #[must_use]
-    pub fn get_node(&self) -> Node {
-        self.inner.get_node()
+    pub fn get_current_node(&self) -> Node {
+        self.inner.get_current_node()
     }
 
     /// Get current hashring
@@ -49,6 +49,29 @@ impl ClusterManager {
     /// Get all nodes
     pub async fn get_nodes(&self) -> DatenLordResult<Vec<Node>> {
         self.inner.get_nodes(false).await
+    }
+
+    /// Get node by hashring index
+    pub async fn get_node(&self, key: String) -> DatenLordResult<Node> {
+        let ring = self.get_ring().await?;
+        if let Some(node) = ring.get_node(&key) {
+            return Ok(node.clone());
+        }
+
+        return Err(DatenLordError::CacheClusterErr {
+            context: vec![format!("Failed to get node by key: {:?}", key)],
+        });
+    }
+
+    /// Watch the distribute cache nodes info,
+    /// this function is used for client to watch the ring update
+    pub async fn watch_ring(&self, token: CancellationToken) -> DatenLordResult<()> {
+        self.inner.watch_ring(token).await
+    }
+
+    /// If current hashring version is not matched, we need to update the hashring manaually in client
+    pub async fn get_ring_force(&self) -> DatenLordResult<Ring<Node>> {
+        self.inner.get_ring(true).await
     }
 
     ///  Stop the cluster manager
@@ -68,15 +91,15 @@ impl ClusterManager {
             // 1. Init cluster manager
             debug!(
                 "Cluster manager start to run in node: {:?}",
-                self.inner.get_node().ip()
+                self.inner.get_current_node().ip()
             );
-            let mut current_node_info = self.inner.get_node();
+            let mut current_node_info = self.inner.get_current_node();
             // Next step is to register the node
             current_node_info.set_status(NodeStatus::Registering);
             self.inner.update_node(current_node_info);
             self.inner.update_node_in_cluster().await?;
 
-            let mut current_node_info = self.inner.get_node();
+            let mut current_node_info = self.inner.get_current_node();
             // 2. Register node to etcd
             debug!(
                 "Current node {:?} status: {:?}",
@@ -94,7 +117,7 @@ impl ClusterManager {
             self.inner.update_node_in_cluster().await?;
 
             // 2. Register node to etcd
-            let mut current_node_info = self.inner.get_node();
+            let mut current_node_info = self.inner.get_current_node();
             debug!(
                 "Current node {:?} status: {:?}",
                 current_node_info.ip(),
@@ -116,7 +139,7 @@ impl ClusterManager {
             }
 
             // 4. Serve as normal status
-            let current_node_info = self.inner.get_node();
+            let current_node_info = self.inner.get_current_node();
             match current_node_info.status() {
                 // Serve as slave node
                 NodeStatus::Slave => match self.do_slave_tasks().await {
@@ -158,7 +181,7 @@ impl ClusterManager {
     /// 1. Master node will watch the node list update, and update the ring
     /// 2. Master will check self
     async fn do_master_tasks(&self) -> DatenLordResult<()> {
-        let current_node_info = self.inner.get_node();
+        let current_node_info = self.inner.get_current_node();
         debug!(
             "do_master_tasks: {:?} will watch the node list update, and update the ring",
             current_node_info.ip()
@@ -195,7 +218,7 @@ impl ClusterManager {
     async fn do_slave_tasks(&self) -> DatenLordResult<()> {
         // Try to watch master and hashring
         // Wait for status update
-        let current_node_info = self.inner.get_node();
+        let current_node_info = self.inner.get_current_node();
         debug!(
             "do_slave_tasks: Node {:?} will watch the ring update and campaign master",
             current_node_info.ip()
@@ -332,7 +355,7 @@ impl ClusterManagerInner {
     ///
     /// Try to campaign master, will return status and master value
     pub async fn do_campaign(&self) -> DatenLordResult<(bool, String)> {
-        let node = self.get_node();
+        let node = self.get_current_node();
         let hash_ring = self.get_ring(false).await?;
 
         let node_session = self.node_session.load();
@@ -401,7 +424,7 @@ impl ClusterManagerInner {
     pub async fn watch_nodes(&self) -> DatenLordResult<()> {
         debug!(
             "Node: {:?} watch_nodes: will watch the node list update",
-            self.get_node().ip()
+            self.get_current_node().ip()
         );
         // Write ticker task
         let mut interval = tokio::time::interval(Duration::from_secs(SESSION_TIMEOUT_SEC));
@@ -535,13 +558,101 @@ impl ClusterManagerInner {
         Ok(())
     }
 
+    /// Try to watch hashring
+    /// This function is used to watch the hashring update for client side and update local hashring value
+    /// If the hashring is changed, we will try to update the hashring
+    pub async fn watch_ring(&self, token: CancellationToken) -> DatenLordResult<()> {
+        debug!("watch_ring: will watch the hashring and try to update local hashring",);
+
+        // Watch with hashring
+        let ring_key = &KeyType::CacheRing;
+        let mut ring_watch_stream = self.kv_engine.watch(ring_key).await?;
+
+        // Check the ring key is exist
+        // If not existed, this function will block here and wait for cache nodes online
+        loop {
+            if let Ok(ring) = self.load_ring().await {
+                debug!("Current ring: {:?}", ring);
+                // Update local hashring cache
+                self.hash_ring.store(Arc::new(ring.clone()));
+                break;
+            }
+        }
+
+        // Watch ring key events
+        // TODO: add cancel token here
+        let mut interval = tokio::time::interval(Duration::from_secs(SESSION_TIMEOUT_SEC));
+        let mut watch_event = false;
+        loop {
+            tokio::select! {
+                _ = token.cancelled() => {
+                    // Cancelled
+                    break;
+                }
+                _ = interval.tick() => {
+                    if watch_event {
+                        // Fetch and update local cache
+                        let ring = self.load_ring().await?;
+                        self.hash_ring.store(Arc::new(ring.clone()));
+                        watch_event = false;
+                    }
+                }
+                stream_event = ring_watch_stream.next() => {
+                    match stream_event {
+                        Some(Ok(event)) => {
+                            let key = event.0;
+                            let value = event.1;
+                            if value.is_some() {
+                                // Update event
+                                debug!(
+                                    "Receive update ring event with key: {:?} value: {:?}",
+                                    key, value
+                                );
+                                watch_event = true;
+
+                                if value.is_some() {
+                                    // Update event
+                                    debug!("Update node list event with key: {:?}", key);
+                                } else {
+                                    // Delete event
+                                    debug!("Delete node list event with key: {:?}", key);
+                                }
+                            } else {
+                                // Delete event
+                                debug!("delete ring event with key: {:?}", key);
+                                // Master has down, try to campaign master
+                                // Return to main loop
+                                break;
+                            }
+                        }
+                        None => {
+                            warn!("Failed to get event from watch stream, because of stream channel is closed");
+                            return Err(DatenLordError::CacheClusterErr {
+                                context: vec![format!("Failed to get event from watch stream, because of stream channel is closed")],
+                            });
+                        }
+                        Some(Err(e)) => {
+                            // Raise error and return to upper level, try to rewatch master again
+                            warn!("Failed to watch ring key: {:?}", e);
+                            return Err(DatenLordError::CacheClusterErr {
+                                context: vec![format!("Failed to watch ring key")],
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     /// Try to watch the master node
     /// If the master node is down, the slave node will try to get the master lock
     /// Then current node will become the master node if operation is successful
     pub async fn watch_master(&self) -> DatenLordResult<()> {
         debug!(
             "Node: {:?} watch_master: will watch the master node and try to update master hashring",
-            self.get_node().ip()
+            self.get_current_node().ip()
         );
 
         // Watch with prefix
@@ -771,7 +882,7 @@ impl ClusterManagerInner {
     }
 
     /// Get current node
-    pub fn get_node(&self) -> Node {
+    pub fn get_current_node(&self) -> Node {
         self.node.load().as_ref().clone()
     }
 
@@ -981,15 +1092,21 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_secs(SESSION_TIMEOUT_SEC)).await;
 
         assert_eq!(
-            Arc::clone(&master_cluster_manager).get_node().status(),
+            Arc::clone(&master_cluster_manager)
+                .get_current_node()
+                .status(),
             NodeStatus::Master
         );
         assert_eq!(
-            Arc::clone(&slave_cluster_manager_1).get_node().status(),
+            Arc::clone(&slave_cluster_manager_1)
+                .get_current_node()
+                .status(),
             NodeStatus::Slave
         );
         assert_eq!(
-            Arc::clone(&slave_cluster_manager_2).get_node().status(),
+            Arc::clone(&slave_cluster_manager_2)
+                .get_current_node()
+                .status(),
             NodeStatus::Slave
         );
         assert_eq!(master_cluster_manager.get_nodes().await.unwrap().len(), 3);
@@ -1008,7 +1125,7 @@ mod tests {
         );
 
         assert_eq!(
-            master_cluster_manager.get_node().status(),
+            master_cluster_manager.get_current_node().status(),
             NodeStatus::Master
         );
         assert_eq!(master_cluster_manager.get_nodes().await.unwrap().len(), 2);
@@ -1071,11 +1188,15 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_secs(5)).await;
 
         assert_eq!(
-            Arc::clone(&master_cluster_manager).get_node().status(),
+            Arc::clone(&master_cluster_manager)
+                .get_current_node()
+                .status(),
             NodeStatus::Master
         );
         assert_eq!(
-            Arc::clone(&slave_cluster_manager_1).get_node().status(),
+            Arc::clone(&slave_cluster_manager_1)
+                .get_current_node()
+                .status(),
             NodeStatus::Slave
         );
 
@@ -1087,7 +1208,7 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_secs(SESSION_TIMEOUT_SEC + 1)).await;
 
         // Check if the slave node has become the new master
-        let new_master_status = slave_cluster_manager_1.get_node().status();
+        let new_master_status = slave_cluster_manager_1.get_current_node().status();
         assert_eq!(new_master_status, NodeStatus::Master);
 
         debug!("test_remove_master_node: slave node has taken over as master");

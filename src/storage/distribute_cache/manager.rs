@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use bytes::BytesMut;
 use tokio::{select, sync::mpsc};
 use tracing::{debug, error, info};
 
@@ -127,19 +128,21 @@ impl Job for FileBlockHandler {
         }
 
         // Prepare response body
-        let resp_body = file_block_resp.encode();
+        let mut resp_body_buffer = BytesMut::new();
+        file_block_resp.encode(&mut resp_body_buffer);
         // Prepare response header
         let resp_header = RespHeader {
             seq: self.header.seq,
             op: RespType::FileBlockResponse.to_u8(),
-            len: usize_to_u64(resp_body.len()),
+            len: usize_to_u64(resp_body_buffer.len()),
         };
-        let mut resp_buffer = resp_header.encode();
+        let mut resp_header_buffer = BytesMut::new();
+        resp_header.encode(&mut resp_header_buffer);
         // Combine response header and body
-        resp_buffer.extend_from_slice(&resp_body);
+        resp_header_buffer.extend_from_slice(&resp_body_buffer);
 
         // Send response to the done channel
-        match self.done_tx.send(resp_buffer).await {
+        match self.done_tx.send(resp_header_buffer.to_vec()).await {
             Ok(()) => {
                 debug!("Sent response to done channel");
             }

@@ -16,7 +16,7 @@ pub const REQ_HEADER_SIZE: u64 = 17;
 pub const RESP_HEADER_SIZE: u64 = 17;
 
 /// The Encode trait is used to encode a message structure into a byte buffer.
-pub trait Encode {
+pub trait Encode: Sync {
     /// Encode the message into a byte buffer, this operation will append to buffer
     /// If you need to encode from start, you should clear the buffer first
     fn encode(&self, buf: &mut BytesMut);
@@ -174,12 +174,52 @@ impl<P: Packet + Send + Sync> PacketsInner<P> {
         // remove packet and return it
         self.packets.remove(&seq)
     }
+
+    /// Clean pending tasks as timeout
+    /// In first step, we will try to mark the task as timeout if it is pending and timeout
+    /// In 10 * timeout time, we will force to remove the task if the task is not consumed
+    pub async fn clean_timeout_tasks(&mut self, current_timestamp: u64, timeout: u64) {
+        let mut last_timeout_packets = Vec::new();
+        for (seq, packet) in &mut self.packets {
+            // Check if the task is timeout
+            let timestamp = packet.get_timestamp();
+            if current_timestamp - timestamp > timeout {
+                // Set the task as timeout
+                last_timeout_packets.push(*seq);
+            }
+        }
+
+        // clean the timeout packets
+        for seq in last_timeout_packets {
+            if let Some(packet) = self.packets.remove(&seq) {
+                debug!("Task {} is timeout", seq);
+                packet
+                    .set_result(Err(RpcError::Timeout(format!("Task {seq} is timeout"))))
+                    .await;
+            } else {
+                debug!("Task {} is timeout, but not found in the packets", seq);
+                continue;
+            }
+        }
+    }
+
+    /// Purge the outdated tasks when connection is timeout
+    pub async fn purge_outdated_tasks(&mut self) {
+        // Take ownership and pass it to the caller
+        for (seq, packet) in self.packets.drain() {
+            packet
+                .set_result(Err(RpcError::Timeout(format!("Task {seq} is timeout"))))
+                .await;
+        }
+
+        self.packets.clear();
+    }
 }
 
 /// The `PacketsKeeper` struct is used to store the current and previous tasks.
 /// It will be modified by single task, so we don't need to share it.
 #[derive(Debug)]
-struct PacketsInner<P>
+pub struct PacketsKeeper<P>
 where
     P: Packet + Send + Sync,
 {
@@ -196,8 +236,8 @@ where
     current_time: Instant,
 }
 
-impl<P: Packet + Send + Sync> PacketsInner<P> {
-    /// Create a new `PacketsInner`
+impl<P: Packet + Send + Sync> PacketsKeeper<P> {
+    /// Create a new `PacketsKeeper`
     #[must_use]
     pub fn new(timeout: u64) -> Self {
         let (buffer_packets_sender, buffer_packets_receiver) = flume::bounded::<P>(1000);
@@ -225,14 +265,6 @@ impl<P: Packet + Send + Sync> PacketsInner<P> {
             })?;
 
         Ok(())
-    }
-
-    /// Get a task from the packets and remove it
-    pub fn remove_task(&mut self, seq: u64) -> Option<P> {
-        self.timestamp.remove(&seq);
-
-        // remove packet and return it
-        self.packets.remove(&seq)
     }
 
     /// Clean pending tasks as timeout
@@ -298,8 +330,6 @@ impl<P: Packet + Send + Sync> PacketsInner<P> {
 
                 return Ok(());
             }
-
-            return Ok(());
         }
 
         Err(RpcError::InvalidRequest(format!("can not find seq: {seq}")))

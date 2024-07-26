@@ -14,3 +14,6 @@ pub mod manager;
 
 /// Distribute cache config
 pub mod config;
+
+/// Distribute cache client
+pub mod client;

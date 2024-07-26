@@ -7,6 +7,8 @@ use tokio_util::sync::CancellationToken;
 
 use self::memfs::kv_engine::KVEngineType;
 use crate::async_fuse::fuse::session;
+use crate::storage::distribute_cache::cluster::cluster_manager::ClusterManager;
+use crate::storage::distribute_cache::cluster::node::Node;
 use crate::storage::policy::LruPolicy;
 use crate::storage::{BackendBuilder, BlockCoordinate, MemoryCacheBuilder, StorageManager};
 use crate::AsyncFuseArgs;
@@ -34,9 +36,26 @@ pub async fn start_async_fuse(
         let block_size = storage_config.block_size;
         let capacity_in_blocks = memory_cache_config.capacity.overflow_div(block_size);
 
-        let backend = BackendBuilder::new(storage_param.clone(), block_size)
-            .build()
-            .await?;
+        let backend = match args.enable_distribute_cache {
+            true => {
+                let cluster_manager =
+                    Arc::new(ClusterManager::new(Arc::clone(&kv_engine), Node::default()));
+                let backend = BackendBuilder::new_with_distribute_cache(
+                    storage_param.clone(),
+                    block_size,
+                    cluster_manager,
+                )
+                .build()
+                .await?;
+                backend
+            }
+            false => {
+                BackendBuilder::new(storage_param.clone(), block_size)
+                    .build()
+                    .await?
+            }
+        };
+
         let lru_policy = LruPolicy::<BlockCoordinate>::new(capacity_in_blocks);
         let memory_cache = MemoryCacheBuilder::new(lru_policy, backend, block_size)
             .command_queue_limit(memory_cache_config.command_queue_limit)

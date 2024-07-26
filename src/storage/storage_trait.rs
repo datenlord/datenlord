@@ -5,7 +5,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use super::error::StorageResult;
-use super::Block;
+use super::{Block, StorageError};
 use crate::async_fuse::fuse::protocol::INum;
 
 /// The `Storage` trait. It handles blocks with storage such as in-memory cache,
@@ -16,6 +16,16 @@ pub trait Storage {
 
     /// Loads a block from `self` but not from its backend.
     async fn load_from_self(&self, ino: INum, block_id: usize) -> StorageResult<Option<Block>>;
+
+    /// Loads a block from `self` but not from its backend, this function support load with version.
+    async fn load_from_self_with_version(
+        &self,
+        _ino: INum,
+        _block_id: usize,
+        _version: u64,
+    ) -> StorageResult<Option<Block>> {
+        Err(StorageError::Unimplemented)
+    }
 
     /// Loads a block from the `backend`.
     async fn load_from_backend(&self, ino: INum, block_id: usize) -> StorageResult<Option<Block>>;
@@ -59,6 +69,48 @@ pub trait Storage {
     ) -> StorageResult<()>;
 
     // Provided methods
+
+    /// This function is used to enhance load with mtime version.
+    /// We will merge this function to load_from_self_with_version in the future.
+    async fn load_with_version(
+        &self,
+        ino: INum,
+        block_id: usize,
+        version: u64,
+    ) -> StorageResult<Option<Block>> {
+        match self
+            .load_from_self_with_version(ino, block_id, version)
+            .await
+        {
+            Ok(Some(block_in_cache)) => Ok(Some(block_in_cache)),
+            Ok(None) => {
+                let res = self.load_from_backend(ino, block_id).await?;
+                if let Some(block) = res {
+                    self.cache_block_from_backend(ino, block_id, block.clone())
+                        .await?;
+                    Ok(Some(block))
+                } else {
+                    Ok(None)
+                }
+            }
+            Err(e) => {
+                match e {
+                    // This funtion is not implemented, we will use the default load function.
+                    StorageError::Unimplemented => {
+                        let res = self.load_from_backend(ino, block_id).await?;
+                        if let Some(block) = res {
+                            self.cache_block_from_backend(ino, block_id, block.clone())
+                                .await?;
+                            Ok(Some(block))
+                        } else {
+                            Ok(None)
+                        }
+                    }
+                    _ => Err(e),
+                }
+            }
+        }
+    }
 
     /// Load a block from the storage.
     async fn load(&self, ino: INum, block_id: usize) -> StorageResult<Option<Block>> {
