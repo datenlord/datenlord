@@ -16,7 +16,7 @@ use tokio::{
 use crate::{read_exact_timeout, write_all_timeout};
 
 use super::{
-    common::ServerTimeoutOptions,
+    common::{self, ServerTimeoutOptions},
     error::RpcError,
     message::{ReqType, RespType},
     packet::{Decode, Encode, ReqHeader, RespHeader, REQ_HEADER_SIZE},
@@ -99,7 +99,9 @@ where
             worker_pool,
             timeout_options,
             dispatch_handler,
-            req_buf: UnsafeCell::new(BytesMut::with_capacity(8 * 1024 * 1024)),
+            req_buf: UnsafeCell::new(BytesMut::with_capacity(
+                common::DEFAULT_TCP_REQUEST_BUFFER_SIZE,
+            )),
         }
     }
 

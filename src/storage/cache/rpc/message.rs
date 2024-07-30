@@ -115,7 +115,6 @@ impl Decode for FileBlockRequest {
         let block_version = get_u64_from_buf(buf, 24)?;
         let hash_ring_version = get_u64_from_buf(buf, 32)?;
 
-
         Ok(FileBlockRequest {
             file_id,
             block_id,
@@ -187,7 +186,7 @@ impl Decode for FileBlockResponse {
         let data_len = usize_to_u64(data.len());
         if data_len != block_size {
             return Err(RpcError::InternalError(format!(
-                "Insufficient block size {data_len}"
+                "Insufficient block size: {block_size}, data len is : {data_len}"
             )));
         }
 
@@ -345,6 +344,7 @@ impl Packet for FileBlockPacket {
     }
 }
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod test {
     use crate::storage::cache::rpc::utils::u64_to_usize;
 
@@ -382,7 +382,7 @@ mod test {
     fn test_file_block_response_encode_decode() {
         let file_id = 123;
         let block_id = 456;
-        let block_size = 789;
+        let block_size = 5;
         let block_version = 10;
         let hash_ring_version = 20;
         let status = StatusCode::Success;
@@ -416,7 +416,7 @@ mod test {
     fn test_file_block_packet_encode() {
         let file_id = 123;
         let block_id = 456;
-        let block_size = 789;
+        let block_size = 5;
         let block_version = 10;
         let hash_ring_version = 20;
 

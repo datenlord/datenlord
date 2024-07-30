@@ -218,7 +218,7 @@ mod tests {
             .await
             .unwrap();
 
-        let rpc_client = RpcClient::<FileBlockPacket>::new(connect_stream, &timeout_options);
+        let rpc_client = RpcClient::<FileBlockPacket>::new(connect_stream, timeout_options);
         rpc_client.start_recv();
 
         time::sleep(Duration::from_secs(1)).await;
@@ -286,7 +286,7 @@ mod tests {
             .await
             .unwrap();
 
-        let rpc_client = RpcClient::<FileBlockPacket>::new(connect_stream, &timeout_options);
+        let rpc_client = RpcClient::<FileBlockPacket>::new(connect_stream, timeout_options);
         rpc_client.start_recv();
 
         time::sleep(Duration::from_secs(5)).await;
@@ -321,7 +321,7 @@ mod tests {
             .await
             .unwrap();
 
-        let rpc_client = RpcClient::<FileBlockPacket>::new(connect_stream, &timeout_options);
+        let rpc_client = RpcClient::<FileBlockPacket>::new(connect_stream, timeout_options);
         rpc_client.start_recv();
 
         // Drop client

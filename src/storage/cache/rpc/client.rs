@@ -18,7 +18,7 @@ use tracing::debug;
 use crate::{read_exact_timeout, write_all_timeout};
 
 use super::{
-    common::ClientTimeoutOptions,
+    common::{self, ClientTimeoutOptions},
     error::RpcError,
     message::{ReqType, RespType},
     packet::{Decode, Encode, Packet, PacketsKeeper, ReqHeader, RespHeader, REQ_HEADER_SIZE},
@@ -72,16 +72,21 @@ where
     P: Packet + Clone + Send + Sync + 'static,
 {
     /// Create a new connection.
-    pub fn new(stream: TcpStream, timeout_options: &ClientTimeoutOptions, client_id: u64) -> Self {
+    pub fn new(stream: TcpStream, timeout_options: ClientTimeoutOptions, client_id: u64) -> Self {
+        let task_timeout = timeout_options.task_timeout.as_secs();
         Self {
             stream: UnsafeCell::new(stream),
-            timeout_options: timeout_options.clone(),
+            timeout_options,
             seq: AtomicU64::new(0),
             clock_instant: Instant::now(),
             received_keepalive_timestamp: AtomicU64::new(0),
-            packets_keeper: PacketsKeeper::new(timeout_options.clone().task_timeout.as_secs()),
-            resp_buf: UnsafeCell::new(BytesMut::with_capacity(8 * 1024 * 1024)),
-            req_buf: UnsafeCell::new(BytesMut::with_capacity(8 * 1024 * 1024)),
+            packets_keeper: PacketsKeeper::new(task_timeout),
+            resp_buf: UnsafeCell::new(BytesMut::with_capacity(
+                common::DEFAULT_TCP_RESPONSE_BUFFER_SIZE,
+            )),
+            req_buf: UnsafeCell::new(BytesMut::with_capacity(
+                common::DEFAULT_TCP_REQUEST_BUFFER_SIZE,
+            )),
             client_id,
         }
     }
@@ -104,7 +109,7 @@ where
         Ok(req_header)
     }
 
-    /// Receive request body from the server.
+    /// Receive response body from the server.
     pub async fn recv_len(&self, len: u64) -> Result<(), RpcError> {
         let mut req_buffer: &mut BytesMut = unsafe { &mut *self.resp_buf.get() };
         req_buffer.resize(u64_to_usize(len), 0);
@@ -318,16 +323,16 @@ where
     /// We don't manage the stream is dead or clean
     /// The client will be closed if the keep alive message is not received in 100 times
     /// When the stream is broken, the client will be closed, and we need to recreate a new client
-    pub fn new(stream: TcpStream, timeout_options: &ClientTimeoutOptions) -> Self {
+    pub fn new(stream: TcpStream, timeout_options: ClientTimeoutOptions) -> Self {
         let client_id = AtomicU64::new(0);
         let inner_connection = RpcClientConnectionInner::new(
             stream,
-            timeout_options,
+            timeout_options.clone(),
             client_id.load(std::sync::atomic::Ordering::Acquire),
         );
 
         Self {
-            timeout_options: timeout_options.clone(),
+            timeout_options,
             inner_connection: Arc::new(inner_connection),
             client_id,
         }
@@ -540,7 +545,7 @@ mod tests {
         };
         let client_id = 123;
         let connection =
-            RpcClientConnectionInner::<TestPacket>::new(stream, &timeout_options, client_id);
+            RpcClientConnectionInner::<TestPacket>::new(stream, timeout_options, client_id);
         assert_eq!(connection.client_id, client_id);
     }
 
@@ -562,7 +567,7 @@ mod tests {
             task_timeout: Duration::from_secs(60),
             keep_alive_timeout: Duration::from_secs(30),
         };
-        let connection = RpcClientConnectionInner::<TestPacket>::new(stream, &timeout_options, 123);
+        let connection = RpcClientConnectionInner::<TestPacket>::new(stream, timeout_options, 123);
         let header = connection.recv_header().await.unwrap();
         assert_eq!(header.seq, 1);
         assert_eq!(header.op, RespType::KeepAliveResponse.to_u8());
@@ -581,7 +586,7 @@ mod tests {
             task_timeout: Duration::from_secs(60),
             keep_alive_timeout: Duration::from_secs(30),
         };
-        let connection = RpcClientConnectionInner::<TestPacket>::new(stream, &timeout_options, 123);
+        let connection = RpcClientConnectionInner::<TestPacket>::new(stream, timeout_options, 123);
         connection.recv_len(10).await.unwrap();
     }
 
@@ -604,7 +609,7 @@ mod tests {
             task_timeout: Duration::from_secs(60),
             keep_alive_timeout: Duration::from_secs(30),
         };
-        let connection = RpcClientConnectionInner::<TestPacket>::new(stream, &timeout_options, 123);
+        let connection = RpcClientConnectionInner::<TestPacket>::new(stream, timeout_options, 123);
         let req_header = ReqHeader {
             seq: 1,
             op: ReqType::KeepAliveRequest.to_u8(),
@@ -630,7 +635,7 @@ mod tests {
         };
         let client_id = 123;
         let connection =
-            RpcClientConnectionInner::<TestPacket>::new(stream, &timeout_options, client_id);
+            RpcClientConnectionInner::<TestPacket>::new(stream, timeout_options, client_id);
         let seq1 = connection.next_seq();
         let seq2 = connection.next_seq();
         assert_eq!(seq1 + 1, seq2);
@@ -654,7 +659,7 @@ mod tests {
             task_timeout: Duration::from_secs(60),
             keep_alive_timeout: Duration::from_secs(30),
         };
-        let connection = RpcClientConnectionInner::<TestPacket>::new(stream, &timeout_options, 123);
+        let connection = RpcClientConnectionInner::<TestPacket>::new(stream, timeout_options, 123);
         connection.ping().await.unwrap();
     }
 }
