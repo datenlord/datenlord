@@ -79,6 +79,7 @@ mock-etcd = { git = "https://github.com/datenlord/etcd-client", rev = "f697899" 
 #  We don't want to start up a real service for some api when doing unit test.
 mockall = "0.11.2"
 tempfile = "3"
+rstest = "0.22.0"
 
 [[bin]]
 path = "src/bin/bind_mounter.rs"
