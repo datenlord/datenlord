@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use tracing::error;
 
 use super::error::StorageResult;
 use super::{Block, StorageError};
@@ -29,6 +30,16 @@ pub trait Storage {
 
     /// Loads a block from the `backend`.
     async fn load_from_backend(&self, ino: INum, block_id: usize) -> StorageResult<Option<Block>>;
+
+    /// Loads a block from the `backend` with version.
+    async fn load_from_backend_with_version(
+        &self,
+        _ino: INum,
+        _block_id: usize,
+        _version: u64,
+    ) -> StorageResult<Option<Block>> {
+        Err(StorageError::Unimplemented)
+    }
 
     /// Caches a block that is just loaded from the backend.
     ///
@@ -84,26 +95,64 @@ pub trait Storage {
         {
             Ok(Some(block_in_cache)) => Ok(Some(block_in_cache)),
             Ok(None) => {
-                let res = self.load_from_backend(ino, block_id).await?;
-                if let Some(block) = res {
-                    self.cache_block_from_backend(ino, block_id, block.clone())
-                        .await?;
-                    Ok(Some(block))
-                } else {
-                    Ok(None)
+                error!("None in load_with_version");
+                match self.load_from_backend_with_version(ino, block_id, version).await {
+                    Ok(Some(block)) => {
+                        self.cache_block_from_backend(ino, block_id, block.clone())
+                            .await?;
+                        Ok(Some(block))
+                    }
+                    Ok(None) => Ok(None),
+                    Err(e) => {
+                        match e {
+                            // This funtion is not implemented, we will use the default load function.
+                            StorageError::Unimplemented => {
+                                let res = self.load_from_backend(ino, block_id).await?;
+                                if let Some(block) = res {
+                                    self.cache_block_from_backend(ino, block_id, block.clone())
+                                        .await?;
+                                    Ok(Some(block))
+                                } else {
+                                    Ok(None)
+                                }
+                            }
+                            _ => Err(e),
+                        }
+                    }
                 }
             }
             Err(e) => {
+                error!("Error in load_with_version: {:?}", e);
                 match e {
                     // This funtion is not implemented, we will use the default load function.
                     StorageError::Unimplemented => {
-                        let res = self.load_from_backend(ino, block_id).await?;
-                        if let Some(block) = res {
-                            self.cache_block_from_backend(ino, block_id, block.clone())
-                                .await?;
-                            Ok(Some(block))
+                        if let Some(block_in_cache) = self.load_from_self(ino, block_id).await? {
+                            Ok(Some(block_in_cache))
                         } else {
-                            Ok(None)
+                            match self.load_from_backend_with_version(ino, block_id, version).await {
+                                Ok(Some(block)) => {
+                                    self.cache_block_from_backend(ino, block_id, block.clone())
+                                        .await?;
+                                    Ok(Some(block))
+                                }
+                                Ok(None) => Ok(None),
+                                Err(e) => {
+                                    match e {
+                                        // This funtion is not implemented, we will use the default load function.
+                                        StorageError::Unimplemented => {
+                                            let res = self.load_from_backend(ino, block_id).await?;
+                                            if let Some(block) = res {
+                                                self.cache_block_from_backend(ino, block_id, block.clone())
+                                                    .await?;
+                                                Ok(Some(block))
+                                            } else {
+                                                Ok(None)
+                                            }
+                                        }
+                                        _ => Err(e),
+                                    }
+                                }
+                            }
                         }
                     }
                     _ => Err(e),
@@ -138,8 +187,30 @@ where
         self.as_ref().load_from_self(ino, block_id).await
     }
 
+    async fn load_from_self_with_version(
+        &self,
+        ino: INum,
+        block_id: usize,
+        version: u64,
+    ) -> StorageResult<Option<Block>> {
+        self.as_ref()
+            .load_from_self_with_version(ino, block_id, version)
+            .await
+    }
+
     async fn load_from_backend(&self, ino: INum, block_id: usize) -> StorageResult<Option<Block>> {
         self.as_ref().load_from_backend(ino, block_id).await
+    }
+
+    async fn load_from_backend_with_version(
+        &self,
+        ino: INum,
+        block_id: usize,
+        version: u64,
+    ) -> StorageResult<Option<Block>> {
+        self.as_ref()
+            .load_from_backend_with_version(ino, block_id, version)
+            .await
     }
 
     async fn cache_block_from_backend(

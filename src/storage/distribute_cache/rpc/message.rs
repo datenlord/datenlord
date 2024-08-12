@@ -2,7 +2,7 @@ use std::mem;
 
 use async_trait::async_trait;
 use bytes::{BufMut, BytesMut};
-use tracing::error;
+use tracing::warn;
 
 use crate::async_fuse::util::usize_to_u64;
 
@@ -313,25 +313,25 @@ impl Packet for FileBlockPacket {
                     match self.done_tx.send_async(Ok(resp)).await {
                         Ok(()) => {}
                         Err(err) => {
-                            error!("Failed to set result: {:?}", err);
+                            warn!("Failed to set result: {:?}", err);
                         }
                     }
                 } else {
-                    error!("Failed to set result: response is None");
+                    warn!("Failed to set result: response is None");
                     match self.done_tx.send_async(Err(self.request.clone())).await {
                         Ok(()) => {}
                         Err(err) => {
-                            error!("Failed to set result: {:?}", err);
+                            warn!("Failed to set result: {:?}", err);
                         }
                     }
                 }
             }
             Err(err) => {
-                error!("Failed to set result: {:?}", err);
+                warn!("Failed to set result: {:?}", err);
                 match self.done_tx.send_async(Err(self.request.clone())).await {
                     Ok(()) => {}
                     Err(err) => {
-                        error!("Failed to set result: {:?}", err);
+                        warn!("Failed to set result: {:?}", err);
                     }
                 }
             }

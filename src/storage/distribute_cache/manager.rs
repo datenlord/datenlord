@@ -2,6 +2,8 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use bytes::BytesMut;
+use datenlord::config::StorageS3Config;
+use opendal::{layers::{ConcurrentLimitLayer, RetryLayer}, services::S3, Operator};
 use tokio::{select, sync::mpsc};
 use tracing::{debug, error, info};
 
@@ -20,7 +22,7 @@ use super::{
         node::{Node, NodeStatus},
     },
     config::DistributeCacheConfig,
-    local_cache::{backend::FSBackend, block::MetaData, manager::BlockManager},
+    local_cache::{backend::S3Backend, block::MetaData, manager::BlockManager},
     rpc::{
         common::ServerTimeoutOptions,
         message::{FileBlockRequest, FileBlockResponse, ReqType, RespType, StatusCode},
@@ -97,6 +99,7 @@ impl Job for FileBlockHandler {
             self.request.block_id,
             self.request.block_size,
         );
+        error!("current file block request: {:?}", self.request);
         let block = self.local_cache_manager.read(meta_data).await;
         if let Ok(block) = block {
             if let Some(block) = block {
@@ -126,6 +129,11 @@ impl Job for FileBlockHandler {
                 }
             }
         }
+
+        error!("current file block response: file_id: {}, block_id: {}, block_size: {}, block_version: {}, hash_ring_version: {}, status: {:?}",
+            file_block_resp.file_id, file_block_resp.block_id, file_block_resp.block_size, file_block_resp.block_version, file_block_resp.hash_ring_version, file_block_resp.status);
+
+        // error!("current file block response data: {:?}", file_block_resp.data);
 
         // Prepare response body
         let mut resp_body_buffer = BytesMut::new();
@@ -251,10 +259,41 @@ pub struct DistributeCacheManager {
 
 impl DistributeCacheManager {
     /// Create a new distribute cache manager.
-    pub fn new(kv_engine: Arc<KVEngineType>, config: &DistributeCacheConfig) -> Self {
+    pub fn new(kv_engine: Arc<KVEngineType>, config: &DistributeCacheConfig, backend_config: &StorageS3Config) -> Self {
         // Create local cache manager
         // Create a block manager in local fs
-        let backend = Arc::new(FSBackend::default());
+        // let backend = Arc::new(FSBackend::default());
+
+        let mut builder = S3::default();
+        builder
+            .endpoint(&backend_config.endpoint_url)
+            .access_key_id(&backend_config.access_key_id)
+            .secret_access_key(&backend_config.secret_access_key)
+            .bucket(&backend_config.bucket_name);
+
+        // Init region
+        if let Some(region) = backend_config.region.to_owned() {
+            builder.region(region.as_str());
+        } else {
+            // Auto detect region
+            builder.region("auto");
+        }
+
+        // For aws s3 issue: https://repost.aws/questions/QU_F-UC6-fSdOYzp-gZSDTvQ/receiving-s3-503-slow-down-responses
+        // 3,500 PUT/COPY/POST/DELETE or 5,500 GET/HEAD requests per second per prefix in a bucket
+        let valid_max_concurrent_requests = backend_config.max_concurrent_requests.map_or(1000, |v| v);
+
+        let conncurrency_layer =
+            ConcurrentLimitLayer::new(valid_max_concurrent_requests.to_owned());
+        let retry_layer = RetryLayer::new();
+
+        #[allow(clippy::unwrap_used)]
+        let operator = Operator::new(builder).unwrap()
+            .layer(conncurrency_layer)
+            .layer(retry_layer)
+            .finish();
+        let backend = Arc::new(S3Backend::new(operator));
+
         let local_cache_manager = Arc::new(BlockManager::new(backend));
 
         // Create a distribute cluster manager

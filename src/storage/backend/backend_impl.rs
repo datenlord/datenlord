@@ -191,6 +191,10 @@ impl Storage for Backend {
         block_id: usize,
         version: u64,
     ) -> StorageResult<Option<Block>> {
+        error!(
+            "Load block from self with version: ino={}, block_id={}, version={}",
+            ino, block_id, version
+        );
         if let Some(distribute_cache_client) = &self.distribute_cache_client {
             match distribute_cache_client
                 .read_block(
@@ -202,6 +206,10 @@ impl Storage for Backend {
                 .await
             {
                 Ok(block) => {
+                    error!(
+                        "Read block from distribute cache: ino={}, block_id={}, version={} block={:?}",
+                        ino, block_id, version, block,
+                    );
                     return Ok(Some(block));
                 }
                 Err(e) => {
@@ -211,14 +219,21 @@ impl Storage for Backend {
                     );
                 }
             }
+        } else {
+            error!("No distribute cache client, will change to backend");
         }
 
         self.load_from_self(ino, block_id).await
     }
 
     async fn load_from_self(&self, ino: INum, block_id: usize) -> StorageResult<Option<Block>> {
+        error!(
+            "Load block from self: ino={}, block_id={}",
+            ino, block_id
+        );
         let mut block = Block::new_zeroed(self.block_size);
 
+        error!("get_block_path: {:?}", get_block_path(ino, block_id));
         let mut reader = self.operator.reader(&get_block_path(ino, block_id)).await?;
         let mut offset = 0;
         // Check if the reader point is at the end of the file.
@@ -250,6 +265,11 @@ impl Storage for Backend {
                 }
             }
         }
+
+        error!(
+            "Read block from self: ino={}, block_id={}, block={:?}",
+            ino, block_id, block
+        );
 
         Ok(Some(block))
     }

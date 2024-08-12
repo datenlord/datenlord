@@ -7,6 +7,7 @@ use anyhow::Context;
 use clippy_utilities::OverflowArithmetic;
 use lockfree_cuckoohash::{pin, LockFreeCuckooHash as HashMap};
 use tokio::task;
+use tracing::error;
 
 use super::super::{Block, Storage};
 use crate::async_fuse::fuse::protocol::INum;
@@ -63,7 +64,10 @@ where
         for block_id in start_block..end_block {
             let storage = Arc::clone(&self.storage);
             let handle =
-                task::spawn(async move { storage.load_with_version(ino, block_id, mtime).await });
+                task::spawn(async move {
+                    error!("load_with_version: ino: {}, block_id: {}, mtime: {}", ino, block_id, mtime);
+                    storage.load_with_version(ino, block_id, mtime).await
+                });
             handles.push(handle);
         }
 

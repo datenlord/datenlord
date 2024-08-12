@@ -199,6 +199,19 @@ impl ClusterManager {
             return Ok(());
         }
 
+        // Check current cluster hashring info, try to update it or init it
+        match self.inner.update_cluster_topo().await {
+            Ok(()) => {
+                debug!("Update cluster topo success");
+            }
+            Err(e) => {
+                warn!("Failed to update cluster topo: {:?}", e);
+                return Err(DatenLordError::CacheClusterErr {
+                    context: vec![format!("Failed to update cluster topo: {:?}", e)],
+                });
+            }
+        }
+
         // Do watch node list update task
         // This task will block until the master status changed
         self.inner.watch_nodes().await.with_context(|| {

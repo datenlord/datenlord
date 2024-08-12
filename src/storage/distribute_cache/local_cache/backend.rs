@@ -1,8 +1,11 @@
 use async_trait::async_trait;
 use opendal::{raw::oio::ReadExt, services::Fs, ErrorKind, Operator};
 use tokio::io::AsyncWriteExt;
+use tracing::debug;
 
 use std::fmt::Debug;
+
+use crate::storage::distribute_cache::local_cache::block::BLOCK_SIZE;
 
 use super::StorageResult;
 
@@ -105,18 +108,23 @@ impl Backend for S3Backend {
     /// Reads data from the storage system into the given buffer.
     #[inline]
     async fn read(&self, path: &str, buf: &mut [u8]) -> StorageResult<usize> {
+        debug!("S3Backend read path: {}", path);
         let mut reader = self.operator.reader(path).await?;
         let mut read_size = 0;
 
         loop {
             // Read data and catch the size
-            let result = reader.read(buf).await;
+            // Calculate the remaining buffer size
+            let remaining_buf = &mut buf[read_size..];
+            let result = reader.read(remaining_buf).await;
             match result {
+                Ok(0) => break,
                 Ok(size) => {
-                    if size == 0 {
+                    // The size is not full, we should break the loop
+                    read_size += size;
+                    if size == BLOCK_SIZE {
                         break;
                     }
-                    read_size += size;
                 }
                 Err(e) => {
                     // If not found just return 0.
@@ -126,6 +134,8 @@ impl Backend for S3Backend {
                 }
             }
         }
+
+        // error!("S3Backend read size: {} and buf: {:?}", read_size, buf);
 
         Ok(read_size)
     }

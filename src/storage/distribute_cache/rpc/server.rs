@@ -24,7 +24,7 @@ use super::{
     workerpool::WorkerPool,
 };
 
-use tracing::{debug, error, info};
+use tracing::{debug, warn};
 
 /// Define trait for implementing the RPC server connection handler.
 #[async_trait]
@@ -208,14 +208,14 @@ where
                 if let Ok(res) = self.inner.send_response(resp_buffer).await {
                     debug!("Sent keepalive response: {:?}", res);
                 } else {
-                    error!("Failed to send keepalive response");
+                    warn!("Failed to send keepalive response");
                 }
             } else {
                 // Try to read the request body
                 match self.inner.recv_len(body_len).await {
                     Ok(()) => {}
                     Err(err) => {
-                        error!("Failed to receive request body: {:?}", err);
+                        warn!("Failed to receive request body: {:?}", err);
                         return;
                     }
                 };
@@ -254,16 +254,15 @@ where
                     if let Ok(res) = inner_conn.send_response(&resp_buffer).await {
                         debug!("Sent file block response successfully: {:?}", res);
                     } else {
-                        error!("Failed to send file block response");
+                        warn!("Failed to send file block response");
                     }
                 } else {
-                    info!("done_rx channel is closed, stop sending response to the stream");
+                    debug!("done_rx channel is closed, stop sending response to the stream");
                     break;
                 }
             }
         });
 
-        let start_time = std::time::Instant::now();
         loop {
             // Receive the request header
             let req_header = match self.inner.recv_header().await {
@@ -277,10 +276,6 @@ where
                 }
             };
 
-            if req_header.seq == 1000 {
-                let end_time = std::time::Instant::now();
-                info!("Total time: {:?}", end_time - start_time);
-            }
             // Dispatch the handler for the connection
             self.dispatch(req_header, done_tx.clone()).await;
         }
@@ -378,7 +373,7 @@ where
         let listener = tokio::net::TcpListener::bind(addr)
             .await
             .map_err(|err| RpcError::InternalError(err.to_string()))?;
-        info!("listening on {:?}", addr.to_owned());
+        debug!("listening on {:?}", addr.to_owned());
 
         // Accept incoming connections
         let timeout_options = self.timeout_options.clone();

@@ -85,7 +85,7 @@ use clap::Parser;
 use csi::meta_data::MetaData;
 use csi::scheduler_extender::SchedulerExtender;
 use datenlord::common::task_manager::{self, TaskName, TASK_MANAGER};
-use datenlord::config::{InnerConfig, NodeRole, StorageConfig};
+use datenlord::config::{InnerConfig, NodeRole, StorageConfig, StorageParams};
 use datenlord::{config, metrics};
 use storage::distribute_cache;
 
@@ -169,22 +169,6 @@ async fn main() -> anyhow::Result<()> {
                 enable_distribute_cache: config.distribute_cache_config.is_some(),
             };
 
-            // TODO: separate the distribute cache task to new node role.
-            if let Some(distribute_cache_config) = config.distribute_cache_config.clone() {
-                let distribute_cache_config_inner =
-                    distribute_cache::config::DistributeCacheConfig::new(
-                        distribute_cache_config.bind_ip,
-                        distribute_cache_config.bind_port,
-                    );
-                let kv_engine = Arc::new(KVEngineType::new(config.kv_addrs.clone()).await?);
-                let distribute_cache_manager =
-                    distribute_cache::manager::DistributeCacheManager::new(
-                        kv_engine,
-                        &distribute_cache_config_inner,
-                    );
-                distribute_cache_manager.start().await?;
-            }
-
             // Start local distribute cache config
 
             TASK_MANAGER
@@ -255,6 +239,32 @@ async fn main() -> anyhow::Result<()> {
                     }
                 })
                 .await?;
+        }
+        NodeRole::Cache => {
+            // TODO: separate the distribute cache task to new node role.
+            if let Some(distribute_cache_config) = config.distribute_cache_config.clone() {
+                let distribute_cache_config_inner =
+                    distribute_cache::config::DistributeCacheConfig::new(
+                        distribute_cache_config.bind_ip,
+                        distribute_cache_config.bind_port,
+                    );
+                let kv_engine = Arc::new(KVEngineType::new(config.kv_addrs.clone()).await?);
+                match config.storage.params {
+                    StorageParams::S3(s3config) => {
+                        let distribute_cache_manager =
+                            distribute_cache::manager::DistributeCacheManager::new(
+                                kv_engine,
+                                &distribute_cache_config_inner,
+                                &s3config,
+                            );
+                        distribute_cache_manager.start().await?;
+                    }
+                    StorageParams::Fs(_) => {
+                        // Currently only support s3
+                        unimplemented!()
+                    }
+                }
+            }
         }
     }
 

@@ -135,6 +135,7 @@ impl MetaData {
                 md.register_to_etcd(SCHEDULER_EXTENDER_PREFIX).await?;
             }
             NodeRole::AsyncFuse => (),
+            NodeRole::Cache => (),
         }
 
         Ok(md)

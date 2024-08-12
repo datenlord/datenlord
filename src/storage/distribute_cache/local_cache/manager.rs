@@ -3,6 +3,8 @@ use std::{
     sync::{Arc, RwLock},
 };
 
+use tracing::debug;
+
 use super::{
     backend::{Backend, FSBackend},
     block::{Block, MetaData, BLOCK_SIZE},
@@ -116,12 +118,15 @@ impl BlockManager {
         {
             // Try to read file from fs backend
             let relative_path = meta_data.to_id();
+            debug!("Read block from backend: {}", relative_path);
             let mut buf = [0; BLOCK_SIZE];
             let size = self
                 .backend
                 .read(&relative_path, &mut buf)
                 .await
                 .unwrap_or_default();
+
+            debug!("Read block size: {}", size);
 
             // If the size is not equal to BLOCK_SIZE, the block is invalid
             if size != BLOCK_SIZE {
@@ -130,11 +135,16 @@ impl BlockManager {
                     .remove(&relative_path)
                     .await
                     .unwrap_or_default();
-
+                debug!("Invalid block: {}", relative_path);
                 return Ok(None);
             }
 
+            // error!("Read block len: {:?}", buf.len());
+            // error!("Read block inner content: {:?}", buf);
+
             let block = Block::new(meta_data.clone(), buf.to_vec());
+
+            // error!("Read block: {:?}", block);
 
             // Write the block to the cache
             let block_ref = Arc::new(RwLock::new(block.clone()));
@@ -142,6 +152,8 @@ impl BlockManager {
                 .write()
                 .unwrap()
                 .put(meta_data.clone(), block_ref);
+
+            // error!("Read block: {:?}", block);
 
             return Ok(Some(block));
         }

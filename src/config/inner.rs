@@ -24,6 +24,8 @@ pub enum Role {
     SchedulerExtender,
     /// Run async fuse
     AsyncFuse,
+    /// Run as distribute cache node
+    Cache,
 }
 
 impl FromStr for Role {
@@ -36,6 +38,7 @@ impl FromStr for Role {
             "node" => Ok(Role::Node),
             "scheduler" => Ok(Role::SchedulerExtender),
             "asyncFuse" => Ok(Role::AsyncFuse),
+            "cache" => Ok(Role::Cache),
             _ => Err(DatenLordError::ArgumentInvalid {
                 context: vec![format!("role {} is not supported", s)],
             }),

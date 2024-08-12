@@ -1,7 +1,9 @@
 use std::hash::{Hash, Hasher};
 
 /// The size of a block in bytes.
-pub const BLOCK_SIZE: usize = 4 * 1024 * 1024;
+// pub const BLOCK_SIZE: usize = 4 * 1024 * 1024;
+// Use 512 KB block size
+pub const BLOCK_SIZE: usize = 512 * 1024;
 
 #[derive(Clone, Debug)]
 /// Provide current node meta infos
@@ -69,12 +71,15 @@ impl MetaData {
 
     /// Convert the MetaData to a string
     pub fn to_id(&self) -> String {
-        format!(
-            "{}_{}_{}_{}",
-            self.inum, self.version, self.offset, self.size
-        )
+        // same as get_block_path in backend_impl.rs
+        // format!(
+        //     "{}_{}_{}_{}",
+        //     self.inum, self.version, self.offset, self.size
+        // )
+        format!("{}/{}.block", self.inum, self.offset)
     }
 
+    /// TODO: Update to use .block
     /// Create a MetaData from a string
     pub fn from_id(id: &str) -> Option<Self> {
         let parts: Vec<&str> = id.split('_').collect();

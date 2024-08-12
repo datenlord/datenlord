@@ -136,7 +136,6 @@ pub struct SessionInner {
     /// The ttl of the lease
     ttl: u64,
     /// The etcd client
-    #[cfg_attr(not(debug_assertions), skip)]
     client: etcd_client::Client,
 }
 
