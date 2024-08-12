@@ -63,11 +63,11 @@ impl LogRole {
 #[inline]
 pub fn init_logger(role: LogRole, level: Level) {
     let filter = filter::Targets::new()
-        .with_target("hyper", Level::WARN)
-        .with_target("h2", Level::WARN)
-        .with_target("tower", Level::WARN)
-        .with_target("datenlord::async_fuse::fuse", Level::INFO)
-        .with_target("datenlord::metrics", Level::INFO)
+        .with_target("hyper", Level::OFF)
+        .with_target("h2", Level::OFF)
+        .with_target("tower", Level::OFF)
+        .with_target("datenlord::async_fuse::fuse", Level::OFF)
+        .with_target("datenlord::metrics", Level::OFF)
         .with_target("", level);
 
     let log_path = format!("./datenlord_{}.log", role.as_str());

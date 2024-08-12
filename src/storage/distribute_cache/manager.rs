@@ -99,7 +99,7 @@ impl Job for FileBlockHandler {
             self.request.block_id,
             self.request.block_size,
         );
-        error!("current file block request: {:?}", self.request);
+        // error!("current file block request: {:?}", self.request);
         let block = self.local_cache_manager.read(meta_data).await;
         if let Ok(block) = block {
             if let Some(block) = block {
@@ -130,8 +130,8 @@ impl Job for FileBlockHandler {
             }
         }
 
-        error!("current file block response: file_id: {}, block_id: {}, block_size: {}, block_version: {}, hash_ring_version: {}, status: {:?}",
-            file_block_resp.file_id, file_block_resp.block_id, file_block_resp.block_size, file_block_resp.block_version, file_block_resp.hash_ring_version, file_block_resp.status);
+        // error!("current file block response: file_id: {}, block_id: {}, block_size: {}, block_version: {}, hash_ring_version: {}, status: {:?}",
+            // file_block_resp.file_id, file_block_resp.block_id, file_block_resp.block_size, file_block_resp.block_version, file_block_resp.hash_ring_version, file_block_resp.status);
 
         // error!("current file block response data: {:?}", file_block_resp.data);
 
@@ -353,7 +353,7 @@ impl DistributeCacheManager {
                 // Create rpc server
                 // Default workpool for rpc server
                 // Default worker for file block handler is 10, default jobs is 100
-                let pool = Arc::new(WorkerPool::new(10, 100));
+                let pool = Arc::new(WorkerPool::new(64, 1000));
                 let handler = BlockHandler::new(
                     Arc::clone(&pool),
                     local_cache_manager_clone,
@@ -361,7 +361,7 @@ impl DistributeCacheManager {
                 );
                 let server_timeout_options = ServerTimeoutOptions::default();
                 // Create a new rpc server with max 100 workers and 1000 jobs
-                let mut rpc_server = RpcServer::new(&server_timeout_options, 100, 1000, handler);
+                let mut rpc_server = RpcServer::new(&server_timeout_options, 64, 1000, handler);
                 match rpc_server.listen(&addr).await {
                     Ok(()) => {
                         info!("Rpc server started on: {}", addr);

@@ -1,5 +1,6 @@
-use std::{sync::Arc, time::Duration};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
+use tokio::sync::Mutex;
 use tracing::error;
 
 use crate::{
@@ -31,12 +32,15 @@ fn get_block_path_id(ino: u64, mtime: u64, block_id: u64, block_size: u64) -> St
 pub struct DistributeCacheClient {
     /// The cluster manager, only used to watch hashring changes
     cluster_manager: Arc<ClusterManager>,
+    /// The rpc client cache
+    rpc_client_cache: Arc<Mutex<HashMap<String, RpcClient<FileBlockPacket>>>>,
 }
 
 impl DistributeCacheClient {
     /// Create a new distribute cache client
     pub fn new(cluster_manager: Arc<ClusterManager>) -> Self {
-        Self { cluster_manager }
+        let rpc_client_cache = Arc::new(Mutex::new(HashMap::new()));
+        Self { cluster_manager, rpc_client_cache }
     }
 
     /// Start the distribute cache client watch task
@@ -82,26 +86,6 @@ impl DistributeCacheClient {
             })?;
         let addr = format!("{}:{}", cache_node.ip(), cache_node.port());
 
-        // Create rpc client from the cache node
-        // TODO: put the rpc client into a pool, so we can use the rpc client
-        //      to read the block from the cache node with keepalive
-        let timeout_options = ClientTimeoutOptions {
-            read_timeout: Duration::from_secs(10),
-            write_timeout: Duration::from_secs(10),
-            task_timeout: Duration::from_secs(10),
-            keep_alive_timeout: Duration::from_secs(10),
-        };
-        let connect_stream = connect_timeout!(addr, timeout_options.read_timeout).await?;
-        let rpc_client = RpcClient::<FileBlockPacket>::new(connect_stream, &timeout_options);
-        rpc_client.start_recv();
-        // Test connection first, if current connection is not available, we will try to return quickly
-        rpc_client
-            .ping()
-            .await
-            .map_err(|err| DatenLordError::DistributeCacheManagerErr {
-                context: vec![format!("Failed to ping cache node: {:?}", err)],
-            })?;
-
         let (tx, rx) = flume::unbounded::<Result<FileBlockResponse, FileBlockRequest>>();
         // Send file block request
         let current_ring = self.cluster_manager.get_ring().await.map_err(|err| {
@@ -117,17 +101,67 @@ impl DistributeCacheClient {
             hash_ring_version: current_ring.version(),
         };
         let mut packet = FileBlockPacket::new(&block_request, tx.clone());
-        rpc_client.send_request(&mut packet).await.map_err(|err| {
-            DatenLordError::DistributeCacheManagerErr {
-                context: vec![format!("Failed to send request: {:?}", err)],
+
+        let start_time = tokio::time::Instant::now();
+
+        {
+            // Add a cache to hold the rpc client
+            let mut rpc_client_cache = self.rpc_client_cache.lock().await;
+            if rpc_client_cache.contains_key(&addr) {
+                // If the rpc client is already in the cache, we will use it directly
+                let rpc_client = rpc_client_cache.get(&addr).unwrap();
+                // TODO: Test connection first, if current connection is not available, we will try to return quickly and delete this rpc client
+
+                rpc_client.send_request(&mut packet).await.map_err(|err| {
+                    DatenLordError::DistributeCacheManagerErr {
+                        context: vec![format!("Failed to send request: {:?}", err)],
+                    }
+                })?;
+            } else {
+                // If the rpc client is not in the cache, we will create a new one
+                // Create rpc client from the cache node
+
+                // Create rpc client from the cache node
+                // TODO: put the rpc client into a pool, so we can use the rpc client
+                //      to read the block from the cache node with keepalive
+                let timeout_options = ClientTimeoutOptions {
+                    read_timeout: Duration::from_secs(10),
+                    write_timeout: Duration::from_secs(10),
+                    task_timeout: Duration::from_secs(10),
+                    keep_alive_timeout: Duration::from_secs(10),
+                };
+                let addr_clone = addr.clone();
+                let connect_stream = connect_timeout!(addr_clone, timeout_options.read_timeout).await?;
+                let rpc_client = RpcClient::<FileBlockPacket>::new(connect_stream, &timeout_options);
+                rpc_client.start_recv();
+
+                // Test connection first, if current connection is not available, we will try to return quickly
+                rpc_client
+                    .ping()
+                    .await
+                    .map_err(|err| DatenLordError::DistributeCacheManagerErr {
+                        context: vec![format!("Failed to ping cache node: {:?}", err)],
+                    })?;
+
+                rpc_client.send_request(&mut packet).await.map_err(|err| {
+                    DatenLordError::DistributeCacheManagerErr {
+                        context: vec![format!("Failed to send request: {:?}", err)],
+                    }
+                })?;
+
+                // Add the rpc client to the cache
+                rpc_client_cache.insert(addr.clone(), rpc_client);
             }
-        })?;
+        }
+        let elapsed = start_time.elapsed();
+        error!("Read block from cache node: {} cost: {:?}", addr, elapsed);
 
         // Async read the block from the cache node
         match rx.recv_async().await {
             Ok(Ok(response)) => {
                 // TODO: ignore hashring version is not match error, this case
                 // will be processed in the future.
+
                 return Ok(Block::from_slice(
                     u64_to_usize(response.block_size),
                     &response.data,

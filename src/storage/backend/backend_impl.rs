@@ -195,6 +195,7 @@ impl Storage for Backend {
             "Load block from self with version: ino={}, block_id={}, version={}",
             ino, block_id, version
         );
+        // let start = tokio::time::Instant::now();
         if let Some(distribute_cache_client) = &self.distribute_cache_client {
             match distribute_cache_client
                 .read_block(
@@ -210,6 +211,8 @@ impl Storage for Backend {
                         "Read block from distribute cache: ino={}, block_id={}, version={} block={:?}",
                         ino, block_id, version, block,
                     );
+                    // let elapsed = start.elapsed();
+                    // error!("Read block from distribute cache cost: {:?}", elapsed);
                     return Ok(Some(block));
                 }
                 Err(e) => {

@@ -17,3 +17,6 @@ pub mod config;
 
 /// Distribute cache client
 pub mod client;
+
+/// Distribute cache tests
+pub mod tests;

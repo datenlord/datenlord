@@ -31,15 +31,15 @@ mod tests {
     use std::time::Duration;
 
     use crate::connect_timeout;
-    use crate::storage::cache::rpc::client::RpcClient;
-    use crate::storage::cache::rpc::common::{ClientTimeoutOptions, ServerTimeoutOptions};
-    use crate::storage::cache::rpc::message::{
+    use crate::storage::distribute_cache::rpc::client::RpcClient;
+    use crate::storage::distribute_cache::rpc::common::{ClientTimeoutOptions, ServerTimeoutOptions};
+    use crate::storage::distribute_cache::rpc::message::{
         FileBlockPacket, FileBlockRequest, FileBlockResponse, ReqType, RespType, StatusCode,
     };
-    use crate::storage::cache::rpc::packet::{Decode, Encode, ReqHeader, RespHeader};
-    use crate::storage::cache::rpc::server::{RpcServer, RpcServerConnectionHandler};
-    use crate::storage::cache::rpc::utils::u64_to_usize;
-    use crate::storage::cache::rpc::workerpool::{Job, WorkerPool};
+    use crate::storage::distribute_cache::rpc::packet::{Decode, Encode, ReqHeader, RespHeader};
+    use crate::storage::distribute_cache::rpc::server::{RpcServer, RpcServerConnectionHandler};
+    use crate::storage::distribute_cache::rpc::utils::u64_to_usize;
+    use crate::storage::distribute_cache::rpc::workerpool::{Job, WorkerPool};
     use async_trait::async_trait;
     use bytes::BytesMut;
     use tokio::sync::mpsc;
@@ -199,9 +199,9 @@ mod tests {
         // setup();
         // Setup server
         let addr = "127.0.0.1:2788";
-        let pool = Arc::new(WorkerPool::new(4, 100));
+        let pool = Arc::new(WorkerPool::new(1000, 1000));
         let handler = FileBlockRpcServerHandler::new(Arc::clone(&pool));
-        let mut server = RpcServer::new(&ServerTimeoutOptions::default(), 4, 100, handler);
+        let mut server = RpcServer::new(&ServerTimeoutOptions::default(), 1000, 1000, handler);
         server.listen(addr).await.unwrap();
         time::sleep(Duration::from_secs(1)).await;
         assert!(is_port_in_use(addr).await);
@@ -226,38 +226,80 @@ mod tests {
         // Send ping
         rpc_client.ping().await.unwrap();
 
-        let (tx, rx) = flume::unbounded::<Result<FileBlockResponse, FileBlockRequest>>();
-        // Send file block request
-        let block_request = FileBlockRequest {
-            block_id: 0,
-            block_size: 4096,
-            file_id: 0,
-            block_version: 0,
-            hash_ring_version: 1,
-        };
-        let mut packet = FileBlockPacket::new(&block_request, tx.clone());
-        rpc_client.send_request(&mut packet).await.unwrap();
+        // benchmark for 400 block with 512k size
+        let block_size = 512 * 1024;
+        let block_count = 400;
 
-        loop {
-            match rx.recv_async().await {
-                Ok(resp) => {
-                    let resp = resp.unwrap();
-                    debug!("Received response ok with len: {:?}", resp.data.len());
+        let start = time::Instant::now();
+        for i in 0..block_count {
+            let (tx, rx) = flume::unbounded::<Result<FileBlockResponse, FileBlockRequest>>();
+            // Send file block request
+            let block_request = FileBlockRequest {
+                block_id: i,
+                block_size: block_size,
+                file_id: 0,
+                block_version: 0,
+                hash_ring_version: 1,
+            };
+            let mut packet = FileBlockPacket::new(&block_request, tx.clone());
+            rpc_client.send_request(&mut packet).await.unwrap();
 
-                    assert_eq!(resp.file_id, 0);
-                    assert_eq!(resp.block_id, 0);
-                    assert_eq!(resp.block_size, 4096);
-                    assert_eq!(resp.status, StatusCode::Success);
-                    assert_eq!(resp.data.len(), 4096);
-                    debug!("Received response ok with len: {:?}", resp.data.len());
-                    break;
-                }
-                Err(err) => {
-                    error!("Failed to receive response: {:?}", err);
-                    time::sleep(Duration::from_secs(1)).await;
+            loop {
+                match rx.recv_async().await {
+                    Ok(resp) => {
+                        let resp = resp.unwrap();
+                        debug!("Received response ok with len: {:?}", resp.data.len());
+
+                        assert_eq!(resp.file_id, 0);
+                        assert_eq!(resp.block_id, i);
+                        assert_eq!(resp.block_size, block_size);
+                        assert_eq!(resp.status, StatusCode::Success);
+                        assert_eq!(resp.data.len(), u64_to_usize(block_size));
+                        debug!("Received response ok with len: {:?}", resp.data.len());
+                        break;
+                    }
+                    Err(err) => {
+                        error!("Failed to receive response: {:?}", err);
+                        // time::sleep(Duration::from_secs(1)).await;
+                    }
                 }
             }
         }
+        let elapsed = start.elapsed();
+        println!("Elapsed time: {:?}", elapsed);
+
+        // let (tx, rx) = flume::unbounded::<Result<FileBlockResponse, FileBlockRequest>>();
+        // // Send file block request
+        // let block_request = FileBlockRequest {
+        //     block_id: 0,
+        //     block_size: block_size,
+        //     file_id: 0,
+        //     block_version: 0,
+        //     hash_ring_version: 1,
+        // };
+        // let mut packet = FileBlockPacket::new(&block_request, tx.clone());
+        // rpc_client.send_request(&mut packet).await.unwrap();
+
+        // loop {
+        //     match rx.recv_async().await {
+        //         Ok(resp) => {
+        //             let resp = resp.unwrap();
+        //             debug!("Received response ok with len: {:?}", resp.data.len());
+
+        //             assert_eq!(resp.file_id, 0);
+        //             assert_eq!(resp.block_id, 0);
+        //             assert_eq!(resp.block_size, 4096);
+        //             assert_eq!(resp.status, StatusCode::Success);
+        //             assert_eq!(resp.data.len(), 4096);
+        //             debug!("Received response ok with len: {:?}", resp.data.len());
+        //             break;
+        //         }
+        //         Err(err) => {
+        //             error!("Failed to receive response: {:?}", err);
+        //             time::sleep(Duration::from_secs(1)).await;
+        //         }
+        //     }
+        // }
 
         server.stop();
     }
