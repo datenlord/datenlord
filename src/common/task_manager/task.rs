@@ -65,11 +65,20 @@ pub(super) struct Task {
     depends_on: Vec<TaskName>,
     /// The count of predecessors.
     predecessor_count: usize,
+    /// Runtime of this task node.
+    runtime: tokio::runtime::Runtime,
 }
 
 impl Task {
     /// Create a task node with `name`.
     pub fn new(name: TaskName, status: Arc<AtomicBool>) -> Self {
+        #[allow(clippy::unwrap_used)]
+        // Get shared singleton tokio runtime.
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(4)
+            .enable_all()
+            .build()
+            .unwrap();
         Self {
             name,
             token: CancellationToken::new(),
@@ -77,6 +86,7 @@ impl Task {
             handles: TaskHandle::default(),
             depends_on: vec![],
             predecessor_count: 0,
+            runtime: runtime,
         }
     }
 
@@ -103,7 +113,7 @@ impl Task {
         let (tx, rx) = mpsc::channel(DEFAULT_HANDLE_QUEUE_LIMIT);
         let gc_task = GcTask::new(self.name, rx, DEFAULT_TIMEOUT);
 
-        let task_handle = tokio::spawn(gc_task.run(token.clone()));
+        let task_handle = self.runtime.spawn(gc_task.run(token.clone()));
         let gc_handle = GcHandle::new(self.name, Arc::clone(&self.status), token, tx);
 
         self.handles = TaskHandle::Gc(gc_handle, task_handle);
