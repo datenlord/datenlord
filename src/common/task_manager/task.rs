@@ -86,7 +86,7 @@ impl Task {
             handles: TaskHandle::default(),
             depends_on: vec![],
             predecessor_count: 0,
-            runtime: runtime,
+            runtime,
         }
     }
 
