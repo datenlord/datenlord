@@ -31,6 +31,8 @@ pub struct TaskManager {
     tasks: Mutex<HashMap<TaskName, Task>>,
     /// The status of task manager, `true` for shutting down.
     is_shutdown: Arc<AtomicBool>,
+    /// Runtime of this task manager node.
+    runtime: tokio::runtime::Runtime,
 }
 
 impl TaskManager {
@@ -43,16 +45,28 @@ impl TaskManager {
     #[inline]
     #[must_use]
     pub fn new() -> Self {
+        #[allow(clippy::unwrap_used)]
+        // Get shared singleton tokio runtime.
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(8)
+            .enable_all()
+            .build()
+            .unwrap();
+
         let mut tasks = HashMap::new();
         let is_shutdown = Arc::default();
         for (prev, next) in EDGES {
             tasks
                 .entry(prev)
-                .or_insert_with(|| Task::new(prev, Arc::clone(&is_shutdown)))
+                .or_insert_with(|| {
+                    Task::new(prev, Arc::clone(&is_shutdown), runtime.handle().clone())
+                })
                 .add_dependency(next);
             tasks
                 .entry(next)
-                .or_insert_with(|| Task::new(next, Arc::clone(&is_shutdown)))
+                .or_insert_with(|| {
+                    Task::new(next, Arc::clone(&is_shutdown), runtime.handle().clone())
+                })
                 .inc_predecessor_count();
         }
 
@@ -60,13 +74,20 @@ impl TaskManager {
         for gc_task_name in GC_TASKS {
             tasks
                 .entry(gc_task_name)
-                .or_insert_with(|| Task::new(gc_task_name, Arc::clone(&is_shutdown)))
+                .or_insert_with(|| {
+                    Task::new(
+                        gc_task_name,
+                        Arc::clone(&is_shutdown),
+                        runtime.handle().clone(),
+                    )
+                })
                 .convert_to_gc_task();
         }
 
         Self {
             tasks: Mutex::new(tasks),
             is_shutdown,
+            runtime,
         }
     }
 
