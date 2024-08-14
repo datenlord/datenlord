@@ -96,7 +96,10 @@ pub trait Storage {
             Ok(Some(block_in_cache)) => Ok(Some(block_in_cache)),
             Ok(None) => {
                 error!("None in load_with_version");
-                match self.load_from_backend_with_version(ino, block_id, version).await {
+                match self
+                    .load_from_backend_with_version(ino, block_id, version)
+                    .await
+                {
                     Ok(Some(block)) => {
                         self.cache_block_from_backend(ino, block_id, block.clone())
                             .await?;
@@ -129,7 +132,10 @@ pub trait Storage {
                         if let Some(block_in_cache) = self.load_from_self(ino, block_id).await? {
                             Ok(Some(block_in_cache))
                         } else {
-                            match self.load_from_backend_with_version(ino, block_id, version).await {
+                            match self
+                                .load_from_backend_with_version(ino, block_id, version)
+                                .await
+                            {
                                 Ok(Some(block)) => {
                                     self.cache_block_from_backend(ino, block_id, block.clone())
                                         .await?;
@@ -142,8 +148,12 @@ pub trait Storage {
                                         StorageError::Unimplemented => {
                                             let res = self.load_from_backend(ino, block_id).await?;
                                             if let Some(block) = res {
-                                                self.cache_block_from_backend(ino, block_id, block.clone())
-                                                    .await?;
+                                                self.cache_block_from_backend(
+                                                    ino,
+                                                    block_id,
+                                                    block.clone(),
+                                                )
+                                                .await?;
                                                 Ok(Some(block))
                                             } else {
                                                 Ok(None)

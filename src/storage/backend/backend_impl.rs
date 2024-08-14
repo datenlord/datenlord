@@ -230,10 +230,7 @@ impl Storage for Backend {
     }
 
     async fn load_from_self(&self, ino: INum, block_id: usize) -> StorageResult<Option<Block>> {
-        error!(
-            "Load block from self: ino={}, block_id={}",
-            ino, block_id
-        );
+        error!("Load block from self: ino={}, block_id={}", ino, block_id);
         let mut block = Block::new_zeroed(self.block_size);
 
         error!("get_block_path: {:?}", get_block_path(ino, block_id));

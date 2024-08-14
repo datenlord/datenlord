@@ -63,11 +63,13 @@ where
 
         for block_id in start_block..end_block {
             let storage = Arc::clone(&self.storage);
-            let handle =
-                task::spawn(async move {
-                    error!("load_with_version: ino: {}, block_id: {}, mtime: {}", ino, block_id, mtime);
-                    storage.load_with_version(ino, block_id, mtime).await
-                });
+            let handle = task::spawn(async move {
+                error!(
+                    "load_with_version: ino: {}, block_id: {}, mtime: {}",
+                    ino, block_id, mtime
+                );
+                storage.load_with_version(ino, block_id, mtime).await
+            });
             handles.push(handle);
         }
 

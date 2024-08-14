@@ -1,7 +1,7 @@
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use tokio::sync::Mutex;
-use tracing::error;
+use tracing::{debug, error, warn};
 
 use crate::{
     common::{
@@ -9,7 +9,7 @@ use crate::{
         task_manager::{TaskName, TASK_MANAGER},
     },
     connect_timeout,
-    storage::Block,
+    storage::{distribute_cache::rpc::error::RpcError, Block},
 };
 
 use super::{
@@ -21,6 +21,9 @@ use super::{
         utils::u64_to_usize,
     },
 };
+
+/// Duration to check the rpc client cache
+const RPC_CLIENT_CACHE_CHECK_DURATION: u64 = 60;
 
 /// Get block path by `ino`, `mtime`, `block_id` and `block_size`
 fn get_block_path_id(ino: u64, mtime: u64, block_id: u64, block_size: u64) -> String {
@@ -40,7 +43,10 @@ impl DistributeCacheClient {
     /// Create a new distribute cache client
     pub fn new(cluster_manager: Arc<ClusterManager>) -> Self {
         let rpc_client_cache = Arc::new(Mutex::new(HashMap::new()));
-        Self { cluster_manager, rpc_client_cache }
+        Self {
+            cluster_manager,
+            rpc_client_cache,
+        }
     }
 
     /// Start the distribute cache client watch task
@@ -53,6 +59,31 @@ impl DistributeCacheClient {
                     Ok(_) => {}
                     Err(err) => {
                         error!("Failed to watch ring: {:?}", err);
+                    }
+                }
+            })
+            .await
+            .map_err(|err| DatenLordError::DistributeCacheManagerErr {
+                context: vec![format!("Failed to start watch task: {:?}", err)],
+            })?;
+
+        let rpc_client_cache = self.rpc_client_cache.clone();
+        // TODO: Selectively verify that a batch of clients is valid in rpc client cache
+        TASK_MANAGER
+            .spawn(TaskName::AsyncFuse, |token| async move {
+                let duration = Duration::from_secs(RPC_CLIENT_CACHE_CHECK_DURATION);
+                loop {
+                    tokio::select! {
+                        _ = tokio::time::sleep(duration) => {
+                            // If current rpc request is valid, we will hold this request and continue to use it,
+                            // in this period, we just delete all the rpc client in the cache
+                            rpc_client_cache.lock().await.clear();
+                            debug!("Batch validate rpc client cache task is finished");
+                        }
+                        _ = token.cancelled() => {
+                            warn!("Batch validate rpc client cache task is cancelled");
+                            return;
+                        }
                     }
                 }
             })
@@ -111,8 +142,19 @@ impl DistributeCacheClient {
                 // If the rpc client is already in the cache, we will use it directly
                 let rpc_client = rpc_client_cache.get(&addr).unwrap();
                 // TODO: Test connection first, if current connection is not available, we will try to return quickly and delete this rpc client
+                // But, it might cause a lot of latency, so we just check the connection and remove it when the connection is not available
 
                 rpc_client.send_request(&mut packet).await.map_err(|err| {
+                    match err {
+                        RpcError::Timeout(_) => {
+                            // If the rpc client is timeout, we will remove it from the cache
+                            rpc_client_cache.remove(&addr);
+                        }
+                        RpcError::InvalidRequest(_)
+                        | RpcError::InvalidResponse(_)
+                        | RpcError::InternalError(_) => {}
+                    }
+
                     DatenLordError::DistributeCacheManagerErr {
                         context: vec![format!("Failed to send request: {:?}", err)],
                     }
@@ -131,17 +173,20 @@ impl DistributeCacheClient {
                     keep_alive_timeout: Duration::from_secs(10),
                 };
                 let addr_clone = addr.clone();
-                let connect_stream = connect_timeout!(addr_clone, timeout_options.read_timeout).await?;
-                let rpc_client = RpcClient::<FileBlockPacket>::new(connect_stream, &timeout_options);
+                let connect_stream =
+                    connect_timeout!(addr_clone, timeout_options.read_timeout).await?;
+                let rpc_client =
+                    RpcClient::<FileBlockPacket>::new(connect_stream, &timeout_options);
                 rpc_client.start_recv();
 
                 // Test connection first, if current connection is not available, we will try to return quickly
-                rpc_client
-                    .ping()
-                    .await
-                    .map_err(|err| DatenLordError::DistributeCacheManagerErr {
+                rpc_client.ping().await.map_err(|err| {
+                    DatenLordError::DistributeCacheManagerErr {
                         context: vec![format!("Failed to ping cache node: {:?}", err)],
-                    })?;
+                    }
+                })?;
+
+                // TODO: Change to other node?
 
                 rpc_client.send_request(&mut packet).await.map_err(|err| {
                     DatenLordError::DistributeCacheManagerErr {

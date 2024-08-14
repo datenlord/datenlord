@@ -275,7 +275,8 @@ where
         _version: u64,
     ) -> StorageResult<Option<Block>> {
         // self.load_from_self(ino, block_id).await
-        self.load_from_backend_with_version(ino, block_id, _version).await
+        self.load_from_backend_with_version(ino, block_id, _version)
+            .await
     }
 
     async fn load_from_backend(&self, ino: INum, block_id: usize) -> StorageResult<Option<Block>> {

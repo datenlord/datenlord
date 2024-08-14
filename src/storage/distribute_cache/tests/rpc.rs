@@ -32,7 +32,9 @@ mod tests {
 
     use crate::connect_timeout;
     use crate::storage::distribute_cache::rpc::client::RpcClient;
-    use crate::storage::distribute_cache::rpc::common::{ClientTimeoutOptions, ServerTimeoutOptions};
+    use crate::storage::distribute_cache::rpc::common::{
+        ClientTimeoutOptions, ServerTimeoutOptions,
+    };
     use crate::storage::distribute_cache::rpc::message::{
         FileBlockPacket, FileBlockRequest, FileBlockResponse, ReqType, RespType, StatusCode,
     };
