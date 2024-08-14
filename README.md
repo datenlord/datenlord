@@ -61,6 +61,11 @@ DatenLord has several target scenarios, which fall into two main categories:
     * AI and big-data jobs, especially training tasks;
     * Multi-cloud storage unified management, to facilitate application migration across clouds.
 -->
+
+## New Features
+
+- **Distribute Cache**: [DatenLord Distribute Cache](docs/datenlord_distribute_cache.md)
+
 ## Quick Start
 Currently DatenLord has been built as Docker images and can be deployed via K8S.
 
