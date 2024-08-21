@@ -31,7 +31,7 @@ impl Debug for MemoryBackend {
 #[async_trait]
 impl Backend for MemoryBackend {
     #[inline]
-    async fn read(&self, path: &str, buf: &mut [u8]) -> StorageResult<usize> {
+    async fn read(&self, path: &str, buf: &mut [u8], _version: u64) -> StorageResult<usize> {
         // mock latency
         tokio::time::sleep(self.latency).await;
 
@@ -50,7 +50,7 @@ impl Backend for MemoryBackend {
     }
 
     #[inline]
-    async fn write(&self, path: &str, buf: &[u8]) -> StorageResult<()> {
+    async fn write(&self, path: &str, buf: &[u8], _version: u64) -> StorageResult<()> {
         // mock latency
         tokio::time::sleep(self.latency).await;
         self.map.insert(path.to_owned(), buf.to_vec());
@@ -107,14 +107,15 @@ mod tests {
     async fn test_remove_all() {
         let backend = MemoryBackend::new(Duration::from_millis(0));
         let mut buf = vec![0; 16];
-        backend.write("a/1", &buf).await.unwrap();
-        backend.write("a/2", &buf).await.unwrap();
+        let version = 0;
+        backend.write("a/1", &buf, version).await.unwrap();
+        backend.write("a/2", &buf, version).await.unwrap();
 
         backend.remove_all("a/").await.unwrap();
 
-        let size = backend.read("a/1", &mut buf).await.unwrap();
+        let size = backend.read("a/1", &mut buf, version).await.unwrap();
         assert_eq!(size, 0);
-        let size = backend.read("a/2", &mut buf).await.unwrap();
+        let size = backend.read("a/2", &mut buf, version).await.unwrap();
         assert_eq!(size, 0);
     }
 }

@@ -47,6 +47,12 @@ pub struct Block {
     version: usize,
 }
 
+impl AsRef<[u8]> for Block {
+    fn as_ref(&self) -> &[u8] {
+        &self.data
+    }
+}
+
 impl Debug for Block {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Block")

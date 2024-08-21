@@ -176,12 +176,12 @@ impl MetaData for S3MetaData {
     }
 
     #[instrument(skip(self), err, ret)]
-    async fn read_helper(&self, ino: INum) -> DatenLordResult<(u64, SystemTime)> {
+    async fn read_helper(&self, ino: INum) -> DatenLordResult<(u64, SystemTime, u64)> {
         let open_file = self.open_files.get(ino);
 
-        let (mtime, file_size) = {
+        let (mtime, file_size, version) = {
             let attr = open_file.read().attr;
-            (attr.mtime, attr.size)
+            (attr.mtime, attr.size, attr.version)
         };
 
         // If now is after atime + 1s, update atime
@@ -208,7 +208,7 @@ impl MetaData for S3MetaData {
             FILESYSTEM_METRICS.observe_storage_operation_throughput(retry, "read");
             res?;
         }
-        Ok((file_size, mtime))
+        Ok((file_size, mtime, version))
     }
 
     #[instrument(skip(self), err, ret)]
@@ -271,13 +271,13 @@ impl MetaData for S3MetaData {
         Ok((ttl, fuse_attr))
     }
 
-    fn mtime_and_size(&self, ino: u64) -> (u64, SystemTime) {
+    fn size_and_version(&self, ino: u64) -> (u64, SystemTime, u64) {
         let open_file = self.open_files.get(ino);
-        let (mtime, file_size) = {
+        let (mtime, file_size, version) = {
             let attr = open_file.read().attr;
-            (attr.mtime, attr.size)
+            (attr.mtime, attr.size, attr.version)
         };
-        (file_size, mtime)
+        (file_size, mtime, version)
     }
 
     #[instrument(skip(self))]
@@ -327,7 +327,7 @@ impl MetaData for S3MetaData {
                         if remote_attr.size != dirty_attr.size {
                             inode.update_mtime_ctime_to_now();
                             storage
-                                .truncate(ino, remote_attr.size.cast(), dirty_attr.size.cast())
+                                .truncate(ino, remote_attr.size.cast(), dirty_attr.size.cast(), remote_attr.version)
                                 .await?;
                             if param.fh.is_some() {
                                 // The file is open, update the attr in `open_files`
@@ -336,6 +336,7 @@ impl MetaData for S3MetaData {
                                 open_file.attr.size = dirty_attr.size;
                                 open_file.attr.mtime = inode.get_attr().mtime;
                                 open_file.attr.ctime = inode.get_attr().ctime;
+                                open_file.attr.version = open_file.attr.version.max(open_file.attr.version.overflow_add(1));
                             }
                         }
                         inode.set_attr(dirty_attr);
@@ -758,6 +759,7 @@ impl MetaData for S3MetaData {
         ino: u64,
         new_mtime: SystemTime,
         new_size: u64,
+        new_version: u64,
     ) -> DatenLordResult<()> {
         // Update the `mtime` and `size` of the file
         {
@@ -765,6 +767,7 @@ impl MetaData for S3MetaData {
             let mut open_file = raw_open_file.write();
             open_file.attr.mtime = new_mtime;
             open_file.attr.size = new_size;
+            open_file.attr.version = new_version;
         }
 
         let (res, retry) = retry_txn!(TXN_RETRY_LIMIT, {
@@ -773,6 +776,7 @@ impl MetaData for S3MetaData {
             let mut attr = node.get_attr();
             attr.mtime = new_mtime;
             attr.size = new_size;
+            attr.version = new_version;
             node.set_attr(attr);
             txn.set(
                 &KeyType::INum2Node(ino),

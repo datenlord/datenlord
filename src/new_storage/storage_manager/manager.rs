@@ -47,17 +47,17 @@ impl Storage for StorageManager {
     /// Reads data from a file specified by the file handle, starting at the
     /// given offset and reading up to `len` bytes.
     #[inline]
-    async fn read(&self, _ino: u64, fh: u64, offset: u64, len: usize) -> StorageResult<Vec<u8>> {
+    async fn read(&self, _ino: u64, fh: u64, offset: u64, len: usize, version: u64) -> StorageResult<Vec<u8>> {
         let handle = self.get_handle(fh);
-        handle.read(offset, len.cast()).await
+        handle.read(offset, len.cast(), version).await
     }
 
     /// Writes data to a file specified by the file handle, starting at the
     /// given offset.
     #[inline]
-    async fn write(&self, _ino: u64, fh: u64, offset: u64, buf: &[u8]) -> StorageResult<()> {
+    async fn write(&self, _ino: u64, fh: u64, offset: u64, buf: &[u8], version: u64) -> StorageResult<()> {
         let handle = self.get_handle(fh);
-        handle.write(offset, buf).await?;
+        handle.write(offset, buf, version).await?;
         Ok(())
     }
 
@@ -83,7 +83,7 @@ impl Storage for StorageManager {
     /// Truncates a file specified by the inode number to a new size, given the
     /// old size.
     #[inline]
-    async fn truncate(&self, ino: u64, old_size: u64, new_size: u64) -> StorageResult<()> {
+    async fn truncate(&self, ino: u64, old_size: u64, new_size: u64, version: u64) -> StorageResult<()> {
         // If new_size == old_size, do nothing
         if new_size >= old_size {
             return Ok(());
@@ -116,7 +116,7 @@ impl Storage for StorageManager {
                 OpenFlag::Write,
             );
             let fill_content = vec![0; fill_size];
-            handle.write(new_size, &fill_content).await?;
+            handle.write(new_size, &fill_content, version).await?;
             handle.close().await?;
         }
 

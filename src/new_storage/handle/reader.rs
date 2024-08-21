@@ -66,7 +66,7 @@ impl Reader {
     }
 
     /// Fetch the block from the backend storage system.
-    async fn fetch_block_from_backend(&self, block_id: u64) -> StorageResult<Arc<RwLock<Block>>> {
+    async fn fetch_block_from_backend(&self, block_id: u64, version: u64) -> StorageResult<Arc<RwLock<Block>>> {
         let key = CacheKey {
             ino: self.ino,
             block_id,
@@ -74,7 +74,7 @@ impl Reader {
         let content = {
             let mut buf = vec![0; self.block_size];
             self.backend
-                .read(&format_path(self.ino, block_id), &mut buf)
+                .read(&format_path(self.ino, block_id), &mut buf, version)
                 .await?;
             buf
         };
@@ -86,14 +86,14 @@ impl Reader {
 
     /// Reads data from the file starting at the given offset and up to the
     /// given length.
-    pub async fn read(&self, buf: &mut Vec<u8>, slices: &[BlockSlice]) -> StorageResult<usize> {
+    pub async fn read(&self, buf: &mut Vec<u8>, slices: &[BlockSlice], version: u64) -> StorageResult<usize> {
         for slice in slices {
             let block_id = slice.block_id;
             self.access(block_id);
             // Block's pin count is increased by 1.
             let block = match self.fetch_block_from_cache(block_id) {
                 Some(block) => block,
-                None => self.fetch_block_from_backend(block_id).await?,
+                None => self.fetch_block_from_backend(block_id, version).await?,
             };
             {
                 // Copy the data from the block to the buffer.
@@ -148,14 +148,16 @@ mod tests {
 
         let b = Arc::clone(&backend);
         let writer = Writer::new(1, BLOCK_SIZE, Arc::clone(&manger), b);
-        writer.write(&content, &[slice]).await.unwrap();
+        let version = 0;
+        writer.write(&content, &[slice], version).await.unwrap();
         writer.flush().await.unwrap();
         writer.close().await.unwrap();
 
         let reader = Reader::new(1, BLOCK_SIZE, Arc::clone(&manger), backend);
         let slice = BlockSlice::new(0, 0, BLOCK_SIZE.cast());
         let mut buf = Vec::with_capacity(BLOCK_SIZE);
-        let size = reader.read(&mut buf, &[slice]).await.unwrap();
+        let version = 0;
+        let size = reader.read(&mut buf, &[slice], version).await.unwrap();
         assert_eq!(size, BLOCK_SIZE);
         assert_eq!(content, buf);
         let memory_size = manger.lock().len();

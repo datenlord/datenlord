@@ -148,25 +148,25 @@ impl FileHandle {
 
     /// Reads data from the file starting at the given offset and up to the
     /// given length.
-    pub async fn read(&self, offset: u64, len: u64) -> StorageResult<Vec<u8>> {
+    pub async fn read(&self, offset: u64, len: u64, version: u64) -> StorageResult<Vec<u8>> {
         let reader = self.reader();
         let slices = offset_to_slice(self.block_size.cast(), offset, len);
         let mut buf = Vec::with_capacity(len.cast());
-        reader.read(&mut buf, &slices).await?;
+        reader.read(&mut buf, &slices, version).await?;
         Ok(buf)
     }
 
     /// Writes data to the file starting at the given offset.
-    pub async fn write(&self, offset: u64, buf: &[u8]) -> StorageResult<()> {
+    pub async fn write(&self, offset: u64, buf: &[u8], version: u64) -> StorageResult<()> {
         let writer = self.writer();
         let slices = offset_to_slice(self.block_size.cast(), offset, buf.len().cast());
-        writer.write(buf, &slices).await
+        writer.write(buf, &slices, version).await
     }
 
     /// Extends the file from the old size to the new size.
-    pub async fn extend(&self, old_size: u64, new_size: u64) -> StorageResult<()> {
+    pub async fn extend(&self, old_size: u64, new_size: u64, version: u64) -> StorageResult<()> {
         let writer = self.writer();
-        writer.extend(old_size, new_size).await
+        writer.extend(old_size, new_size, version).await
     }
 
     /// Flushes any pending writes to the file.
@@ -301,8 +301,10 @@ mod tests {
         };
         handles.add_handle(file_handle.clone());
         let buf = vec![b'1', b'2', b'3', b'4'];
-        file_handle.write(0, &buf).await.unwrap();
-        let read_buf = file_handle.read(0, 4).await.unwrap();
+        let version = 0;
+        file_handle.write(0, &buf ,version).await.unwrap();
+        let version = 0;
+        let read_buf = file_handle.read(0, 4, version).await.unwrap();
         assert_eq!(read_buf, buf);
         file_handle.flush().await.unwrap();
     }

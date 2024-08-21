@@ -85,9 +85,10 @@ async fn warm_up(storage: Arc<StorageManager>, ino: u64) {
     let flag = OpenFlag::Read;
     let fh = CURRENT_FD.fetch_add(1, Ordering::SeqCst);
     storage.open(ino, fh, flag);
+    let version = 0;
     for i in 0..TOTAL_TEST_BLOCKS {
         let buf = storage
-            .read(ino, fh, (i * IO_SIZE) as u64, IO_SIZE)
+            .read(ino, fh, (i * IO_SIZE) as u64, IO_SIZE, version)
             .await
             .unwrap();
         assert_eq!(buf.len(), IO_SIZE);
@@ -98,9 +99,10 @@ async fn seq_read(storage: Arc<StorageManager>, ino: u64) {
     let flag = OpenFlag::Read;
     let fh = CURRENT_FD.fetch_add(1, Ordering::SeqCst);
     storage.open(ino, fh, flag);
+    let version = 0;
     for i in 0..TOTAL_TEST_BLOCKS {
         let buf = storage
-            .read(10, fh, (i * IO_SIZE) as u64, IO_SIZE)
+            .read(10, fh, (i * IO_SIZE) as u64, IO_SIZE, version)
             .await
             .unwrap();
         assert_eq!(buf.len(), IO_SIZE);
@@ -114,11 +116,12 @@ async fn create_a_file(storage: Arc<StorageManager>, ino: u64) {
     let fh = CURRENT_FD.fetch_add(1, Ordering::SeqCst);
     storage.open(ino, fh, flag);
     let start = std::time::Instant::now();
+    let version = 0;
     for i in 0..TOTAL_TEST_BLOCKS {
         let mut content = Vec::new();
         modify_data(&mut content, i as u64);
         storage
-            .write(ino, fh, (i * IO_SIZE) as u64, &content)
+            .write(ino, fh, (i * IO_SIZE) as u64, &content, version)
             .await
             .unwrap();
     }
@@ -227,9 +230,10 @@ async fn scan_worker(storage: Arc<StorageManager>, ino: u64, time: u64) -> usize
     let start = tokio::time::Instant::now();
     let mut i = 0;
     let mut scan_cnt = 0;
+    let version = 0;
     while tokio::time::Instant::now() - start < tokio::time::Duration::from_secs(time) {
         let buf = storage
-            .read(ino, fh, (i * IO_SIZE) as u64, IO_SIZE)
+            .read(ino, fh, (i * IO_SIZE) as u64, IO_SIZE, version)
             .await
             .unwrap();
         assert_eq!(buf.len(), IO_SIZE);
@@ -254,8 +258,9 @@ async fn get_worker(storage: Arc<StorageManager>, ino: u64, time: u64) -> usize 
         // 使用 Zipfian 分布来选择数据块 ID
         let i = zipf.sample(&mut thread_rng()) as usize % TOTAL_TEST_BLOCKS;
 
+        let version = 0;
         let buf = storage
-            .read(ino, fh, (i * IO_SIZE) as u64, IO_SIZE)
+            .read(ino, fh, (i * IO_SIZE) as u64, IO_SIZE, version)
             .await
             .unwrap();
         assert_eq!(buf.len(), IO_SIZE);
@@ -338,48 +343,51 @@ async fn test_truncate() {
     let block_size: u64 = BLOCK_SIZE.cast();
     let mut buffer = vec![0; BLOCK_SIZE];
 
+    let version = 0;
     let fh = CURRENT_FD.fetch_add(1, Ordering::SeqCst);
     storage.open(ino, fh, OpenFlag::ReadAndWrite);
-    storage.write(ino, fh, 0, &content).await.unwrap();
+    storage.write(ino, fh, 0, &content, version).await.unwrap();
     storage.close(fh).await.unwrap();
+    let version = 0;
     let size = backend
-        .read(&format_path(ino, 1), &mut buffer)
+        .read(&format_path(ino, 1), &mut buffer, version)
         .await
         .unwrap();
     assert_eq!(size, BLOCK_SIZE);
     let size = backend
-        .read(&format_path(ino, 2), &mut buffer)
+        .read(&format_path(ino, 2), &mut buffer, version)
         .await
         .unwrap();
     assert_eq!(size, 0);
 
+    let version = 0;
     // Truncate to a greater size, noop
     storage
-        .truncate(ino, block_size * 2, block_size * 3)
+        .truncate(ino, block_size * 2, block_size * 3, version)
         .await
         .unwrap();
     let size = backend
-        .read(&format_path(ino, 2), &mut buffer)
+        .read(&format_path(ino, 2), &mut buffer, version)
         .await
         .unwrap();
     assert_eq!(size, 0);
 
     storage
-        .truncate(ino, block_size * 2, block_size)
+        .truncate(ino, block_size * 2, block_size, version)
         .await
         .unwrap();
     let size = backend
-        .read(&format_path(ino, 1), &mut buffer)
+        .read(&format_path(ino, 1), &mut buffer, version)
         .await
         .unwrap();
     assert_eq!(size, 0);
 
     storage
-        .truncate(ino, block_size, block_size / 2)
+        .truncate(ino, block_size, block_size / 2, version)
         .await
         .unwrap();
     let size = backend
-        .read(&format_path(ino, 0), &mut buffer)
+        .read(&format_path(ino, 0), &mut buffer, version)
         .await
         .unwrap();
     assert_eq!(size, BLOCK_SIZE);
@@ -387,7 +395,7 @@ async fn test_truncate() {
     truncated_content.resize(BLOCK_SIZE, 0);
     assert_eq!(truncated_content, buffer);
 
-    storage.truncate(ino, block_size / 2, 0).await.unwrap();
+    storage.truncate(ino, block_size / 2, 0, version).await.unwrap();
 }
 
 #[tokio::test]
@@ -400,21 +408,24 @@ async fn test_remove() {
     let content = vec![6_u8; BLOCK_SIZE * 2];
     let ino = 0;
     let mut buffer = vec![0; BLOCK_SIZE];
+    let version = 0;
 
     let fh = CURRENT_FD.fetch_add(1, Ordering::SeqCst);
     storage.open(ino, fh, OpenFlag::ReadAndWrite);
-    storage.write(ino, fh, 0, &content).await.unwrap();
+    storage.write(ino, fh, 0, &content, version).await.unwrap();
     storage.close(fh).await.unwrap();
 
     storage.remove(ino).await.unwrap();
 
+    let version = 0;
+
     let size = backend
-        .read(&format_path(ino, 0), &mut buffer)
+        .read(&format_path(ino, 0), &mut buffer, version)
         .await
         .unwrap();
     assert_eq!(size, 0);
     let size = backend
-        .read(&format_path(ino, 1), &mut buffer)
+        .read(&format_path(ino, 1), &mut buffer, version)
         .await
         .unwrap();
     assert_eq!(size, 0);
