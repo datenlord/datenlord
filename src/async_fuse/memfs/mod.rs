@@ -562,6 +562,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
             }
         };
         let file_size = fileattr.size;
+        let version = fileattr.version;
 
         if offset >= file_size {
             return reply.data(Vec::<u8>::new()).await;
@@ -574,7 +575,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
             size.cast()
         };
 
-        let result = self.storage.read(ino, offset, read_size.cast()).await;
+        let result = self.storage.read(ino, offset, read_size.cast(), version).await;
         // Check the load result
         match result {
             Ok(content) => reply.data(content).await,
@@ -611,11 +612,12 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
             }
         };
         let old_size = fileattr.size;
+        let version = fileattr.version;
         let new_size = old_size.max(offset.cast::<u64>().overflow_add(data_len));
 
         let result = self
             .storage
-            .write(ino, offset.cast(), &data, new_size)
+            .write(ino, offset.cast(), &data, new_size, version)
             .await;
         let new_mtime = match result {
             Ok(()) => SystemTime::now(),
@@ -627,6 +629,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         // Update local attr
         fileattr.size = new_size;
         fileattr.mtime = new_mtime;
+        fileattr.version = version.max(fileattr.version.overflow_add(1));
         self.storage.setattr(ino, fileattr).await;
 
         reply.written(data_len.cast()).await

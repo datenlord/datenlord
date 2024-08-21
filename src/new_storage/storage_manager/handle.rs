@@ -103,6 +103,8 @@ pub struct WriteTask {
     block: Arc<RwLock<Block>>,
     /// The file size in this operation.
     file_size: u64,
+    /// The file version in this operation.
+    version: u64,
 }
 
 /// Write a block back to the backend.
@@ -120,7 +122,7 @@ async fn write_back_block(task: Arc<WriteTask>) -> StorageResult<()> {
             (content, version)
         };
 
-        task.backend.write(&path, &content).await?;
+        task.backend.write(&path, &content, task.version).await?;
         {
             let mut block = task.block.write();
             // Check version
@@ -189,7 +191,7 @@ impl FileHandleInner {
 
     /// Fetch the block from the cache manager.
     #[inline]
-    pub async fn fetch_block(&self, block_id: u64) -> StorageResult<Arc<RwLock<Block>>> {
+    pub async fn fetch_block(&self, block_id: u64, version: u64) -> StorageResult<Arc<RwLock<Block>>> {
         let key = CacheKey {
             ino: self.ino,
             block_id,
@@ -209,7 +211,7 @@ impl FileHandleInner {
         // backend. But according to the current design, concurrency
         // read/write is not supported.
         let mut buf = vec![0; self.block_size];
-        self.backend.read(&path, &mut buf).await?;
+        self.backend.read(&path, &mut buf, version).await?;
         let block = {
             let mut cache = self.cache.lock();
             cache
@@ -222,11 +224,11 @@ impl FileHandleInner {
 
     /// Reads data from the file starting at the given offset and up to the
     /// given length.
-    pub async fn read(&self, buf: &mut Vec<u8>, slices: &[BlockSlice]) -> StorageResult<usize> {
+    pub async fn read(&self, buf: &mut Vec<u8>, slices: &[BlockSlice], version: u64) -> StorageResult<usize> {
         for slice in slices {
             let block_id = slice.block_id;
             // Block's pin count is increased by 1.
-            let block = self.fetch_block(block_id).await?;
+            let block = self.fetch_block(block_id, version).await?;
             {
                 // Copy the data from the block to the buffer.
                 let block = block.read();
@@ -254,7 +256,7 @@ impl FileHandleInner {
 
     /// Writes data to the file starting at the given offset.
     #[inline]
-    pub async fn write(&self, buf: &[u8], slices: &[BlockSlice], size: u64) -> StorageResult<()> {
+    pub async fn write(&self, buf: &[u8], slices: &[BlockSlice], size: u64, version: u64) -> StorageResult<()> {
         let mut consume_index = 0;
         for slice in slices {
             let block_id = slice.block_id;
@@ -267,7 +269,7 @@ impl FileHandleInner {
             let write_content = buf
                 .get(consume_index..end)
                 .unwrap_or_else(|| unreachable!("The `buf` is checked to be long enough."));
-            let block = self.fetch_block(block_id).await?;
+            let block = self.fetch_block(block_id, version).await?;
             {
                 let mut block = block.write();
                 block.set_dirty(true);
@@ -292,6 +294,7 @@ impl FileHandleInner {
                 block_id,
                 block,
                 file_size: size,
+                version: version,
             });
             self.write_back_sender
                 .send(Task::Pending(task))
@@ -324,11 +327,11 @@ impl FileHandleInner {
     /// Extends the file from the old size to the new size.
     /// It is only called by the truncate method in the storage system.
     #[inline]
-    pub async fn extend(&self, old_size: u64, new_size: u64) -> StorageResult<()> {
+    pub async fn extend(&self, old_size: u64, new_size: u64, version: u64) -> StorageResult<()> {
         let slices = offset_to_slice(self.block_size.cast(), old_size, new_size - old_size);
         for slice in slices {
             let buf = vec![0_u8; slice.size.cast()];
-            self.write(&buf, &[slice], new_size).await?;
+            self.write(&buf, &[slice], new_size, version).await?;
         }
 
         Ok(())
@@ -408,7 +411,7 @@ impl FileHandleInner {
             ino, current_attr.size
         );
         if let Err(e) = metadata_client
-            .write_remote_size_helper(ino, current_attr.size)
+            .write_remote_size_and_version_helper(ino, current_attr.size, current_attr.version)
             .await
         {
             error!("Failed to commit meta data, the error is {e}.");
@@ -534,23 +537,23 @@ impl FileHandle {
 
     /// Reads data from the file starting at the given offset and up to the
     /// given length.
-    pub async fn read(&self, offset: u64, len: u64) -> StorageResult<Vec<u8>> {
+    pub async fn read(&self, offset: u64, len: u64, version: u64) -> StorageResult<Vec<u8>> {
         let slices = offset_to_slice(self.block_size.cast(), offset, len);
         let mut buf = Vec::with_capacity(len.cast());
-        self.inner.read(&mut buf, &slices).await?;
+        self.inner.read(&mut buf, &slices, version).await?;
         Ok(buf)
     }
 
     /// Writes data to the file starting at the given offset.
-    pub async fn write(&self, offset: u64, buf: &[u8], size: u64) -> StorageResult<()> {
+    pub async fn write(&self, offset: u64, buf: &[u8], size: u64, version: u64) -> StorageResult<()> {
         let slices: smallvec::SmallVec<[BlockSlice; 2]> =
             offset_to_slice(self.block_size.cast(), offset, buf.len().cast());
-        self.inner.write(buf, &slices, size).await
+        self.inner.write(buf, &slices, size, version).await
     }
 
     /// Extends the file from the old size to the new size.
-    pub async fn extend(&self, old_size: u64, new_size: u64) -> StorageResult<()> {
-        self.inner.extend(old_size, new_size).await
+    pub async fn extend(&self, old_size: u64, new_size: u64, version: u64) -> StorageResult<()> {
+        self.inner.extend(old_size, new_size, version).await
     }
 
     /// Flushes any pending writes to the file.
@@ -794,8 +797,10 @@ mod tests {
         };
         handles.add_handle(file_handle.clone()).await;
         let buf = vec![b'1', b'2', b'3', b'4'];
-        file_handle.write(0, &buf, 4).await.unwrap();
-        let read_buf = file_handle.read(0, 4).await.unwrap();
+        let version = 0;
+        file_handle.write(0, &buf, 4 ,version).await.unwrap();
+        let version = 0;
+        let read_buf = file_handle.read(0, 4, version).await.unwrap();
         assert_eq!(read_buf, buf);
         file_handle.flush().await.unwrap();
     }

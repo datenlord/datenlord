@@ -82,9 +82,9 @@ impl<M: MetaData + Send + Sync + 'static> Storage for StorageManager<M> {
     /// Reads data from a file specified by the file handle, starting at the
     /// given offset and reading up to `len` bytes.
     #[inline]
-    async fn read(&self, ino: u64, offset: u64, len: usize) -> StorageResult<Vec<u8>> {
+    async fn read(&self, ino: u64, offset: u64, len: usize, version: u64) -> StorageResult<Vec<u8>> {
         match self.get_handle(ino).await {
-            Some(fh) => fh.read(offset, len.cast()).await,
+            Some(fh) => fh.read(offset, len.cast(), version).await,
             None => Err(StorageError::Internal(anyhow::anyhow!(
                 "This file handle is not exists."
             ))),
@@ -94,9 +94,9 @@ impl<M: MetaData + Send + Sync + 'static> Storage for StorageManager<M> {
     /// Writes data to a file specified by the file handle, starting at the
     /// given offset.
     #[inline]
-    async fn write(&self, ino: u64, offset: u64, buf: &[u8], size: u64) -> StorageResult<()> {
+    async fn write(&self, ino: u64, offset: u64, buf: &[u8], size: u64, version: u64) -> StorageResult<()> {
         match self.get_handle(ino).await {
-            Some(fh) => fh.write(offset, buf, size).await,
+            Some(fh) => fh.write(offset, buf, size, version).await,
             None => {
                 panic!("Cannot write to a file that is not open.");
             }
@@ -130,10 +130,10 @@ impl<M: MetaData + Send + Sync + 'static> Storage for StorageManager<M> {
     /// Truncates a file specified by the inode number to a new size, given the
     /// old size.
     #[inline]
-    async fn truncate(&self, ino: u64, old_size: u64, new_size: u64) -> StorageResult<()> {
+    async fn truncate(&self, ino: u64, old_size: u64, new_size: u64, version: u64) -> StorageResult<()> {
         info!(
-            "truncate: ino: {} old_size: {} new_size: {}",
-            ino, old_size, new_size
+            "truncate: ino: {} old_size: {} new_size: {} version: {}",
+            ino, old_size, new_size, version
         );
         // If new_size == old_size, do nothing
         if new_size >= old_size {
@@ -162,7 +162,7 @@ impl<M: MetaData + Send + Sync + 'static> Storage for StorageManager<M> {
             let fill_content = vec![0; fill_size];
             match self.get_handle(ino).await {
                 Some(fh) => {
-                    fh.write(new_size, &fill_content, new_size).await?;
+                    fh.write(new_size, &fill_content, new_size, version).await?;
                 }
                 None => {
                     panic!("Cannot write to a file that is not open.");
