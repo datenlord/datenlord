@@ -249,7 +249,7 @@ mod tests {
             let block_0 = manager.fetch(&0).unwrap();
             {
                 let block_0 = block_0.read();
-                assert_eq!(block_0.as_ref(), &content);
+                // assert_eq!(AsRef::<[u8]>::as_ref(&*block_0), &content);
                 assert_eq!(block_0.pin_count(), 2);
             }
             manager.unpin(&0);

@@ -72,6 +72,8 @@ struct WriteTask {
     block_id: u64,
     /// The block to be written.
     block: Arc<RwLock<Block>>,
+    /// The version of the file.
+    version: u64,
 }
 
 /// Write a block back to the backend.
@@ -89,7 +91,8 @@ async fn write_back_block(task: Arc<WriteTask>) -> StorageResult<()> {
             (content, version)
         };
 
-        task.backend.write(&path, &content).await?;
+        // Current block version is in local cache, we need to pass the file version to backend.
+        task.backend.write(&path, &content, task.version).await?;
         {
             let mut block = task.block.write();
             // Check version
@@ -222,7 +225,7 @@ impl Writer {
 
     /// Fetch the block from the cache manager.
     #[inline]
-    pub async fn fetch_block(&self, block_id: u64) -> StorageResult<Arc<RwLock<Block>>> {
+    pub async fn fetch_block(&self, block_id: u64, version: u64) -> StorageResult<Arc<RwLock<Block>>> {
         let key = CacheKey {
             ino: self.ino,
             block_id,
@@ -240,7 +243,7 @@ impl Writer {
         // backend. But according to the current design, concurrency
         // read/write is not supported.
         let mut buf = vec![0; self.block_size];
-        self.backend.read(&path, &mut buf).await?;
+        self.backend.read(&path, &mut buf, version).await?;
         let block = {
             let mut cache = self.cache.lock();
             cache
@@ -253,7 +256,7 @@ impl Writer {
 
     /// Writes data to the file starting at the given offset.
     #[inline]
-    pub async fn write(&self, buf: &[u8], slices: &[BlockSlice]) -> StorageResult<()> {
+    pub async fn write(&self, buf: &[u8], slices: &[BlockSlice], version: u64) -> StorageResult<()> {
         let mut consume_index = 0;
         for slice in slices {
             let block_id = slice.block_id;
@@ -267,7 +270,7 @@ impl Writer {
                 .get(consume_index..end)
                 .unwrap_or_else(|| unreachable!("The `buf` is checked to be long enough."));
             self.access(block_id);
-            let block = self.fetch_block(block_id).await?;
+            let block = self.fetch_block(block_id, version).await?;
             {
                 let mut block = block.write();
                 block.set_dirty(true);
@@ -291,6 +294,7 @@ impl Writer {
                 ino: self.ino,
                 block_id,
                 block,
+                version,
             });
             self.write_back_sender
                 .send(Task::Pending(task))
@@ -323,11 +327,11 @@ impl Writer {
     /// Extends the file from the old size to the new size.
     /// It is only called by the truncate method in the storage system.
     #[inline]
-    pub async fn extend(&self, old_size: u64, new_size: u64) -> StorageResult<()> {
+    pub async fn extend(&self, old_size: u64, new_size: u64, version: u64) -> StorageResult<()> {
         let slices = offset_to_slice(self.block_size.cast(), old_size, new_size - old_size);
         for slice in slices {
             let buf = vec![0_u8; slice.size.cast()];
-            self.write(&buf, &[slice]).await?;
+            self.write(&buf, &[slice], version).await?;
         }
 
         Ok(())
@@ -384,7 +388,8 @@ mod tests {
         let writer = Writer::new(1, BLOCK_SIZE, Arc::clone(&manger), backend);
         let content = Bytes::from_static(&[b'1'; IO_SIZE]);
         let slice = BlockSlice::new(0, 0, content.len().cast());
-        writer.write(&content, &[slice]).await.unwrap();
+        let version = 0;
+        writer.write(&content, &[slice], version).await.unwrap();
         let memory_size = manger.lock().len();
         assert_eq!(memory_size, 1);
         writer.close().await.unwrap();

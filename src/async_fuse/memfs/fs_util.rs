@@ -41,6 +41,8 @@ pub struct FileAttr {
     pub gid: u32,
     /// Rdev
     pub rdev: u32,
+    /// Version
+    pub version: u64,
 }
 
 /// Whether to check permission.
@@ -66,6 +68,7 @@ impl FileAttr {
             uid: 0,
             gid: 0,
             rdev: 0,
+            version: 0,
         }
     }
 
@@ -269,6 +272,7 @@ impl Default for FileAttr {
             uid: 0,
             gid: 0,
             rdev: 0,
+            version: 0,
         }
     }
 }
@@ -371,6 +375,7 @@ mod tests {
             uid: 1000,
             gid: 1000,
             rdev: 0,
+            version: 0,
         };
 
         // Owner permission checks
