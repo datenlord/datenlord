@@ -73,7 +73,11 @@ async fn run_fs(mount_point: &Path, is_s3: bool, token: CancellationToken) -> an
         let capacity_in_blocks = memory_cache_config.capacity.overflow_div(block_size);
 
         let cache = Arc::new(Mutex::new(MemoryCache::new(capacity_in_blocks, block_size)));
-        let backend = Arc::new(BackendBuilder::new(storage_param.clone()).build().await?);
+        let backend = Arc::new(
+            BackendBuilder::new(storage_param.clone(), block_size)
+                .build()
+                .await?,
+        );
         StorageManager::new(cache, backend, block_size)
     };
 

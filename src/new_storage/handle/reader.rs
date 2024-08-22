@@ -66,7 +66,11 @@ impl Reader {
     }
 
     /// Fetch the block from the backend storage system.
-    async fn fetch_block_from_backend(&self, block_id: u64, version: u64) -> StorageResult<Arc<RwLock<Block>>> {
+    async fn fetch_block_from_backend(
+        &self,
+        block_id: u64,
+        version: u64,
+    ) -> StorageResult<Arc<RwLock<Block>>> {
         let key = CacheKey {
             ino: self.ino,
             block_id,
@@ -86,7 +90,12 @@ impl Reader {
 
     /// Reads data from the file starting at the given offset and up to the
     /// given length.
-    pub async fn read(&self, buf: &mut Vec<u8>, slices: &[BlockSlice], version: u64) -> StorageResult<usize> {
+    pub async fn read(
+        &self,
+        buf: &mut Vec<u8>,
+        slices: &[BlockSlice],
+        version: u64,
+    ) -> StorageResult<usize> {
         for slice in slices {
             let block_id = slice.block_id;
             self.access(block_id);

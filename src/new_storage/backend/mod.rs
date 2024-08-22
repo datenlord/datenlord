@@ -10,6 +10,8 @@ pub use backend_impl::{BackendBuilder, BackendImpl};
 
 use super::error::StorageResult;
 
+const BLOCK_SIZE: usize = 4 * 1024 * 1024;
+
 /// The `Backend` trait represents a backend storage system.
 #[async_trait]
 pub trait Backend: Debug + Send + Sync {

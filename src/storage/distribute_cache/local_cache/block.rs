@@ -76,7 +76,12 @@ impl MetaData {
         //     "{}_{}_{}_{}",
         //     self.inum, self.version, self.offset, self.size
         // )
-        format!("{}/{}.block", self.inum, self.offset)
+
+        // For new storage
+        format!("{}/{}", self.inum, self.offset)
+
+        // For old storage
+        // format!("{}/{}.block", self.inum, self.offset)
     }
 
     /// TODO: Update to use .block

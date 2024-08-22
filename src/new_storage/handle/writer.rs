@@ -225,7 +225,11 @@ impl Writer {
 
     /// Fetch the block from the cache manager.
     #[inline]
-    pub async fn fetch_block(&self, block_id: u64, version: u64) -> StorageResult<Arc<RwLock<Block>>> {
+    pub async fn fetch_block(
+        &self,
+        block_id: u64,
+        version: u64,
+    ) -> StorageResult<Arc<RwLock<Block>>> {
         let key = CacheKey {
             ino: self.ino,
             block_id,
@@ -256,7 +260,12 @@ impl Writer {
 
     /// Writes data to the file starting at the given offset.
     #[inline]
-    pub async fn write(&self, buf: &[u8], slices: &[BlockSlice], version: u64) -> StorageResult<()> {
+    pub async fn write(
+        &self,
+        buf: &[u8],
+        slices: &[BlockSlice],
+        version: u64,
+    ) -> StorageResult<()> {
         let mut consume_index = 0;
         for slice in slices {
             let block_id = slice.block_id;

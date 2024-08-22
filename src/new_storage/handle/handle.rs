@@ -302,7 +302,7 @@ mod tests {
         handles.add_handle(file_handle.clone());
         let buf = vec![b'1', b'2', b'3', b'4'];
         let version = 0;
-        file_handle.write(0, &buf ,version).await.unwrap();
+        file_handle.write(0, &buf, version).await.unwrap();
         let version = 0;
         let read_buf = file_handle.read(0, 4, version).await.unwrap();
         assert_eq!(read_buf, buf);
