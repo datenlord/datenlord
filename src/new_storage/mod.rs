@@ -15,7 +15,9 @@ mod storage_manager;
 mod storage_trait;
 mod utils;
 
-pub use backend::{Backend, BackendBuilder, BackendImpl};
+pub use backend::{
+    Backend, BackendBuilder, BackendImpl, DistributeCacheBackendBuilder, DistributeCacheBackendImpl,
+};
 pub use block::Block;
 #[cfg(test)]
 pub use block::BLOCK_SIZE;

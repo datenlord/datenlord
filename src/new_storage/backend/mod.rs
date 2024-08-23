@@ -1,12 +1,16 @@
 //! Backend related modules.
 
 pub mod backend_impl;
+pub mod distribute_cache_backend_impl;
 pub mod memory_backend;
 
 use std::fmt::Debug;
 
 use async_trait::async_trait;
 pub use backend_impl::{BackendBuilder, BackendImpl};
+pub use distribute_cache_backend_impl::{
+    DistributeCacheBackendBuilder, DistributeCacheBackendImpl,
+};
 
 use super::error::StorageResult;
 

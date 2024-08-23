@@ -1,7 +1,5 @@
 //! The general backend implementation with `openDAL`
 
-use std::sync::Arc;
-
 use async_trait::async_trait;
 use datenlord::config::{StorageParams, StorageS3Config};
 use datenlord::metrics::DATENLORD_REGISTRY;
@@ -13,8 +11,6 @@ use prometheus::{exponential_buckets, linear_buckets};
 use tokio::io::AsyncWriteExt;
 
 use super::BLOCK_SIZE;
-use crate::storage::distribute_cache::client::DistributeCacheClient;
-use crate::storage::distribute_cache::cluster::cluster_manager::ClusterManager;
 
 use super::{Backend, StorageResult};
 
@@ -25,43 +21,19 @@ pub struct BackendBuilder {
     config: StorageParams,
     /// The block size
     block_size: usize,
-    /// Distribute cache client, option
-    distribute_cache_cluster_manager: Option<Arc<ClusterManager>>,
 }
 
 impl BackendBuilder {
     /// Create a backend builder.
     #[must_use]
     pub fn new(config: StorageParams, block_size: usize) -> Self {
-        Self {
-            config,
-            block_size,
-            distribute_cache_cluster_manager: None,
-        }
-    }
-
-    /// Create a backend builder with distribute cache.
-    #[must_use]
-    pub fn new_with_distribute_cache(
-        config: StorageParams,
-        block_size: usize,
-        distribute_cache_cluster_manager: Arc<ClusterManager>,
-    ) -> Self {
-        Self {
-            config,
-            block_size,
-            distribute_cache_cluster_manager: Some(distribute_cache_cluster_manager),
-        }
+        Self { config, block_size }
     }
 
     /// Build the backend.
     #[allow(clippy::expect_used, clippy::unwrap_in_result)] // `.expect()` here are ensured not to panic.
     pub async fn build(self) -> opendal::Result<BackendImpl> {
-        let BackendBuilder {
-            config,
-            block_size,
-            distribute_cache_cluster_manager,
-        } = self;
+        let BackendBuilder { config, block_size } = self;
 
         let layer = PrometheusLayer::with_registry(DATENLORD_REGISTRY.clone())
             .bytes_total_buckets(
@@ -122,22 +94,9 @@ impl BackendBuilder {
             }
         };
 
-        let distribute_cache_client = match distribute_cache_cluster_manager {
-            Some(cluster_manager) => {
-                let distribute_cache_client = DistributeCacheClient::new(cluster_manager);
-                distribute_cache_client
-                    .start_watch()
-                    .await
-                    .expect("Failed to start watch task.");
-                Some(distribute_cache_client)
-            }
-            None => None,
-        };
-
         Ok(BackendImpl {
             operator,
             block_size,
-            distribute_cache_client,
         })
     }
 }
@@ -150,8 +109,6 @@ pub struct BackendImpl {
     operator: Operator,
     /// The block size
     block_size: usize,
-    /// Distribute cache client, option
-    distribute_cache_client: Option<DistributeCacheClient>,
 }
 
 impl BackendImpl {
@@ -161,7 +118,6 @@ impl BackendImpl {
         Self {
             operator,
             block_size,
-            distribute_cache_client: None,
         }
     }
 }
@@ -170,34 +126,6 @@ impl BackendImpl {
 impl Backend for BackendImpl {
     #[inline]
     async fn read(&self, path: &str, buf: &mut [u8], _version: u64) -> StorageResult<usize> {
-        // // Get ino and other info from current path
-        // let (ino, block_id) = get_block_from_path(path);
-        // // Try to read block from distribute cache
-        // if let Some(distribute_cache_client) = &self.distribute_cache_client {
-        //     match distribute_cache_client
-        //         .read_block(ino, block_id, version, usize_to_u64(self.block_size))
-        //         .await
-        //     {
-        //         Ok(block) => {
-        //             error!(
-        //                 "Read block from distribute cache: ino={}, block_id={}, version={} block={:?}",
-        //                 ino, block_id, version, block,
-        //             );
-        //             // let elapsed = start.elapsed();
-        //             // error!("Read block from distribute cache cost: {:?}", elapsed);
-        //             return Ok(self.block_size);
-        //         }
-        //         Err(e) => {
-        //             error!(
-        //                 "Failed to read block from distribute cache: {:?}, will change to backend",
-        //                 e
-        //             );
-        //         }
-        //     }
-        // } else {
-        //     error!("No distribute cache client, will change to backend");
-        // }
-
         let len = buf.len();
         let mut reader = self.operator.reader(path).await?;
         let mut read_size = 0;
