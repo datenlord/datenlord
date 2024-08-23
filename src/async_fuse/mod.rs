@@ -3,12 +3,16 @@
 use std::sync::Arc;
 
 use clippy_utilities::OverflowArithmetic;
+use parking_lot::Mutex;
 use tokio_util::sync::CancellationToken;
 
 use self::memfs::kv_engine::KVEngineType;
 use crate::async_fuse::fuse::session;
-use crate::storage::policy::LruPolicy;
-use crate::storage::{BackendBuilder, BlockCoordinate, MemoryCacheBuilder, StorageManager};
+use crate::new_storage::{
+    Backend, BackendBuilder, DistributeCacheBackendBuilder, MemoryCache, StorageManager,
+};
+use crate::storage::distribute_cache::cluster::cluster_manager::ClusterManager;
+use crate::storage::distribute_cache::cluster::node::Node;
 use crate::AsyncFuseArgs;
 
 pub mod fuse;
@@ -34,20 +38,39 @@ pub async fn start_async_fuse(
         let block_size = storage_config.block_size;
         let capacity_in_blocks = memory_cache_config.capacity.overflow_div(block_size);
 
-        let backend = BackendBuilder::new(storage_param.clone(), block_size)
-            .build()
-            .await?;
-        let lru_policy = LruPolicy::<BlockCoordinate>::new(capacity_in_blocks);
-        let memory_cache = MemoryCacheBuilder::new(lru_policy, backend, block_size)
-            .command_queue_limit(memory_cache_config.command_queue_limit)
-            .limit(memory_cache_config.soft_limit)
-            .write_through(!memory_cache_config.write_back)
-            .build()
-            .await;
-        StorageManager::new(memory_cache, block_size)
-    };
+        let cache = Arc::new(Mutex::new(MemoryCache::new(capacity_in_blocks, block_size)));
 
-    let storage = Arc::new(storage);
+        // Backend layer 2 for distribute cache
+        let backend: Arc<dyn Backend> = match args.enable_distribute_cache {
+            true => {
+                // Backend layer 1
+                let backend = Arc::new(
+                    BackendBuilder::new(storage_param.clone(), block_size)
+                        .build()
+                        .await?,
+                );
+
+                // Backend layer 2
+                let cluster_manager =
+                    Arc::new(ClusterManager::new(Arc::clone(&kv_engine), Node::default()));
+                let backend =
+                    DistributeCacheBackendBuilder::new(block_size, cluster_manager, backend)
+                        .build()
+                        .await?;
+
+                Arc::new(backend)
+            }
+            false => {
+                let backend = BackendBuilder::new(storage_param.clone(), block_size)
+                    .build()
+                    .await?;
+
+                Arc::new(backend)
+            }
+        };
+
+        StorageManager::new(cache, backend, block_size)
+    };
 
     let fs: memfs::MemFs<memfs::S3MetaData> = memfs::MemFs::new(
         &args.mount_dir,

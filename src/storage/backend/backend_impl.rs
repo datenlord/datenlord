@@ -1,5 +1,6 @@
 //! The backend implementation.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -15,6 +16,9 @@ use tokio::time::sleep;
 use tracing::{error, warn};
 
 use crate::async_fuse::fuse::protocol::INum;
+use crate::async_fuse::util::usize_to_u64;
+use crate::storage::distribute_cache::client::DistributeCacheClient;
+use crate::storage::distribute_cache::cluster::cluster_manager::ClusterManager;
 use crate::storage::error::StorageResult;
 use crate::storage::{Block, Storage};
 
@@ -40,19 +44,43 @@ pub struct BackendBuilder {
     config: StorageParams,
     /// The size of a block
     block_size: usize,
+    /// Distribute cache client, option
+    distribute_cache_cluster_manager: Option<Arc<ClusterManager>>,
 }
 
 impl BackendBuilder {
     /// Create a backend builder.
     #[must_use]
     pub fn new(config: StorageParams, block_size: usize) -> Self {
-        Self { config, block_size }
+        Self {
+            config,
+            block_size,
+            distribute_cache_cluster_manager: None,
+        }
+    }
+
+    /// Create a backend builder with distribute cache.
+    #[must_use]
+    pub fn new_with_distribute_cache(
+        config: StorageParams,
+        block_size: usize,
+        distribute_cache_cluster_manager: Arc<ClusterManager>,
+    ) -> Self {
+        Self {
+            config,
+            block_size,
+            distribute_cache_cluster_manager: Some(distribute_cache_cluster_manager),
+        }
     }
 
     /// Build the backend.
     #[allow(clippy::expect_used, clippy::unwrap_in_result)] // `.expect()` here are ensured not to panic.
     pub async fn build(self) -> opendal::Result<Backend> {
-        let BackendBuilder { config, block_size } = self;
+        let BackendBuilder {
+            config,
+            block_size,
+            distribute_cache_cluster_manager,
+        } = self;
 
         let layer = PrometheusLayer::with_registry(DATENLORD_REGISTRY.clone())
             .bytes_total_buckets(
@@ -112,9 +140,22 @@ impl BackendBuilder {
             }
         };
 
+        let distribute_cache_client = match distribute_cache_cluster_manager {
+            Some(cluster_manager) => {
+                let distribute_cache_client = DistributeCacheClient::new(cluster_manager);
+                distribute_cache_client
+                    .start_watch()
+                    .await
+                    .expect("Failed to start watch task.");
+                Some(distribute_cache_client)
+            }
+            None => None,
+        };
+
         Ok(Backend {
             operator,
             block_size,
+            distribute_cache_client,
         })
     }
 }
@@ -126,6 +167,8 @@ pub struct Backend {
     operator: Operator,
     /// Block size
     block_size: usize,
+    /// Distribute cache client, option
+    distribute_cache_client: Option<DistributeCacheClient>,
 }
 
 impl Backend {
@@ -135,15 +178,62 @@ impl Backend {
         Self {
             operator,
             block_size,
+            distribute_cache_client: None,
         }
     }
 }
 
 #[async_trait]
 impl Storage for Backend {
+    async fn load_from_self_with_version(
+        &self,
+        ino: INum,
+        block_id: usize,
+        version: u64,
+    ) -> StorageResult<Option<Block>> {
+        error!(
+            "Load block from self with version: ino={}, block_id={}, version={}",
+            ino, block_id, version
+        );
+        // let start = tokio::time::Instant::now();
+        if let Some(distribute_cache_client) = &self.distribute_cache_client {
+            match distribute_cache_client
+                .read_block(
+                    ino,
+                    usize_to_u64(block_id),
+                    version,
+                    usize_to_u64(self.block_size),
+                )
+                .await
+            {
+                Ok(block) => {
+                    error!(
+                        "Read block from distribute cache: ino={}, block_id={}, version={} block={:?}",
+                        ino, block_id, version, block,
+                    );
+                    // let elapsed = start.elapsed();
+                    // error!("Read block from distribute cache cost: {:?}", elapsed);
+                    return Ok(Some(block));
+                }
+                Err(e) => {
+                    error!(
+                        "Failed to read block from distribute cache: {:?}, will change to backend",
+                        e
+                    );
+                }
+            }
+        } else {
+            error!("No distribute cache client, will change to backend");
+        }
+
+        self.load_from_self(ino, block_id).await
+    }
+
     async fn load_from_self(&self, ino: INum, block_id: usize) -> StorageResult<Option<Block>> {
+        error!("Load block from self: ino={}, block_id={}", ino, block_id);
         let mut block = Block::new_zeroed(self.block_size);
 
+        error!("get_block_path: {:?}", get_block_path(ino, block_id));
         let mut reader = self.operator.reader(&get_block_path(ino, block_id)).await?;
         let mut offset = 0;
         // Check if the reader point is at the end of the file.
@@ -175,6 +265,11 @@ impl Storage for Backend {
                 }
             }
         }
+
+        error!(
+            "Read block from self: ino={}, block_id={}, block={:?}",
+            ino, block_id, block
+        );
 
         Ok(Some(block))
     }

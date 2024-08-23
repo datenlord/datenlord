@@ -73,13 +73,14 @@ pub trait MetaData {
         ino: u64,
         new_mtime: SystemTime,
         new_size: u64,
+        new_version: u64,
     ) -> DatenLordResult<()>;
 
-    /// Helper function to get a open file's size and mtime
+    /// Helper function to get a open file's size, mtime and version
     /// # Return
-    /// Return a tuple of (file_size, modified_time)
+    /// Return a tuple of (file_size, modified_time, version)
     /// It will not change the file's atime
-    fn mtime_and_size(&self, ino: u64) -> (u64, SystemTime);
+    fn size_and_version(&self, ino: u64) -> (u64, SystemTime, u64);
 
     /// Set fuse fd into `MetaData`
     async fn set_fuse_fd(&self, fuse_fd: RawFd);
@@ -107,7 +108,7 @@ pub trait MetaData {
     async fn getattr(&self, ino: u64) -> DatenLordResult<(Duration, FuseAttr)>;
 
     /// Open a file or directory by ino and flags
-    async fn open(&self, context: ReqContext, ino: u64, flags: u32) -> DatenLordResult<RawFd>;
+    async fn open(&self, context: ReqContext, ino: u64, flags: u32) -> DatenLordResult<u64>;
 
     /// Forget a i-node by ino
     /// # Return
@@ -117,8 +118,8 @@ pub trait MetaData {
 
     /// Helper function to read data
     /// # Return
-    /// Return a tuple of (file_size, modified_time)
-    async fn read_helper(&self, ino: u64) -> DatenLordResult<(u64, SystemTime)>;
+    /// Return a tuple of (file_size, modified_time, version)
+    async fn read_helper(&self, ino: u64) -> DatenLordResult<(u64, SystemTime, u64)>;
 
     /// Helper function to release dir
     async fn releasedir(&self, ino: u64, fh: u64) -> DatenLordResult<()>;
@@ -130,7 +131,7 @@ pub trait MetaData {
     async fn readlink(&self, ino: u64) -> DatenLordResult<Vec<u8>>;
 
     /// Helper function to opendir
-    async fn opendir(&self, context: ReqContext, ino: u64, flags: u32) -> DatenLordResult<RawFd>;
+    async fn opendir(&self, context: ReqContext, ino: u64, flags: u32) -> DatenLordResult<u64>;
 
     /// Helper function to readdir
     async fn readdir(

@@ -22,6 +22,14 @@ pub enum KeyType {
     /// Just a string key for testing the KVEngine.
     #[cfg(test)]
     String(String),
+    /// Distributed cache node key
+    CacheNode(String),
+    /// Distributed hash ring key
+    CacheRing,
+    /// Distributed cache node master key
+    CacheMasterNode,
+    /// Distribute cache cluster config
+    CacheClusterConfig,
 }
 
 // ::<KeyType>::get() -> ValueType
@@ -35,6 +43,8 @@ pub enum LockKeyType {
     VolumeInfoLock,
     /// ETCD file node list lock
     FileNodeListLock(INum),
+    /// Distributed cache node master key
+    CacheMasterNode,
 }
 
 impl Display for KeyType {
@@ -48,6 +58,10 @@ impl Display for KeyType {
             KeyType::FileNodeList(ref inum) => write!(f, "FileNodeList({inum})"),
             #[cfg(test)]
             KeyType::String(ref s) => write!(f, "String({s})"),
+            KeyType::CacheNode(ref s) => write!(f, "CacheNode({s})"),
+            KeyType::CacheRing => write!(f, "CacheRing/"), // CacheRing
+            KeyType::CacheMasterNode => write!(f, "CacheMasterNode"), // CacheMasterNode
+            KeyType::CacheClusterConfig => write!(f, "CacheClusterConfig/"), // CacheClusterConfig
         }
     }
 }
@@ -63,6 +77,9 @@ impl Display for LockKeyType {
             }
             LockKeyType::FileNodeListLock(ref inum) => {
                 write!(f, "FileNodeListLock({inum:?})")
+            }
+            LockKeyType::CacheMasterNode => {
+                write!(f, "CacheMasterNode")
             }
         }
     }
@@ -90,6 +107,10 @@ impl KeyType {
             KeyType::String(_) => "TEST_",
             KeyType::IdAllocatorValue(_) => "IdAlloc",
             KeyType::FileNodeList(_) => "FileNodeList",
+            KeyType::CacheNode(_) => "CacheNode",
+            KeyType::CacheRing => "CacheRing",
+            KeyType::CacheMasterNode => "CacheMasterNode",
+            KeyType::CacheClusterConfig => "CacheClusterConfig",
         }
     }
 
@@ -111,6 +132,18 @@ impl KeyType {
             }
             KeyType::FileNodeList(ref inum) => {
                 write!(f, "{inum}").unwrap();
+            }
+            KeyType::CacheNode(ref s) => {
+                write!(f, "{s}").unwrap();
+            }
+            KeyType::CacheRing => {
+                write!(f, "").unwrap();
+            }
+            KeyType::CacheMasterNode => {
+                write!(f, "").unwrap();
+            }
+            KeyType::CacheClusterConfig => {
+                write!(f, "").unwrap();
             }
         }
     }
@@ -135,6 +168,7 @@ impl LockKeyType {
             LockKeyType::IdAllocatorLock(_) => "IdAllocLock",
             LockKeyType::VolumeInfoLock => "VolumeInfoLock",
             LockKeyType::FileNodeListLock(_) => "FileNodeListLock",
+            LockKeyType::CacheMasterNode => "CacheMasterNode",
         }
     }
 
@@ -149,6 +183,9 @@ impl LockKeyType {
             }
             LockKeyType::FileNodeListLock(ref inum) => {
                 write!(f, "{inum}").unwrap();
+            }
+            LockKeyType::CacheMasterNode => {
+                write!(f, "").unwrap();
             }
         }
     }

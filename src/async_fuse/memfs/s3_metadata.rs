@@ -1,7 +1,7 @@
 use std::fmt::Debug;
 use std::os::unix::ffi::OsStringExt;
 use std::os::unix::io::RawFd;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
@@ -21,7 +21,7 @@ use super::kv_engine::{KVEngine, KVEngineType, MetaTxn, ValueType};
 use super::metadata::{error, MetaData, ReqContext};
 use super::node::Node;
 use super::open_file::OpenFiles;
-use super::s3_node::{S3Node, GLOBAL_S3_FD_CNT};
+use super::s3_node::S3Node;
 use super::{check_type_supported, CreateParam, RenameParam, SetAttrParam, StorageType};
 use crate::async_fuse::fuse::fuse_reply::{ReplyDirectory, StatFsParam};
 use crate::async_fuse::fuse::protocol::{FuseAttr, INum, FUSE_ROOT_ID};
@@ -34,6 +34,7 @@ use crate::common::error::{
     DatenLordResult,
 };
 use crate::function_name;
+use crate::new_storage::Storage;
 
 /// A helper function to build [`DatenLordError::InconsistentFS`] with default
 /// context and get the function name automatic.
@@ -55,7 +56,7 @@ const TXN_RETRY_LIMIT: u32 = 10;
 #[allow(dead_code)]
 pub struct S3MetaData {
     /// Current available fd, it'll increase after using
-    pub(crate) cur_fd: AtomicU32,
+    fd_allocator: AtomicU64,
     /// Current service id
     pub(crate) node_id: Arc<str>,
     /// Fuse fd
@@ -127,7 +128,7 @@ impl MetaData for S3MetaData {
     }
 
     #[instrument(skip(self), err, ret)]
-    async fn opendir(&self, context: ReqContext, ino: u64, flags: u32) -> DatenLordResult<RawFd> {
+    async fn opendir(&self, context: ReqContext, ino: u64, flags: u32) -> DatenLordResult<u64> {
         match self.get_node_from_kv_engine(ino).await? {
             None => {
                 return build_error_result_from_errno(
@@ -138,7 +139,7 @@ impl MetaData for S3MetaData {
             Some(node) => {
                 let o_flags = fs_util::parse_oflag(flags);
                 node.open_pre_check(o_flags, context.uid, context.gid)?;
-                return Ok(GLOBAL_S3_FD_CNT.fetch_add(1, Ordering::SeqCst).cast());
+                return Ok(self.allocate_fd());
             }
         }
     }
@@ -175,12 +176,12 @@ impl MetaData for S3MetaData {
     }
 
     #[instrument(skip(self), err, ret)]
-    async fn read_helper(&self, ino: INum) -> DatenLordResult<(u64, SystemTime)> {
+    async fn read_helper(&self, ino: INum) -> DatenLordResult<(u64, SystemTime, u64)> {
         let open_file = self.open_files.get(ino);
 
-        let (mtime, file_size) = {
+        let (mtime, file_size, version) = {
             let attr = open_file.read().attr;
-            (attr.mtime, attr.size)
+            (attr.mtime, attr.size, attr.version)
         };
 
         // If now is after atime + 1s, update atime
@@ -207,11 +208,11 @@ impl MetaData for S3MetaData {
             FILESYSTEM_METRICS.observe_storage_operation_throughput(retry, "read");
             res?;
         }
-        Ok((file_size, mtime))
+        Ok((file_size, mtime, version))
     }
 
     #[instrument(skip(self), err, ret)]
-    async fn open(&self, context: ReqContext, ino: u64, flags: u32) -> DatenLordResult<RawFd> {
+    async fn open(&self, context: ReqContext, ino: u64, flags: u32) -> DatenLordResult<u64> {
         // TODO: handle open flags
         // <https://pubs.opengroup.org/onlinepubs/9699919799/functions/open.html>
 
@@ -229,7 +230,7 @@ impl MetaData for S3MetaData {
             open_file
                 .attr
                 .check_perm(context.uid, context.gid, access_mode)?;
-            return Ok(GLOBAL_S3_FD_CNT.fetch_add(1, Ordering::SeqCst).cast());
+            return Ok(self.allocate_fd());
         }
 
         // The file doesn't open by any process, so we need to open it
@@ -245,7 +246,7 @@ impl MetaData for S3MetaData {
                 attr.check_perm(context.uid, context.gid, access_mode)?;
                 // Add the file to `open_files`
                 self.open_files.open(ino, attr);
-                return Ok(GLOBAL_S3_FD_CNT.fetch_add(1, Ordering::SeqCst).cast());
+                return Ok(self.allocate_fd());
             }
         }
     }
@@ -270,13 +271,13 @@ impl MetaData for S3MetaData {
         Ok((ttl, fuse_attr))
     }
 
-    fn mtime_and_size(&self, ino: u64) -> (u64, SystemTime) {
+    fn size_and_version(&self, ino: u64) -> (u64, SystemTime, u64) {
         let open_file = self.open_files.get(ino);
-        let (mtime, file_size) = {
+        let (mtime, file_size, version) = {
             let attr = open_file.read().attr;
-            (attr.mtime, attr.size)
+            (attr.mtime, attr.size, attr.version)
         };
-        (file_size, mtime)
+        (file_size, mtime, version)
     }
 
     #[instrument(skip(self))]
@@ -307,7 +308,7 @@ impl MetaData for S3MetaData {
         res
     }
 
-    #[instrument(skip(self), err, ret)]
+    #[instrument(skip(self, storage), err, ret)]
     async fn setattr_helper(
         &self,
         context: ReqContext,
@@ -330,7 +331,7 @@ impl MetaData for S3MetaData {
                                     ino,
                                     remote_attr.size.cast(),
                                     dirty_attr.size.cast(),
-                                    inode.get_attr().mtime,
+                                    remote_attr.version,
                                 )
                                 .await?;
                             if param.fh.is_some() {
@@ -340,6 +341,10 @@ impl MetaData for S3MetaData {
                                 open_file.attr.size = dirty_attr.size;
                                 open_file.attr.mtime = inode.get_attr().mtime;
                                 open_file.attr.ctime = inode.get_attr().ctime;
+                                open_file.attr.version = open_file
+                                    .attr
+                                    .version
+                                    .max(open_file.attr.version.overflow_add(1));
                             }
                         }
                         inode.set_attr(dirty_attr);
@@ -451,7 +456,7 @@ impl MetaData for S3MetaData {
 
     async fn new(kv_engine: Arc<KVEngineType>, node_id: &str) -> DatenLordResult<Arc<Self>> {
         let meta = Arc::new(Self {
-            cur_fd: AtomicU32::new(4),
+            fd_allocator: AtomicU64::new(4),
             node_id: Arc::<str>::from(node_id.to_owned()),
             fuse_fd: Mutex::new(-1_i32),
             inum_allocator: INumAllocator::new(Arc::clone(&kv_engine)),
@@ -762,6 +767,7 @@ impl MetaData for S3MetaData {
         ino: u64,
         new_mtime: SystemTime,
         new_size: u64,
+        new_version: u64,
     ) -> DatenLordResult<()> {
         // Update the `mtime` and `size` of the file
         {
@@ -769,6 +775,7 @@ impl MetaData for S3MetaData {
             let mut open_file = raw_open_file.write();
             open_file.attr.mtime = new_mtime;
             open_file.attr.size = new_size;
+            open_file.attr.version = new_version;
         }
 
         let (res, retry) = retry_txn!(TXN_RETRY_LIMIT, {
@@ -777,6 +784,7 @@ impl MetaData for S3MetaData {
             let mut attr = node.get_attr();
             attr.mtime = new_mtime;
             attr.size = new_size;
+            attr.version = new_version;
             node.set_attr(attr);
             txn.set(
                 &KeyType::INum2Node(ino),
@@ -792,6 +800,11 @@ impl MetaData for S3MetaData {
 }
 
 impl S3MetaData {
+    /// Allocate an fd
+    fn allocate_fd(&self) -> u64 {
+        self.fd_allocator.fetch_add(1, Ordering::SeqCst)
+    }
+
     #[allow(clippy::unwrap_used)]
     /// Get a node from kv engine by inum
     pub async fn get_node_from_kv_engine(&self, inum: INum) -> DatenLordResult<Option<S3Node>> {
