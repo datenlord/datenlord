@@ -3,7 +3,6 @@
 use std::sync::Arc;
 
 use clippy_utilities::Cast;
-use hashbrown::HashSet;
 use parking_lot::{Mutex, RwLock};
 
 use super::super::policy::LruPolicy;
@@ -24,8 +23,6 @@ pub struct Reader {
     cache: Arc<Mutex<MemoryCache<CacheKey, LruPolicy<CacheKey>>>>,
     /// The backend storage system.
     backend: Arc<dyn Backend>,
-    /// A set of keys that tracks accessed cache blocks.
-    access_keys: Mutex<HashSet<CacheKey>>,
 }
 
 impl Reader {
@@ -41,35 +38,31 @@ impl Reader {
             block_size,
             cache,
             backend,
-            access_keys: Mutex::new(HashSet::new()),
         }
     }
 
     /// Try fetch the block from `MemoryCache`.
-    fn fetch_block_from_cache(&self, block_id: u64) -> Option<Arc<RwLock<Block>>> {
+    fn fetch_block_from_cache(&self, block_id: u64, version: u64) -> Option<Arc<RwLock<Block>>> {
         let key = CacheKey {
             ino: self.ino,
             block_id,
+            // Check current block is invalid or not.
+            version,
         };
         let cache = self.cache.lock();
         cache.fetch(&key)
     }
 
-    /// Mark the block as accessed.
-    fn access(&self, block_id: u64) {
-        let key = CacheKey {
-            ino: self.ino,
-            block_id,
-        };
-        let mut access_keys = self.access_keys.lock();
-        access_keys.insert(key);
-    }
-
     /// Fetch the block from the backend storage system.
-    async fn fetch_block_from_backend(&self, block_id: u64, version: u64) -> StorageResult<Arc<RwLock<Block>>> {
+    async fn fetch_block_from_backend(
+        &self,
+        block_id: u64,
+        version: u64,
+    ) -> StorageResult<Arc<RwLock<Block>>> {
         let key = CacheKey {
             ino: self.ino,
             block_id,
+            version,
         };
         let content = {
             let mut buf = vec![0; self.block_size];
@@ -86,12 +79,16 @@ impl Reader {
 
     /// Reads data from the file starting at the given offset and up to the
     /// given length.
-    pub async fn read(&self, buf: &mut Vec<u8>, slices: &[BlockSlice], version: u64) -> StorageResult<usize> {
+    pub async fn read(
+        &self,
+        buf: &mut Vec<u8>,
+        slices: &[BlockSlice],
+        version: u64,
+    ) -> StorageResult<usize> {
         for slice in slices {
             let block_id = slice.block_id;
-            self.access(block_id);
             // Block's pin count is increased by 1.
-            let block = match self.fetch_block_from_cache(block_id) {
+            let block = match self.fetch_block_from_cache(block_id, version) {
                 Some(block) => block,
                 None => self.fetch_block_from_backend(block_id, version).await?,
             };
@@ -115,17 +112,16 @@ impl Reader {
             self.cache.lock().unpin(&CacheKey {
                 ino: self.ino,
                 block_id,
+                version,
             });
         }
         Ok(buf.len())
     }
 
     /// Close the reader and remove the accessed cache blocks.
+    #[allow(clippy::unused_self)]
     pub fn close(&self) {
-        let access_keys = self.access_keys.lock();
-        for key in access_keys.iter() {
-            self.cache.lock().remove(key);
-        }
+        // For continuous read/write, we do not need to clean these cache blocks.
     }
 }
 
@@ -164,6 +160,8 @@ mod tests {
         assert_eq!(memory_size, 1);
         reader.close();
         let memory_size = manger.lock().len();
-        assert_eq!(memory_size, 0);
+        // assert_eq!(memory_size, 0);
+        // Current cache is not cleaned after close for continuous read/write.
+        assert_eq!(memory_size, 1);
     }
 }

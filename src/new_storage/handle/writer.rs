@@ -31,8 +31,6 @@ pub struct Writer {
     write_back_sender: Sender<Task>,
     /// The handle to the write back worker.
     write_back_handle: tokio::sync::Mutex<Option<JoinHandle<()>>>,
-    /// The access keys.
-    access_keys: Mutex<Vec<CacheKey>>,
 }
 
 impl std::fmt::Debug for Writer {
@@ -42,7 +40,6 @@ impl std::fmt::Debug for Writer {
             .field("block_size", &self.block_size)
             .field("cache", &self.cache)
             .field("backend", &self.backend)
-            .field("access_keys", &self.access_keys)
             .finish_non_exhaustive()
     }
 }
@@ -110,6 +107,7 @@ async fn write_back_block(task: Arc<WriteTask>) -> StorageResult<()> {
             task.cache.lock().unpin(&CacheKey {
                 ino: task.ino,
                 block_id: task.block_id,
+                version: task.version,
             });
             break;
         }
@@ -206,29 +204,23 @@ impl Writer {
             backend,
             write_back_sender: tx,
             write_back_handle: tokio::sync::Mutex::new(None),
-            access_keys: Mutex::new(Vec::new()),
         };
         let handle = tokio::spawn(write_back_work(rx));
         writer.write_back_handle = tokio::sync::Mutex::new(Some(handle));
         writer
     }
 
-    /// Record the block access.
-    fn access(&self, block_id: u64) {
-        let key = CacheKey {
-            ino: self.ino,
-            block_id,
-        };
-        let mut access_keys = self.access_keys.lock();
-        access_keys.push(key);
-    }
-
     /// Fetch the block from the cache manager.
     #[inline]
-    pub async fn fetch_block(&self, block_id: u64, version: u64) -> StorageResult<Arc<RwLock<Block>>> {
+    pub async fn fetch_block(
+        &self,
+        block_id: u64,
+        version: u64,
+    ) -> StorageResult<Arc<RwLock<Block>>> {
         let key = CacheKey {
             ino: self.ino,
             block_id,
+            version,
         };
 
         {
@@ -256,7 +248,12 @@ impl Writer {
 
     /// Writes data to the file starting at the given offset.
     #[inline]
-    pub async fn write(&self, buf: &[u8], slices: &[BlockSlice], version: u64) -> StorageResult<()> {
+    pub async fn write(
+        &self,
+        buf: &[u8],
+        slices: &[BlockSlice],
+        version: u64,
+    ) -> StorageResult<()> {
         let mut consume_index = 0;
         for slice in slices {
             let block_id = slice.block_id;
@@ -269,7 +266,6 @@ impl Writer {
             let write_content = buf
                 .get(consume_index..end)
                 .unwrap_or_else(|| unreachable!("The `buf` is checked to be long enough."));
-            self.access(block_id);
             let block = self.fetch_block(block_id, version).await?;
             {
                 let mut block = block.write();
@@ -360,13 +356,7 @@ impl Writer {
                 panic!("Failed to join the write back task: {e}");
             });
 
-        {
-            let keys = self.access_keys.lock();
-            for key in keys.iter() {
-                self.cache.lock().remove(key);
-            }
-        }
-
+        // For continuous read/write, we do not need to clean these cache blocks.
         rx.await
             .unwrap_or_else(|_| panic!("The sender should not be closed."))
             .map_or(Ok(()), Err)
@@ -394,6 +384,8 @@ mod tests {
         assert_eq!(memory_size, 1);
         writer.close().await.unwrap();
         let memory_size = manger.lock().len();
-        assert_eq!(memory_size, 0);
+        // assert_eq!(memory_size, 0);
+        // Current cache is not cleaned after close for continuous read/write.
+        assert_eq!(memory_size, 1);
     }
 }

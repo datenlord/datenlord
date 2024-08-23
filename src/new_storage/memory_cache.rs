@@ -17,6 +17,8 @@ pub struct CacheKey {
     pub ino: u64,
     /// The block ID.
     pub block_id: u64,
+    /// The version of the block
+    pub version: u64,
 }
 
 /// The `MemoryCache` struct is used to manage cache of blocks with a

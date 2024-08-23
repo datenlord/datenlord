@@ -29,10 +29,6 @@ pub enum StorageError {
 impl From<StorageError> for DatenLordError {
     fn from(value: StorageError) -> Self {
         match value {
-            StorageError::OutOfRange { maximum, found } => DatenLordError::InternalErr {
-                source: anyhow!("IO out of range: the maximum is {maximum}, but {found} found."),
-                context: vec![],
-            },
             StorageError::OutOfMemory => DatenLordError::InternalErr {
                 source: anyhow::Error::new(Errno::EIO),
                 context: vec!["Cache is out of memory.".to_owned()],

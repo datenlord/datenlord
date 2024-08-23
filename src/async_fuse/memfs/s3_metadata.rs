@@ -327,7 +327,12 @@ impl MetaData for S3MetaData {
                         if remote_attr.size != dirty_attr.size {
                             inode.update_mtime_ctime_to_now();
                             storage
-                                .truncate(ino, remote_attr.size.cast(), dirty_attr.size.cast(), remote_attr.version)
+                                .truncate(
+                                    ino,
+                                    remote_attr.size.cast(),
+                                    dirty_attr.size.cast(),
+                                    remote_attr.version,
+                                )
                                 .await?;
                             if param.fh.is_some() {
                                 // The file is open, update the attr in `open_files`
@@ -336,7 +341,10 @@ impl MetaData for S3MetaData {
                                 open_file.attr.size = dirty_attr.size;
                                 open_file.attr.mtime = inode.get_attr().mtime;
                                 open_file.attr.ctime = inode.get_attr().ctime;
-                                open_file.attr.version = open_file.attr.version.max(open_file.attr.version.overflow_add(1));
+                                open_file.attr.version = open_file
+                                    .attr
+                                    .version
+                                    .max(open_file.attr.version.overflow_add(1));
                             }
                         }
                         inode.set_attr(dirty_attr);

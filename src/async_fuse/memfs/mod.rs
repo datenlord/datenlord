@@ -554,7 +554,10 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
             size.cast()
         };
 
-        let result = self.storage.read(ino, fh, offset, read_size.cast(), version).await;
+        let result = self
+            .storage
+            .read(ino, fh, offset, read_size.cast(), version)
+            .await;
         // Check the load result
         match result {
             Ok(content) => reply.data(content).await,
@@ -585,7 +588,10 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
 
         let (old_size, _, version) = self.metadata.size_and_version(ino);
         // TODO: Current write operation is not atomic and transactional, we need to add a transaction in the future
-        let result = self.storage.write(ino, fh, offset.cast(), &data, version).await;
+        let result = self
+            .storage
+            .write(ino, fh, offset.cast(), &data, version)
+            .await;
 
         let new_mtime = match result {
             Ok(()) => SystemTime::now(),
@@ -597,7 +603,10 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         let new_size = old_size.max(offset.cast::<u64>().overflow_add(data_len));
         let new_version = version.max(version.overflow_add(1));
 
-        let write_result = self.metadata.write_helper(ino, new_mtime, new_size, new_version).await;
+        let write_result = self
+            .metadata
+            .write_helper(ino, new_mtime, new_size, new_version)
+            .await;
         match write_result {
             Ok(()) => reply.written(data_len.cast()).await,
             Err(e) => reply.error(e).await,

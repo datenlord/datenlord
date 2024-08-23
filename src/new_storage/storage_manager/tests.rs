@@ -395,7 +395,10 @@ async fn test_truncate() {
     truncated_content.resize(BLOCK_SIZE, 0);
     assert_eq!(truncated_content, buffer);
 
-    storage.truncate(ino, block_size / 2, 0, version).await.unwrap();
+    storage
+        .truncate(ino, block_size / 2, 0, version)
+        .await
+        .unwrap();
 }
 
 #[tokio::test]
