@@ -191,7 +191,11 @@ impl FileHandleInner {
 
     /// Fetch the block from the cache manager.
     #[inline]
-    pub async fn fetch_block(&self, block_id: u64, version: u64) -> StorageResult<Arc<RwLock<Block>>> {
+    pub async fn fetch_block(
+        &self,
+        block_id: u64,
+        version: u64,
+    ) -> StorageResult<Arc<RwLock<Block>>> {
         let key = CacheKey {
             ino: self.ino,
             block_id,
@@ -224,7 +228,12 @@ impl FileHandleInner {
 
     /// Reads data from the file starting at the given offset and up to the
     /// given length.
-    pub async fn read(&self, buf: &mut Vec<u8>, slices: &[BlockSlice], version: u64) -> StorageResult<usize> {
+    pub async fn read(
+        &self,
+        buf: &mut Vec<u8>,
+        slices: &[BlockSlice],
+        version: u64,
+    ) -> StorageResult<usize> {
         for slice in slices {
             let block_id = slice.block_id;
             // Block's pin count is increased by 1.
@@ -256,7 +265,13 @@ impl FileHandleInner {
 
     /// Writes data to the file starting at the given offset.
     #[inline]
-    pub async fn write(&self, buf: &[u8], slices: &[BlockSlice], size: u64, version: u64) -> StorageResult<()> {
+    pub async fn write(
+        &self,
+        buf: &[u8],
+        slices: &[BlockSlice],
+        size: u64,
+        version: u64,
+    ) -> StorageResult<()> {
         let mut consume_index = 0;
         for slice in slices {
             let block_id = slice.block_id;
@@ -294,7 +309,7 @@ impl FileHandleInner {
                 block_id,
                 block,
                 file_size: size,
-                version: version,
+                version,
             });
             self.write_back_sender
                 .send(Task::Pending(task))
@@ -545,7 +560,13 @@ impl FileHandle {
     }
 
     /// Writes data to the file starting at the given offset.
-    pub async fn write(&self, offset: u64, buf: &[u8], size: u64, version: u64) -> StorageResult<()> {
+    pub async fn write(
+        &self,
+        offset: u64,
+        buf: &[u8],
+        size: u64,
+        version: u64,
+    ) -> StorageResult<()> {
         let slices: smallvec::SmallVec<[BlockSlice; 2]> =
             offset_to_slice(self.block_size.cast(), offset, buf.len().cast());
         self.inner.write(buf, &slices, size, version).await
@@ -798,7 +819,7 @@ mod tests {
         handles.add_handle(file_handle.clone()).await;
         let buf = vec![b'1', b'2', b'3', b'4'];
         let version = 0;
-        file_handle.write(0, &buf, 4 ,version).await.unwrap();
+        file_handle.write(0, &buf, 4, version).await.unwrap();
         let version = 0;
         let read_buf = file_handle.read(0, 4, version).await.unwrap();
         assert_eq!(read_buf, buf);

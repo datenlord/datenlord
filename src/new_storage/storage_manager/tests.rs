@@ -403,7 +403,10 @@ async fn test_truncate() {
     let version = 0;
     let _fh = CURRENT_FD.fetch_add(1, Ordering::SeqCst);
     storage.open(ino, FileAttr::default()).await;
-    storage.write(ino, 0, &content, block_size, version).await.unwrap();
+    storage
+        .write(ino, 0, &content, block_size, version)
+        .await
+        .unwrap();
     storage.close(ino).await.unwrap();
     let version = 0;
     let size = backend
@@ -462,7 +465,10 @@ async fn test_truncate() {
     assert_eq!(truncated_content, buffer);
 
     storage.open(ino, FileAttr::default()).await;
-    storage.truncate(ino, block_size / 2, 0, version).await.unwrap();
+    storage
+        .truncate(ino, block_size / 2, 0, version)
+        .await
+        .unwrap();
     storage.close(ino).await.unwrap();
 }
 

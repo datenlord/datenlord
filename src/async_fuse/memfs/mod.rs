@@ -575,7 +575,10 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
             size.cast()
         };
 
-        let result = self.storage.read(ino, offset, read_size.cast(), version).await;
+        let result = self
+            .storage
+            .read(ino, offset, read_size.cast(), version)
+            .await;
         // Check the load result
         match result {
             Ok(content) => reply.data(content).await,
