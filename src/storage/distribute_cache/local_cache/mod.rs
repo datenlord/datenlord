@@ -1,6 +1,19 @@
-//! Error types for storage.
-
 use thiserror::Error;
+
+/// The backend wrapper of `openDAL` operator.
+pub mod backend;
+
+/// The block module.
+pub mod block;
+
+/// The manager of memory cache module.
+pub mod manager;
+
+/// The policy module.
+pub mod policy;
+
+/// The snowflake module.
+pub mod snowflake;
 
 /// The result of storage operation.
 pub type StorageResult<T> = Result<T, StorageError>;
@@ -25,7 +38,4 @@ pub enum StorageError {
     /// A internal storage error.
     #[error("{0}")]
     Internal(#[from] anyhow::Error),
-    /// Unimplemented error
-    #[error("Unimplemented")]
-    Unimplemented,
 }
