@@ -3,7 +3,7 @@
 use async_trait::async_trait;
 use datenlord::config::{StorageParams, StorageS3Config};
 use datenlord::metrics::DATENLORD_REGISTRY;
-use opendal::layers::PrometheusLayer;
+use opendal::layers::{ConcurrentLimitLayer, PrometheusLayer, RetryLayer};
 use opendal::raw::oio::ReadExt;
 use opendal::services::{Fs, Memory, S3};
 use opendal::{ErrorKind, Operator};
@@ -28,7 +28,7 @@ impl BackendBuilder {
 
     /// Build the backend.
     #[allow(clippy::expect_used, clippy::unwrap_in_result)] // `.expect()` here are ensured not to panic.
-    pub fn build(self) -> opendal::Result<BackendImpl> {
+    pub async fn build(self) -> opendal::Result<BackendImpl> {
         let BackendBuilder { config } = self;
 
         let layer = PrometheusLayer::with_registry(DATENLORD_REGISTRY.clone())
@@ -45,6 +45,8 @@ impl BackendBuilder {
                 ref access_key_id,
                 ref secret_access_key,
                 ref bucket_name,
+                ref region,
+                ref max_concurrent_requests,
             }) => {
                 let mut builder = S3::default();
 
@@ -52,10 +54,33 @@ impl BackendBuilder {
                     .endpoint(endpoint_url)
                     .access_key_id(access_key_id)
                     .secret_access_key(secret_access_key)
-                    .region("auto")
                     .bucket(bucket_name);
 
-                Operator::new(builder)?.layer(layer).finish()
+                // Init region
+                if let Some(region) = region.to_owned() {
+                    builder.region(region.as_str());
+                } else {
+                    // Auto detect region
+                    if let Some(region) = S3::detect_region(endpoint_url, bucket_name).await {
+                        builder.region(region.as_str());
+                    } else {
+                        builder.region("auto");
+                    }
+                }
+
+                // For aws s3 issue: https://repost.aws/questions/QU_F-UC6-fSdOYzp-gZSDTvQ/receiving-s3-503-slow-down-responses
+                // 3,500 PUT/COPY/POST/DELETE or 5,500 GET/HEAD requests per second per prefix in a bucket
+                let valid_max_concurrent_requests = max_concurrent_requests.map_or(1000, |v| v);
+
+                let conncurrency_layer =
+                    ConcurrentLimitLayer::new(valid_max_concurrent_requests.to_owned());
+                let retry_layer = RetryLayer::new();
+
+                Operator::new(builder)?
+                    .layer(layer)
+                    .layer(conncurrency_layer)
+                    .layer(retry_layer)
+                    .finish()
             }
             StorageParams::Fs(ref root) => {
                 let mut builder = Fs::default();
