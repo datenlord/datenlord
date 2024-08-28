@@ -4,9 +4,10 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
+use crate::fs::fs_util::INum;
+
 use super::error::StorageResult;
 use super::Block;
-use crate::async_fuse::fuse::protocol::INum;
 
 /// The `Storage` trait. It handles blocks with storage such as in-memory cache,
 /// in-disk cache and `S3Backend`.

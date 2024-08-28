@@ -27,6 +27,7 @@ pub enum StorageError {
 }
 
 impl From<StorageError> for DatenLordError {
+    #[inline]
     fn from(value: StorageError) -> Self {
         match value {
             StorageError::OutOfMemory => DatenLordError::InternalErr {

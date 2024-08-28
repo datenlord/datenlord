@@ -52,9 +52,16 @@ impl Storage for StorageManager {
     /// Reads data from a file specified by the file handle, starting at the
     /// given offset and reading up to `len` bytes.
     #[inline]
-    async fn read(&self, _ino: u64, fh: u64, offset: u64, len: usize) -> StorageResult<Vec<u8>> {
+    async fn read(
+        &self,
+        _ino: u64,
+        fh: u64,
+        offset: u64,
+        len: usize,
+        buf: &mut [u8],
+    ) -> StorageResult<()> {
         let handle = self.get_handle(fh);
-        handle.read(offset, len.cast()).await
+        handle.read(offset, len.cast(), buf).await
     }
 
     /// Writes data to a file specified by the file handle, starting at the
@@ -128,6 +135,7 @@ impl Storage for StorageManager {
         Ok(())
     }
 
+    #[inline]
     async fn remove(&self, ino: u64) -> StorageResult<()> {
         self.backend.remove_all(&format_file_path(ino)).await?;
 

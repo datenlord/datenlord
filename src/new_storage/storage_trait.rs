@@ -13,7 +13,14 @@ pub trait Storage {
 
     /// Reads data from a file specified by the inode number and file handle,
     /// starting at the given offset and reading up to `len` bytes.
-    async fn read(&self, ino: u64, fh: u64, offset: u64, len: usize) -> StorageResult<Vec<u8>>;
+    async fn read(
+        &self,
+        ino: u64,
+        fh: u64,
+        offset: u64,
+        len: usize,
+        buf: &mut [u8],
+    ) -> StorageResult<()>;
 
     /// Writes data to a file specified by the inode number and file handle,
     /// starting at the given offset.

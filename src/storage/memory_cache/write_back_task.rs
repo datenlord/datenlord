@@ -14,7 +14,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
-use crate::async_fuse::fuse::protocol::INum;
+use crate::fs::fs_util::INum;
 use crate::storage::error::StorageResult;
 use crate::storage::policy::EvictPolicy;
 use crate::storage::{Block, BlockCoordinate, BlockId, MemoryCache, Storage};
@@ -317,6 +317,8 @@ where
             if interval.period() != new_period {
                 interval = tokio::time::interval(new_period);
             }
+
+            info!("Write back task is running.");
 
             select! {
                 command = self.command_receiver.recv() => {
