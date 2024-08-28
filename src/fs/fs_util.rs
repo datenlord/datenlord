@@ -1,4 +1,5 @@
 //! The implementation of filesystem related utilities
+use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Context;
@@ -6,13 +7,129 @@ use clippy_utilities::Cast;
 use nix::errno::Errno;
 use nix::fcntl::OFlag;
 use nix::sys::stat::{Mode, SFlag};
+use serde::{Deserialize, Serialize};
 use tracing::debug;
 
-use super::SetAttrParam;
-use crate::async_fuse::fuse::protocol::{FuseAttr, INum};
-use crate::async_fuse::util::build_error_result_from_errno;
-use crate::common::error::DatenLordResult;
+use crate::async_fuse::fuse::protocol::FuseAttr;
+use crate::common::error::{DatenLordError, DatenLordResult};
 use crate::common::util;
+
+/// Build error result from `nix` error code
+/// # Errors
+///
+/// Return the built `Err(anyhow::Error(..))`
+pub fn build_error_result_from_errno<T>(error_code: Errno, err_msg: String) -> DatenLordResult<T> {
+    Err(DatenLordError::from(
+        anyhow::Error::new(error_code).context(err_msg),
+    ))
+}
+
+/// The node ID of the root inode
+pub const ROOT_ID: u64 = 1;
+
+/// The type of i-number
+pub type INum = u64;
+
+/// POSIX statvfs parameters
+#[derive(Debug)]
+pub struct StatFsParam {
+    /// The number of blocks in the filesystem
+    pub blocks: u64,
+    /// The number of free blocks
+    pub bfree: u64,
+    /// The number of free blocks for non-privilege users
+    pub bavail: u64,
+    /// The number of inodes
+    pub files: u64,
+    /// The number of free inodes
+    pub f_free: u64,
+    /// Block size
+    pub bsize: u32,
+    /// Maximum file name length
+    pub namelen: u32,
+    /// Fragment size
+    pub frsize: u32,
+}
+
+/// Set attribute parameters
+#[derive(Debug)]
+pub struct SetAttrParam {
+    /// FUSE set attribute bit mask
+    pub valid: u32,
+    /// File handler
+    pub fh: Option<u64>,
+    /// File mode
+    pub mode: Option<u32>,
+    /// User ID
+    pub u_id: Option<u32>,
+    /// Group ID
+    pub g_id: Option<u32>,
+    /// File size
+    pub size: Option<u64>,
+    /// Lock owner
+    #[cfg(feature = "abi-7-9")]
+    pub lock_owner: Option<u64>,
+    /// Access time
+    pub a_time: Option<SystemTime>,
+    /// Content modified time
+    pub m_time: Option<SystemTime>,
+    /// Meta-data changed time seconds
+    #[cfg(feature = "abi-7-23")]
+    pub c_time: Option<SystemTime>,
+}
+
+/// Create parameters
+#[derive(Debug)]
+pub struct CreateParam {
+    /// Parent directory i-number
+    pub parent: INum,
+    /// File name
+    pub name: String,
+    /// File mode
+    pub mode: u32,
+    /// File flags
+    pub rdev: u32,
+    /// User ID
+    pub uid: u32,
+    /// Group ID
+    pub gid: u32,
+    /// Type
+    pub node_type: SFlag,
+    /// For symlink
+    pub link: Option<PathBuf>,
+}
+
+/// Rename parameters
+#[derive(Serialize, Deserialize, Debug)]
+pub struct RenameParam {
+    /// Old parent directory i-number
+    pub old_parent: INum,
+    /// Old name
+    pub old_name: String,
+    /// New parent directory i-number
+    pub new_parent: INum,
+    /// New name
+    pub new_name: String,
+    /// Rename flags
+    pub flags: u32,
+}
+
+/// POSIX file lock parameters
+#[derive(Debug)]
+pub struct FileLockParam {
+    /// File handler
+    pub fh: u64,
+    /// Lock owner
+    pub lock_owner: u64,
+    /// Start offset
+    pub start: u64,
+    /// End offset
+    pub end: u64,
+    /// Lock type
+    pub typ: u32,
+    /// The process ID of the lock
+    pub pid: u32,
+}
 
 /// File attributes
 #[derive(Copy, Clone, Debug)]

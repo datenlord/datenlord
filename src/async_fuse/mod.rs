@@ -3,16 +3,17 @@
 use std::sync::Arc;
 
 use clippy_utilities::OverflowArithmetic;
+use fuse::file_system::FuseFileSystem;
 use parking_lot::Mutex;
 use tokio_util::sync::CancellationToken;
 
-use self::memfs::kv_engine::KVEngineType;
 use crate::async_fuse::fuse::session;
+use crate::fs::datenlordfs;
+use crate::fs::kv_engine::KVEngineType;
 use crate::new_storage::{BackendBuilder, MemoryCache, StorageManager};
 use crate::AsyncFuseArgs;
 
 pub mod fuse;
-pub mod memfs;
 pub mod proactor;
 pub mod util;
 
@@ -39,7 +40,7 @@ pub async fn start_async_fuse(
         StorageManager::new(cache, backend, block_size)
     };
 
-    let fs: memfs::MemFs<memfs::S3MetaData> = memfs::MemFs::new(
+    let fs: FuseFileSystem<datenlordfs::S3MetaData> = FuseFileSystem::new_datenlord_fs(
         &args.mount_dir,
         global_cache_capacity,
         kv_engine,
@@ -49,7 +50,7 @@ pub async fn start_async_fuse(
     )
     .await?;
 
-    let ss = session::new_session_of_memfs(mount_point, fs).await?;
+    let ss = session::new_fuse_session(mount_point, fs).await?;
     ss.run(token).await?;
 
     Ok(())

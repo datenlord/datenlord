@@ -337,8 +337,8 @@ mod test {
     use std::time::Instant;
 
     use super::*;
-    use crate::async_fuse::memfs::direntry::{DirEntry, FileType};
     use crate::common::error::DatenLordError;
+    use crate::fs::datenlordfs::direntry::{DirEntry, FileType};
     use crate::retry_txn;
 
     const ETCD_ADDRESS: &str = "localhost:2379";

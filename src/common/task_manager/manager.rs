@@ -161,7 +161,7 @@ impl TaskManager {
     /// After `shutdown` being called, no new task should be spawned via task
     /// manager.
     #[inline]
-    #[instrument(skip(self))]
+    #[instrument(level="debug",  skip(self))]
     pub async fn shutdown(&self) {
         let mut queue = VecDeque::from([TaskName::Root]);
 

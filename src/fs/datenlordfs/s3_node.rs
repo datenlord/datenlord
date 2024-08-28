@@ -16,16 +16,14 @@ use parking_lot::RwLock;
 use tracing::info;
 
 use super::direntry::{DirEntry, FileType};
-use super::fs_util::{self, FileAttr};
-use super::kv_engine::{KVEngineType, KeyType, MetaTxn, ValueType};
-use super::node::Node;
 use super::s3_metadata::S3MetaData;
 use super::serial::{file_attr_to_serial, serial_to_file_attr, SerialNode, SerialNodeData};
 use super::CreateParam;
-use crate::async_fuse::fuse::fuse_reply::StatFsParam;
-use crate::async_fuse::fuse::protocol::{INum, FUSE_ROOT_ID};
-use crate::async_fuse::util::build_error_result_from_errno;
 use crate::common::error::DatenLordResult;
+use crate::fs::fs_util::{self, FileAttr, StatFsParam};
+use crate::fs::fs_util::{build_error_result_from_errno, INum, ROOT_ID};
+use crate::fs::kv_engine::{KVEngineType, KeyType, MetaTxn, ValueType};
+use crate::fs::node::Node;
 
 /// A file node data or a directory node data
 #[derive(Debug)]
@@ -181,7 +179,7 @@ impl S3Node {
         name: &str,
         meta: Arc<S3MetaData>,
     ) -> DatenLordResult<Self> {
-        if let Some(root_node) = meta.get_node_from_kv_engine(FUSE_ROOT_ID).await? {
+        if let Some(root_node) = meta.get_node_from_kv_engine(ROOT_ID).await? {
             Ok(root_node)
         } else {
             let now = SystemTime::now();

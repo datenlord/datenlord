@@ -3,8 +3,7 @@ use std::sync::Arc;
 
 use parking_lot::{Mutex, RwLock};
 
-use super::fs_util::FileAttr;
-use crate::async_fuse::fuse::protocol::INum;
+use crate::fs::fs_util::{FileAttr, INum};
 
 /// A structure representing an open file with its attributes and open count.
 ///

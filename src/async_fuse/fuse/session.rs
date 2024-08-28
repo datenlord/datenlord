@@ -23,7 +23,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, instrument};
 
 use super::context::ProtoVersion;
-use super::file_system::FileSystem;
+use super::file_system::{FileSystem, FuseFileSystem};
 use super::fuse_reply::{
     ReplyAttr, ReplyBMap, ReplyCreate, ReplyData, ReplyDirectory, ReplyEmpty, ReplyEntry,
     ReplyInit, ReplyLock, ReplyOpen, ReplyStatFs, ReplyWrite, ReplyXAttr,
@@ -40,9 +40,8 @@ use super::protocol::{
     FUSE_KERNEL_VERSION, FUSE_RELEASE_FLUSH,
 };
 use crate::async_fuse::fuse::de::DeserializeError;
-use crate::async_fuse::memfs::{
-    CreateParam, FileLockParam, MemFs, MetaData, RenameParam, SetAttrParam,
-};
+use crate::fs::datenlordfs::MetaData;
+use crate::fs::fs_util::{CreateParam, FileLockParam, RenameParam, SetAttrParam};
 
 /// We generally support async reads
 #[cfg(target_os = "linux")]
@@ -283,10 +282,10 @@ impl<F: FileSystem + Send + Sync + 'static> Drop for Session<F> {
 
 /// Create FUSE session
 #[allow(clippy::clone_on_ref_ptr)] // allow this clone to transform trait to sub-trait
-pub async fn new_session_of_memfs<M>(
+pub async fn new_fuse_session<M>(
     mount_path: &Path,
-    fs: MemFs<M>,
-) -> anyhow::Result<Session<MemFs<M>>>
+    fs: FuseFileSystem<M>,
+) -> anyhow::Result<Session<FuseFileSystem<M>>>
 where
     M: MetaData + Send + Sync + 'static,
 {

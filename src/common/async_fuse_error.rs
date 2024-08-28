@@ -1,7 +1,7 @@
 //! `DatenLord` async fuse error of different mod
 use thiserror::Error;
 
-/// Error caused by `async_fuse::memfs::kv_engine`
+/// Error caused by `fs::datenlordfs::kv_engine`
 #[derive(Error, Debug)]
 pub enum KVEngineError {
     /// Error caused by std::io::Error

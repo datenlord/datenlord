@@ -9,12 +9,10 @@ use nix::fcntl::OFlag;
 use nix::sys::stat::{Mode, SFlag};
 use parking_lot::RwLock;
 
-use super::fs_util::FileAttr;
+use super::fs_util::{CreateParam, INum, StatFsParam};
 use super::kv_engine::MetaTxn;
-use super::CreateParam;
-use crate::async_fuse::fuse::fuse_reply::StatFsParam;
-use crate::async_fuse::fuse::protocol::INum;
 use crate::common::error::DatenLordResult;
+use crate::fs::fs_util::FileAttr;
 
 /// Fs node trait
 #[async_trait]

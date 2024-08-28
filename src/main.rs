@@ -75,19 +75,20 @@
 pub mod async_fuse;
 mod common;
 mod csi;
+pub mod fs;
 pub mod new_storage;
 pub mod storage;
 
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 
-use async_fuse::memfs::kv_engine::{KVEngine, KVEngineType};
 use clap::Parser;
 use csi::meta_data::MetaData;
 use csi::scheduler_extender::SchedulerExtender;
 use datenlord::common::task_manager::{self, TaskName, TASK_MANAGER};
 use datenlord::config::{InnerConfig, NodeRole, StorageConfig};
 use datenlord::{config, metrics};
+use fs::kv_engine::{KVEngine, KVEngineType};
 
 use crate::common::error::DatenLordResult;
 use crate::common::etcd_delegate::EtcdDelegate;

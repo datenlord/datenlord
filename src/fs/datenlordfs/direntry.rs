@@ -4,7 +4,7 @@ use nix::sys::stat::SFlag;
 use serde::{Deserialize, Serialize};
 use tracing::error;
 
-use crate::async_fuse::fuse::protocol::INum;
+use crate::fs::fs_util::INum;
 
 /// Represents the type of a file in a filesystem.
 ///

@@ -1,7 +1,6 @@
 use std::fmt::{self, Display, Formatter, Write};
 
-use crate::async_fuse::fuse::protocol::INum;
-use crate::async_fuse::memfs::id_alloc::IdType;
+use crate::fs::{datenlordfs::id_alloc::IdType, fs_util::INum};
 
 /// The `KeyType` is used to locate the value in the distributed K/V storage.
 /// Every key is prefixed with a string to indicate the type of the value.
@@ -25,7 +24,7 @@ pub enum KeyType {
 }
 
 // ::<KeyType>::get() -> ValueType
-/// Lock key type the memfs used.
+/// Lock key type the datenlordfs used.
 #[derive(Debug, Eq, PartialEq)]
 #[allow(variant_size_differences)]
 pub enum LockKeyType {
