@@ -10,7 +10,7 @@ use tokio::select;
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
-use tracing::{error, info};
+use tracing::{debug, error, info};
 
 use super::{SpawnError, TaskName};
 
@@ -113,6 +113,7 @@ impl GcTask {
         loop {
             select! {
                 res = self.rx.recv() => {
+                    debug!("Received a new handle from `{:?}`.", self.name);
                     if let Some(future) = res {
                         self.tasks.spawn(future);
                     } else {

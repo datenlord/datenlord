@@ -6,6 +6,7 @@ use tracing_subscriber::prelude::*;
 
 /// Represents the role of the logger.
 #[derive(Debug)]
+#[allow(clippy::upper_case_acronyms)] // consider making the acronym lowercase, except the initial letter: `Sdk`
 pub enum LogRole {
     /// Same as `NodeRole::Node`.
     Node,
@@ -22,6 +23,9 @@ pub enum LogRole {
     /// user.
     #[allow(dead_code)] // /bin/bind_mounter.rs is still using this.
     BindMounter,
+    /// Same as `NodeRole::SDK`.
+    #[allow(dead_code)] // /sdk is still using this.
+    SDK,
 }
 
 impl From<crate::config::NodeRole> for LogRole {
@@ -31,7 +35,7 @@ impl From<crate::config::NodeRole> for LogRole {
             crate::config::NodeRole::Node => LogRole::Node,
             crate::config::NodeRole::Controller => LogRole::Controller,
             crate::config::NodeRole::SchedulerExtender => LogRole::SchedulerExtender,
-            crate::config::NodeRole::AsyncFuse => LogRole::AsyncFuse,
+            crate::config::NodeRole::AsyncFuse | crate::config::NodeRole::SDK => LogRole::AsyncFuse,
         }
     }
 }
@@ -49,6 +53,7 @@ impl LogRole {
             #[cfg(test)]
             LogRole::Test => "test",
             LogRole::BindMounter => "bind_mounter",
+            LogRole::SDK => "sdk",
         }
     }
 }
@@ -64,6 +69,7 @@ pub fn init_logger(role: LogRole, level: Level) {
         .with_target("tower", Level::WARN)
         .with_target("datenlord::async_fuse::fuse", Level::INFO)
         .with_target("datenlord::metrics", Level::INFO)
+        .with_target("datenlordsdk", Level::INFO)
         .with_target("", level);
 
     let log_path = format!("./datenlord_{}.log", role.as_str());

@@ -2,8 +2,8 @@ use std::collections::HashMap;
 use std::fmt::Debug;
 use std::time::Duration;
 
+use crate::metrics::KV_METRICS;
 use async_trait::async_trait;
-use datenlord::metrics::KV_METRICS;
 use etcd_client::{
     Compare, CompareOp, DeleteOptions, GetOptions, LockOptions, PutOptions, Txn, TxnOp,
 };
@@ -337,8 +337,8 @@ mod test {
     use std::time::Instant;
 
     use super::*;
-    use crate::async_fuse::memfs::direntry::{DirEntry, FileType};
     use crate::common::error::DatenLordError;
+    use crate::fs::datenlordfs::direntry::{DirEntry, FileType};
     use crate::retry_txn;
 
     const ETCD_ADDRESS: &str = "localhost:2379";

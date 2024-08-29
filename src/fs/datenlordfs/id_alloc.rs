@@ -10,8 +10,8 @@ use clippy_utilities::OverflowArithmetic;
 use tokio::sync::Mutex;
 use tracing::debug;
 
-use crate::async_fuse::memfs::kv_engine::{KVEngine, KeyType, LockKeyType, ValueType};
 use crate::common::error::DatenLordResult;
+use crate::fs::kv_engine::{KVEngine, KeyType, LockKeyType, ValueType};
 
 /// Id type
 #[derive(Debug, Eq, PartialEq, Clone)]

@@ -1,9 +1,9 @@
 use serde::{Deserialize, Serialize};
 
-use crate::async_fuse::memfs::direntry::DirEntry;
-use crate::async_fuse::memfs::s3_node::S3Node;
-use crate::async_fuse::memfs::serial::SerialNode;
-use crate::async_fuse::memfs::S3MetaData;
+use crate::fs::datenlordfs::direntry::DirEntry;
+use crate::fs::datenlordfs::s3_node::S3Node;
+use crate::fs::datenlordfs::serial::SerialNode;
+use crate::fs::datenlordfs::S3MetaData;
 
 /// The `ValueType` is used to provide support for metadata.
 ///

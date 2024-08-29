@@ -2,7 +2,7 @@
 
 use async_trait::async_trait;
 
-use crate::{async_fuse::memfs::FileAttr, new_storage::StorageError};
+use crate::{fs::fs_util::FileAttr, new_storage::StorageError};
 
 use super::StorageResult;
 
@@ -27,9 +27,14 @@ pub trait Storage {
 
     /// Reads data from a file specified by the inode number and file handle,
     /// starting at the given offset and reading up to `len` bytes.
-    /// version is used to check if the file has been modified since the last read.
-    async fn read(&self, ino: u64, offset: u64, len: usize, version: u64)
-        -> StorageResult<Vec<u8>>;
+    async fn read(
+        &self,
+        ino: u64,
+        offset: u64,
+        len: usize,
+        version: u64,
+        buf: &mut Vec<u8>,
+    ) -> StorageResult<()>;
 
     /// Writes data to a file specified by the inode number and file handle,
     /// starting at the given offset.
@@ -48,9 +53,6 @@ pub trait Storage {
 
     /// Truncates a file specified by the inode number to a new size,
     /// given the old size and the new size.
-    /// version is used to check if the file has been modified since the last truncate.
-    /// current truncate implementation might need to read the file from storage first,
-    /// so this function need to sync with read function.
     async fn truncate(
         &self,
         ino: u64,

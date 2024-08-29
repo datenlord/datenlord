@@ -6,16 +6,19 @@
     clippy::indexing_slicing,
     clippy::float_arithmetic,
     clippy::cast_possible_truncation,
-    clippy::cast_sign_loss
+    clippy::cast_sign_loss,
+    clippy::print_stdout,
+    clippy::arithmetic_side_effects
 )]
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::fs::datenlordfs::{MetaData, S3MetaData};
+use crate::metrics::LossyCast;
 use bytes::BufMut;
 use clippy_utilities::Cast;
-use datenlord::metrics::LossyCast;
 use parking_lot::Mutex;
 use rand::distributions::Distribution;
 use rand::{thread_rng, Rng};
@@ -23,8 +26,8 @@ use rand_distr::Zipf;
 
 use super::super::backend::memory_backend::MemoryBackend;
 use super::super::{Backend, MemoryCache, Storage, StorageManager};
-use crate::async_fuse::memfs::kv_engine::{KVEngine, KVEngineType};
-use crate::async_fuse::memfs::{self, FileAttr, MetaData, S3MetaData};
+use crate::fs::fs_util::FileAttr;
+use crate::fs::kv_engine::{etcd_impl, KVEngine, KVEngineType};
 use crate::new_storage::block::BLOCK_SIZE;
 use crate::new_storage::format_path;
 
@@ -93,8 +96,10 @@ async fn warm_up(storage: Arc<StorageManager<S3MetaData>>, ino: u64) {
     storage.open(ino, FileAttr::default()).await;
     let version = 0;
     for i in 0..TOTAL_TEST_BLOCKS {
-        let buf = storage
-            .read(ino, (i * IO_SIZE) as u64, IO_SIZE, version)
+        // let mut buf = vec![0_u8; IO_SIZE];
+        let mut buf = Vec::new();
+        storage
+            .read(ino, (i * IO_SIZE) as u64, IO_SIZE, version, &mut buf)
             .await
             .unwrap();
         assert_eq!(buf.len(), IO_SIZE);
@@ -106,8 +111,10 @@ async fn seq_read(storage: Arc<StorageManager<S3MetaData>>, ino: u64) {
     storage.open(ino, FileAttr::default()).await;
     let version = 0;
     for i in 0..TOTAL_TEST_BLOCKS {
-        let buf = storage
-            .read(ino, (i * IO_SIZE) as u64, IO_SIZE, version)
+        // let mut buf = vec![0_u8; IO_SIZE];
+        let mut buf = Vec::new();
+        storage
+            .read(10, (i * IO_SIZE) as u64, IO_SIZE, version, &mut buf)
             .await
             .unwrap();
         assert_eq!(buf.len(), IO_SIZE);
@@ -159,7 +166,7 @@ async fn concurrency_read() {
     // Only 1 file, 256 blocks , the cache will never miss
     let manager = Arc::new(Mutex::new(MemoryCache::new(500, BLOCK_SIZE)));
 
-    let kv_engine: Arc<memfs::kv_engine::etcd_impl::EtcdKVEngine> = Arc::new(
+    let kv_engine: Arc<etcd_impl::EtcdKVEngine> = Arc::new(
         KVEngineType::new(vec![TEST_ETCD_ENDPOINT.to_owned()])
             .await
             .unwrap(),
@@ -215,7 +222,7 @@ async fn concurrency_read_with_write() {
         BLOCK_SIZE,
     )));
 
-    let kv_engine: Arc<memfs::kv_engine::etcd_impl::EtcdKVEngine> = Arc::new(
+    let kv_engine: Arc<etcd_impl::EtcdKVEngine> = Arc::new(
         KVEngineType::new(vec![TEST_ETCD_ENDPOINT.to_owned()])
             .await
             .unwrap(),
@@ -267,8 +274,10 @@ async fn scan_worker(storage: Arc<StorageManager<S3MetaData>>, ino: u64, time: u
     let mut scan_cnt = 0;
     let version = 0;
     while tokio::time::Instant::now() - start < tokio::time::Duration::from_secs(time) {
-        let buf = storage
-            .read(ino, (i * IO_SIZE) as u64, IO_SIZE, version)
+        // let mut buf = vec![0_u8; IO_SIZE];
+        let mut buf = Vec::new();
+        storage
+            .read(ino, (i * IO_SIZE) as u64, IO_SIZE, version, &mut buf)
             .await
             .unwrap();
         assert_eq!(buf.len(), IO_SIZE);
@@ -284,17 +293,19 @@ async fn get_worker(storage: Arc<StorageManager<S3MetaData>>, ino: u64, time: u6
     storage.open(ino, FileAttr::default()).await;
     let start = tokio::time::Instant::now();
 
-    // 初始化 Zipfian 分布
+    // Initialize the Zipfian distribution
     let zipf = Zipf::new(TOTAL_TEST_BLOCKS as u64, 1.5_f64).unwrap();
 
     let mut get_cnt = 0;
+    let version = 0;
     while tokio::time::Instant::now() - start < tokio::time::Duration::from_secs(time) {
-        // 使用 Zipfian 分布来选择数据块 ID
+        // Use the Zipfian distribution to select the block ID
         let i = zipf.sample(&mut thread_rng()) as usize % TOTAL_TEST_BLOCKS;
 
-        let version = 0;
-        let buf = storage
-            .read(ino, (i * IO_SIZE) as u64, IO_SIZE, version)
+        // let mut buf = vec![0_u8; IO_SIZE];
+        let mut buf = Vec::new();
+        storage
+            .read(ino, (i * IO_SIZE) as u64, IO_SIZE, version, &mut buf)
             .await
             .unwrap();
         assert_eq!(buf.len(), IO_SIZE);
@@ -309,7 +320,7 @@ async fn real_workload() {
     let backend = Arc::new(MemoryBackend::new(BACKEND_LATENCY));
     // A 4GB cache
     let manager = Arc::new(Mutex::new(MemoryCache::new(1024 + 10, BLOCK_SIZE)));
-    let kv_engine: Arc<memfs::kv_engine::etcd_impl::EtcdKVEngine> = Arc::new(
+    let kv_engine: Arc<etcd_impl::EtcdKVEngine> = Arc::new(
         KVEngineType::new(vec![TEST_ETCD_ENDPOINT.to_owned()])
             .await
             .unwrap(),
@@ -383,7 +394,7 @@ async fn test_truncate() {
     let backend = Arc::new(MemoryBackend::new(BACKEND_LATENCY));
     let backend_clone = Arc::clone(&backend);
 
-    let kv_engine: Arc<memfs::kv_engine::etcd_impl::EtcdKVEngine> = Arc::new(
+    let kv_engine: Arc<etcd_impl::EtcdKVEngine> = Arc::new(
         KVEngineType::new(vec![TEST_ETCD_ENDPOINT.to_owned()])
             .await
             .unwrap(),
@@ -475,7 +486,7 @@ async fn test_remove() {
     let backend = Arc::new(MemoryBackend::new(BACKEND_LATENCY));
     let backend_clone = Arc::clone(&backend);
 
-    let kv_engine: Arc<memfs::kv_engine::etcd_impl::EtcdKVEngine> = Arc::new(
+    let kv_engine: Arc<etcd_impl::EtcdKVEngine> = Arc::new(
         KVEngineType::new(vec![TEST_ETCD_ENDPOINT.to_owned()])
             .await
             .unwrap(),

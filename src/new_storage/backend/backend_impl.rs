@@ -1,14 +1,15 @@
 //! The general backend implementation with `openDAL`
 
 use async_trait::async_trait;
-use datenlord::config::{StorageParams, StorageS3Config};
-use datenlord::metrics::DATENLORD_REGISTRY;
 use opendal::layers::{ConcurrentLimitLayer, PrometheusLayer, RetryLayer};
 use opendal::raw::oio::ReadExt;
 use opendal::services::{Fs, Memory, S3};
 use opendal::{ErrorKind, Operator};
 use prometheus::{exponential_buckets, linear_buckets};
 use tokio::io::AsyncWriteExt;
+
+use crate::config::{StorageParams, StorageS3Config};
+use crate::metrics::DATENLORD_REGISTRY;
 
 use super::{Backend, StorageResult};
 

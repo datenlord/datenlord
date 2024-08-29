@@ -4,20 +4,20 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 
-use super::kv_engine::KVEngineType;
-use super::node::Node;
-use super::{CreateParam, FileAttr, RenameParam, SetAttrParam, StorageType};
-use crate::async_fuse::fuse::fuse_reply::{ReplyDirectory, StatFsParam};
-use crate::async_fuse::fuse::protocol::{FuseAttr, INum};
 use crate::common::error::DatenLordResult;
+use crate::fs::datenlordfs::direntry::DirEntry;
+use crate::fs::fs_util::{CreateParam, FileAttr, INum, RenameParam, SetAttrParam, StatFsParam};
+use crate::fs::kv_engine::KVEngineType;
+use crate::fs::node::Node;
+
+use super::StorageType;
 
 pub(crate) mod error {
     //! A module containing helper functions to build errors.
 
     use tracing::error;
 
-    use super::INum;
-    use crate::common::error::DatenLordError;
+    use crate::{common::error::DatenLordError, fs::fs_util::INum};
 
     /// A helper function to build [`DatenLordError::InconsistentFS`] with
     /// default context.
@@ -54,7 +54,7 @@ pub trait MetaData {
     async fn new(kv_engine: Arc<KVEngineType>, node_id: &str) -> DatenLordResult<Arc<Self>>;
 
     /// Helper function to create node
-    async fn mknod(&self, param: CreateParam) -> DatenLordResult<(Duration, FuseAttr, u64)>;
+    async fn mknod(&self, param: CreateParam) -> DatenLordResult<(Duration, FileAttr, u64)>;
 
     /// Helper function to lookup
     async fn lookup_helper(
@@ -62,7 +62,7 @@ pub trait MetaData {
         context: ReqContext,
         parent: INum,
         name: &str,
-    ) -> DatenLordResult<(Duration, FuseAttr, u64)>;
+    ) -> DatenLordResult<(Duration, FileAttr, u64)>;
 
     /// Rename helper to exchange on disk
     async fn rename(&self, context: ReqContext, param: RenameParam) -> DatenLordResult<()>;
@@ -85,7 +85,7 @@ pub trait MetaData {
         ino: u64,
         param: &SetAttrParam,
         storage: &StorageType,
-    ) -> DatenLordResult<(Duration, FuseAttr)>;
+    ) -> DatenLordResult<(Duration, FileAttr)>;
 
     /// Helper function to unlink
     /// # Return
@@ -96,7 +96,7 @@ pub trait MetaData {
         parent: INum,
         name: &str,
         storage: &StorageType,
-    ) -> DatenLordResult<()>;
+    ) -> DatenLordResult<Option<INum>>;
 
     /// Get attribute of i-node by ino from remote
     async fn get_remote_attr(&self, ino: u64) -> DatenLordResult<(Duration, FileAttr)>;
@@ -129,14 +129,12 @@ pub trait MetaData {
         ino: u64,
         fh: u64,
         offset: i64,
-        reply: &mut ReplyDirectory,
-    ) -> DatenLordResult<()>;
+    ) -> DatenLordResult<Vec<DirEntry>>;
 
     /// Helper function to release
     async fn release(
         &self,
         ino: u64,
-        fh: u64,
         flags: u32,
         lock_owner: u64,
         flush: bool,
