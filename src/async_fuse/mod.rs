@@ -1,21 +1,37 @@
 //! FUSE async implementation
 
+use std::net::IpAddr;
 use std::sync::Arc;
 
 use clippy_utilities::OverflowArithmetic;
-use memfs::MetaData;
+use fuse::file_system::FuseFileSystem;
 use parking_lot::Mutex;
 use tokio_util::sync::CancellationToken;
 
-use self::memfs::kv_engine::KVEngineType;
 use crate::async_fuse::fuse::session;
+use crate::config::StorageConfig;
+use crate::fs::datenlordfs;
+use crate::fs::kv_engine::KVEngineType;
 use crate::new_storage::{BackendBuilder, MemoryCache, StorageManager};
-use crate::AsyncFuseArgs;
 
 pub mod fuse;
-pub mod memfs;
 pub mod proactor;
 pub mod util;
+
+/// Async fuse args type
+#[derive(Debug)]
+pub struct AsyncFuseArgs {
+    /// Node id
+    pub node_id: String,
+    /// Node ip
+    pub ip_address: IpAddr,
+    /// Server port
+    pub server_port: u16,
+    /// Mount dir
+    pub mount_dir: String,
+    /// Storage config
+    pub storage_config: StorageConfig,
+}
 
 /// Start async-fuse
 #[allow(clippy::pattern_type_mismatch)] // Raised by `tokio::select`
@@ -28,7 +44,7 @@ pub async fn start_async_fuse(
 
     let mount_point = std::path::Path::new(&args.mount_dir);
     let global_cache_capacity = args.storage_config.memory_cache_config.capacity;
-    let metadata_client = memfs::S3MetaData::new(Arc::clone(&kv_engine), &args.node_id).await?;
+    let metadata_client = datenlordfs::MetaData::new(Arc::clone(&kv_engine), &args.node_id).await?;
     let storage = {
         let storage_param = &storage_config.params;
         let memory_cache_config = &storage_config.memory_cache_config;
@@ -42,7 +58,7 @@ pub async fn start_async_fuse(
         StorageManager::new(cache, backend, block_size, Arc::clone(&metadata_client))
     };
 
-    let fs: memfs::MemFs<memfs::S3MetaData> = memfs::MemFs::new(
+    let fs: FuseFileSystem<datenlordfs::S3MetaData> = FuseFileSystem::new_datenlord_fs(
         &args.mount_dir,
         global_cache_capacity,
         storage_config,
@@ -51,7 +67,7 @@ pub async fn start_async_fuse(
         Arc::clone(&metadata_client),
     );
 
-    let ss = session::new_session_of_memfs(mount_point, fs).await?;
+    let ss = session::new_fuse_session(mount_point, fs).await?;
     ss.run(token).await?;
 
     Ok(())

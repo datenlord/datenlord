@@ -9,8 +9,7 @@ use lockfree_cuckoohash::{pin, LockFreeCuckooHash as HashMap};
 use tokio::task;
 
 use super::super::{Block, Storage};
-use crate::async_fuse::fuse::protocol::INum;
-use crate::common::error::DatenLordResult;
+use crate::{common::error::DatenLordResult, fs::fs_util::INum};
 
 /// The storage manager, which exposes the interfaces to `FileSystem` for
 /// interacting with the storage layers.

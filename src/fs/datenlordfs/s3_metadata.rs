@@ -5,35 +5,34 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::metrics::FILESYSTEM_METRICS;
 use async_trait::async_trait;
-use clippy_utilities::{Cast, OverflowArithmetic};
-use datenlord::metrics::FILESYSTEM_METRICS;
+use clippy_utilities::Cast;
 use libc::{RENAME_EXCHANGE, RENAME_NOREPLACE};
 use nix::errno::Errno;
 use nix::fcntl::OFlag;
 use nix::sys::stat::SFlag;
 use tokio::sync::Mutex;
-use tracing::{debug, error, info, instrument};
+use tracing::{debug, info, instrument, warn};
 
-use super::fs_util::{self, NEED_CHECK_PERM};
 use super::id_alloc_used::INumAllocator;
-use super::kv_engine::{KVEngine, KVEngineType, MetaTxn, ValueType};
 use super::metadata::{error, MetaData, ReqContext};
-use super::node::Node;
 use super::s3_node::S3Node;
-use super::{check_type_supported, CreateParam, FileAttr, RenameParam, SetAttrParam, StorageType};
-use crate::async_fuse::fuse::fuse_reply::{ReplyDirectory, StatFsParam};
-use crate::async_fuse::fuse::protocol::{FuseAttr, INum, FUSE_ROOT_ID};
-use crate::async_fuse::memfs::check_name_length;
-use crate::async_fuse::memfs::direntry::DirEntry;
-use crate::async_fuse::memfs::kv_engine::KeyType;
-use crate::async_fuse::util::build_error_result_from_errno;
+use super::{check_type_supported, CreateParam, RenameParam, SetAttrParam, StorageType};
 use crate::common::error::{
     Context as DatenLordContext, // conflict with anyhow::Context
     DatenLordResult,
 };
-use crate::function_name;
+use crate::fs::datenlordfs::check_name_length;
+use crate::fs::datenlordfs::direntry::DirEntry;
+use crate::fs::fs_util::{self, FileAttr, NEED_CHECK_PERM};
+use crate::fs::fs_util::{build_error_result_from_errno, INum, StatFsParam, ROOT_ID};
+use crate::fs::kv_engine::KeyType;
+use crate::fs::kv_engine::ValueType;
+use crate::fs::kv_engine::{KVEngine, KVEngineType, MetaTxn};
+use crate::fs::node::Node;
 use crate::new_storage::Storage;
+use crate::{function_name, retry_txn};
 
 /// A helper function to build [`DatenLordError::InconsistentFS`] with default
 /// context and get the function name automatic.
@@ -70,11 +69,10 @@ pub struct S3MetaData {
 impl MetaData for S3MetaData {
     type N = S3Node;
 
-    #[instrument(skip(self))]
+    #[instrument(level = "debug", skip(self))]
     async fn release(
         &self,
         _ino: u64,
-        _fh: u64,
         _flags: u32,
         _lock_owner: u64,
         _flush: bool,
@@ -82,46 +80,43 @@ impl MetaData for S3MetaData {
         Ok(())
     }
 
-    #[instrument(skip(self), err, ret)]
+    #[instrument(level = "debug", skip(self), err, ret)]
     async fn readdir(
         &self,
         context: ReqContext,
         ino: u64,
         _fh: u64,
-        offset: i64,
-        reply: &mut ReplyDirectory,
-    ) -> DatenLordResult<()> {
+        _offset: i64,
+    ) -> DatenLordResult<Vec<DirEntry>> {
         let inode = self
             .get_node_from_kv_engine(ino)
             .await?
             .ok_or_else(|| build_inconsistent_fs!(ino))?;
         inode.get_attr().check_perm(context.uid, context.gid, 5)?;
 
-        let dir_entries = self.get_all_dir_entry(ino).await?;
-        for (i, dir_etnry) in dir_entries.iter().enumerate().skip(offset.cast()) {
-            reply.add(
-                dir_etnry.ino(),
-                offset.overflow_add(i.cast()).overflow_add(1), /* i + 1 means the index of
-                                                                * the next entry */
-                dir_etnry.file_type().into(),
-                dir_etnry.name(),
-            );
+        match self.get_all_dir_entry(ino).await {
+            Ok(dir_entries) => {
+                debug!(
+                    "metadata call readdir() get all dir entries, dir_entries={:?}",
+                    dir_entries
+                );
+                Ok(dir_entries)
+            }
+            Err(err) => {
+                warn!(
+                    "metadata call readdir() failed to get all dir entries, err={}",
+                    err
+                );
+                Err(err)
+            }
         }
-        info!(
-            "readdir() ino={} offset={} child_size={} reply={:?}",
-            ino,
-            offset,
-            dir_entries.len(),
-            reply
-        );
-
-        Ok(())
     }
 
-    #[instrument(skip(self), err, ret)]
+    #[instrument(level = "debug", skip(self), err, ret)]
     async fn opendir(&self, context: ReqContext, ino: u64, flags: u32) -> DatenLordResult<u64> {
         match self.get_node_from_kv_engine(ino).await? {
             None => {
+                warn!("metadata call opendir() failed to find ino={ino}");
                 return build_error_result_from_errno(
                     Errno::ENOENT,
                     format!("opendir() failed to find ino={ino}"),
@@ -130,12 +125,13 @@ impl MetaData for S3MetaData {
             Some(node) => {
                 let o_flags = fs_util::parse_oflag(flags);
                 node.open_pre_check(o_flags, context.uid, context.gid)?;
+                debug!("metadata call opendir() ino={} success", ino);
                 return Ok(self.allocate_fd());
             }
         }
     }
 
-    #[instrument(skip(self))]
+    #[instrument(level = "debug", skip(self))]
     async fn readlink(&self, ino: u64) -> DatenLordResult<Vec<u8>> {
         let node = self
             .get_node_from_kv_engine(ino)
@@ -144,7 +140,7 @@ impl MetaData for S3MetaData {
         Ok(node.get_symlink_target().as_os_str().to_owned().into_vec())
     }
 
-    #[instrument(skip(self), err, ret)]
+    #[instrument(level = "debug", skip(self), err, ret)]
     async fn statfs(&self, context: ReqContext, ino: u64) -> DatenLordResult<StatFsParam> {
         let node = self
             .get_node_from_kv_engine(ino)
@@ -154,7 +150,7 @@ impl MetaData for S3MetaData {
         node.statefs().await
     }
 
-    #[instrument(skip(self))]
+    #[instrument(level = "debug", skip(self))]
     async fn releasedir(&self, ino: u64, _fh: u64) -> DatenLordResult<()> {
         let inode = self.get_node_from_kv_engine(ino).await?;
         if inode.is_none() {
@@ -166,7 +162,7 @@ impl MetaData for S3MetaData {
         Ok(())
     }
 
-    #[instrument(skip(self), err, ret)]
+    #[instrument(level = "debug", skip(self), err, ret)]
     async fn open(
         &self,
         context: ReqContext,
@@ -187,7 +183,6 @@ impl MetaData for S3MetaData {
         // The file doesn't open by any process, so we need to open it
         match self.get_node_from_kv_engine(ino).await? {
             None => {
-                error!("open() failed to find ino={ino}");
                 return build_error_result_from_errno(
                     Errno::ENOENT,
                     format!("open() failed to find ino={ino}"),
@@ -201,8 +196,7 @@ impl MetaData for S3MetaData {
         }
     }
 
-    /// Get attribute of i-node by ino from remote
-    #[instrument(skip(self), err, ret)]
+    #[instrument(level = "debug", skip(self), err, ret)]
     async fn get_remote_attr(&self, ino: u64) -> DatenLordResult<(Duration, FileAttr)> {
         // If the file is not open, return the attr in kv engine
         let inode = self
@@ -214,14 +208,14 @@ impl MetaData for S3MetaData {
         Ok((ttl, attr))
     }
 
-    #[instrument(skip(self, storage), err, ret)]
+    #[instrument(level = "debug", skip(self, storage), err, ret)]
     async fn setattr_helper<M: MetaData + Send + Sync + 'static>(
         &self,
         context: ReqContext,
         ino: u64,
         param: &SetAttrParam,
         storage: &StorageType,
-    ) -> DatenLordResult<(Duration, FuseAttr)> {
+    ) -> DatenLordResult<(Duration, FileAttr)> {
         let ttl = Duration::new(MY_TTL_SEC, 0);
         let mut inode = self
             .get_node_from_kv_engine(ino)
@@ -275,6 +269,7 @@ impl MetaData for S3MetaData {
                     // Make sure the file is open
                     storage.open(ino, dirty_attr_without_size).await;
 
+                    // TODO: update truncate filehandle
                     storage
                         .truncate(
                             ino,
@@ -303,21 +298,21 @@ impl MetaData for S3MetaData {
                     "no change setattr() ino={} new_attr={:?} old_attr={:?}",
                     ino, old_attr, old_attr
                 );
-                return Ok((ttl, FuseAttr::from(old_attr)));
+                return Ok((ttl, old_attr));
             };
 
-        Ok((ttl, FuseAttr::from(dirty_attr_for_reply)))
+        Ok((ttl, dirty_attr_for_reply))
     }
 
-    #[instrument(skip(self), err, ret)]
+    #[instrument(level = "debug", skip(self), err, ret)]
     async fn unlink(
         &self,
         context: ReqContext,
         parent: INum,
         name: &str,
         storage: &StorageType,
-    ) -> DatenLordResult<()> {
-        let (_res, retry) = retry_txn!(TXN_RETRY_LIMIT, {
+    ) -> DatenLordResult<Option<INum>> {
+        let (res, retry) = retry_txn!(TXN_RETRY_LIMIT, {
             let mut txn = self.kv_engine.new_meta_txn().await;
             let mut parent_node = self.get_inode_from_txn(txn.as_mut(), parent).await?;
             let mut result = None;
@@ -381,7 +376,7 @@ impl MetaData for S3MetaData {
         });
 
         FILESYSTEM_METRICS.observe_storage_operation_throughput(retry, "unlink");
-        Ok(())
+        res
     }
 
     async fn new(kv_engine: Arc<KVEngineType>, node_id: &str) -> DatenLordResult<Arc<Self>> {
@@ -395,9 +390,7 @@ impl MetaData for S3MetaData {
 
         let (res, _) = retry_txn!(TXN_RETRY_LIMIT, {
             let mut txn = meta.kv_engine.new_meta_txn().await;
-            let prev = meta
-                .try_get_inode_from_txn(txn.as_mut(), FUSE_ROOT_ID)
-                .await?;
+            let prev = meta.try_get_inode_from_txn(txn.as_mut(), ROOT_ID).await?;
             if let Some(prev_root_node) = prev {
                 info!(
                     "[init] root node already exists root_node file_attr {:?}, skip init",
@@ -408,12 +401,12 @@ impl MetaData for S3MetaData {
                 (Ok(true), ())
             } else {
                 info!("[init] root node not exists, init root node");
-                let root_inode = S3Node::open_root_node(FUSE_ROOT_ID, "/", Arc::clone(&meta))
+                let root_inode = S3Node::open_root_node(ROOT_ID, "/", Arc::clone(&meta))
                     .await
                     .add_context("failed to open FUSE root node")?;
-                // insert (FUSE_ROOT_ID -> root_inode) into KV engine
+                // insert (ROOT_ID -> root_inode) into KV engine
                 txn.set(
-                    &KeyType::INum2Node(FUSE_ROOT_ID),
+                    &KeyType::INum2Node(ROOT_ID),
                     &ValueType::Node(root_inode.to_serial_node()),
                 );
                 (txn.commit().await, ())
@@ -430,12 +423,12 @@ impl MetaData for S3MetaData {
         *self.fuse_fd.lock().await = fuse_fd;
     }
 
-    #[instrument(skip(self), err, ret)]
+    #[instrument(level = "debug", skip(self), err, ret)]
     // Create a file, but do not open it. They are two separate steps.
     // If the file does not exist, first create it with
     // the specified mode, and then open it.
     #[allow(clippy::too_many_lines)]
-    async fn mknod(&self, param: CreateParam) -> DatenLordResult<(Duration, FuseAttr, u64)> {
+    async fn mknod(&self, param: CreateParam) -> DatenLordResult<(Duration, FileAttr, u64)> {
         check_name_length(&param.name)?;
         check_type_supported(&param.node_type)?;
         let parent_ino = param.parent;
@@ -464,7 +457,7 @@ impl MetaData for S3MetaData {
             let new_node = parent_node
                 .create_child_node(&param, new_num, txn.as_mut())
                 .await?;
-            let fuse_attr = FuseAttr::from(new_node.get_attr());
+            let current_attr = new_node.get_attr();
             let ttl = Duration::new(MY_TTL_SEC, 0);
             txn.set(
                 &KeyType::INum2Node(new_num),
@@ -474,15 +467,15 @@ impl MetaData for S3MetaData {
                 &KeyType::INum2Node(parent_ino),
                 &ValueType::Node(parent_node.to_serial_node()),
             );
-            (txn.commit().await, (ttl, fuse_attr))
+            (txn.commit().await, (ttl, current_attr))
         });
         FILESYSTEM_METRICS.observe_storage_operation_throughput(retry, "mknod");
-        let (ttl, fuse_attr) = res?;
+        let (ttl, current_attr) = res?;
 
-        Ok((ttl, fuse_attr, MY_GENERATION))
+        Ok((ttl, current_attr, MY_GENERATION))
     }
 
-    #[instrument(skip(self), err, ret)]
+    #[instrument(level = "debug", skip(self), err, ret)]
     /// Helper function to lookup
     #[allow(clippy::too_many_lines)]
     async fn lookup_helper(
@@ -490,7 +483,7 @@ impl MetaData for S3MetaData {
         context: ReqContext,
         parent: INum,
         child_name: &str,
-    ) -> DatenLordResult<(Duration, FuseAttr, u64)> {
+    ) -> DatenLordResult<(Duration, FileAttr, u64)> {
         let (res, retry) = retry_txn!(TXN_RETRY_LIMIT, {
             let mut txn = self.kv_engine.new_meta_txn().await;
             if NEED_CHECK_PERM {
@@ -515,12 +508,11 @@ impl MetaData for S3MetaData {
             let child_attr = child_node.get_attr();
 
             let ttl = Duration::new(MY_TTL_SEC, 0);
-            let fuse_attr = FuseAttr::from(child_attr);
             txn.set(
                 &KeyType::INum2Node(child_ino),
                 &ValueType::Node(child_node.to_serial_node()),
             );
-            (txn.commit().await, (ttl, fuse_attr, MY_GENERATION))
+            (txn.commit().await, (ttl, child_attr, MY_GENERATION))
         });
 
         FILESYSTEM_METRICS.observe_storage_operation_throughput(retry, "lookup");
@@ -528,7 +520,7 @@ impl MetaData for S3MetaData {
     }
 
     #[allow(clippy::too_many_lines)] // TODO: refactor it into smaller functions
-    #[instrument(skip(self), err, ret)]
+    #[instrument(level = "debug", skip(self), err, ret)]
     async fn rename(&self, context: ReqContext, param: RenameParam) -> DatenLordResult<()> {
         let old_parent = param.old_parent;
         let old_name = param.old_name.as_str();
@@ -690,7 +682,9 @@ impl MetaData for S3MetaData {
         res
     }
 
+    /// Helper function to write data
     /// Helper function to write remote meta data
+    #[instrument(level = "debug", skip(self), err, ret)]
     async fn write_remote_size_and_version_helper(
         &self,
         ino: u64,

@@ -53,6 +53,8 @@ impl TaskManager {
             .build()
             .unwrap();
 
+        info!("Create a new task manager.");
+
         let mut tasks = HashMap::new();
         let is_shutdown = Arc::default();
         for (prev, next) in EDGES {
@@ -70,6 +72,8 @@ impl TaskManager {
                 .inc_predecessor_count();
         }
 
+        info!("Initialize task manager with {:?} tasks.", tasks.len());
+
         // Start GC task
         for gc_task_name in GC_TASKS {
             tasks
@@ -84,11 +88,23 @@ impl TaskManager {
                 .convert_to_gc_task();
         }
 
+        info!(
+            "Initialize task manager with {:?} GC tasks.",
+            GC_TASKS.len()
+        );
+
         Self {
             tasks: Mutex::new(tasks),
             is_shutdown,
             runtime,
         }
+    }
+
+    /// Get current runtime for this task manager.
+    #[inline]
+    #[must_use]
+    pub fn runtime(&self) -> &tokio::runtime::Runtime {
+        &self.runtime
     }
 
     /// Dumps all edges of the dependency graph.
@@ -161,7 +177,7 @@ impl TaskManager {
     /// After `shutdown` being called, no new task should be spawned via task
     /// manager.
     #[inline]
-    #[instrument(skip(self))]
+    #[instrument(level = "debug", skip(self))]
     pub async fn shutdown(&self) {
         let mut queue = VecDeque::from([TaskName::Root]);
 

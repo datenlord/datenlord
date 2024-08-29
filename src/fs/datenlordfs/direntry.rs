@@ -1,10 +1,10 @@
 // Use of external crates and modules
-use datenlord::common::error::DatenLordError;
+use crate::common::error::DatenLordError;
 use nix::sys::stat::SFlag;
 use serde::{Deserialize, Serialize};
 use tracing::error;
 
-use crate::async_fuse::fuse::protocol::INum;
+use crate::fs::fs_util::INum;
 
 /// Represents the type of a file in a filesystem.
 ///

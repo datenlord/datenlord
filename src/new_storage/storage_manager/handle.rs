@@ -6,6 +6,8 @@ use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 
+use crate::fs::datenlordfs::MetaData;
+use crate::fs::fs_util::FileAttr;
 use crate::new_storage::{format_path, Block, BlockSlice, StorageError};
 use bytes::Bytes;
 use clippy_utilities::Cast;
@@ -20,7 +22,6 @@ use super::super::error::StorageResult;
 use super::super::format_file_path;
 use super::super::policy::LruPolicy;
 use super::super::{CacheKey, MemoryCache};
-use crate::async_fuse::memfs::{FileAttr, MetaData};
 
 /// The `DirtyFileAttr` struct represents the dirty file attributes.
 #[derive(Copy, Clone, Debug)]
@@ -622,11 +623,16 @@ impl FileHandle {
 
     /// Reads data from the file starting at the given offset and up to the
     /// given length.
-    pub async fn read(&self, offset: u64, len: u64, version: u64) -> StorageResult<Vec<u8>> {
+    pub async fn read(
+        &self,
+        offset: u64,
+        len: u64,
+        version: u64,
+        buf: &mut Vec<u8>,
+    ) -> StorageResult<()> {
         let slices = offset_to_slice(self.block_size.cast(), offset, len);
-        let mut buf = Vec::with_capacity(len.cast());
-        self.inner.read(&mut buf, &slices, version).await?;
-        Ok(buf)
+        self.inner.read(buf, &slices, version).await?;
+        Ok(())
     }
 
     /// Writes data to the file starting at the given offset.
@@ -770,8 +776,8 @@ impl Handles {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
-    use crate::async_fuse::memfs::kv_engine::{KVEngine, KVEngineType};
-    use crate::async_fuse::memfs::{self, S3MetaData};
+    use crate::fs::datenlordfs::S3MetaData;
+    use crate::fs::kv_engine::{etcd_impl, KVEngine, KVEngineType};
     use crate::new_storage::backend::backend_impl::tmp_fs_backend;
     use crate::new_storage::block::BLOCK_SIZE;
 
@@ -781,7 +787,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_file_handle() {
-        let kv_engine: Arc<memfs::kv_engine::etcd_impl::EtcdKVEngine> = Arc::new(
+        let kv_engine: Arc<etcd_impl::EtcdKVEngine> = Arc::new(
             KVEngineType::new(vec![TEST_ETCD_ENDPOINT.to_owned()])
                 .await
                 .unwrap(),
@@ -810,7 +816,11 @@ mod tests {
         // handles.add_handle(file_handle.clone()).await;
         let buf = vec![b'1', b'2', b'3', b'4'];
         file_handle.write(0, &buf, 4, version).await.unwrap();
-        let read_buf = file_handle.read(0, 4, version).await.unwrap();
+        let mut read_buf = Vec::new();
+        file_handle
+            .read(0, 4, version, &mut read_buf)
+            .await
+            .unwrap();
         assert_eq!(read_buf, buf);
         file_handle.flush().await.unwrap();
     }

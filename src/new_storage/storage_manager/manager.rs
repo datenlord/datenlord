@@ -7,7 +7,8 @@ use clippy_utilities::{Cast, OverflowArithmetic};
 use parking_lot::Mutex;
 use tracing::{debug, error};
 
-use crate::async_fuse::memfs::{FileAttr, MetaData};
+use crate::fs::datenlordfs::MetaData;
+use crate::fs::fs_util::FileAttr;
 use crate::new_storage::StorageError;
 
 use super::super::policy::LruPolicy;
@@ -86,9 +87,10 @@ impl<M: MetaData + Send + Sync + 'static> Storage for StorageManager<M> {
         offset: u64,
         len: usize,
         version: u64,
-    ) -> StorageResult<Vec<u8>> {
+        buf: &mut Vec<u8>,
+    ) -> StorageResult<()> {
         match self.get_handle(ino).await {
-            Some(fh) => fh.read(offset, len.cast(), version).await,
+            Some(fh) => fh.read(offset, len.cast(), version, buf).await,
             None => Err(StorageError::Internal(anyhow::anyhow!(
                 "This file handle is not exists."
             ))),

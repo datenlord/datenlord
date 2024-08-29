@@ -4,9 +4,9 @@ use std::time::SystemTime;
 use nix::sys::stat::SFlag;
 use serde::{Deserialize, Serialize};
 
-use super::fs_util::FileAttr;
+use crate::fs::fs_util::{FileAttr, INum};
+
 use super::s3_node::S3NodeData;
-use crate::async_fuse::fuse::protocol::INum;
 
 /// Serializable `FileAttr`
 #[derive(Serialize, Deserialize, Debug, Clone, Eq, PartialEq)]
@@ -35,8 +35,7 @@ pub struct SerialFileAttr {
     gid: u32,
     /// Rdev
     rdev: u32,
-    /// Serial node version number, default is 0 for compatibility
-    #[serde(default)]
+    /// Version
     version: u64,
 }
 

@@ -3,9 +3,9 @@
 use std::sync::Arc;
 
 use super::id_alloc::{DistIdAllocator, IdType};
-use super::kv_engine::KVEngine;
-use crate::async_fuse::fuse::protocol::INum;
 use crate::common::error::DatenLordResult;
+use crate::fs::fs_util::INum;
+use crate::fs::kv_engine::KVEngine;
 
 /// Inum allocator
 #[derive(Debug)]
