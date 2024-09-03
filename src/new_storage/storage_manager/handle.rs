@@ -5,22 +5,23 @@ use std::hash::{Hash, Hasher};
 use std::sync::atomic::AtomicU32;
 use std::sync::Arc;
 
+use crate::new_storage::{format_path, Block, BlockSlice, StorageError};
 use bytes::Bytes;
 use clippy_utilities::Cast;
+use hashbrown::HashSet;
 use nix::fcntl::OFlag;
 use parking_lot::{Mutex, RwLock};
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
-use tracing::{error, warn};
-
-use crate::new_storage::{format_path, Block, BlockSlice, StorageError};
+use tracing::{debug, error, warn};
 
 use super::super::backend::Backend;
 use super::super::block_slice::offset_to_slice;
 use super::super::error::StorageResult;
 use super::super::policy::LruPolicy;
 use super::super::{CacheKey, MemoryCache};
+use crate::async_fuse::memfs::MetaData;
 
 /// The `FileHandleInner` struct represents the inner state of a file handle.
 /// It contains the file handle, reader, and writer.
@@ -44,6 +45,10 @@ pub struct FileHandleInner {
     write_back_sender: Sender<Task>,
     /// The handle to the write back worker.
     write_back_handle: tokio::sync::Mutex<Option<JoinHandle<()>>>,
+    /// The sender to send meta task to the meta task worker.
+    meta_task_sender: Sender<MetaTask>,
+    /// The handle to the meta task worker.
+    meta_task_handle: tokio::sync::Mutex<Option<JoinHandle<()>>>,
 }
 
 impl std::fmt::Debug for FileHandleInner {
@@ -56,6 +61,25 @@ impl std::fmt::Debug for FileHandleInner {
             .field("access_keys", &self.access_keys)
             .finish_non_exhaustive()
     }
+}
+
+/// The `MetaTask` enum represents the different types of meta tasks that the
+/// write back worker can perform.
+#[derive(Debug)]
+enum MetaTask {
+    /// A pending write task.
+    Pending(Arc<MetaCommitTask>),
+    /// A flush task, which means we need to flush the meta to the meta data server.
+    Flush(oneshot::Sender<Option<StorageError>>),
+    /// A finish task.
+    Finish(oneshot::Sender<Option<StorageError>>),
+}
+
+/// The `MetaCommitTask` struct represents a meta commit task.
+#[derive(Debug)]
+struct MetaCommitTask {
+    /// The inode number associated with the file being written.
+    ino: u64,
 }
 
 /// The `OpenFlag` enum represents the mode in which a file is opened.
@@ -109,6 +133,8 @@ struct WriteTask {
     block_id: u64,
     /// The block to be written.
     block: Arc<RwLock<Block>>,
+    /// Meta commit task sender, when current block is written back, we need to send a meta commit task.
+    meta_task_sender: Sender<MetaTask>,
 }
 
 /// Write a block back to the backend.
@@ -149,6 +175,24 @@ async fn write_back_block(task: Arc<WriteTask>) -> StorageResult<()> {
         }
     }
 
+    // Send the meta commit task.
+    let meta_task = Arc::new(MetaCommitTask { ino: task.ino });
+    match task
+        .meta_task_sender
+        .send(MetaTask::Pending(meta_task))
+        .await
+    {
+        Ok(()) => {
+            debug!(
+                "Send meta task successfully, current meta task is {:?}",
+                task
+            );
+        }
+        Err(e) => {
+            error!("Failed to send meta task, the error is {e}.");
+        }
+    }
+
     Ok(())
 }
 
@@ -172,6 +216,66 @@ async fn write_blocks(tasks: &Vec<Arc<WriteTask>>) -> Option<StorageError> {
         }
     }
     result
+}
+
+/// The `commit_meta_data` function represents the meta data commit operation.
+async fn commit_meta_data<M: MetaData + Send + Sync + 'static>(
+    metadata_client: Arc<M>,
+    to_be_committed_inos: &HashSet<u64>,
+) {
+    for ino in to_be_committed_inos {
+        if let Err(e) = metadata_client.write_remote_helper(ino.to_owned()).await {
+            error!("Failed to commit meta data, the error is {e}.");
+        }
+    }
+}
+
+/// The `meta_commit_work` function represents the meta commit worker.
+#[allow(clippy::pattern_type_mismatch)] // Raised by `tokio::select!`
+async fn meta_commit_work<M: MetaData + Send + Sync + 'static>(
+    metadata_client: Arc<M>,
+    mut meta_task_receiver: Receiver<MetaTask>,
+) {
+    // We will receive the meta write back message here and flush open_files status to meta data server,
+    let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
+    let mut to_be_committed_inos = HashSet::new();
+    loop {
+        tokio::select! {
+            Some(task) = meta_task_receiver.recv() => {
+                match task {
+                    MetaTask::Pending(meta_task) => {
+                        let ino = meta_task.ino;
+                        to_be_committed_inos.insert(ino);
+                    }
+                    MetaTask::Flush(tx) => {
+                        // Commit immediately.
+                        commit_meta_data(Arc::clone(&metadata_client), &to_be_committed_inos).await;
+                        to_be_committed_inos.clear();
+
+                        // Flush the open_files to the meta data server.
+                        if let Err(Some(e)) = tx.send(None) {
+                            error!("Failed to send storage error back to `Writer`, the error is {e}.");
+                        }
+                    }
+                    MetaTask::Finish(tx) => {
+                        // Commit immediately.
+                        commit_meta_data(Arc::clone(&metadata_client), &to_be_committed_inos).await;
+                        to_be_committed_inos.clear();
+
+                        // Flush the open_files to the meta data server.
+                        if let Err(Some(e)) = tx.send(None) {
+                            error!("Failed to send storage error back to `Writer`, the error is {e}.");
+                        }
+                        return;
+                    }
+                }
+            }
+            _ = interval.tick() => {
+                commit_meta_data(Arc::clone(&metadata_client), &to_be_committed_inos).await;
+                to_be_committed_inos.clear();
+            }
+        }
+    }
 }
 
 /// The `write_back_work` function represents the write back worker.
@@ -226,16 +330,19 @@ impl FileHandleInner {
     /// Creates a new `FileHandleInner` instance.
     #[inline]
     #[allow(clippy::needless_pass_by_value)]
-    pub fn new(
+    pub fn new<M: MetaData + Send + Sync + 'static>(
         ino: u64,
         block_size: usize,
         cache: Arc<Mutex<MemoryCache<CacheKey, LruPolicy<CacheKey>>>>,
         backend: Arc<dyn Backend>,
+        metadata_client: Arc<M>,
     ) -> Self {
-        let (tx, rx) = tokio::sync::mpsc::channel(100);
+        let (write_back_tx, write_back_rx) = tokio::sync::mpsc::channel(100);
+        let (meta_task_tx, meta_task_rx) = tokio::sync::mpsc::channel(100);
         // TODO: Move to task manager
         // let handle = TASK_MANAGER.spawn(TaskName::WriteBack, write_back_work(rx)).await;
-        let handle = tokio::spawn(write_back_work(rx));
+        let write_back_handle = tokio::spawn(write_back_work(write_back_rx));
+        let meta_task_handle = tokio::spawn(meta_commit_work(metadata_client, meta_task_rx));
 
         FileHandleInner {
             ino,
@@ -244,9 +351,11 @@ impl FileHandleInner {
             backend,
             // The open count is initialized to 0, open() method will increase this flag.
             open_cnt: AtomicU32::new(0),
+            meta_task_sender: meta_task_tx,
+            meta_task_handle: tokio::sync::Mutex::new(Some(meta_task_handle)),
             access_keys: Mutex::new(Vec::new()),
-            write_back_sender: tx,
-            write_back_handle: tokio::sync::Mutex::new(Some(handle)),
+            write_back_sender: write_back_tx,
+            write_back_handle: tokio::sync::Mutex::new(Some(write_back_handle)),
         }
     }
 
@@ -366,6 +475,7 @@ impl FileHandleInner {
                 ino: self.ino,
                 block_id,
                 block,
+                meta_task_sender: self.meta_task_sender.clone(),
             });
             self.write_back_sender
                 .send(Task::Pending(task))
@@ -388,6 +498,18 @@ impl FileHandleInner {
             .await
             .unwrap_or_else(|_| {
                 panic!("Should not send command to write back task when the task quits.");
+            });
+
+        rx.await
+            .unwrap_or_else(|_| panic!("The sender should not be closed."))
+            .map_or(Ok(()), Err)?;
+
+        let (tx, rx) = oneshot::channel();
+        self.meta_task_sender
+            .send(MetaTask::Flush(tx))
+            .await
+            .unwrap_or_else(|_| {
+                panic!("Should not send command to meta task when the task quits.");
             });
 
         rx.await
@@ -425,7 +547,6 @@ impl FileHandleInner {
         }
 
         let (tx, rx) = oneshot::channel();
-
         self.write_back_sender
             .send(Task::Finish(tx))
             .await
@@ -454,6 +575,31 @@ impl FileHandleInner {
 
         rx.await
             .unwrap_or_else(|_| panic!("The sender should not be closed."))
+            .map_or(Ok(()), Err)?;
+
+        let (tx, rx) = oneshot::channel();
+        // TODO: handle it by `TaskManager`
+        self.meta_task_sender
+            .send(MetaTask::Finish(tx))
+            .await
+            .unwrap_or_else(|_| {
+                panic!("Should not send command to meta task when the task quits.");
+            });
+
+        self.meta_task_handle
+            .lock()
+            .await
+            .take()
+            .unwrap_or_else(|| {
+                unreachable!("The `JoinHandle` should not be None.");
+            })
+            .await
+            .unwrap_or_else(|e| {
+                panic!("Failed to join the meta task: {e}");
+            });
+
+        rx.await
+            .unwrap_or_else(|_| panic!("The sender should not be closed."))
             .map_or(Ok(()), Err)
     }
 }
@@ -474,15 +620,16 @@ pub struct FileHandle {
 
 impl FileHandle {
     /// Creates a new `FileHandle` instance.
-    pub fn new(
+    pub fn new<M: MetaData + Send + Sync + 'static>(
         fh: u64,
         ino: u64,
         block_size: usize,
         cache: Arc<Mutex<MemoryCache<CacheKey, LruPolicy<CacheKey>>>>,
         backend: Arc<dyn Backend>,
         flag: OpenFlag,
+        metadata_client: Arc<M>,
     ) -> Self {
-        let inner = FileHandleInner::new(ino, block_size, cache, backend);
+        let inner = FileHandleInner::new(ino, block_size, cache, backend, metadata_client);
         let inner = Arc::new(inner);
         FileHandle {
             fh,
@@ -640,19 +787,30 @@ impl Handles {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use crate::async_fuse::memfs::kv_engine::{KVEngine, KVEngineType};
+    use crate::async_fuse::memfs::{self, S3MetaData};
     use crate::new_storage::backend::backend_impl::tmp_fs_backend;
     use crate::new_storage::block::BLOCK_SIZE;
 
+    const TEST_NODE_ID: &str = "test_node";
+    const TEST_ETCD_ENDPOINT: &str = "127.0.0.1:2379";
     const IO_SIZE: usize = 128 * 1024;
 
     #[tokio::test]
     async fn test_file_handle() {
+        let kv_engine: Arc<memfs::kv_engine::etcd_impl::EtcdKVEngine> = Arc::new(
+            KVEngineType::new(vec![TEST_ETCD_ENDPOINT.to_owned()])
+                .await
+                .unwrap(),
+        );
+        let metadata_client = S3MetaData::new(kv_engine, TEST_NODE_ID).await.unwrap();
+
         let cache = Arc::new(Mutex::new(MemoryCache::new(100, BLOCK_SIZE)));
         let backend = Arc::new(tmp_fs_backend().unwrap());
         let handles = Arc::new(Handles::new());
         let ino = 1;
         let fh = 1;
-        let file_handle = FileHandleInner::new(ino, BLOCK_SIZE, cache, backend);
+        let file_handle = FileHandleInner::new(ino, BLOCK_SIZE, cache, backend, metadata_client);
         let file_handle = Arc::new(file_handle);
         let file_handle = FileHandle {
             fh,

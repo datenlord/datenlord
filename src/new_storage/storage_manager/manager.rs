@@ -6,6 +6,8 @@ use async_trait::async_trait;
 use clippy_utilities::{Cast, OverflowArithmetic};
 use parking_lot::Mutex;
 
+use crate::async_fuse::memfs::MetaData;
+
 use super::super::policy::LruPolicy;
 use super::super::{
     format_file_path, format_path, Backend, CacheKey, FileHandle, Handles, MemoryCache, OpenFlag,
@@ -16,7 +18,7 @@ use super::super::{
 /// `MockIO` trait. It manages file handles, caching, and interacts with a
 /// backend storage.
 #[derive(Debug)]
-pub struct StorageManager {
+pub struct StorageManager<M: MetaData + Send + Sync + 'static> {
     /// The size of a block
     block_size: usize,
     /// The file handles.
@@ -25,10 +27,12 @@ pub struct StorageManager {
     cache: Arc<Mutex<MemoryCache<CacheKey, LruPolicy<CacheKey>>>>,
     /// The backend storage system.
     backend: Arc<dyn Backend>,
+    /// Fs metadata
+    metadata_client: Arc<M>,
 }
 
 #[async_trait]
-impl Storage for StorageManager {
+impl<M: MetaData + Send + Sync + 'static> Storage for StorageManager<M> {
     /// Opens a file with the given inode number and flags, returning a new file
     /// handle.
     #[inline]
@@ -44,6 +48,7 @@ impl Storage for StorageManager {
                 Arc::clone(&self.cache),
                 Arc::clone(&self.backend),
                 flag,
+                Arc::clone(&self.metadata_client),
             );
             self.handles.add_handle(handle);
         }
@@ -119,6 +124,7 @@ impl Storage for StorageManager {
                 Arc::clone(&self.cache),
                 Arc::clone(&self.backend),
                 OpenFlag::Write,
+                Arc::clone(&self.metadata_client),
             );
             let fill_content = vec![0; fill_size];
             handle.write(new_size, &fill_content).await?;
@@ -135,19 +141,21 @@ impl Storage for StorageManager {
     }
 }
 
-impl StorageManager {
+impl<M: MetaData + Send + Sync + 'static> StorageManager<M> {
     /// Creates a new `Storage` instance.
     #[inline]
     pub fn new(
         cache: Arc<Mutex<MemoryCache<CacheKey, LruPolicy<CacheKey>>>>,
         backend: Arc<dyn Backend>,
         block_size: usize,
+        metadata_client: Arc<M>,
     ) -> Self {
         StorageManager {
             block_size,
             handles: Arc::new(Handles::new()),
             cache,
             backend,
+            metadata_client,
         }
     }
 

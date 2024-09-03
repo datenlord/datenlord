@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 use clippy_utilities::OverflowArithmetic;
+use memfs::MetaData;
 use parking_lot::Mutex;
 use tokio_util::sync::CancellationToken;
 
@@ -27,6 +28,7 @@ pub async fn start_async_fuse(
 
     let mount_point = std::path::Path::new(&args.mount_dir);
     let global_cache_capacity = args.storage_config.memory_cache_config.capacity;
+    let metadata_client = memfs::S3MetaData::new(Arc::clone(&kv_engine), &args.node_id).await?;
     let storage = {
         let storage_param = &storage_config.params;
         let memory_cache_config = &storage_config.memory_cache_config;
@@ -36,18 +38,18 @@ pub async fn start_async_fuse(
 
         let cache = Arc::new(Mutex::new(MemoryCache::new(capacity_in_blocks, block_size)));
         let backend = Arc::new(BackendBuilder::new(storage_param.clone()).build().await?);
-        StorageManager::new(cache, backend, block_size)
+
+        StorageManager::new(cache, backend, block_size, Arc::clone(&metadata_client))
     };
 
     let fs: memfs::MemFs<memfs::S3MetaData> = memfs::MemFs::new(
         &args.mount_dir,
         global_cache_capacity,
-        kv_engine,
-        &args.node_id,
         storage_config,
         storage,
-    )
-    .await?;
+        &args.node_id,
+        Arc::clone(&metadata_client),
+    );
 
     let ss = session::new_session_of_memfs(mount_point, fs).await?;
     ss.run(token).await?;
