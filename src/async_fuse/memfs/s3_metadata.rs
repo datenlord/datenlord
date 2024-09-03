@@ -236,6 +236,7 @@ impl MetaData for S3MetaData {
         // The file doesn't open by any process, so we need to open it
         match self.get_node_from_kv_engine(ino).await? {
             None => {
+                debug!("open() failed to find ino={ino}");
                 return build_error_result_from_errno(
                     Errno::ENOENT,
                     format!("open() failed to find ino={ino}"),
@@ -245,7 +246,8 @@ impl MetaData for S3MetaData {
                 let attr = node.get_attr();
                 attr.check_perm(context.uid, context.gid, access_mode)?;
                 // Add the file to `open_files`
-                self.open_files.open(ino, attr);
+                let open_file = self.open_files.open(ino, attr);
+                debug!("open() ino={} open_file={:?}", ino, open_file);
                 return Ok(self.allocate_fd());
             }
         }
@@ -309,7 +311,7 @@ impl MetaData for S3MetaData {
     }
 
     #[instrument(skip(self, storage), err, ret)]
-    async fn setattr_helper(
+    async fn setattr_helper<M: MetaData + Send + Sync + 'static>(
         &self,
         context: ReqContext,
         ino: u64,
@@ -752,8 +754,8 @@ impl MetaData for S3MetaData {
         res
     }
 
-    /// Helper function to write data
-    async fn write_helper(
+    /// Helper function to write local meta data
+    async fn write_local_helper(
         &self,
         ino: u64,
         new_mtime: SystemTime,
@@ -765,6 +767,39 @@ impl MetaData for S3MetaData {
             let mut open_file = raw_open_file.write();
             open_file.attr.mtime = new_mtime;
             open_file.attr.size = new_size;
+        }
+
+        debug!(
+            "write_local_helper() ino={} new_mtime={:?} new_size={} open_files={:?}",
+            ino, new_mtime, new_size, self.open_files
+        );
+        Ok(())
+    }
+
+    /// Helper function to write remote meta data
+    async fn write_remote_helper(&self, ino: u64) -> DatenLordResult<()> {
+        let new_mtime;
+        let new_size;
+
+        {
+            match self.open_files.try_get(ino) {
+                None => {
+                    debug!("write_remote_helper() failed to find ino={ino}");
+                    return build_error_result_from_errno(
+                        Errno::ENOENT,
+                        format!("write_remote_helper() failed to find ino={ino}"),
+                    );
+                }
+                Some(open_file) => {
+                    debug!(
+                        "write_remote_helper() success to find ino={:?} open_file={:?}",
+                        ino,
+                        open_file.read()
+                    );
+                    new_mtime = open_file.read().attr.mtime;
+                    new_size = open_file.read().attr.size;
+                }
+            }
         }
 
         let (res, retry) = retry_txn!(TXN_RETRY_LIMIT, {
