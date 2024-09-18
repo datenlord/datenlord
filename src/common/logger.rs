@@ -23,6 +23,7 @@ pub enum LogRole {
     #[allow(dead_code)] // /bin/bind_mounter.rs is still using this.
     BindMounter,
     /// Same as `NodeRole::SDK`.
+    #[allow(dead_code)] // /sdk is still using this.
     SDK,
 }
 
