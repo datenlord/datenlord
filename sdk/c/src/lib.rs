@@ -1,4 +1,3 @@
 //! datenlord c sdk
 
-pub mod datenlord;
-pub mod localfs;
+pub mod sdk;

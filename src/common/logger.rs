@@ -22,6 +22,8 @@ pub enum LogRole {
     /// user.
     #[allow(dead_code)] // /bin/bind_mounter.rs is still using this.
     BindMounter,
+    /// Same as `NodeRole::SDK`.
+    SDK,
 }
 
 impl From<crate::config::NodeRole> for LogRole {
@@ -32,6 +34,7 @@ impl From<crate::config::NodeRole> for LogRole {
             crate::config::NodeRole::Controller => LogRole::Controller,
             crate::config::NodeRole::SchedulerExtender => LogRole::SchedulerExtender,
             crate::config::NodeRole::AsyncFuse => LogRole::AsyncFuse,
+            crate::config::NodeRole::SDK => LogRole::AsyncFuse,
         }
     }
 }
@@ -49,6 +52,7 @@ impl LogRole {
             #[cfg(test)]
             LogRole::Test => "test",
             LogRole::BindMounter => "bind_mounter",
+            LogRole::SDK => "sdk",
         }
     }
 }

@@ -4,13 +4,9 @@
 #include <ostream>
 #include <new>
 
-template<typename T = void>
-struct Arc;
-
-struct LocalFS;
-
 struct datenlord_sdk {
-  Arc<Mutex<LocalFS>> localfs;
+  void *datenlordfs;
+  void *rt;
 };
 
 struct datenlord_bytes {

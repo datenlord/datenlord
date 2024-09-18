@@ -222,6 +222,9 @@ async fn main() -> anyhow::Result<()> {
                 })
                 .await?;
         }
+        NodeRole::SDK => {
+            panic!("SDK role is not supported yet");
+        }
     }
 
     task_manager::wait_for_shutdown(&TASK_MANAGER)?.await;

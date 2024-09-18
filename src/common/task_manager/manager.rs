@@ -91,6 +91,13 @@ impl TaskManager {
         }
     }
 
+    /// Get current runtime for this task manager.
+    #[inline]
+    #[must_use]
+    pub fn runtime(&self) -> &tokio::runtime::Runtime {
+        &self.runtime
+    }
+
     /// Dumps all edges of the dependency graph.
     #[cfg(test)]
     pub(super) async fn edges(&self) -> Vec<(TaskName, TaskName)> {
