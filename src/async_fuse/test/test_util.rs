@@ -5,8 +5,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use clippy_utilities::OverflowArithmetic;
-use datenlord::common::task_manager::{TaskName, TASK_MANAGER};
-use datenlord::config::{
+use crate::common::task_manager::{TaskName, TASK_MANAGER};
+use crate::config::{
     MemoryCacheConfig, SoftLimit, StorageConfig, StorageParams, StorageS3Config,
 };
 use parking_lot::Mutex;

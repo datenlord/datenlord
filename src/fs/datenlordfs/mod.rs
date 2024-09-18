@@ -20,7 +20,7 @@ use std::time::{Duration, SystemTime};
 use async_trait::async_trait;
 use bytes::BytesMut;
 use clippy_utilities::{Cast, OverflowArithmetic};
-use datenlord::metrics::FILESYSTEM_METRICS;
+use crate::metrics::FILESYSTEM_METRICS;
 pub use metadata::MetaData;
 use nix::errno::Errno;
 use nix::sys::stat::SFlag;

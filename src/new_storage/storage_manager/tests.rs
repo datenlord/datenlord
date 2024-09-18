@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use bytes::BufMut;
 use clippy_utilities::Cast;
-use datenlord::metrics::LossyCast;
+use crate::metrics::LossyCast;
 use parking_lot::Mutex;
 use rand::distributions::Distribution;
 use rand::{thread_rng, Rng};

@@ -3,7 +3,7 @@ use std::fmt::Debug;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use datenlord::metrics::KV_METRICS;
+use crate::metrics::KV_METRICS;
 use etcd_client::{
     Compare, CompareOp, DeleteOptions, GetOptions, LockOptions, PutOptions, Txn, TxnOp,
 };

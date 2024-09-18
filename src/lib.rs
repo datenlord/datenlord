@@ -67,3 +67,6 @@ pub mod common;
 /// Configurations
 pub mod config;
 pub mod metrics;
+pub mod fs;
+pub mod async_fuse;
+pub mod new_storage;

@@ -7,7 +7,7 @@ use std::time::{Duration, SystemTime};
 
 use async_trait::async_trait;
 use clippy_utilities::Cast;
-use datenlord::metrics::FILESYSTEM_METRICS;
+use crate::metrics::FILESYSTEM_METRICS;
 use libc::{RENAME_EXCHANGE, RENAME_NOREPLACE};
 use nix::errno::Errno;
 use nix::fcntl::OFlag;

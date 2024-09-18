@@ -7,7 +7,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use bytes::BytesMut;
 use clippy_utilities::{Cast, OverflowArithmetic};
-use datenlord::config::StorageConfig;
+use crate::config::StorageConfig;
 use nix::errno::Errno;
 use nix::sys::stat::SFlag;
 use tracing::{debug, info, instrument};

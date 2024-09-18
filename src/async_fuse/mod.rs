@@ -1,5 +1,6 @@
 //! FUSE async implementation
 
+use std::net::IpAddr;
 use std::sync::Arc;
 
 use clippy_utilities::OverflowArithmetic;
@@ -8,14 +9,29 @@ use parking_lot::Mutex;
 use tokio_util::sync::CancellationToken;
 
 use crate::async_fuse::fuse::session;
+use crate::config::StorageConfig;
 use crate::fs::datenlordfs;
 use crate::fs::kv_engine::KVEngineType;
 use crate::new_storage::{BackendBuilder, MemoryCache, StorageManager};
-use crate::AsyncFuseArgs;
 
 pub mod fuse;
 pub mod proactor;
 pub mod util;
+
+/// Async fuse args type
+#[derive(Debug)]
+pub struct AsyncFuseArgs {
+    /// Node id
+    pub node_id: String,
+    /// Node ip
+    pub ip_address: IpAddr,
+    /// Server port
+    pub server_port: u16,
+    /// Mount dir
+    pub mount_dir: String,
+    /// Storage config
+    pub storage_config: StorageConfig,
+}
 
 /// Start async-fuse
 #[allow(clippy::pattern_type_mismatch)] // Raised by `tokio::select`

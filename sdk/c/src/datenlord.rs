@@ -1,14 +1,15 @@
+use bytes::BytesMut;
+use datenlord::fs::fs_util::{CreateParam, INum, RenameParam};
+use datenlord::fs::virtualfs::VirtualFs;
 use std::ffi::CStr;
 use std::os::raw::{c_char, c_uint};
 use std::ptr;
-use std::time::SystemTime;
-use bytes::BytesMut;
-use tokio::runtime::Runtime;
 use std::sync::{Arc, Mutex};
+use std::time::SystemTime;
+use tokio::runtime::Runtime;
 
-use crate::storage::fs_util::{CreateParam, RenameParam};
-use crate::storage::localfs::LocalFS;
-use crate::storage::virtualfs::{INum, VirtualFs};
+use crate::localfs::LocalFS;
+
 
 #[repr(C)]
 #[allow(non_camel_case_types)]
@@ -73,11 +74,7 @@ pub extern "C" fn init(config: *const c_char) -> *mut datenlord_sdk {
         return ptr::null_mut();
     }
 
-    let config_str = unsafe {
-        CStr::from_ptr(config)
-            .to_str()
-            .unwrap_or("default config")
-    };
+    let config_str = unsafe { CStr::from_ptr(config).to_str().unwrap_or("default config") };
 
     let localfs = LocalFS::new().unwrap();
     let sdk = Box::new(datenlord_sdk {
@@ -131,7 +128,7 @@ pub extern "C" fn mkdir(sdk: *mut datenlord_sdk, dir_path: *const c_char) -> *mu
     let rt = Runtime::new().unwrap();
     let result = rt.block_on(async {
         let param = CreateParam {
-            parent: 34735213,// test inode
+            parent: 34735213, // test inode
             name: path.to_string(),
             mode: 0o777,
             rdev: 0,
@@ -149,14 +146,13 @@ pub extern "C" fn mkdir(sdk: *mut datenlord_sdk, dir_path: *const c_char) -> *mu
         Ok(_) => std::ptr::null_mut(),
         Err(_) => datenlord_error::new(1, "Failed to create directory".to_string()),
     }
-
 }
 
 #[no_mangle]
 pub extern "C" fn deldir(
     sdk: *mut datenlord_sdk,
     dir_path: *const c_char,
-    recursive: bool
+    recursive: bool,
 ) -> *mut datenlord_error {
     if sdk.is_null() || dir_path.is_null() {
         return datenlord_error::new(1, "Invalid arguments".to_string());
@@ -182,7 +178,7 @@ pub extern "C" fn deldir(
 pub extern "C" fn rename_path(
     sdk: *mut datenlord_sdk,
     src_path: *const c_char,
-    dest_path: *const c_char
+    dest_path: *const c_char,
 ) -> *mut datenlord_error {
     if sdk.is_null() || src_path.is_null() || dest_path.is_null() {
         return datenlord_error::new(1, "Invalid arguments".to_string());
@@ -216,7 +212,7 @@ pub extern "C" fn copy_from_local_file(
     sdk: *mut datenlord_sdk,
     overwrite: bool,
     local_file_path: *const c_char,
-    dest_file_path: *const c_char
+    dest_file_path: *const c_char,
 ) -> *mut datenlord_error {
     if sdk.is_null() || local_file_path.is_null() || dest_file_path.is_null() {
         return datenlord_error::new(1, "Invalid arguments".to_string());
@@ -235,12 +231,10 @@ pub extern "C" fn copy_from_local_file(
         }
 
         match std::fs::read(local) {
-            Ok(content) => {
-                match localfs.write(1, 0, 0, &content, 0).await {
-                    Ok(_) => Ok(()),
-                    Err(_) => Err(()),
-                }
-            }
+            Ok(content) => match localfs.write(1, 0, 0, &content, 0).await {
+                Ok(_) => Ok(()),
+                Err(_) => Err(()),
+            },
             Err(_) => Err(()),
         }
     });
@@ -255,7 +249,7 @@ pub extern "C" fn copy_from_local_file(
 pub extern "C" fn copy_to_local_file(
     sdk: *mut datenlord_sdk,
     src_file_path: *const c_char,
-    local_file_path: *const c_char
+    local_file_path: *const c_char,
 ) -> *mut datenlord_error {
     if sdk.is_null() || src_file_path.is_null() || local_file_path.is_null() {
         return datenlord_error::new(1, "Invalid arguments".to_string());
@@ -272,12 +266,10 @@ pub extern "C" fn copy_to_local_file(
 
         // for demo purpose, we need to get the hole file size
         match localfs.read(1, 0, 0, 1024, &mut buf).await {
-            Ok(size) => {
-                match std::fs::write(local, &buf[..size]) {
-                    Ok(_) => Ok(()),
-                    Err(_) => Err(()),
-                }
-            }
+            Ok(size) => match std::fs::write(local, &buf[..size]) {
+                Ok(_) => Ok(()),
+                Err(_) => Err(()),
+            },
             Err(_) => Err(()),
         }
     });
@@ -288,11 +280,10 @@ pub extern "C" fn copy_to_local_file(
     }
 }
 
-
 #[no_mangle]
 pub extern "C" fn create_file(
     sdk: *mut datenlord_sdk,
-    file_path: *const c_char
+    file_path: *const c_char,
 ) -> *mut datenlord_error {
     if sdk.is_null() || file_path.is_null() {
         return datenlord_error::new(1, "Invalid arguments".to_string());
@@ -328,7 +319,7 @@ pub extern "C" fn create_file(
 pub extern "C" fn stat(
     sdk: *mut datenlord_sdk,
     file_path: *const c_char,
-    file_metadata: *mut datenlord_file_stat
+    file_metadata: *mut datenlord_file_stat,
 ) -> *mut datenlord_error {
     if sdk.is_null() || file_path.is_null() {
         return datenlord_error::new(1, "Invalid arguments".to_string());
@@ -344,7 +335,7 @@ pub extern "C" fn stat(
     let rt = Runtime::new().unwrap();
     let result = rt.block_on(async {
         let localfs = sdk_ref.localfs.lock().unwrap();
-        localfs.getattr(1).await  // 示例 inode
+        localfs.getattr(1).await // 示例 inode
     });
 
     match result {
@@ -376,7 +367,12 @@ pub extern "C" fn write_file(
     let path = unsafe { CStr::from_ptr(file_path).to_str().unwrap_or_default() };
     let data = unsafe { std::slice::from_raw_parts(content.data, content.len) };
 
-    println!("Writing file: {} data size: {} data {}", path, data.len(), String::from_utf8_lossy(data));
+    println!(
+        "Writing file: {} data size: {} data {}",
+        path,
+        data.len(),
+        String::from_utf8_lossy(data)
+    );
 
     let sdk_ref = unsafe { &*sdk };
 
@@ -415,9 +411,13 @@ pub extern "C" fn read_file(
         // Convert buffer to c buffer
         let out_content_data = unsafe { (*out_content).data as *mut u8 };
         let out_content_len = unsafe { (*out_content).len };
-        let buffer: &mut [u8] = unsafe { std::slice::from_raw_parts_mut(out_content_data, out_content_len) };
+        // let buffer: &mut [u8] =
+        //     unsafe { std::slice::from_raw_parts_mut(out_content_data, out_content_len) };
+        let mut buffer = BytesMut::with_capacity(out_content_len);
 
-        localfs.read(34734588, 0, 0, buffer.len() as u32, buffer).await
+        localfs
+            .read(34734588, 0, 0, buffer.len() as u32, &mut buffer)
+            .await
     });
 
     match result {
