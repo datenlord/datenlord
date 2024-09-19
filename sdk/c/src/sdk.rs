@@ -5,6 +5,7 @@ use datenlord::common::error::{DatenLordError, DatenLordResult};
 use datenlord::common::logger::init_logger;
 use datenlord::common::task_manager::{TaskName, TASK_MANAGER};
 use datenlord::config::{self, InnerConfig, NodeRole};
+use datenlord::fs::datenlordfs::direntry::FileType;
 use datenlord::fs::datenlordfs::{DatenLordFs, MetaData, S3MetaData};
 use datenlord::fs::fs_util::{CreateParam, FileAttr, INum, RenameParam, ROOT_ID};
 use datenlord::fs::kv_engine::etcd_impl::EtcdKVEngine;
@@ -14,7 +15,10 @@ use datenlord::metrics;
 use datenlord::new_storage::{BackendBuilder, MemoryCache, StorageManager};
 use nix::fcntl::OFlag;
 use nix::sys::stat::SFlag;
+use once_cell::sync::Lazy;
+use tracing::{error, info};
 use core::panic;
+use std::collections::VecDeque;
 use std::ffi::{c_void, CStr};
 use std::fs::File;
 use std::io::{Read, Write};
@@ -25,6 +29,14 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 use tokio::runtime;
 
+
+// Lazy runtime for current thread
+static RUNTIME: Lazy<tokio::runtime::Runtime> = Lazy::new(|| {
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+});
 
 #[repr(C)]
 #[allow(non_camel_case_types)]
@@ -38,7 +50,7 @@ pub struct datenlord_error {
 #[allow(non_camel_case_types)]
 pub struct datenlord_file_stat {
     /// Inode number
-    pub ino: INum,
+    pub ino: u64,
     /// Size in bytes
     pub size: u64,
     /// Size in blocks
@@ -81,8 +93,6 @@ impl datenlord_error {
 pub struct datenlord_sdk {
     // Do not expose the internal structure, use c_void instead
     datenlordfs: *mut c_void,
-    // Runtime for async operations
-    rt: *mut c_void,
 }
 
 async fn find_parent_attr(path: &str, fs: Arc<DatenLordFs<S3MetaData>>) -> DatenLordResult<(Duration, FileAttr)> {
@@ -128,10 +138,7 @@ pub extern "C" fn init(config: *const c_char) -> *mut datenlord_sdk {
     init_logger(config.role.into(), config.log_level);
 
     // Initialize the runtime
-    let rt = TASK_MANAGER.runtime();
-    let rt_ptr = Box::into_raw(Box::new(rt)) as *mut c_void;
-
-    let datenlord_fs = rt.block_on(async {
+    let datenlord_fs = RUNTIME.handle().block_on(async {
         match config.role {
             NodeRole::SDK => {
                 let kv_engine: Arc<EtcdKVEngine> = Arc::new(KVEngineType::new(config.kv_addrs.clone()).await.unwrap());
@@ -168,7 +175,6 @@ pub extern "C" fn init(config: *const c_char) -> *mut datenlord_sdk {
 
     let sdk = Box::new(datenlord_sdk {
         datenlordfs: fs_ptr,
-        rt: rt_ptr,
     });
 
     Box::into_raw(sdk)
@@ -190,17 +196,28 @@ pub extern "C" fn exists(sdk: *mut datenlord_sdk, dir_path: *const c_char) -> bo
     }
 
     let sdk = unsafe { &*sdk };
-    let rt = unsafe { &*(sdk.rt as *const runtime::Runtime) };
+    // let rt = unsafe { &*(sdk.rt as *const runtime::Runtime) };
     let fs = unsafe { Arc::from_raw(sdk.datenlordfs as *const DatenLordFs<S3MetaData>) };
 
     let dir_path_str = unsafe { CStr::from_ptr(dir_path).to_string_lossy().into_owned() };
 
-    let result = rt.block_on(async {
-        fs.lookup(0, 0, ROOT_ID, &dir_path_str).await
+    let result = RUNTIME.handle().block_on(async {
+        match find_parent_attr(&dir_path_str, fs.clone()).await {
+            Ok((_, attr)) => {
+                // Get current dir or file name from path and find current inode
+                let path_components: Vec<&str> = dir_path_str.split('/').filter(|s| !s.is_empty()).collect();
+                fs.lookup(0, 0, attr.ino, path_components.last().unwrap()).await
+            }
+            Err(e) => Err(e.into()),
+        }
     });
 
     let _ = Arc::into_raw(fs);
-    result.is_ok()
+
+    match result {
+        Ok(_) => true,
+        Err(_) => false,
+    }
 }
 
 #[no_mangle]
@@ -210,12 +227,11 @@ pub extern "C" fn mkdir(sdk: *mut datenlord_sdk, dir_path: *const c_char) -> *mu
     }
 
     let sdk = unsafe { &*sdk };
-    let rt = unsafe { &*(sdk.rt as *const runtime::Runtime) };
     let fs = unsafe { Arc::from_raw(sdk.datenlordfs as *const DatenLordFs<S3MetaData>) };
 
     let dir_path_str = unsafe { CStr::from_ptr(dir_path).to_string_lossy().into_owned() };
 
-    let result = rt.block_on(async {
+    let result = RUNTIME.handle().block_on(async {
         let param = CreateParam {
             parent: ROOT_ID,
             name: dir_path_str,
@@ -245,17 +261,13 @@ pub extern "C" fn deldir(sdk: *mut datenlord_sdk, dir_path: *const c_char, recur
     }
 
     let sdk = unsafe { &*sdk };
-    let rt = unsafe { &*(sdk.rt as *const runtime::Runtime) };
+
     let fs = unsafe { Arc::from_raw(sdk.datenlordfs as *const DatenLordFs<S3MetaData>) };
 
     let dir_path_str = unsafe { CStr::from_ptr(dir_path).to_string_lossy().into_owned() };
 
-    let result = rt.block_on(async {
-        if recursive {
-            fs.rmdir(0, 0, ROOT_ID, &dir_path_str).await
-        } else {
-            fs.unlink(0, 0, ROOT_ID, &dir_path_str).await.map(|_| None)
-        }
+    let result = RUNTIME.handle().block_on(async {
+        recursive_delete_dir(Arc::clone(&fs), &dir_path_str, recursive).await
     });
 
     let _ = Arc::into_raw(fs);
@@ -266,6 +278,47 @@ pub extern "C" fn deldir(sdk: *mut datenlord_sdk, dir_path: *const c_char, recur
     }
 }
 
+async fn recursive_delete_dir(
+    fs: Arc<DatenLordFs<S3MetaData>>,
+    dir_path: &str,
+    recursive: bool,
+) -> DatenLordResult<()> {
+    let mut dir_stack = VecDeque::new();
+    dir_stack.push_back(dir_path.to_string());
+
+    while let Some(current_dir_path) = dir_stack.pop_back() {
+        let (_, parent_attr) = find_parent_attr(&current_dir_path, fs.clone()).await?;
+        let path_components: Vec<&str> = current_dir_path.split('/').filter(|s| !s.is_empty()).collect();
+        let (_, dir_attr, _) = fs.lookup(0, 0, parent_attr.ino, path_components.last().unwrap()).await?;
+
+        let current_dir_ino = dir_attr.ino;
+        let dir_handle = match fs.opendir(0, 0, current_dir_ino, OFlag::O_RDWR.bits() as u32).await {
+            Ok(handle) => handle,
+            Err(e) => return Err(e),
+        };
+
+        let entries = fs.readdir(0, 0, ROOT_ID, dir_handle, 0).await?;
+        for entry in entries {
+            let entry_path = format!("{}/{}", current_dir_path, entry.name());
+
+            if entry.file_type() == FileType::Dir {
+                dir_stack.push_back(entry_path);
+            } else {
+                fs.unlink(0, 0, ROOT_ID, &entry_path).await?;
+            }
+        }
+
+        fs.releasedir(current_dir_ino, dir_handle, 0).await.unwrap();
+        fs.rmdir(0, 0, current_dir_ino, path_components.last().unwrap()).await?;
+
+        if !recursive {
+            break;
+        }
+    }
+
+    Ok(())
+}
+
 #[no_mangle]
 pub extern "C" fn rename_path(sdk: *mut datenlord_sdk, src_path: *const c_char, dest_path: *const c_char) -> *mut datenlord_error {
     if sdk.is_null() || src_path.is_null() || dest_path.is_null() {
@@ -273,13 +326,13 @@ pub extern "C" fn rename_path(sdk: *mut datenlord_sdk, src_path: *const c_char, 
     }
 
     let sdk = unsafe { &*sdk };
-    let rt = unsafe { &*(sdk.rt as *const runtime::Runtime) };
+
     let fs = unsafe { Arc::from_raw(sdk.datenlordfs as *const DatenLordFs<S3MetaData>) };
 
     let src_path_str = unsafe { CStr::from_ptr(src_path).to_string_lossy().into_owned() };
     let dest_path_str = unsafe { CStr::from_ptr(dest_path).to_string_lossy().into_owned() };
 
-    let result = rt.block_on(async {
+    let result = RUNTIME.handle().block_on(async {
         let param = RenameParam {
             old_parent: ROOT_ID,
             old_name: src_path_str,
@@ -314,10 +367,9 @@ pub extern "C" fn copy_from_local_file(
     let dest_file_path_str = unsafe { CStr::from_ptr(dest_file_path).to_string_lossy().into_owned() };
 
     let sdk_ref = unsafe { &*sdk };
-    let rt = unsafe { &*(sdk_ref.rt as *const runtime::Runtime) };
     let fs = unsafe { Arc::from_raw(sdk_ref.datenlordfs as *const DatenLordFs<S3MetaData>) };
 
-    let result: Result<(), DatenLordError> = rt.block_on(async {
+    let result: Result<(), DatenLordError> = RUNTIME.handle().block_on(async {
         if !overwrite {
             if let Ok((_, _, _)) = fs.lookup(0, 0, ROOT_ID, &dest_file_path_str).await {
                 return Err(DatenLordError::ArgumentInvalid { context: vec!["File already exists".to_string()] });
@@ -391,10 +443,9 @@ pub extern "C" fn copy_to_local_file(
     let local_file_path_str = unsafe { CStr::from_ptr(local_file_path).to_string_lossy().into_owned() };
 
     let sdk_ref = unsafe { &*sdk };
-    let rt = unsafe { &*(sdk_ref.rt as *const runtime::Runtime) };
     let fs = unsafe { Arc::from_raw(sdk_ref.datenlordfs as *const DatenLordFs<S3MetaData>) };
 
-    let result = rt.block_on(async {
+    let result = RUNTIME.handle().block_on(async {
         match find_parent_attr(&src_file_path_str, fs.clone()).await {
             Ok((_, attr)) => {
                 let path_components: Vec<&str> = src_file_path_str.split('/').filter(|s| !s.is_empty()).collect();
@@ -436,17 +487,16 @@ pub extern "C" fn create_file(sdk: *mut datenlord_sdk, file_path: *const c_char)
     }
 
     let sdk = unsafe { &*sdk };
-    let rt = unsafe { &*(sdk.rt as *const runtime::Runtime) };
+
     let fs = unsafe { Arc::from_raw(sdk.datenlordfs as *const DatenLordFs<S3MetaData>) };
 
     let file_path_str = unsafe { CStr::from_ptr(file_path).to_string_lossy().into_owned() };
 
-    let result = rt.block_on(async {
+    let result = RUNTIME.handle().block_on(async {
         match find_parent_attr(&file_path_str, fs.clone()).await {
             Ok((_, attr)) => {
                 // Get current dir or file name from path and find current inode
                 let path_components: Vec<&str> = file_path_str.split('/').filter(|s| !s.is_empty()).collect();
-                let (_, parent_attr, _) = fs.lookup(0, 0, attr.ino, path_components.last().unwrap()).await.unwrap();
                 let param = CreateParam {
                     parent: attr.ino,
                     name: path_components.last().unwrap().to_string(),
@@ -490,10 +540,8 @@ pub extern "C" fn stat(
     let sdk_ref = unsafe { &*sdk };
     let file_metadata: &mut datenlord_file_stat = unsafe { &mut *file_metadata };
     let fs = unsafe { Arc::from_raw(sdk_ref.datenlordfs as *const DatenLordFs<S3MetaData>) };
-    let rt = unsafe { &*(sdk_ref.rt as *const runtime::Runtime) };
 
-
-    let result = rt.block_on(async {
+    let result = RUNTIME.handle().block_on(async {
         // Find the file from parent inode
         match find_parent_attr(path, Arc::clone(&fs)).await {
             Ok((_, attr)) => {
@@ -541,10 +589,10 @@ pub extern "C" fn write_file(
     let data = unsafe { std::slice::from_raw_parts(content.data, content.len) };
 
     let sdk_ref = unsafe { &*sdk };
-    let rt = unsafe { &*(sdk_ref.rt as *const runtime::Runtime) };
     let fs = unsafe { Arc::from_raw(sdk_ref.datenlordfs as *const DatenLordFs<S3MetaData>) };
 
-    let result = rt.block_on(async {
+    let result = RUNTIME.handle().block_on(async {
+        info!("Writing file: {:?}", file_path_str);
         match find_parent_attr(&file_path_str, fs.clone()).await {
             Ok((_, parent_attr)) => {
                 let path_components: Vec<&str> = file_path_str.split('/').filter(|s| !s.is_empty()).collect();
@@ -554,10 +602,16 @@ pub extern "C" fn write_file(
                     Ok((_, file_attr, _)) => {
                         match fs.open(0, 0, file_attr.ino, OFlag::O_WRONLY.bits() as u32).await {
                             Ok(fh) => {
+                                info!("Writing the file: {:?}", file_path_str);
                                 match fs.write(file_attr.ino, fh, 0, data, 0).await {
                                     Ok(_) => {
-                                        fs.release(file_attr.ino, fh, 0, 0, true).await?;
-                                        Ok(())
+                                        match fs.release(file_attr.ino, fh, 0, 0, true).await {
+                                            Ok(_) => Ok(()),
+                                            Err(e) => {
+                                                error!("Failed to release file handle: {:?}", e);
+                                                Err(e)
+                                            }
+                                        }
                                     }
                                     Err(e) => Err(e),
                                 }
@@ -594,10 +648,9 @@ pub extern "C" fn read_file(
     let file_path_str = unsafe { CStr::from_ptr(file_path).to_string_lossy().into_owned() };
 
     let sdk_ref = unsafe { &*sdk };
-    let rt = unsafe { &*(sdk_ref.rt as *const runtime::Runtime) };
     let fs = unsafe { Arc::from_raw(sdk_ref.datenlordfs as *const DatenLordFs<S3MetaData>) };
 
-    let result = rt.block_on(async {
+    let result = RUNTIME.handle().block_on(async {
         // Find current attribute
         match find_parent_attr(&file_path_str, fs.clone()).await {
             Ok((_, attr)) => {

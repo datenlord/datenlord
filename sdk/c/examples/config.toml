@@ -1,0 +1,33 @@
+config_file = "config.toml"
+role = "sdk"
+node_name = "node222"
+node_ip = "127.0.0.1"
+mount_path = "/tmp/datenlord_data_dir"
+kv_server_list = [
+    "127.0.0.1:2379"
+]
+server_port = 8800
+scheduler_extender_port = 12345
+log-level = "debug"
+
+[storage]
+storage_type = "fs"
+block_size = 524288
+fs_storage_root = "/tmp/datenlord_backend"
+
+[storage.memory_cache_config]
+capacity = 8589934592
+command_queue_limit = 1000
+write_back = false
+soft_limit = "3,5"
+
+[storage.s3_storage_config]
+endpoint_url = "http://localhost:9000"
+access_key_id = "minioadmin"
+secret_access_key = "minioadmin"
+bucket_name = "mybucket"
+
+[csi_config]
+endpoint = "unix:///tmp/node.sock "
+driver_name = "io.datenlord.csi.plugin"
+worker_port = 9001
