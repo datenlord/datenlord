@@ -8,10 +8,10 @@ kv_server_list = [
 ]
 server_port = 8800
 scheduler_extender_port = 12345
-log-level = "debug"
+log_level = "error"
 
 [storage]
-storage_type = "fs"
+storage_type = "s3"
 block_size = 524288
 fs_storage_root = "/tmp/datenlord_backend"
 

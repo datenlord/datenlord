@@ -1,6 +1,6 @@
 config_file = "config.toml"
 role = "sdk"
-node_name = "node222"
+node_name = "TestNode"
 node_ip = "127.0.0.1"
 mount_path = "/tmp/datenlord_data_dir"
 kv_server_list = [
@@ -8,7 +8,7 @@ kv_server_list = [
 ]
 server_port = 8800
 scheduler_extender_port = 12345
-log-level = "debug"
+log_level = "debug"
 
 [storage]
 storage_type = "fs"

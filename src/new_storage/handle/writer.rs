@@ -8,7 +8,7 @@ use parking_lot::{Mutex, RwLock};
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
-use tracing::{error, warn};
+use tracing::{error, info, warn};
 
 use super::super::policy::LruPolicy;
 use super::super::{
@@ -77,6 +77,7 @@ struct WriteTask {
 /// Write a block back to the backend.
 async fn write_back_block(task: Arc<WriteTask>) -> StorageResult<()> {
     let path = format_path(task.ino, task.block_id);
+    info!("Write back block {} to backend", task.block_id);
     loop {
         let (content, version) = {
             let block = task.block.read();
@@ -90,6 +91,7 @@ async fn write_back_block(task: Arc<WriteTask>) -> StorageResult<()> {
         };
 
         task.backend.write(&path, &content).await?;
+        info!("Write back block {} to backend done", task.block_id);
         {
             let mut block = task.block.write();
             // Check version
@@ -147,8 +149,10 @@ async fn write_back_work(mut write_back_receiver: Receiver<Task>) {
     loop {
         tokio::select! {
             Some(task) = write_back_receiver.recv() => {
+                info!("Received a task: {:?}", task);
                 match task {
                     Task::Pending(task) => {
+                        info!("Received a pending task: {:?}", task);
                         tasks.push(task);
                         if tasks.len() >= 10 {
                             let res = write_blocks(&tasks).await;
@@ -159,6 +163,7 @@ async fn write_back_work(mut write_back_receiver: Receiver<Task>) {
                         }
                     }
                     Task::Flush(tx) => {
+                        info!("Flush the cache with tasks: {:?}", tasks);
                         let res = write_blocks(&tasks).await;
                         tasks.clear();
                         let res = result.take().or(res);
@@ -167,6 +172,7 @@ async fn write_back_work(mut write_back_receiver: Receiver<Task>) {
                         }
                     }
                     Task::Finish(tx) => {
+                        info!("Finish the cache with tasks: {:?}", tasks);
                         let res = write_blocks(&tasks).await;
                         tasks.clear();
                         let res = result.take().or(res);
@@ -298,6 +304,7 @@ impl Writer {
                 .unwrap_or_else(|_| {
                     panic!("Should not send command to write back task when the task quits.");
                 });
+            info!("Write block {} back to the backend.", block_id);
         }
 
         Ok(())

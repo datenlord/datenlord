@@ -48,11 +48,11 @@ def main():
         handle_error(e)
 
     # Read the file
-    try:
-        content = sdk.read_file(file_path)
-        print(f"File read successfully: {content.decode()}")
-    except Exception as e:
-        handle_error(e)
+    # try:
+    #     content = sdk.read_file(file_path)
+    #     print(f"File read successfully: {content.decode()}")
+    # except Exception as e:
+    #     handle_error(e)
 
     # Stat the file
     try:

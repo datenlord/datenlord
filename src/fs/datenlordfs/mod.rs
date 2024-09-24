@@ -494,6 +494,11 @@ impl<M: MetaData + Send + Sync + 'static> VirtualFs for DatenLordFs<M> {
         let _timer = FILESYSTEM_METRICS.start_storage_operation_timer("write");
         let data_len: u64 = data.len().cast();
 
+        debug!(
+            "write(ino={}, fh={}, offset={}, data_len={})",
+            ino, fh, offset, data_len
+        );
+
         let (old_size, _) = self.metadata.mtime_and_size(ino);
         let result = self.storage.write(ino, fh, offset.cast(), &data).await;
 
@@ -569,6 +574,10 @@ impl<M: MetaData + Send + Sync + 'static> VirtualFs for DatenLordFs<M> {
         lock_owner: u64,
         flush: bool,
     ) -> DatenLordResult<()> {
+        debug!(
+            "release(ino={}, fh={}, flags={}, lock_owner={}, flush={})",
+            ino, fh, flags, lock_owner, flush
+        );
         let _timer = FILESYSTEM_METRICS.start_storage_operation_timer("release");
         match self.storage.close(fh).await {
             Ok(()) => {}
@@ -576,6 +585,7 @@ impl<M: MetaData + Send + Sync + 'static> VirtualFs for DatenLordFs<M> {
                 return Err(e.into());
             }
         }
+        debug!("datenlordfs callrelease() close the file handler success");
         match self
             .metadata
             .release(ino, fh, flags, lock_owner, flush)

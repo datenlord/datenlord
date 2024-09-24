@@ -110,9 +110,11 @@ impl GcTask {
     /// Run the GC task, consume the task itself.
     #[allow(clippy::pattern_type_mismatch)] // for `tokio::select!`
     pub async fn run(mut self, token: CancellationToken) -> Self {
+        info!("GC task `{:?}` starts.", self.name);
         loop {
             select! {
                 res = self.rx.recv() => {
+                    info!("Received a new handle from `{:?}`.", self.name);
                     if let Some(future) = res {
                         self.tasks.spawn(future);
                     } else {

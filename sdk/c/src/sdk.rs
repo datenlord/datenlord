@@ -16,7 +16,7 @@ use datenlord::new_storage::{BackendBuilder, MemoryCache, StorageManager};
 use nix::fcntl::OFlag;
 use nix::sys::stat::SFlag;
 use once_cell::sync::Lazy;
-use tracing::{error, info};
+use tracing::{debug, error, info};
 use core::panic;
 use std::collections::VecDeque;
 use std::ffi::{c_void, CStr};
@@ -135,6 +135,7 @@ pub extern "C" fn init(config: *const c_char) -> *mut datenlord_sdk {
     arg_conf.config_file = Some(config_str.to_string());
     let config = InnerConfig::try_from(config::Config::load_from_args(arg_conf).unwrap()).unwrap();
 
+    println!("Config: {:?}", config);
     init_logger(config.role.into(), config.log_level);
 
     // Initialize the runtime
@@ -182,6 +183,7 @@ pub extern "C" fn init(config: *const c_char) -> *mut datenlord_sdk {
 
 #[no_mangle]
 pub extern "C" fn free_sdk(sdk: *mut datenlord_sdk) {
+    // Stop daemon tasks
     if !sdk.is_null() {
         unsafe {
             let _ = Box::from_raw(sdk);
@@ -274,10 +276,17 @@ pub extern "C" fn deldir(sdk: *mut datenlord_sdk, dir_path: *const c_char, recur
 
     match result {
         Ok(_) => ptr::null_mut(),
-        Err(e) => datenlord_error::new(3, format!("{:?}", e)),
+        Err(e) => {
+            error!("Failed to delete directory: {:?}", e);
+            ptr::null_mut()
+        },
     }
 }
 
+// The current implementation searches for items and places them into a queue.
+// It continues doing so until the subdirectory is found to be empty, at which point it deletes it.
+// This method introduces some overhead due to repeated searches.
+// An optimization could be applied to reduce the query overhead.
 async fn recursive_delete_dir(
     fs: Arc<DatenLordFs<S3MetaData>>,
     dir_path: &str,
@@ -286,30 +295,32 @@ async fn recursive_delete_dir(
     let mut dir_stack = VecDeque::new();
     dir_stack.push_back(dir_path.to_string());
 
-    while let Some(current_dir_path) = dir_stack.pop_back() {
+    while let Some(current_dir_path) = dir_stack.pop_front() {
         let (_, parent_attr) = find_parent_attr(&current_dir_path, fs.clone()).await?;
         let path_components: Vec<&str> = current_dir_path.split('/').filter(|s| !s.is_empty()).collect();
         let (_, dir_attr, _) = fs.lookup(0, 0, parent_attr.ino, path_components.last().unwrap()).await?;
 
         let current_dir_ino = dir_attr.ino;
-        let dir_handle = match fs.opendir(0, 0, current_dir_ino, OFlag::O_RDWR.bits() as u32).await {
-            Ok(handle) => handle,
-            Err(e) => return Err(e),
-        };
+        let dir_handle = fs.opendir(0, 0, current_dir_ino, OFlag::O_RDWR.bits() as u32).await?;
 
-        let entries = fs.readdir(0, 0, ROOT_ID, dir_handle, 0).await?;
-        for entry in entries {
+        let entries = fs.readdir(0, 0, current_dir_ino, dir_handle, 0).await?;
+        for entry in entries.iter() {
             let entry_path = format!("{}/{}", current_dir_path, entry.name());
 
             if entry.file_type() == FileType::Dir {
-                dir_stack.push_back(entry_path);
+                if recursive {
+                    dir_stack.push_front(entry_path);
+                }
             } else {
-                fs.unlink(0, 0, ROOT_ID, &entry_path).await?;
+                fs.unlink(0, 0, current_dir_ino, &entry.name()).await?;
             }
         }
 
-        fs.releasedir(current_dir_ino, dir_handle, 0).await.unwrap();
-        fs.rmdir(0, 0, current_dir_ino, path_components.last().unwrap()).await?;
+        fs.releasedir(current_dir_ino, dir_handle, 0).await?;
+
+        if recursive || entries.is_empty() {
+            fs.rmdir(0, 0, parent_attr.ino, path_components.last().unwrap()).await?;
+        }
 
         if !recursive {
             break;
@@ -318,6 +329,7 @@ async fn recursive_delete_dir(
 
     Ok(())
 }
+
 
 #[no_mangle]
 pub extern "C" fn rename_path(sdk: *mut datenlord_sdk, src_path: *const c_char, dest_path: *const c_char) -> *mut datenlord_error {
@@ -603,8 +615,10 @@ pub extern "C" fn write_file(
                         match fs.open(0, 0, file_attr.ino, OFlag::O_WRONLY.bits() as u32).await {
                             Ok(fh) => {
                                 info!("Writing the file: {:?}", file_path_str);
+                                info!("Writing the data: {:?}", data);
                                 match fs.write(file_attr.ino, fh, 0, data, 0).await {
                                     Ok(_) => {
+                                        info!("Writing the file ok: {:?}", file_path_str);
                                         match fs.release(file_attr.ino, fh, 0, 0, true).await {
                                             Ok(_) => Ok(()),
                                             Err(e) => {
@@ -669,6 +683,7 @@ pub extern "C" fn read_file(
                                     (*out_content).data = buffer.as_ptr();
                                     (*out_content).len = read_size;
                                 }
+                                debug!("Read file: {:?}", file_path_str);
                                 // Close this file handle
                                 fs.release(current_attr.ino, 0, 0, 0, true).await
                             }

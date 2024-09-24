@@ -59,9 +59,20 @@ int main() {
         handle_error(err);
     }
 
-    // Check if directory exists
+    // Check if file exists
     dir_exists = exists(sdk, file_path);
-    printf("Directory exists: %d\n", dir_exists);
+    printf("File exists: %d\n", dir_exists);
+
+    // Stat the file
+    datenlord_file_stat file_stat;
+    err = stat(sdk, file_path, &file_stat);
+    if (err == NULL) {
+        printf("File stat: inode=%ld, size=%ld, blocks=%ld, perm=o%o, nlink=%d, uid=%d, gid=%d\n",
+               file_stat.ino, file_stat.size, file_stat.blocks, file_stat.perm, file_stat.nlink,
+               file_stat.uid, file_stat.gid);
+    } else {
+        handle_error(err);
+    }
 
     // Write data to the file
     const char* file_content = "Hello, Datenlord!";
@@ -90,10 +101,10 @@ int main() {
     free(buffer);
 
     // Stat the file
-    datenlord_file_stat file_stat;
+    file_stat;
     err = stat(sdk, file_path, &file_stat);
     if (err == NULL) {
-        printf("File stat: inode=%ld, size=%ld, blocks=%ld, perm=%d, nlink=%d, uid=%d, gid=%d\n",
+        printf("File stat: inode=%ld, size=%ld, blocks=%ld, perm=o%o, nlink=%d, uid=%d, gid=%d\n",
                file_stat.ino, file_stat.size, file_stat.blocks, file_stat.perm, file_stat.nlink,
                file_stat.uid, file_stat.gid);
     } else {
@@ -139,16 +150,16 @@ int main() {
     dir_exists = exists(sdk, remote_file_path);
     printf("Copied file exists: %d\n", dir_exists);
 
-    // Delete the directory recursively
-    err = deldir(sdk, test_dir, true);
-    if (err == NULL) {
-        printf("Directory deleted successfully\n");
-    } else {
-        handle_error(err);
-    }
-    // Check if directory exists
-    dir_exists = exists(sdk, test_dir);
-    printf("Directory exists: %d\n", dir_exists);
+    // // Delete the directory recursively
+    // err = deldir(sdk, test_dir, true);
+    // if (err == NULL) {
+    //     printf("Directory deleted successfully\n");
+    // } else {
+    //     handle_error(err);
+    // }
+    // // Check if directory exists
+    // dir_exists = exists(sdk, test_dir);
+    // printf("Directory exists: %d\n", dir_exists);
 
     // Release the SDK
     free_sdk(sdk);

@@ -67,8 +67,9 @@ pub fn init_logger(role: LogRole, level: Level) {
         .with_target("hyper", Level::WARN)
         .with_target("h2", Level::WARN)
         .with_target("tower", Level::WARN)
-        .with_target("datenlord::async_fuse::fuse", Level::INFO)
+        .with_target("datenlord::async_fuse::fuse", Level::ERROR)
         .with_target("datenlord::metrics", Level::INFO)
+        .with_target("datenlordsdk", Level::DEBUG)
         .with_target("", level);
 
     let log_path = format!("./datenlord_{}.log", role.as_str());

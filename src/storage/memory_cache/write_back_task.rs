@@ -318,6 +318,8 @@ where
                 interval = tokio::time::interval(new_period);
             }
 
+            info!("Write back task is running.");
+
             select! {
                 command = self.command_receiver.recv() => {
                     if let Some(command) = command {
