@@ -88,7 +88,10 @@ impl TaskManager {
                 .convert_to_gc_task();
         }
 
-        info!("Initialize task manager with {:?} GC tasks.", GC_TASKS.len());
+        info!(
+            "Initialize task manager with {:?} GC tasks.",
+            GC_TASKS.len()
+        );
 
         Self {
             tasks: Mutex::new(tasks),
@@ -174,7 +177,7 @@ impl TaskManager {
     /// After `shutdown` being called, no new task should be spawned via task
     /// manager.
     #[inline]
-    #[instrument(level="debug",  skip(self))]
+    #[instrument(level = "debug", skip(self))]
     pub async fn shutdown(&self) {
         let mut queue = VecDeque::from([TaskName::Root]);
 

@@ -23,13 +23,11 @@
 ///
 use bytes::BytesMut;
 use clippy_utilities::OverflowArithmetic;
-use datenlord::common::error::{DatenLordError, DatenLordResult};
 use datenlord::common::logger::init_logger;
 use datenlord::common::task_manager::{TaskName, TASK_MANAGER};
 use datenlord::config::{self, InnerConfig, NodeRole};
-use datenlord::fs::datenlordfs::direntry::FileType;
 use datenlord::fs::datenlordfs::{DatenLordFs, MetaData, S3MetaData};
-use datenlord::fs::fs_util::{CreateParam, FileAttr, RenameParam, ROOT_ID};
+use datenlord::fs::fs_util::{CreateParam, RenameParam, ROOT_ID};
 use datenlord::fs::kv_engine::etcd_impl::EtcdKVEngine;
 use datenlord::fs::kv_engine::{KVEngine, KVEngineType};
 use datenlord::fs::virtualfs::VirtualFs;
@@ -38,18 +36,15 @@ use datenlord::new_storage::{BackendBuilder, MemoryCache, StorageManager};
 use nix::fcntl::OFlag;
 use nix::sys::stat::SFlag;
 use pyo3::exceptions::PyException;
-use pyo3::types::{PyBytes, PyModule};
-use pyo3::{pyclass, pymethods, pymodule, Bound, PyAny, PyResult, Python};
+use pyo3::{pyclass, pymethods, Bound, PyAny, PyResult, Python};
 use pyo3_asyncio::tokio::future_into_py;
-use std::collections::VecDeque;
 use std::io::{Read, Write};
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Duration;
 use tracing::info;
 
 use crate::file::File;
-use crate::utils;
+use crate::utils::{self, Buffer, Entry};
 
 #[pyclass]
 pub struct DatenLordSDK {
@@ -59,7 +54,7 @@ pub struct DatenLordSDK {
 #[pymethods]
 impl DatenLordSDK {
     #[new]
-    pub fn new(py: Python, config_path: String) -> PyResult<Self> {
+    pub fn new(_py: Python, config_path: String) -> PyResult<Self> {
         // let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
         let config_str = config_path.to_string();
 
@@ -134,8 +129,6 @@ impl DatenLordSDK {
     /// https://pyo3.rs/v0.22.3/class/protocols.html?highlight=__del#class-customizations
     #[pyo3(name = "close")]
     fn py_close<'a>(&'a self, py: Python<'a>) -> PyResult<Bound<PyAny>> {
-        let fs = Arc::clone(&self.datenlordfs);
-
         future_into_py(py, async move {
             TASK_MANAGER.shutdown().await;
             Ok(())
@@ -541,7 +534,7 @@ impl DatenLordSDK {
                                 Ok(fh) => {
                                     let mut buffer =
                                         BytesMut::with_capacity(file_attr.size as usize);
-                                    match fs
+                                    let _ = fs
                                         .read(
                                             file_attr.ino,
                                             fh,
@@ -550,21 +543,12 @@ impl DatenLordSDK {
                                             &mut buffer,
                                         )
                                         .await
-                                    {
-                                        Ok(read_size) => {
-                                            // convert to [u8]
-                                            unsafe {
-                                                buffer.set_len(read_size as usize);
-                                            }
-                                            // TODO: change type to pyany
-                                            Ok(buffer.freeze().to_vec())
-                                            // Ok(buffer[..read_size])
-                                        }
-                                        Err(e) => Err(PyException::new_err(format!(
-                                            "read failed: {:?}",
-                                            e
-                                        ))),
-                                    }
+                                        .map_err(|e| {
+                                            PyException::new_err(format!("read failed: {:?}", e))
+                                        })?;
+                                    Python::with_gil(|py| {
+                                        Buffer::new(buffer.freeze().to_vec()).into_bytes(py)
+                                    })
                                 }
                                 Err(e) => {
                                     Err(PyException::new_err(format!("open failed: {:?}", e)))
@@ -584,7 +568,7 @@ impl DatenLordSDK {
 
     /// Open a file and return a `File` object. mode is a string that represents the file open mode.
     #[pyo3(name = "open")]
-    fn py_open<'a>(&'a self, py: Python<'a>, file_path: String, mode: String) -> PyResult<File> {
+    fn py_open<'a>(&'a self, _py: Python<'a>, file_path: String, mode: String) -> PyResult<File> {
         let fs = Arc::clone(&self.datenlordfs);
         // Convert mode string to OFlag
         let mode = match mode.as_str() {
@@ -630,6 +614,56 @@ impl DatenLordSDK {
                         Err(e) => Err(PyException::new_err(format!("lookup failed: {:?}", e))),
                     }
                 }
+                Err(e) => Err(PyException::new_err(format!(
+                    "utils::find_parent_attr failed: {:?}",
+                    e
+                ))),
+            }
+        })
+    }
+
+    /// List dirs and files in a directory
+    /// return a list of file names
+    #[pyo3(name = "list_dir")]
+    fn py_list_dir<'a>(&'a self, py: Python<'a>, dir_path: String) -> PyResult<Bound<PyAny>> {
+        let fs = Arc::clone(&self.datenlordfs);
+
+        future_into_py(py, async move {
+            match utils::find_parent_attr(&dir_path, Arc::clone(&fs)).await {
+                Ok((_, parent_attr)) => {
+                    let path = Path::new(&dir_path);
+                    let dir_name = path
+                        .file_name()
+                        .ok_or(PyException::new_err(format!(
+                            "Invalid dir path: {:?}",
+                            dir_path
+                        )))?
+                        .to_str()
+                        .ok_or(PyException::new_err(format!(
+                            "Invalid dir path: {:?}",
+                            dir_path
+                        )))?;
+
+                    // Get list of files
+                    match fs.lookup(0, 0, parent_attr.ino, dir_name).await {
+                        Ok((_, dir_attr, _)) => {
+                            // Current readdir does not support fh and offset
+                            let dir_entries = fs.readdir(0, 0, dir_attr.ino, 0, 0).await.map_err(
+                                |e| {
+                                    PyException::new_err(format!("readdir failed: {:?}", e))
+                                })?;
+                            Ok(dir_entries
+                                .into_iter()
+                                .map(|e| Entry{
+                                    name: e.name().to_owned(),
+                                    ino: e.ino(),
+                                    file_type: e.file_type(),
+                                })
+                                .collect::<Vec<_>>())
+                        }
+                        Err(e) => Err(PyException::new_err(format!("lookup failed: {:?}", e))),
+                    }
+                },
                 Err(e) => Err(PyException::new_err(format!(
                     "utils::find_parent_attr failed: {:?}",
                     e

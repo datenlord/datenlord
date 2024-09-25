@@ -4,11 +4,9 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use clippy_utilities::OverflowArithmetic;
 use crate::common::task_manager::{TaskName, TASK_MANAGER};
-use crate::config::{
-    MemoryCacheConfig, SoftLimit, StorageConfig, StorageParams, StorageS3Config,
-};
+use crate::config::{MemoryCacheConfig, SoftLimit, StorageConfig, StorageParams, StorageS3Config};
+use clippy_utilities::OverflowArithmetic;
 use parking_lot::Mutex;
 use tokio_util::sync::CancellationToken;
 use tracing::level_filters::LevelFilter;

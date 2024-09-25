@@ -5,15 +5,17 @@ from datenlordsdk import DatenLordSDK
 # clear the command line arguments
 sys.argv = [sys.argv[0]]
 
+
 def handle_error(err):
     print(f"Error: {err}")
+
 
 async def main():
     sdk = DatenLordSDK("config.toml")
     print("SDK initialized successfully")
 
     # Check if directory exists
-    test_dir = "datenlord_sdk_111"
+    test_dir = "datenlord_sdk"
     is_exists = await sdk.exists(test_dir)
     print(f"{test_dir} directory exists: {is_exists}")
 
@@ -36,8 +38,23 @@ async def main():
     except Exception as e:
         handle_error(e)
 
+    # Create a new directory
+    try:
+        await sdk.mkdir(f"{test_dir}/subdir")
+        print(f"{test_dir}/subdir directory created successfully")
+    except Exception as e:
+        handle_error(e)
+
     # Create a new file
     file_path = f"{test_dir}/test_file.txt"
+    try:
+        await sdk.create_file(file_path)
+        print(f"{file_path} file created successfully")
+    except Exception as e:
+        handle_error(e)
+
+    # Create a new file
+    file_path = f"{test_dir}/test_file2.txt"
     try:
         await sdk.create_file(file_path)
         print(f"{file_path} file created successfully")
@@ -60,13 +77,23 @@ async def main():
     except Exception as e:
         handle_error(e)
 
-    # Read the file
-    try:
-        content = await sdk.read_file(file_path)
-        # Convert to string
-        print(f"{file_path} file read successfully, content: {bytes(content)}")
-    except Exception as e:
-        handle_error(e)
+    # Read the file with file handle
+    async with sdk.open(file_path, "rw") as f:
+        try:
+            await f.seek(0)
+            content = await f.read()
+            print(
+                f"{file_path} file async read successfully, content: {bytes(content)}"
+            )
+
+            pos = await f.tell()
+            print(f"Position: {pos}")
+
+            await f.seek(0)
+            pos = await f.tell()
+            print(f"Position: {pos}")
+        except Exception as e:
+            handle_error(e)
 
     # Stat the file
     try:
@@ -90,11 +117,21 @@ async def main():
     except Exception as e:
         handle_error(e)
 
+    # Read dir info
+    try:
+        dir_info = await sdk.list_dir(test_dir)
+        print(f"{test_dir} directory info: {dir_info}")
+        for item in dir_info:
+            print(f"Item name: {item.name} ino: {item.ino} type: {item.file_type}")
+    except Exception as e:
+        handle_error(e)
+
     try:
         is_closed = await sdk.close()
         print(f"SDK closed: {is_closed}")
     except Exception as e:
         handle_error(e)
+
 
 if __name__ == "__main__":
     asyncio.run(main())

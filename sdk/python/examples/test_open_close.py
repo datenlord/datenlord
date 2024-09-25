@@ -5,8 +5,10 @@ from datenlordsdk import DatenLordSDK
 # clear the command line arguments
 sys.argv = [sys.argv[0]]
 
+
 def handle_error(err):
     print(f"Error: {err}")
+
 
 async def main():
     sdk = DatenLordSDK("config.toml")
@@ -84,6 +86,7 @@ async def main():
         print(f"SDK closed: {is_closed}")
     except Exception as e:
         handle_error(e)
+
 
 if __name__ == "__main__":
     asyncio.run(main())

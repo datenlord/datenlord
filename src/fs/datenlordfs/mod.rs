@@ -17,10 +17,10 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
+use crate::metrics::FILESYSTEM_METRICS;
 use async_trait::async_trait;
 use bytes::BytesMut;
 use clippy_utilities::{Cast, OverflowArithmetic};
-use crate::metrics::FILESYSTEM_METRICS;
 pub use metadata::MetaData;
 use nix::errno::Errno;
 use nix::sys::stat::SFlag;
@@ -117,7 +117,10 @@ impl<M: MetaData + Send + Sync + 'static> VirtualFs for DatenLordFs<M> {
         let context = ReqContext { uid, gid };
         match self.metadata.lookup_helper(context, parent, name).await {
             Ok(result) => {
-                debug!("datenlordfs calllookup() success, the result is: {:?}", result);
+                debug!(
+                    "datenlordfs calllookup() success, the result is: {:?}",
+                    result
+                );
                 Ok(result)
             }
             Err(e) => {
@@ -135,12 +138,15 @@ impl<M: MetaData + Send + Sync + 'static> VirtualFs for DatenLordFs<M> {
     /// filesystem may ignore forget calls, if the inodes don't need to have
     /// a limited lifetime. On unmount it is not guaranteed, that all referenced
     /// inodes will receive a forget message.
-    #[instrument(level="debug",  skip(self))]
+    #[instrument(level = "debug", skip(self))]
     async fn forget(&self, ino: u64, nlookup: u64) {
         let _timer = FILESYSTEM_METRICS.start_storage_operation_timer("forget");
         let deleted = match self.metadata.forget(ino, nlookup).await {
             Ok(deleted) => {
-                debug!("datenlordfs callforget() success, the result is: {:?}", deleted);
+                debug!(
+                    "datenlordfs callforget() success, the result is: {:?}",
+                    deleted
+                );
                 deleted
             }
             Err(e) => {
@@ -154,7 +160,10 @@ impl<M: MetaData + Send + Sync + 'static> VirtualFs for DatenLordFs<M> {
                     debug!("datenlordfs callforget() defer deletion success");
                 }
                 Err(e) => {
-                    debug!("datenlordfs callforget() defer deletion failed, the error is: {:?}", e);
+                    debug!(
+                        "datenlordfs callforget() defer deletion failed, the error is: {:?}",
+                        e
+                    );
                 }
             }
         }
@@ -166,7 +175,10 @@ impl<M: MetaData + Send + Sync + 'static> VirtualFs for DatenLordFs<M> {
         debug!("getattr(ino={})", ino);
         match self.metadata.getattr(ino).await {
             Ok(result) => {
-                debug!("datenlordfs callgetattr() success, the result is: {:?}", result);
+                debug!(
+                    "datenlordfs callgetattr() success, the result is: {:?}",
+                    result
+                );
                 Ok(result)
             }
             Err(e) => {
@@ -201,7 +213,10 @@ impl<M: MetaData + Send + Sync + 'static> VirtualFs for DatenLordFs<M> {
             .await
         {
             Ok(result) => {
-                debug!("datenlordfs callsetattr() success, the result is: {:?}", result);
+                debug!(
+                    "datenlordfs callsetattr() success, the result is: {:?}",
+                    result
+                );
                 Ok(result)
             }
             Err(e) => {
@@ -218,7 +233,10 @@ impl<M: MetaData + Send + Sync + 'static> VirtualFs for DatenLordFs<M> {
 
         match self.metadata.readlink(ino).await {
             Ok(result) => {
-                debug!("datenlordfs callreadlink() success, the result is: {:?}", result);
+                debug!(
+                    "datenlordfs callreadlink() success, the result is: {:?}",
+                    result
+                );
                 Ok(result)
             }
             Err(e) => {
@@ -236,7 +254,10 @@ impl<M: MetaData + Send + Sync + 'static> VirtualFs for DatenLordFs<M> {
         debug!("mknod param = {:?}", param);
         match self.metadata.mknod(param).await {
             Ok(result) => {
-                debug!("datenlordfs callmknod() success, the result is: {:?}", result);
+                debug!(
+                    "datenlordfs callmknod() success, the result is: {:?}",
+                    result
+                );
                 Ok(result)
             }
             Err(e) => {
@@ -262,7 +283,10 @@ impl<M: MetaData + Send + Sync + 'static> VirtualFs for DatenLordFs<M> {
         };
         match self.metadata.mknod(param).await {
             Ok(result) => {
-                debug!("datenlordfs callmkdir() success, the result is: {:?}", result);
+                debug!(
+                    "datenlordfs callmkdir() success, the result is: {:?}",
+                    result
+                );
                 Ok(result)
             }
             Err(e) => {
@@ -273,7 +297,7 @@ impl<M: MetaData + Send + Sync + 'static> VirtualFs for DatenLordFs<M> {
     }
 
     /// Remove a file.
-    #[instrument(level="debug",  skip(self), err, ret)]
+    #[instrument(level = "debug", skip(self), err, ret)]
     async fn unlink(&self, uid: u32, gid: u32, parent: INum, name: &str) -> DatenLordResult<()> {
         let _timer = FILESYSTEM_METRICS.start_storage_operation_timer("unlink");
         debug!("unlink(parent={}, name={:?}", parent, name);
@@ -287,7 +311,10 @@ impl<M: MetaData + Send + Sync + 'static> VirtualFs for DatenLordFs<M> {
                 if let Some(ino) = result {
                     self.storage.remove(ino).await?;
                 }
-                debug!("datenlordfs callunlink() success, the result is: {:?}", result);
+                debug!(
+                    "datenlordfs callunlink() success, the result is: {:?}",
+                    result
+                );
                 Ok(())
             }
             Err(e) => {
@@ -298,7 +325,7 @@ impl<M: MetaData + Send + Sync + 'static> VirtualFs for DatenLordFs<M> {
     }
 
     /// Remove a directory.
-    #[instrument(level="debug",  skip(self), err, ret)]
+    #[instrument(level = "debug", skip(self), err, ret)]
     async fn rmdir(
         &self,
         uid: u32,
@@ -316,7 +343,10 @@ impl<M: MetaData + Send + Sync + 'static> VirtualFs for DatenLordFs<M> {
             Ok(result) => {
                 // We don't store dir information in the persistent storage, so we don't need to remove
                 // it
-                debug!("datenlordfs callrmdir() success, the result is: {:?}", result);
+                debug!(
+                    "datenlordfs callrmdir() success, the result is: {:?}",
+                    result
+                );
                 Ok(result)
             }
             Err(e) => {
@@ -352,7 +382,10 @@ impl<M: MetaData + Send + Sync + 'static> VirtualFs for DatenLordFs<M> {
         };
         match self.metadata.mknod(param).await {
             Ok(result) => {
-                debug!("datenlordfs callsymlink() success, the result is: {:?}", result);
+                debug!(
+                    "datenlordfs callsymlink() success, the result is: {:?}",
+                    result
+                );
                 Ok(result)
             }
             Err(e) => {
@@ -436,6 +469,7 @@ impl<M: MetaData + Send + Sync + 'static> VirtualFs for DatenLordFs<M> {
         // Use buffer trait instead of Vec<u8> to avoid memory copy
         buf: &mut BytesMut,
     ) -> DatenLordResult<usize> {
+        let start_time = tokio::time::Instant::now();
         let _timer = FILESYSTEM_METRICS.start_storage_operation_timer("read");
         let offset: u64 = offset.cast();
 
@@ -466,6 +500,7 @@ impl<M: MetaData + Send + Sync + 'static> VirtualFs for DatenLordFs<M> {
                     "datenlordfs callread() success, the result is: content length {:?}",
                     content.len()
                 );
+                error!("read duration: {:?}", start_time.elapsed());
                 Ok(content.len())
             }
             Err(e) => {
@@ -482,7 +517,7 @@ impl<M: MetaData + Send + Sync + 'static> VirtualFs for DatenLordFs<M> {
     /// call will reflect the return value of self operation. fh will
     /// contain the value set by the open method, or will be undefined if
     /// the open method did not set any value.
-    #[instrument(level="debug",  skip(self, data), err, ret)]
+    #[instrument(level = "debug", skip(self, data), err, ret)]
     async fn write(
         &self,
         ino: u64,
@@ -535,7 +570,7 @@ impl<M: MetaData + Send + Sync + 'static> VirtualFs for DatenLordFs<M> {
     /// flush data, is if the filesystem wants to return write errors. If
     /// the filesystem supports file locking operations (setlk, getlk) it
     /// should remove all locks belonging to `lock_owner`.
-    #[instrument(level="debug",  skip(self), err, ret)]
+    #[instrument(level = "debug", skip(self), err, ret)]
     async fn flush(&self, ino: u64, fh: u64, lock_owner: u64) -> DatenLordResult<()> {
         let _timer = FILESYSTEM_METRICS.start_storage_operation_timer("flush");
         debug!("flush(ino={}, fh={}, lock_owner={})", ino, fh, lock_owner,);
@@ -565,7 +600,7 @@ impl<M: MetaData + Send + Sync + 'static> VirtualFs for DatenLordFs<M> {
     /// contain the value set by the open method, or will be undefined
     /// if the open method didn't set any value. flags will contain the same
     /// flags as for open.
-    #[instrument(level="debug",  skip(self), err, ret)]
+    #[instrument(level = "debug", skip(self), err, ret)]
     async fn release(
         &self,
         ino: u64,
@@ -605,7 +640,7 @@ impl<M: MetaData + Send + Sync + 'static> VirtualFs for DatenLordFs<M> {
     /// Synchronize file contents.
     /// If the datasync parameter is non-zero, then only the user data should be
     /// flushed, not the meta data.
-    #[instrument(level="debug",  skip(self), err, ret)]
+    #[instrument(level = "debug", skip(self), err, ret)]
     async fn fsync(&self, ino: u64, fh: u64, _datasync: bool) -> DatenLordResult<()> {
         let _timer = FILESYSTEM_METRICS.start_storage_operation_timer("fsync");
         match self.storage.flush(ino, fh).await {
@@ -668,7 +703,10 @@ impl<M: MetaData + Send + Sync + 'static> VirtualFs for DatenLordFs<M> {
         let context = ReqContext { uid, gid };
         match self.metadata.readdir(context, ino, fh, offset).await {
             Ok(result) => {
-                debug!("datenlordfs callreaddir() success, the result is: {:?}", result);
+                debug!(
+                    "datenlordfs callreaddir() success, the result is: {:?}",
+                    result
+                );
                 Ok(result)
             }
             Err(e) => {
@@ -703,7 +741,7 @@ impl<M: MetaData + Send + Sync + 'static> VirtualFs for DatenLordFs<M> {
     /// should be flushed, not the meta data. fh will contain the value set
     /// by the opendir method, or will be undefined if the opendir method
     /// didn't set any value.
-    #[instrument(level="debug",  skip(self), err, ret)]
+    #[instrument(level = "debug", skip(self), err, ret)]
     async fn fsyncdir(&self, ino: u64, _fh: u64, _datasync: bool) -> DatenLordResult<()> {
         let _timer = FILESYSTEM_METRICS.start_storage_operation_timer("fsyncdir");
 
@@ -721,7 +759,10 @@ impl<M: MetaData + Send + Sync + 'static> VirtualFs for DatenLordFs<M> {
         let context = ReqContext { uid, gid };
         match self.metadata.statfs(context, ino).await {
             Ok(result) => {
-                debug!("datenlordfs callstatfs() success, the result is: {:?}", result);
+                debug!(
+                    "datenlordfs callstatfs() success, the result is: {:?}",
+                    result
+                );
                 Ok(result)
             }
             Err(e) => {

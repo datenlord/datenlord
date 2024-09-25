@@ -18,7 +18,7 @@ fs_storage_root = "/tmp/datenlord_backend"
 [storage.memory_cache_config]
 capacity = 8589934592
 command_queue_limit = 1000
-write_back = false
+write_back = true
 soft_limit = "3,5"
 
 [storage.s3_storage_config]

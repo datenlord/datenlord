@@ -1,8 +1,8 @@
 //! The general backend implementation with `openDAL`
 
-use async_trait::async_trait;
 use crate::config::{StorageParams, StorageS3Config};
 use crate::metrics::DATENLORD_REGISTRY;
+use async_trait::async_trait;
 use opendal::layers::{ConcurrentLimitLayer, PrometheusLayer, RetryLayer};
 use opendal::raw::oio::ReadExt;
 use opendal::services::{Fs, Memory, S3};

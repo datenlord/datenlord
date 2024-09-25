@@ -7,9 +7,14 @@ use datenlord::fs::{
     virtualfs::VirtualFs,
 };
 use pyo3::{
-    exceptions::PyException, pyclass, pymethods, Bound, IntoPy, PyAny, PyRef, PyResult, Python,
+    exceptions::PyException, pyclass, pymethods, Bound, IntoPy, PyAny,
+    PyRef, PyResult, Python,
 };
 use pyo3_asyncio::tokio::future_into_py;
+use tokio::sync::Mutex;
+use tracing::error;
+
+use crate::utils::Buffer;
 
 #[pyclass]
 pub struct File {
@@ -22,6 +27,9 @@ pub struct File {
     flags: u32,
     /// File system
     fs: Arc<DatenLordFs<S3MetaData>>,
+    // File offset here, start from 0 and don't support atomic update
+    // TODO: Change to atomic
+    offset: Arc<Mutex<u64>>,
 }
 
 impl File {
@@ -31,6 +39,7 @@ impl File {
             fd,
             flags,
             fs,
+            offset: Arc::new(Mutex::new(0)),
         }
     }
 }
@@ -38,32 +47,38 @@ impl File {
 #[pymethods]
 impl File {
     /// Read and return at most size bytes, or if size is not given, until EOF.
+    /// Read with seek(offset)
     #[pyo3(signature = (size=None,))]
-    pub fn read<'a>(&'a self, py: Python<'a>, size: Option<usize>) -> PyResult<Bound<PyAny>> {
+    pub fn read<'a>(&'a mut self, py: Python<'a>, size: Option<usize>) -> PyResult<Bound<PyAny>> {
         let attr = self.attr.clone();
         let fd = self.fd;
         let fs = Arc::clone(&self.fs);
+        // This operation does not support atomic update
+        let offset = Arc::clone(&self.offset);
 
-        future_into_py(py, async move {
+        let res = future_into_py(py, async move {
             let size = size.unwrap_or(attr.size as usize);
+            let mut offset_guard = offset.lock().await;
+            let offset = *offset_guard;
             // Read the file
             let mut buffer = BytesMut::with_capacity(size);
-            match fs
-                .read(attr.ino, fd, 0, buffer.capacity() as u32, &mut buffer)
+            let read_size = fs
+                .read(attr.ino, fd, offset, buffer.capacity() as u32, &mut buffer)
                 .await
-            {
-                Ok(read_size) => {
-                    // convert to [u8]
-                    unsafe {
-                        buffer.set_len(read_size as usize);
-                    }
-                    // TODO: change type to pyany
-                    Ok(buffer.freeze().to_vec())
-                    // Ok(buffer[..read_size])
-                }
-                Err(e) => Err(PyException::new_err(format!("read failed: {:?}", e))),
+                .map_err(|e| PyException::new_err(format!("read failed: {:?}", e)))?;
+
+            if read_size == 0 {
+                return Ok(Python::with_gil(|py| py.None()));
             }
-        })
+
+            // Update current data offset
+            *offset_guard += read_size as u64;
+
+            let bf = buffer.freeze().to_vec();
+            Python::with_gil(|py| Buffer::new(bf).into_bytes(py))
+        });
+
+        return res;
     }
 
     /// Write the given bytes-like object, return the number of bytes written.
@@ -71,13 +86,57 @@ impl File {
         let attr = self.attr.clone();
         let fd = self.fd;
         let fs = Arc::clone(&self.fs);
+        let offset = Arc::clone(&self.offset);
 
         future_into_py(py, async move {
+            let offset_guard = offset.lock().await;
+            let offset = *offset_guard;
             // Write the file
-            match fs.write(attr.ino, fd, 0, &data, 0).await {
+            match fs.write(attr.ino, fd, offset as i64, &data, 0).await {
                 Ok(()) => Ok(()),
                 Err(e) => Err(PyException::new_err(format!("write failed: {:?}", e))),
             }
+        })
+    }
+
+    /// Seek to the given offset in the file.
+    ///
+    /// 0 - start of the file, offset should be positive
+    /// 1 - current file position
+    /// 2 - end of the file, offset can be negative
+    #[pyo3(signature = (offset, whence = 0))]
+    pub fn seek<'a>(&'a mut self, py: Python<'a>, offset: i64, whence: u8) -> PyResult<Bound<PyAny>> {
+        let attr = self.attr.clone();
+        let current_offset = Arc::clone(&self.offset);
+
+        future_into_py(py, async move {
+            let mut offset_guard = current_offset.lock().await;
+            let current_offset = *offset_guard;
+
+            // Seek the file
+            let new_offset = match whence {
+                0 => offset,
+                1 => current_offset as i64 + offset,
+                2 => attr.size as i64 + offset,
+                _ => {
+                    error!("Invalid whence: {}", whence);
+                    return Err(PyException::new_err("Invalid whence"));
+                }
+            };
+
+            *offset_guard = new_offset as u64;
+
+            Ok(new_offset)
+        })
+    }
+
+    /// Tell the current file position, start from 0
+    pub fn tell<'a>(&'a self, py: Python<'a>) -> PyResult<Bound<PyAny>> {
+        let offset = Arc::clone(&self.offset);
+
+        future_into_py(py, async move {
+            let offset_guard = offset.lock().await;
+            Ok(*offset_guard as i64)
         })
     }
 

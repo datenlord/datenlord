@@ -1,8 +1,9 @@
 //! DatenLord Python SDK
 
+use file::File;
 use pyo3::{pymodule, types::PyModule, Bound, PyResult, Python};
 use sdk::DatenLordSDK;
-use file::File;
+use utils::{Buffer, Entry};
 
 /// DatenLord Python SDK file
 pub mod file;
@@ -12,8 +13,11 @@ pub mod sdk;
 pub mod utils;
 
 #[pymodule]
-fn datenlordsdk(py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
+fn datenlordsdk(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<DatenLordSDK>()?;
     m.add_class::<File>()?;
+    m.add_class::<Buffer>()?;
+    m.add_class::<Entry>()?;
+
     Ok(())
 }

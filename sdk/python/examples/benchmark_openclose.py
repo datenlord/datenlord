@@ -42,20 +42,43 @@ async def main():
     except Exception as e:
         handle_error(e)
 
-    file_base = "20mb_file"
+    file_base = "20mb_file11111"
     write_latency = []
+    read_latency = []
 
     # Create and write 5 files
     for i in range(5):
         file_path = f"{test_dir}/{file_base}_{i}.bin"
-        file_content = "a" * 20 * 1024 * 1024  # 20 MB
+        file_content = "a" * 100 * 1024 * 1024  # 20 MB
         start_time = time.time()
         try:
             await sdk.create_file(file_path)
-            await sdk.write_file(file_path, file_content.encode())
+            fd = sdk.open(file_path, "rw")
+            await fd.write(file_content.encode())
             end_time = time.time()
             write_latency.append(end_time - start_time)
-            print(f"{file_path} created and written successfully")
+
+            for i in range(5):
+                read_start_time = time.time()
+                try:
+                    content = await fd.read()
+                    read_end_time = time.time()
+                    read_latency.append(read_end_time - read_start_time)
+                    # print(f"{file_path} read successfully, size: {len(content)} bytes")
+                except Exception as e:
+                    handle_error(e)
+
+            sorted_read_latency = sorted(read_latency)
+            avg_read_latency = sum(sorted_read_latency) / len(read_latency)
+            print(
+                f"Read {len(read_latency)} files, average time: {avg_read_latency:.6f} seconds, "
+                f"max: {max(read_latency):.6f} seconds, min: {min(read_latency):.6f} seconds, "
+                f"mid: {sorted_read_latency[len(sorted_read_latency) // 2]:.6f} seconds"
+            )
+            read_latency = []
+
+            fd.close()
+            # print(f"{file_path} created and written successfully")
         except Exception as e:
             handle_error(e)
 
@@ -71,15 +94,18 @@ async def main():
     # Read the first file 5 times and calculate latency
     read_latency = []
     file_path = f"{test_dir}/{file_base}_0.bin"
+    fd = sdk.open(file_path, "rw")
     for i in range(5):
         start_time = time.time()
         try:
-            content = await sdk.read_file(file_path)
+            fd.seek(0)
+            content = await fd.read()
             end_time = time.time()
             read_latency.append(end_time - start_time)
             # print(f"{file_path} read successfully, size: {len(content)} bytes")
         except Exception as e:
             handle_error(e)
+    fd.close()
 
     # Sort and calculate read latency stats
     sorted_read_latency = sorted(read_latency)
@@ -90,14 +116,23 @@ async def main():
         f"mid: {sorted_read_latency[len(sorted_read_latency) // 2]:.6f} seconds"
     )
 
-    # Delete all files
-    for i in range(5):
-        file_path = f"{test_dir}/{file_base}_{i}.bin"
-        try:
-            await sdk.deldir(test_dir, recursive=True)
-            print(f"{file_path} deleted successfully")
-        except Exception as e:
-            handle_error(e)
+    # Sort and calculate read latency stats
+    sorted_read_latency = sorted(read_latency)
+    avg_read_latency = sum(sorted_read_latency) / len(read_latency)
+    print(
+        f"Read {len(read_latency)} files, average time: {avg_read_latency:.6f} seconds, "
+        f"max: {max(read_latency):.6f} seconds, min: {min(read_latency):.6f} seconds, "
+        f"mid: {sorted_read_latency[len(sorted_read_latency) // 2]:.6f} seconds"
+    )
+
+    # # Delete all files
+    # for i in range(5):
+    #     file_path = f"{test_dir}/{file_base}_{i}.bin"
+    #     try:
+    #         await sdk.deldir(test_dir, recursive=True)
+    #         print(f"{file_path} deleted successfully")
+    #     except Exception as e:
+    #         handle_error(e)
 
     # Close SDK
     try:

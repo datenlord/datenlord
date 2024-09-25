@@ -2,8 +2,8 @@ use std::collections::HashMap;
 use std::fmt::Debug;
 use std::time::Duration;
 
-use async_trait::async_trait;
 use crate::metrics::KV_METRICS;
+use async_trait::async_trait;
 use etcd_client::{
     Compare, CompareOp, DeleteOptions, GetOptions, LockOptions, PutOptions, Txn, TxnOp,
 };

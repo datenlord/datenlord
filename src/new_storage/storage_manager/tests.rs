@@ -13,9 +13,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::metrics::LossyCast;
 use bytes::BufMut;
 use clippy_utilities::Cast;
-use crate::metrics::LossyCast;
 use parking_lot::Mutex;
 use rand::distributions::Distribution;
 use rand::{thread_rng, Rng};

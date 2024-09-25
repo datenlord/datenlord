@@ -1,28 +1,34 @@
 import time
 import os
+import asyncio
+import aiofiles
 
 
-def read_file(file_path):
+async def read_file(file_path):
     try:
-        with open(file_path, "rb") as f:
-            return f.read()
+        async with aiofiles.open(file_path, "rb") as f:
+            return await f.read()
     except Exception as e:
         print(f"Error reading file {file_path}: {e}")
         return None
 
 
-def main():
-    # file_path = '/tmp/20mb_file.bin'
+async def write_file(file_path):
+    async with aiofiles.open(file_path, "wb") as f:
+        await f.write(b"a" * 20 * 1024 * 1024)
+
+
+async def main():
+    # dir_path = '/home/lvbo/data/local_cache'
     dir_path = "/home/lvbo/data/datenlord_cache"
-    file_base = "20mb_file5"
+    file_base = "20mb_file111"
     write_latency = []
-    # Create 5 file to local
+
     for i in range(5):
         start_time = time.time()
         file_path = os.path.join(dir_path, f"{file_base}_{i}.bin")
         if not os.path.exists(file_path):
-            with open(file_path, "wb") as f:
-                f.write(b"a" * 20 * 1024 * 1024)
+            await write_file(file_path)
         end_time = time.time()
         write_latency.append(end_time - start_time)
 
@@ -34,28 +40,27 @@ def main():
 
     read_latency = []
     file_path = os.path.join(dir_path, f"{file_base}_0.bin")
-    # Read the file with 5 times
+
     for i in range(5):
         start_time = time.time()
-        content = read_file(file_path)
+        content = await read_file(file_path)
         if content:
-            # print(f"{file_path} file read successfully, size: {len(content)} bytes")
             end_time = time.time()
             read_latency.append(end_time - start_time)
         else:
             print(f"Failed to read {file_path}")
+
     sorted_read_latency = sorted(read_latency)
     avg_read_latency = sum(sorted_read_latency) / len(read_latency)
     print(
         f"Read {len(read_latency)} files, average time: {avg_read_latency:.6f} seconds, max: {max(read_latency):.6f} seconds, min: {min(read_latency):.6f} seconds, mid: {sorted_read_latency[len(sorted_read_latency)//2]:.6f} seconds"
     )
 
-    # Del all files
-    for i in range(10):
+    for i in range(5):
         file_path = os.path.join(dir_path, f"{file_base}_{i}.bin")
         if os.path.exists(file_path):
             os.remove(file_path)
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

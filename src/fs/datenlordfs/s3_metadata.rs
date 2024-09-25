@@ -5,9 +5,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
+use crate::metrics::FILESYSTEM_METRICS;
 use async_trait::async_trait;
 use clippy_utilities::Cast;
-use crate::metrics::FILESYSTEM_METRICS;
 use libc::{RENAME_EXCHANGE, RENAME_NOREPLACE};
 use nix::errno::Errno;
 use nix::fcntl::OFlag;
@@ -72,7 +72,7 @@ pub struct S3MetaData {
 impl MetaData for S3MetaData {
     type N = S3Node;
 
-    #[instrument(level="debug",  skip(self))]
+    #[instrument(level = "debug", skip(self))]
     async fn release(
         &self,
         ino: u64,
@@ -90,7 +90,7 @@ impl MetaData for S3MetaData {
         Ok(())
     }
 
-    #[instrument(level="debug",  skip(self), err, ret)]
+    #[instrument(level = "debug", skip(self), err, ret)]
     async fn readdir(
         &self,
         context: ReqContext,
@@ -122,7 +122,7 @@ impl MetaData for S3MetaData {
         }
     }
 
-    #[instrument(level="debug",  skip(self), err, ret)]
+    #[instrument(level = "debug", skip(self), err, ret)]
     async fn opendir(&self, context: ReqContext, ino: u64, flags: u32) -> DatenLordResult<u64> {
         match self.get_node_from_kv_engine(ino).await? {
             None => {
@@ -141,7 +141,7 @@ impl MetaData for S3MetaData {
         }
     }
 
-    #[instrument(level="debug",  skip(self))]
+    #[instrument(level = "debug", skip(self))]
     async fn readlink(&self, ino: u64) -> DatenLordResult<Vec<u8>> {
         let node = self
             .get_node_from_kv_engine(ino)
@@ -150,7 +150,7 @@ impl MetaData for S3MetaData {
         Ok(node.get_symlink_target().as_os_str().to_owned().into_vec())
     }
 
-    #[instrument(level="debug",  skip(self), err, ret)]
+    #[instrument(level = "debug", skip(self), err, ret)]
     async fn statfs(&self, context: ReqContext, ino: u64) -> DatenLordResult<StatFsParam> {
         let node = self
             .get_node_from_kv_engine(ino)
@@ -160,7 +160,7 @@ impl MetaData for S3MetaData {
         node.statefs().await
     }
 
-    #[instrument(level="debug",  skip(self))]
+    #[instrument(level = "debug", skip(self))]
     async fn releasedir(&self, ino: u64, _fh: u64) -> DatenLordResult<()> {
         let inode = self.get_node_from_kv_engine(ino).await?;
         if inode.is_none() {
@@ -172,7 +172,7 @@ impl MetaData for S3MetaData {
         Ok(())
     }
 
-    #[instrument(level="debug",  skip(self), err, ret)]
+    #[instrument(level = "debug", skip(self), err, ret)]
     async fn read_helper(&self, ino: INum) -> DatenLordResult<(u64, SystemTime)> {
         let open_file = self.open_files.get(ino);
 
@@ -208,7 +208,7 @@ impl MetaData for S3MetaData {
         Ok((file_size, mtime))
     }
 
-    #[instrument(level="debug",  skip(self), err, ret)]
+    #[instrument(level = "debug", skip(self), err, ret)]
     async fn open(&self, context: ReqContext, ino: u64, flags: u32) -> DatenLordResult<u64> {
         // TODO: handle open flags
         // <https://pubs.opengroup.org/onlinepubs/9699919799/functions/open.html>
@@ -248,7 +248,7 @@ impl MetaData for S3MetaData {
         }
     }
 
-    #[instrument(level="debug",  skip(self), err, ret)]
+    #[instrument(level = "debug", skip(self), err, ret)]
     async fn getattr(&self, ino: u64) -> DatenLordResult<(Duration, FileAttr)> {
         // If the file is open, return the attr in `open_files`
         if let Some(open_file) = self.open_files.try_get(ino) {
@@ -277,7 +277,7 @@ impl MetaData for S3MetaData {
         (file_size, mtime)
     }
 
-    #[instrument(level="debug",  skip(self))]
+    #[instrument(level = "debug", skip(self))]
     async fn forget(&self, ino: u64, nlookup: u64) -> DatenLordResult<bool> {
         let (res, retry) = retry_txn!(TXN_RETRY_LIMIT, {
             let mut txn = self.kv_engine.new_meta_txn().await;
@@ -305,7 +305,7 @@ impl MetaData for S3MetaData {
         res
     }
 
-    #[instrument(level="debug",  skip(self, storage), err, ret)]
+    #[instrument(level = "debug", skip(self, storage), err, ret)]
     async fn setattr_helper(
         &self,
         context: ReqContext,
@@ -355,7 +355,7 @@ impl MetaData for S3MetaData {
         res
     }
 
-    #[instrument(level="debug",  skip(self), err, ret)]
+    #[instrument(level = "debug", skip(self), err, ret)]
     async fn unlink(
         &self,
         context: ReqContext,
@@ -484,7 +484,7 @@ impl MetaData for S3MetaData {
         *self.fuse_fd.lock().await = fuse_fd;
     }
 
-    #[instrument(level="debug",  skip(self), err, ret)]
+    #[instrument(level = "debug", skip(self), err, ret)]
     // Create a file, but do not open it. They are two separate steps.
     // If the file does not exist, first create it with
     // the specified mode, and then open it.
@@ -536,7 +536,7 @@ impl MetaData for S3MetaData {
         Ok((ttl, current_attr, MY_GENERATION))
     }
 
-    #[instrument(level="debug",  skip(self), err, ret)]
+    #[instrument(level = "debug", skip(self), err, ret)]
     /// Helper function to lookup
     #[allow(clippy::too_many_lines)]
     async fn lookup_helper(
@@ -581,7 +581,7 @@ impl MetaData for S3MetaData {
     }
 
     #[allow(clippy::too_many_lines)] // TODO: refactor it into smaller functions
-    #[instrument(level="debug",  skip(self), err, ret)]
+    #[instrument(level = "debug", skip(self), err, ret)]
     async fn rename(&self, context: ReqContext, param: RenameParam) -> DatenLordResult<()> {
         let old_parent = param.old_parent;
         let old_name = param.old_name.as_str();

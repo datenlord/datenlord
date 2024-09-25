@@ -1,5 +1,7 @@
+use std::os::raw::c_int;
 use std::{collections::VecDeque, path::Path, sync::Arc, time::Duration};
 
+use datenlord::fs::fs_util::INum;
 use datenlord::{
     common::error::{DatenLordError, DatenLordResult},
     fs::{
@@ -9,6 +11,76 @@ use datenlord::{
     },
 };
 use nix::fcntl::OFlag;
+use pyo3::ffi;
+use pyo3::prelude::*;
+use pyo3::pymethods;
+
+/// A bytes-like object that implements buffer protocol.
+/// Reference to opendal lib.
+#[pyclass]
+pub struct Buffer {
+    inner: Vec<u8>,
+}
+
+impl Buffer {
+    pub fn new(inner: Vec<u8>) -> Self {
+        Buffer { inner }
+    }
+
+    /// Consume self to build a bytes
+    pub fn into_bytes(self, py: Python) -> PyResult<Py<PyAny>> {
+        let buffer = self.into_py(py);
+
+        unsafe { PyObject::from_owned_ptr_or_err(py, ffi::PyBytes_FromObject(buffer.as_ptr())) }
+    }
+}
+
+#[pyclass]
+pub struct Entry {
+    pub name: String,
+    pub ino: INum,
+    pub file_type: FileType,
+}
+
+#[pymethods]
+impl Entry {
+    #[getter]
+    pub fn name(&self) -> String {
+        self.name.clone()
+    }
+
+    #[getter]
+    pub fn ino(&self) -> INum {
+        self.ino
+    }
+
+    #[getter]
+    pub fn file_type(&self) -> String {
+        match self.file_type {
+            FileType::File => "file".to_string(),
+            FileType::Dir => "dir".to_string(),
+            FileType::Symlink => "symlink".to_string(),
+        }
+    }
+
+    fn __str__(&self) -> String {
+        let file_type = match self.file_type {
+            FileType::File => "file".to_string(),
+            FileType::Dir => "dir".to_string(),
+            FileType::Symlink => "symlink".to_string(),
+        };
+        format!("Entry {{ name: {}, ino: {}, file_type: {} }}", self.name, self.ino, file_type)
+    }
+
+    fn __repr__(&self) -> String {
+        let file_type = match self.file_type {
+            FileType::File => "file".to_string(),
+            FileType::Dir => "dir".to_string(),
+            FileType::Symlink => "symlink".to_string(),
+        };
+        format!("Entry {{ name: {}, ino: {}, file_type: {} }}", self.name, self.ino, file_type)
+    }
+}
 
 /// Find the parent inode and attribute of the given path.
 pub async fn find_parent_attr(
@@ -105,4 +177,27 @@ pub async fn recursive_delete_dir(
     }
 
     Ok(())
+}
+
+#[pymethods]
+impl Buffer {
+    unsafe fn __getbuffer__(
+        slf: PyRefMut<Self>,
+        view: *mut ffi::Py_buffer,
+        flags: c_int,
+    ) -> PyResult<()> {
+        let bytes = slf.inner.as_slice();
+        let ret = ffi::PyBuffer_FillInfo(
+            view,
+            slf.as_ptr() as *mut _,
+            bytes.as_ptr() as *mut _,
+            bytes.len().try_into().unwrap(),
+            1, // read only
+            flags,
+        );
+        if ret == -1 {
+            return Err(PyErr::fetch(slf.py()));
+        }
+        Ok(())
+    }
 }

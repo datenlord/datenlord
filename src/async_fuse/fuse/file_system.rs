@@ -4,10 +4,10 @@ use std::marker::PhantomData;
 use std::path::Path;
 use std::sync::Arc;
 
+use crate::config::StorageConfig;
 use async_trait::async_trait;
 use bytes::BytesMut;
 use clippy_utilities::{Cast, OverflowArithmetic};
-use crate::config::StorageConfig;
 use nix::errno::Errno;
 use nix::sys::stat::SFlag;
 use tracing::{debug, info, instrument};
@@ -455,7 +455,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for FuseFileSystem<M> {
     /// filesystem may ignore forget calls, if the inodes don't need to have
     /// a limited lifetime. On unmount it is not guaranteed, that all referenced
     /// inodes will receive a forget message.
-    #[instrument(level="debug",  skip(self))]
+    #[instrument(level = "debug", skip(self))]
     async fn forget(&self, req: &Request<'_>, nlookup: u64) {
         let ino = req.nodeid();
         debug!("forget(ino={}, nlookup={}, req={:?})", ino, nlookup, req,);
@@ -587,7 +587,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for FuseFileSystem<M> {
     }
 
     /// Remove a file.
-    #[instrument(level="debug",  skip(self), err, ret)]
+    #[instrument(level = "debug", skip(self), err, ret)]
     async fn unlink(
         &self,
         req: &Request<'_>,
@@ -621,7 +621,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for FuseFileSystem<M> {
     }
 
     /// Remove a directory.
-    #[instrument(level="debug",  skip(self), err, ret)]
+    #[instrument(level = "debug", skip(self), err, ret)]
     async fn rmdir(
         &self,
         req: &Request<'_>,
@@ -755,7 +755,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for FuseFileSystem<M> {
     /// call will reflect the return value of self operation. fh will
     /// contain the value set by the open method, or will be undefined if
     /// the open method did not set any value.
-    #[instrument(level="debug",  skip(self, data, req), err, ret)]
+    #[instrument(level = "debug", skip(self, data, req), err, ret)]
     async fn write(
         &self,
         req: &Request<'_>,
@@ -804,7 +804,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for FuseFileSystem<M> {
     /// flush data, is if the filesystem wants to return write errors. If
     /// the filesystem supports file locking operations (setlk, getlk) it
     /// should remove all locks belonging to `lock_owner`.
-    #[instrument(level="debug",  skip(self), err, ret)]
+    #[instrument(level = "debug", skip(self), err, ret)]
     async fn flush(
         &self,
         req: &Request<'_>,
@@ -852,7 +852,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for FuseFileSystem<M> {
     /// contain the value set by the open method, or will be undefined
     /// if the open method didn't set any value. flags will contain the same
     /// flags as for open.
-    #[instrument(level="debug",  skip(self), err, ret)]
+    #[instrument(level = "debug", skip(self), err, ret)]
     async fn release(
         &self,
         req: &Request<'_>,
@@ -894,7 +894,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for FuseFileSystem<M> {
     /// Synchronize file contents.
     /// If the datasync parameter is non-zero, then only the user data should be
     /// flushed, not the meta data.
-    #[instrument(level="debug",  skip(self), err, ret)]
+    #[instrument(level = "debug", skip(self), err, ret)]
     async fn fsync(
         &self,
         req: &Request<'_>,
@@ -1059,7 +1059,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for FuseFileSystem<M> {
     /// should be flushed, not the meta data. fh will contain the value set
     /// by the opendir method, or will be undefined if the opendir method
     /// didn't set any value.
-    #[instrument(level="debug",  skip(self), err, ret)]
+    #[instrument(level = "debug", skip(self), err, ret)]
     async fn fsyncdir(
         &self,
         req: &Request<'_>,
