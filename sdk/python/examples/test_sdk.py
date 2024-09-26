@@ -15,48 +15,79 @@ async def main():
     print("SDK initialized successfully")
 
     # Check if directory exists
-    test_dir = "datenlord_sdk"
+    test_dir = "datenlord_cache"
     is_exists = await sdk.exists(test_dir)
     print(f"{test_dir} directory exists: {is_exists}")
 
-    if is_exists:
-        print(f"{test_dir} directory exists")
+    if not is_exists:
         try:
-            await sdk.deldir(test_dir, recursive=True)
-            print(f"{test_dir} directory deleted successfully")
+            res = await sdk.mkdir(test_dir)
+            print(f"{test_dir} directory created successfully", res)
+            is_exists = await sdk.exists(test_dir)
+            if is_exists:
+                print(f"{test_dir} directory exists")
+            else:
+                print(f"{test_dir} directory does not exist")
         except Exception as e:
             handle_error(e)
 
-    try:
-        res = await sdk.mkdir(test_dir)
-        print(f"{test_dir} directory created successfully", res)
-        is_exists = await sdk.exists(test_dir)
-        if is_exists:
-            print(f"{test_dir} directory exists")
-        else:
-            print(f"{test_dir} directory does not exist")
-    except Exception as e:
-        handle_error(e)
+    # Check if directory exists
+    test_dir_subdir = f"{test_dir}/subdir"
+    is_exists = await sdk.exists(test_dir_subdir)
+    print(f"{test_dir_subdir} directory exists: {is_exists}")
+
+    if is_exists:
+        print(f"{test_dir_subdir} directory exists")
+        try:
+            await sdk.rmdir(test_dir_subdir)
+            print(f"{test_dir_subdir} directory deleted successfully")
+        except Exception as e:
+            handle_error(e)
 
     # Create a new directory
     try:
-        await sdk.mkdir(f"{test_dir}/subdir")
+        await sdk.mkdir(test_dir_subdir)
         print(f"{test_dir}/subdir directory created successfully")
     except Exception as e:
         handle_error(e)
 
+    # Check if file exists
+    test_dir_file = f"{test_dir}/test_file.txt"
+    is_exists = await sdk.exists(test_dir_file)
+    print(f"{test_dir_file} file exists: {is_exists}")
+
+    if is_exists:
+        print(f"{test_dir_file} file exists")
+        try:
+            await sdk.remove(test_dir_file)
+            print(f"{test_dir_file} file deleted successfully")
+        except Exception as e:
+            handle_error(e)
+
     # Create a new file
     file_path = f"{test_dir}/test_file.txt"
     try:
-        await sdk.create_file(file_path)
+        await sdk.mknod(file_path)
         print(f"{file_path} file created successfully")
     except Exception as e:
         handle_error(e)
 
-    # Create a new file
+    # Check if file exists
     file_path = f"{test_dir}/test_file2.txt"
+    is_exists = await sdk.exists(file_path)
+    print(f"{file_path} file exists: {is_exists}")
+
+    if is_exists:
+        print(f"{file_path} file exists")
+        try:
+            await sdk.remove(file_path)
+            print(f"{file_path} file deleted successfully")
+        except Exception as e:
+            handle_error(e)
+
+    # Create a new file
     try:
-        await sdk.create_file(file_path)
+        await sdk.mknod(file_path)
         print(f"{file_path} file created successfully")
     except Exception as e:
         handle_error(e)
@@ -105,7 +136,7 @@ async def main():
     # Rename the file
     rename_file_path = f"{test_dir}/test_file_rename.txt"
     try:
-        await sdk.rename_path(file_path, rename_file_path)
+        await sdk.rename(file_path, rename_file_path)
         print(f"{file_path} file renamed successfully to {rename_file_path}")
     except Exception as e:
         handle_error(e)
@@ -119,7 +150,7 @@ async def main():
 
     # Read dir info
     try:
-        dir_info = await sdk.list_dir(test_dir)
+        dir_info = await sdk.listdir(test_dir)
         print(f"{test_dir} directory info: {dir_info}")
         for item in dir_info:
             print(f"Item name: {item.name} ino: {item.ino} type: {item.file_type}")

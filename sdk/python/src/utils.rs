@@ -35,6 +35,7 @@ impl Buffer {
     }
 }
 
+/// A directory entry type.
 #[pyclass]
 pub struct Entry {
     pub name: String,
@@ -136,6 +137,7 @@ pub async fn recursive_delete_dir(
     while let Some(current_dir_path) = dir_stack.pop_front() {
         let (_, parent_attr) = find_parent_attr(&current_dir_path, fs.clone()).await?;
         let path = Path::new(&current_dir_path);
+
         let current_name = path
             .file_name()
             .ok_or(DatenLordError::ArgumentInvalid {
@@ -145,26 +147,38 @@ pub async fn recursive_delete_dir(
             .ok_or(DatenLordError::ArgumentInvalid {
                 context: vec!["Invalid file path".to_string()],
             })?;
-        let (_, dir_attr, _) = fs.lookup(0, 0, parent_attr.ino, current_name).await?;
 
+        let (_, dir_attr, _) = fs.lookup(0, 0, parent_attr.ino, current_name).await?;
         let current_dir_ino = dir_attr.ino;
+
+        // Open directory
         let dir_handle = fs
-            .opendir(0, 0, current_dir_ino, OFlag::O_RDWR.bits() as u32)
+            .opendir(0, 0, current_dir_ino, OFlag::O_RDONLY.bits() as u32)
             .await?;
 
-        let entries = fs.readdir(0, 0, current_dir_ino, dir_handle, 0).await?;
+        // Read directory entries
+        let entries = match fs.readdir(0, 0, current_dir_ino, dir_handle, 0).await {
+            Ok(e) => e,
+            Err(e) => {
+                // Release the directory handle before returning the error
+                let _ = fs.releasedir(current_dir_ino, dir_handle, 0).await;
+                return Err(e);
+            }
+        };
+
         for entry in entries.iter() {
-            let entry_path = format!("{}/{}", current_dir_path, entry.name());
+            let entry_path = Path::new(&current_dir_path).join(entry.name());
 
             if entry.file_type() == FileType::Dir {
                 if recursive {
-                    dir_stack.push_front(entry_path);
+                    dir_stack.push_front(entry_path.to_string_lossy().to_string());
                 }
             } else {
                 fs.unlink(0, 0, current_dir_ino, &entry.name()).await?;
             }
         }
 
+        // Always release the directory handle
         fs.releasedir(current_dir_ino, dir_handle, 0).await?;
 
         if recursive || entries.is_empty() {
@@ -172,12 +186,13 @@ pub async fn recursive_delete_dir(
         }
 
         if !recursive {
-            break;
+            return Ok(());
         }
     }
 
     Ok(())
 }
+
 
 #[pymethods]
 impl Buffer {

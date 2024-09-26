@@ -27,7 +27,7 @@ use datenlord::common::logger::init_logger;
 use datenlord::common::task_manager::{TaskName, TASK_MANAGER};
 use datenlord::config::{self, InnerConfig, NodeRole};
 use datenlord::fs::datenlordfs::{DatenLordFs, MetaData, S3MetaData};
-use datenlord::fs::fs_util::{CreateParam, RenameParam, ROOT_ID};
+use datenlord::fs::fs_util::{CreateParam, RenameParam};
 use datenlord::fs::kv_engine::etcd_impl::EtcdKVEngine;
 use datenlord::fs::kv_engine::{KVEngine, KVEngineType};
 use datenlord::fs::virtualfs::VirtualFs;
@@ -36,9 +36,9 @@ use datenlord::new_storage::{BackendBuilder, MemoryCache, StorageManager};
 use nix::fcntl::OFlag;
 use nix::sys::stat::SFlag;
 use pyo3::exceptions::PyException;
-use pyo3::{pyclass, pymethods, Bound, PyAny, PyResult, Python};
+use pyo3::types::{PyBytes, PyBytesMethods};
+use pyo3::{pyclass, pymethods, Bound, IntoPy, PyAny, PyRef, PyResult, Python};
 use pyo3_asyncio::tokio::future_into_py;
-use std::io::{Read, Write};
 use std::path::Path;
 use std::sync::Arc;
 use tracing::info;
@@ -46,13 +46,16 @@ use tracing::info;
 use crate::file::File;
 use crate::utils::{self, Buffer, Entry};
 
+/// `DatenLordSDK` is a Python class that provides an interface to interact with the DatenLord filesystem.
 #[pyclass]
 pub struct DatenLordSDK {
+    /// The `DatenLordFs` instance that represents the filesystem.
     datenlordfs: Arc<DatenLordFs<S3MetaData>>,
 }
 
 #[pymethods]
 impl DatenLordSDK {
+    /// Initializes a new instance of `DatenLordSDK` by loading the configuration from the specified path
     #[new]
     pub fn new(_py: Python, config_path: String) -> PyResult<Self> {
         // let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
@@ -135,6 +138,25 @@ impl DatenLordSDK {
         })
     }
 
+    /// Support async context manager
+    fn __aenter__<'a>(slf: PyRef<'a, Self>, py: Python<'a>) -> PyResult<Bound<'a, PyAny>> {
+        let slf = slf.into_py(py);
+        future_into_py(py, async move { Ok(slf) })
+    }
+
+    /// Support async context manager
+    fn __aexit__<'a>(
+        &'a mut self,
+        py: Python<'a>,
+        _exc_type: &Bound<'a, PyAny>,
+        _exc_value: &Bound<'a, PyAny>,
+        _traceback: &Bound<'a, PyAny>,
+    ) -> PyResult<Bound<'a, PyAny>> {
+        self.py_close(py)
+    }
+
+    /// Check if a path exists
+    /// Return True if the path exists, False otherwise.
     #[pyo3(name = "exists")]
     fn py_exists<'a>(&'a self, py: Python<'a>, path: String) -> PyResult<Bound<PyAny>> {
         let fs = Arc::clone(&self.datenlordfs);
@@ -157,10 +179,12 @@ impl DatenLordSDK {
         })
     }
 
+    /// Create a directory.
+    /// The `path` is the path to the directory to be created.
     #[pyo3(name = "mkdir")]
-    fn py_mkdir<'a>(&'a self, py: Python<'a>, path: &'a str) -> PyResult<Bound<PyAny>> {
+    fn py_mkdir<'a>(&'a self, py: Python<'a>, path: String) -> PyResult<Bound<PyAny>> {
         let fs = Arc::clone(&self.datenlordfs);
-        let path_str = path.to_string();
+        let path_str = path;
 
         future_into_py(py, async move {
             // Find parent inode
@@ -190,15 +214,18 @@ impl DatenLordSDK {
         })
     }
 
-    #[pyo3(name = "deldir")]
-    fn py_deldir<'a>(
+    /// Remove a directory.
+    /// Not recommended to remove all dirs and files, support to remove one
+    /// dir at a time.
+    #[pyo3(name = "rmdir", signature = (path, recursive = false))]
+    fn py_rmdir<'a>(
         &'a self,
         py: Python<'a>,
-        path: &'a str,
+        path: String,
         recursive: bool,
     ) -> PyResult<Bound<PyAny>> {
         let fs = Arc::clone(&self.datenlordfs);
-        let path_str = path.to_string();
+        let path_str = path;
 
         future_into_py(py, async move {
             match utils::recursive_delete_dir(fs.clone(), &path_str, recursive).await {
@@ -208,133 +235,37 @@ impl DatenLordSDK {
         })
     }
 
-    #[pyo3(name = "copy_from_local_file")]
-    fn py_copy_from_local_file<'a>(
-        &'a self,
-        py: Python<'a>,
-        local_path: &'a str,
-        dest_path: &'a str,
-        overwrite: bool,
-    ) -> PyResult<Bound<PyAny>> {
+    /// Remove a file
+    /// The `path` is the path to the file to be removed.
+    #[pyo3(name = "remove")]
+    fn py_remove<'a>(&'a self, py: Python<'a>, path: String) -> PyResult<Bound<PyAny>> {
         let fs = Arc::clone(&self.datenlordfs);
-        let local_path_str = local_path.to_string();
-        let dest_path_str = dest_path.to_string();
+        let path_str = path;
 
         future_into_py(py, async move {
-            if !overwrite {
-                if let Ok((_, _, _)) = fs.lookup(0, 0, ROOT_ID, &dest_path_str).await {
-                    return Err(PyException::new_err("File already exists"));
-                }
-            }
+            match utils::find_parent_attr(&path_str, fs.clone()).await {
+                Ok((_, parent_attr)) => {
+                    let filename = Path::new(&path_str)
+                        .file_name()
+                        .ok_or(PyException::new_err(format!(
+                            "Invalid file path: {:?}",
+                            path_str
+                        )))?
+                        .to_str()
+                        .ok_or(PyException::new_err(format!(
+                            "Invalid file path: {:?}",
+                            path_str
+                        )))?;
 
-            match std::fs::File::open(&local_path_str) {
-                Ok(mut local_file) => {
-                    let mut buffer = Vec::new();
-                    if let Err(e) = local_file.read_to_end(&mut buffer) {
-                        return Err(PyException::new_err(format!("read_to_end failed: {:?}", e)));
-                    }
-
-                    let path_components: Vec<&str> =
-                        dest_path_str.split('/').filter(|s| !s.is_empty()).collect();
-                    match utils::find_parent_attr(&dest_path_str, fs.clone()).await {
-                        Ok((_, parent_attr)) => {
-                            let param = CreateParam {
-                                parent: parent_attr.ino,
-                                name: path_components.last().unwrap().to_string(),
-                                mode: 0o777,
-                                rdev: 0,
-                                uid: 0,
-                                gid: 0,
-                                node_type: SFlag::S_IFREG,
-                                link: None,
-                            };
-
-                            match fs.mknod(param).await {
-                                Ok((_, file_attr, _)) => {
-                                    match fs
-                                        .open(0, 0, file_attr.ino, OFlag::O_WRONLY.bits() as u32)
-                                        .await
-                                    {
-                                        Ok(fh) => {
-                                            match fs.write(file_attr.ino, fh, 0, &buffer, 0).await {
-                                                Ok(_) => Ok(()),
-                                                Err(e) => Err(PyException::new_err(format!(
-                                                    "write failed: {:?}",
-                                                    e
-                                                ))),
-                                            }
-                                        }
-                                        Err(e) => Err(PyException::new_err(format!(
-                                            "open failed: {:?}",
-                                            e
-                                        ))),
-                                    }
-                                }
-                                Err(e) => {
-                                    Err(PyException::new_err(format!("mknod failed: {:?}", e)))
-                                }
+                    match fs.lookup(0, 0, parent_attr.ino, filename).await {
+                        Ok((_, _, _)) => {
+                            // Check current file is exists
+                            match fs.unlink(0, 0, parent_attr.ino, filename).await {
+                                Ok(_) => Ok(()),
+                                Err(e) => Err(PyException::new_err(format!("remove failed: {:?}", e))),
                             }
                         }
-                        Err(e) => Err(PyException::new_err(format!(
-                            "utils::find_parent_attr failed: {:?}",
-                            e
-                        ))),
-                    }
-                }
-                Err(e) => Err(PyException::new_err(format!("File open error: {:?}", e))),
-            }
-        })
-    }
-
-    #[pyo3(name = "copy_to_local_file")]
-    fn py_copy_to_local_file<'a>(
-        &'a self,
-        py: Python<'a>,
-        src_path: &'a str,
-        local_path: &'a str,
-    ) -> PyResult<Bound<PyAny>> {
-        let fs = Arc::clone(&self.datenlordfs);
-        let src_path_str = src_path.to_string();
-        let local_path_str = local_path.to_string();
-
-        future_into_py(py, async move {
-            match utils::find_parent_attr(&src_path_str, fs.clone()).await {
-                Ok((_, attr)) => {
-                    let path_components: Vec<&str> =
-                        src_path_str.split('/').filter(|s| !s.is_empty()).collect();
-                    let (_, file_attr, _) = fs
-                        .lookup(0, 0, attr.ino, path_components.last().unwrap())
-                        .await
-                        .unwrap();
-
-                    match fs
-                        .open(0, 0, file_attr.ino, OFlag::O_RDONLY.bits() as u32)
-                        .await
-                    {
-                        Ok(fh) => {
-                            let mut buffer = BytesMut::with_capacity(file_attr.size as usize);
-                            match fs
-                                .read(file_attr.ino, fh, 0, buffer.capacity() as u32, &mut buffer)
-                                .await
-                            {
-                                Ok(read_size) => {
-                                    let mut local_file = std::fs::File::create(local_path_str)?;
-                                    local_file.write_all(&buffer[..read_size])?;
-                                    fs.release(file_attr.ino, fh, 0, 0, true)
-                                        .await
-                                        .map_err(|e| {
-                                            PyException::new_err(format!(
-                                                "Failed to release file handle: {:?}",
-                                                e
-                                            ))
-                                        })
-                                }
-                                Err(e) => {
-                                    Err(PyException::new_err(format!("read failed: {:?}", e)))
-                                }
-                            }
-                        }
-                        Err(e) => Err(PyException::new_err(format!("open failed: {:?}", e))),
+                        Err(e) => Err(PyException::new_err(format!("lookup failed: {:?}", e))),
                     }
                 }
                 Err(e) => Err(PyException::new_err(format!(
@@ -345,20 +276,37 @@ impl DatenLordSDK {
         })
     }
 
-    #[pyo3(name = "create_file")]
-    fn py_create_file<'a>(&'a self, py: Python<'a>, file_path: &'a str) -> PyResult<Bound<PyAny>> {
+    /// Create a node in the file system.
+    /// The node can be a file.
+    /// The mode parameter is used to set the permissions of the node.
+    #[pyo3(name = "mknod", signature = (path, mode = 0o644))]
+    fn py_mknod<'a>(&'a self, py: Python<'a>, path: &'a str, mode: u32) -> PyResult<Bound<PyAny>> {
         let fs = Arc::clone(&self.datenlordfs);
-        let file_path_str = file_path.to_string();
+        let file_path_str = path.to_string();
 
         future_into_py(py, async move {
             match utils::find_parent_attr(&file_path_str, fs.clone()).await {
                 Ok((_, attr)) => {
-                    let path_components: Vec<&str> =
-                        file_path_str.split('/').filter(|s| !s.is_empty()).collect();
+                    if attr.kind != SFlag::S_IFDIR {
+                        return Err(PyException::new_err(format!(
+                            "parent dir is not a directory"
+                        )));
+                    }
+                    let name = Path::new(&file_path_str)
+                        .file_name()
+                        .ok_or(PyException::new_err(format!(
+                            "Invalid file path: {:?}",
+                            file_path_str
+                        )))?
+                        .to_str()
+                        .ok_or(PyException::new_err(format!(
+                            "Invalid file path: {:?}",
+                            file_path_str
+                        )))?;
                     let param = CreateParam {
                         parent: attr.ino,
-                        name: path_components.last().unwrap().to_string(),
-                        mode: 0o777,
+                        name: name.to_owned(),
+                        mode: mode,
                         rdev: 0,
                         uid: 0,
                         gid: 0,
@@ -378,16 +326,19 @@ impl DatenLordSDK {
         })
     }
 
-    #[pyo3(name = "rename_path")]
-    fn py_rename_path<'a>(
+    /// Rename a file or directory.
+    /// The `src` is the path to the file or directory to be renamed.
+    /// The `dst` is the new path for the file or directory.
+    #[pyo3(name = "rename")]
+    fn py_rename<'a>(
         &'a self,
         py: Python<'a>,
-        src_path: &'a str,
-        dest_path: &'a str,
+        src: &'a str,
+        dst: &'a str,
     ) -> PyResult<Bound<PyAny>> {
         let fs = Arc::clone(&self.datenlordfs);
-        let src_path_str = src_path.to_string();
-        let dest_path_str = dest_path.to_string();
+        let src_path_str = src.to_string();
+        let dest_path_str = dst.to_string();
 
         future_into_py(py, async move {
             // Find parent inode
@@ -414,10 +365,12 @@ impl DatenLordSDK {
         })
     }
 
+    /// Perform a stat system call on the given path.
+    /// Path to be examined; can be string.
     #[pyo3(name = "stat")]
-    fn py_stat<'a>(&'a self, py: Python<'a>, file_path: &'a str) -> PyResult<Bound<PyAny>> {
+    fn py_stat<'a>(&'a self, py: Python<'a>, path: String) -> PyResult<Bound<PyAny>> {
         let fs = Arc::clone(&self.datenlordfs);
-        let file_path_str = file_path.to_string();
+        let file_path_str = path;
 
         future_into_py(py, async move {
             match utils::find_parent_attr(&file_path_str, fs.clone()).await {
@@ -452,16 +405,18 @@ impl DatenLordSDK {
         })
     }
 
+    /// Built-in function to write a hole file.
+    /// The `path` is the path to the file to be written.
     #[pyo3(name = "write_file")]
     fn py_write_file<'a>(
         &'a self,
         py: Python<'a>,
-        file_path: &'a str,
-        content: &'a [u8],
+        path: String,
+        data: &Bound<PyBytes>,
     ) -> PyResult<Bound<PyAny>> {
         let fs = Arc::clone(&self.datenlordfs);
-        let file_path_str = file_path.to_string();
-        let data = content.to_vec();
+        let file_path_str = path;
+        let data = data.as_bytes().to_owned();
 
         future_into_py(py, async move {
             match utils::find_parent_attr(&file_path_str, fs.clone()).await {
@@ -513,10 +468,12 @@ impl DatenLordSDK {
         })
     }
 
+    /// Built-in function to read a hole file.
+    /// The `path` is the path to the file to be read.
     #[pyo3(name = "read_file")]
-    fn py_read_file<'a>(&'a self, py: Python<'a>, file_path: &'a str) -> PyResult<Bound<PyAny>> {
+    fn py_read_file<'a>(&'a self, py: Python<'a>, path: String) -> PyResult<Bound<PyAny>> {
         let fs = Arc::clone(&self.datenlordfs);
-        let file_path_str = file_path.to_string();
+        let file_path_str = path;
 
         future_into_py(py, async move {
             match utils::find_parent_attr(&file_path_str, fs.clone()).await {
@@ -567,14 +524,22 @@ impl DatenLordSDK {
     }
 
     /// Open a file and return a `File` object. mode is a string that represents the file open mode.
+    /// The mode can be one of the following:
+    /// - "r": Read mode
+    /// - "w": Write mode
+    /// - "a": Append mode
+    /// - "rw": Read/Write mode
+    /// The `File` object can be used to read and write data to the file.
     #[pyo3(name = "open")]
-    fn py_open<'a>(&'a self, _py: Python<'a>, file_path: String, mode: String) -> PyResult<File> {
+    fn py_open<'a>(&'a self, _py: Python<'a>, path: String, mode: String) -> PyResult<File> {
         let fs = Arc::clone(&self.datenlordfs);
+        let file_path = path;
         // Convert mode string to OFlag
         let mode = match mode.as_str() {
             "r" => OFlag::O_RDONLY,
             "w" => OFlag::O_WRONLY,
             "a" => OFlag::O_APPEND,
+            "rw" => OFlag::O_RDWR,
             _ => OFlag::O_RDWR,
         };
 
@@ -623,10 +588,11 @@ impl DatenLordSDK {
     }
 
     /// List dirs and files in a directory
-    /// return a list of file names
-    #[pyo3(name = "list_dir")]
-    fn py_list_dir<'a>(&'a self, py: Python<'a>, dir_path: String) -> PyResult<Bound<PyAny>> {
+    /// Return a list containing the names of the files in the directory.
+    #[pyo3(name = "listdir")]
+    fn py_listdir<'a>(&'a self, py: Python<'a>, path: String) -> PyResult<Bound<PyAny>> {
         let fs = Arc::clone(&self.datenlordfs);
+        let dir_path = path;
 
         future_into_py(py, async move {
             match utils::find_parent_attr(&dir_path, Arc::clone(&fs)).await {

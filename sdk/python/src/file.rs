@@ -7,8 +7,7 @@ use datenlord::fs::{
     virtualfs::VirtualFs,
 };
 use pyo3::{
-    exceptions::PyException, pyclass, pymethods, Bound, IntoPy, PyAny,
-    PyRef, PyResult, Python,
+    exceptions::PyException, pyclass, pymethods, types::{PyBytes, PyBytesMethods}, Bound, IntoPy, PyAny, PyRef, PyResult, Python
 };
 use pyo3_asyncio::tokio::future_into_py;
 use tokio::sync::Mutex;
@@ -16,6 +15,7 @@ use tracing::error;
 
 use crate::utils::Buffer;
 
+/// A file object that implements read, write, seek, and tell.
 #[pyclass]
 pub struct File {
     /// Current file ino, we use file descriptor to represent the file
@@ -56,6 +56,7 @@ impl File {
         // This operation does not support atomic update
         let offset = Arc::clone(&self.offset);
 
+        // thread nums for preheat
         let res = future_into_py(py, async move {
             let size = size.unwrap_or(attr.size as usize);
             let mut offset_guard = offset.lock().await;
@@ -82,11 +83,12 @@ impl File {
     }
 
     /// Write the given bytes-like object, return the number of bytes written.
-    pub fn write<'a>(&'a self, py: Python<'a>, data: Vec<u8>) -> PyResult<Bound<PyAny>> {
+    pub fn write<'a>(&'a self, py: Python<'a>, data: &Bound<PyBytes>) -> PyResult<Bound<PyAny>> {
         let attr = self.attr.clone();
         let fd = self.fd;
         let fs = Arc::clone(&self.fs);
         let offset = Arc::clone(&self.offset);
+        let data = data.as_bytes().to_owned();
 
         future_into_py(py, async move {
             let offset_guard = offset.lock().await;

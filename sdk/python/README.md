@@ -6,6 +6,12 @@ This example demonstrates how to use the DatenLord SDK to implement a user-space
 
 ### Python Example
 
+- See the Python example in the `example` directory.
+
+### Documentation
+
+- See the `docs` directory for the Python SDK documentation.
+
 #### Installation
 Before using the Python SDK, make sure you have installed the `datenlordsdk` package. You can install it from PyPI (if published) or build and install it locally using `maturin`.
 
