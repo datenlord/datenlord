@@ -1,6 +1,6 @@
 config_file = "config.toml"
 role = "sdk"
-node_name = "TestNode"
+node_name = "node222"
 node_ip = "127.0.0.1"
 mount_path = "/tmp/datenlord_data_dir"
 kv_server_list = [
@@ -8,17 +8,17 @@ kv_server_list = [
 ]
 server_port = 8800
 scheduler_extender_port = 12345
-log_level = "debug"
+log_level = "error"
 
 [storage]
-storage_type = "fs"
-block_size = 524288
+storage_type = "s3"
+block_size = 4194304
 fs_storage_root = "/tmp/datenlord_backend"
 
 [storage.memory_cache_config]
 capacity = 8589934592
 command_queue_limit = 1000
-write_back = false
+write_back = true
 soft_limit = "3,5"
 
 [storage.s3_storage_config]

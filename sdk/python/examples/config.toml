@@ -12,7 +12,7 @@ log_level = "debug"
 
 [storage]
 storage_type = "s3"
-block_size = 524288
+block_size = 4194304
 fs_storage_root = "/tmp/datenlord_backend"
 
 [storage.memory_cache_config]

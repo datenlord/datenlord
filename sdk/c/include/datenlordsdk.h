@@ -13,11 +13,6 @@ struct datenlord_bytes {
   uintptr_t len;
 };
 
-struct datenlord_error {
-  unsigned int code;
-  datenlord_bytes message;
-};
-
 /// File attributes
 struct datenlord_file_stat {
   /// Inode number
@@ -40,35 +35,46 @@ struct datenlord_file_stat {
 
 extern "C" {
 
-datenlord_sdk *init(const char *config);
+/// Open a file return current fd
+/// mode_t is a type that represents file mode and permission bits
+unsigned long long dl_open(datenlord_sdk *sdk, const char *file_path, mode_t mode);
 
-void free_sdk(datenlord_sdk *sdk);
+/// Close a opened file
+long long dl_close(datenlord_sdk *sdk, unsigned long long ino, unsigned long long fd);
 
-bool exists(datenlord_sdk *sdk, const char *dir_path);
+/// Write to a opened file
+long long dl_write(datenlord_sdk *sdk,
+                   unsigned long long ino,
+                   unsigned long long fd,
+                   datenlord_bytes content);
 
-datenlord_error *mkdir(datenlord_sdk *sdk, const char *dir_path);
+/// Read from a opened file
+long long dl_read(datenlord_sdk *sdk,
+                  unsigned long long ino,
+                  unsigned long long fd,
+                  datenlord_bytes *out_content,
+                  unsigned int size);
 
-datenlord_error *deldir(datenlord_sdk *sdk, const char *dir_path, bool recursive);
+datenlord_sdk *dl_init_sdk(const char *config);
 
-datenlord_error *rename_path(datenlord_sdk *sdk, const char *src_path, const char *dest_path);
+void dl_free_sdk(datenlord_sdk *sdk);
 
-datenlord_error *copy_from_local_file(datenlord_sdk *sdk,
-                                      bool overwrite,
-                                      const char *local_file_path,
-                                      const char *dest_file_path);
+bool dl_exists(datenlord_sdk *sdk, const char *dir_path);
 
-datenlord_error *copy_to_local_file(datenlord_sdk *sdk,
-                                    const char *src_file_path,
-                                    const char *local_file_path);
+long long dl_mkdir(datenlord_sdk *sdk, const char *dir_path);
 
-datenlord_error *create_file(datenlord_sdk *sdk, const char *file_path);
+long long dl_rmdir(datenlord_sdk *sdk, const char *dir_path, bool recursive);
 
-datenlord_error *stat(datenlord_sdk *sdk,
-                      const char *file_path,
-                      datenlord_file_stat *file_metadata);
+long long dl_remove(datenlord_sdk *sdk, const char *file_path);
 
-datenlord_error *write_file(datenlord_sdk *sdk, const char *file_path, datenlord_bytes content);
+long long dl_rename(datenlord_sdk *sdk, const char *src_path, const char *dest_path);
 
-datenlord_error *read_file(datenlord_sdk *sdk, const char *file_path, datenlord_bytes *out_content);
+long long dl_mknod(datenlord_sdk *sdk, const char *file_path);
+
+long long dl_stat(datenlord_sdk *sdk, const char *file_path, datenlord_file_stat *file_metadata);
+
+long long dl_write_file(datenlord_sdk *sdk, const char *file_path, datenlord_bytes content);
+
+long long dl_read_file(datenlord_sdk *sdk, const char *file_path, datenlord_bytes *out_content);
 
 } // extern "C"

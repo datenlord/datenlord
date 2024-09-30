@@ -1,169 +1,169 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <stdbool.h>
+#include <time.h>
+#include <fcntl.h>
+#include <sys/stat.h>
 #include "datenlordsdk.h"
 
-// Utils functions to free current error
-void handle_error(datenlord_error *err) {
-    if (err != NULL) {
-        printf("Error code: %d, message: %.*s\n", err->code, (int)err->message.len, (const char*)err->message.data);
-        free(err);
-    }
+#define FILE_SIZE_MB 20
+#define FILE_SIZE (FILE_SIZE_MB * 1024 * 1024)
+#define READ_BUFFER_SIZE 4096
+
+double get_time_diff(struct timespec start, struct timespec end) {
+    return (end.tv_sec - start.tv_sec) + (end.tv_nsec - start.tv_nsec) / 1e9;
+}
+
+void print_file_stat(const datenlord_file_stat *stat) {
+    printf("File Attributes:\n");
+    printf("Inode: %llu\n", stat->ino);
+    printf("Size: %llu bytes\n", stat->size);
+    printf("Blocks: %llu\n", stat->blocks);
+    printf("Permissions: %u\n", stat->perm);
+    printf("Number of Hard Links: %u\n", stat->nlink);
+    printf("User ID: %u\n", stat->uid);
+    printf("Group ID: %u\n", stat->gid);
+    printf("Rdev: %u\n", stat->rdev);
 }
 
 int main() {
-    // Init SDK
-    datenlord_sdk* sdk = init("config.toml");
-    if (sdk == NULL) {
+    datenlord_sdk *sdk = dl_init_sdk("config.toml");
+    if (!sdk) {
         printf("Failed to initialize SDK\n");
         return 1;
     }
     printf("SDK initialized successfully\n");
 
-    // Check if directory exists
-    const char* test_dir = "datenlord_sdk";
-    // Delete the directory recursively
-    datenlord_error* err = deldir(sdk, test_dir, true);
-    if (err == NULL) {
-        printf("Directory deleted successfully\n");
-    } else {
-        handle_error(err);
+    const char *file_path = "test_file.bin";
+    const char *dir_path = "test_directory";
+    const char *new_dir_path = "renamed_directory";
+    const char *new_file_path = "renamed_file.bin";
+
+    printf("\n=== File Operation Tests ===\n");
+
+    if (dl_exists(sdk, file_path)) {
+        printf("File %s already exists, removing it...\n", file_path);
+        dl_remove(sdk, file_path);
     }
 
-    bool dir_exists = exists(sdk, test_dir);
-    printf("Directory exists: %d\n", dir_exists);
-
-    // Mkdir test_sdk
-    err = mkdir(sdk, test_dir);
-    if (err == NULL) {
-        printf("Directory created successfully\n");
-    } else {
-        handle_error(err);
-    }
-
-    // Check if directory exists
-    dir_exists = exists(sdk, test_dir);
-    printf("Directory exists: %d\n", dir_exists);
-
-    // Create a new file
-    const char* file_path = "datenlord_sdk/test_file.txt";
-    // Check if directory exists
-    dir_exists = exists(sdk, file_path);
-    printf("Directory exists: %d\n", dir_exists);
-
-    err = create_file(sdk, file_path);
-    if (err == NULL) {
-        printf("File created successfully\n");
-    } else {
-        handle_error(err);
-    }
-
-    // Check if file exists
-    dir_exists = exists(sdk, file_path);
-    printf("File exists: %d\n", dir_exists);
-
-    // Stat the file
-    datenlord_file_stat file_stat;
-    err = stat(sdk, file_path, &file_stat);
-    if (err == NULL) {
-        printf("File stat: inode=%ld, size=%ld, blocks=%ld, perm=o%o, nlink=%d, uid=%d, gid=%d\n",
-               file_stat.ino, file_stat.size, file_stat.blocks, file_stat.perm, file_stat.nlink,
-               file_stat.uid, file_stat.gid);
-    } else {
-        handle_error(err);
-    }
-
-    // Write data to the file
-    const char* file_content = "Hello, Datenlord!";
-    datenlord_bytes content = { (const uint8_t*)file_content, strlen(file_content) };
-    err = write_file(sdk, file_path, content);
-    if (err == NULL) {
-        printf("File written successfully\n");
-    } else {
-        handle_error(err);
-    }
-
-    // Read the file
-    size_t buffer_size = 1024;
-    uint8_t *buffer = (uint8_t *)malloc(buffer_size);
-    if (buffer == NULL) {
-        printf("Failed to allocate buffer\n");
+    if (dl_mknod(sdk, file_path) < 0) {
+        printf("Failed to create file");
+        dl_free_sdk(sdk);
         return 1;
     }
-    datenlord_bytes out_content = { buffer, buffer_size };
-    err = read_file(sdk, file_path, &out_content);
-    if (err == NULL) {
-        printf("File read successfully: %.*s\n", (int)out_content.len, (const char*)out_content.data);
-    } else {
-        handle_error(err);
+    printf("File %s created successfully\n", file_path);
+
+    unsigned long long fd = dl_open(sdk, file_path, O_RDWR);
+    if (fd == 0) {
+        printf("Failed to open file");
+        dl_free_sdk(sdk);
+        return 1;
     }
-    free(buffer);
+    printf("File %s opened successfully with descriptor %llu\n", file_path, fd);
 
-    // Stat the file
-    file_stat;
-    err = stat(sdk, file_path, &file_stat);
-    if (err == NULL) {
-        printf("File stat: inode=%ld, size=%ld, blocks=%ld, perm=o%o, nlink=%d, uid=%d, gid=%d\n",
-               file_stat.ino, file_stat.size, file_stat.blocks, file_stat.perm, file_stat.nlink,
-               file_stat.uid, file_stat.gid);
+    datenlord_file_stat file_stat;
+    if (dl_stat(sdk, file_path, &file_stat) < 0) {
+        printf("Failed to get file stat");
+        dl_close(sdk, 0, fd);
+        dl_free_sdk(sdk);
+        return 1;
+    }
+    print_file_stat(&file_stat);
+
+    uint8_t *data = (uint8_t *)malloc(FILE_SIZE);
+    if (!data) {
+        printf("Failed to allocate memory");
+        dl_close(sdk, file_stat.ino, fd);
+        dl_free_sdk(sdk);
+        return 1;
+    }
+    memset(data, 'A', FILE_SIZE);
+    datenlord_bytes content = {.data = data, .len = FILE_SIZE};
+
+    struct timespec start_time, end_time;
+    clock_gettime(CLOCK_MONOTONIC, &start_time);
+    if (dl_write(sdk, file_stat.ino, fd, content) < 0) {
+        printf("Failed to write to file");
+        dl_close(sdk, file_stat.ino, fd);
+        free(data);
+        dl_free_sdk(sdk);
+        return 1;
+    }
+    clock_gettime(CLOCK_MONOTONIC, &end_time);
+    double write_time = get_time_diff(start_time, end_time);
+    printf("Write operation completed in %.6f seconds\n", write_time);
+
+    datenlord_bytes read_content;
+    read_content.data = (uint8_t *)malloc(READ_BUFFER_SIZE);
+    read_content.len = READ_BUFFER_SIZE;
+
+    clock_gettime(CLOCK_MONOTONIC, &start_time);
+    if (dl_read(sdk, file_stat.ino, fd, &read_content, READ_BUFFER_SIZE) < 0) {
+        printf("Failed to read file");
+        dl_close(sdk, file_stat.ino, fd);
+        // free(read_content.data);
+        free(data);
+        dl_free_sdk(sdk);
+        return 1;
+    }
+    clock_gettime(CLOCK_MONOTONIC, &end_time);
+    double read_time = get_time_diff(start_time, end_time);
+    printf("Read operation completed in %.6f seconds\n", read_time);
+
+    clock_gettime(CLOCK_MONOTONIC, &start_time);
+    if (dl_close(sdk, file_stat.ino, fd) < 0) {
+        printf("Failed to close file");
+        // free(read_content.data);
+        free(data);
+        dl_free_sdk(sdk);
+        return 1;
+    }
+    clock_gettime(CLOCK_MONOTONIC, &end_time);
+    double close_time = get_time_diff(start_time, end_time);
+    printf("File close operation completed in %.6f seconds\n", close_time);
+
+    free(data);
+    // free(read_content.data);
+
+    if (dl_rename(sdk, file_path, new_file_path) < 0) {
+        printf("Failed to rename file");
     } else {
-        handle_error(err);
+        printf("File %s renamed to %s successfully\n", file_path, new_file_path);
     }
 
-    // Rename the file
-    const char* rename_file_path = "datenlord_sdk/test_file_rename.txt";
-    err = rename_path(sdk, file_path, rename_file_path);
-    if (err == NULL) {
-        printf("File renamed successfully\n");
+    if (dl_remove(sdk, new_file_path) < 0) {
+        printf("Failed to remove file");
     } else {
-        handle_error(err);
+        printf("File %s removed successfully\n", new_file_path);
     }
 
-    err = rename_path(sdk, rename_file_path, file_path);
-    if (err == NULL) {
-        printf("File renamed successfully\n");
-    } else {
-        handle_error(err);
+    printf("\n=== Directory Operation Tests ===\n");
+
+    if (dl_exists(sdk, dir_path)) {
+        printf("Directory %s already exists, removing it...\n", dir_path);
+        dl_rmdir(sdk, dir_path, true);
     }
 
-    // Copy file from local to SDK
-    const char* local_file_path = "/bin/cat";
-    const char* remote_file_path = "cat";
-    err = copy_from_local_file(sdk, true, local_file_path, remote_file_path);
-    if (err == NULL) {
-        printf("File copied from local to SDK successfully\n");
+    if (dl_mkdir(sdk, dir_path) < 0) {
+        printf("Failed to create directory");
     } else {
-        handle_error(err);
+        printf("Directory %s created successfully\n", dir_path);
     }
 
-    // Copy file from SDK to local
-    const char* local_file_path_tmp = "/tmp/cat";
-    err = copy_to_local_file(sdk, remote_file_path, local_file_path_tmp);
-    if (err == NULL) {
-        printf("File copied to local successfully\n");
+    if (dl_rename(sdk, dir_path, new_dir_path) < 0) {
+        printf("Failed to rename directory");
     } else {
-        handle_error(err);
+        printf("Directory %s renamed to %s successfully\n", dir_path, new_dir_path);
     }
 
-    // Check if the copied file exists
-    dir_exists = exists(sdk, remote_file_path);
-    printf("Copied file exists: %d\n", dir_exists);
+    if (dl_rmdir(sdk, new_dir_path, true) < 0) {
+        printf("Failed to remove directory");
+    } else {
+        printf("Directory %s removed successfully\n", new_dir_path);
+    }
 
-    // // Delete the directory recursively
-    // err = deldir(sdk, test_dir, true);
-    // if (err == NULL) {
-    //     printf("Directory deleted successfully\n");
-    // } else {
-    //     handle_error(err);
-    // }
-    // // Check if directory exists
-    // dir_exists = exists(sdk, test_dir);
-    // printf("Directory exists: %d\n", dir_exists);
-
-    // Release the SDK
-    free_sdk(sdk);
-    printf("SDK released successfully\n");
+    dl_free_sdk(sdk);
+    printf("SDK resources freed successfully\n");
 
     return 0;
 }
