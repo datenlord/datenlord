@@ -75,38 +75,26 @@
 pub mod async_fuse;
 mod common;
 mod csi;
+pub mod fs;
 pub mod new_storage;
 pub mod storage;
 
-use std::net::{IpAddr, SocketAddr};
+use std::net::SocketAddr;
 use std::sync::Arc;
 
-use async_fuse::memfs::kv_engine::{KVEngine, KVEngineType};
+use async_fuse::AsyncFuseArgs;
 use clap::Parser;
 use csi::meta_data::MetaData;
 use csi::scheduler_extender::SchedulerExtender;
 use datenlord::common::task_manager::{self, TaskName, TASK_MANAGER};
-use datenlord::config::{InnerConfig, NodeRole, StorageConfig};
+use datenlord::config::{InnerConfig, NodeRole};
 use datenlord::{config, metrics};
+use fs::kv_engine::{KVEngine, KVEngineType};
 
 use crate::common::error::DatenLordResult;
 use crate::common::etcd_delegate::EtcdDelegate;
 use crate::common::logger::init_logger;
 
-/// Async fuse args type
-#[derive(Debug)]
-pub struct AsyncFuseArgs {
-    /// Node id
-    pub node_id: String,
-    /// Node ip
-    pub ip_address: IpAddr,
-    /// Server port
-    pub server_port: u16,
-    /// Mount dir
-    pub mount_dir: String,
-    /// Storage config
-    pub storage_config: StorageConfig,
-}
 /// Parse config from command line arguments, and return the created `MetaData`
 async fn parse_metadata(config: &InnerConfig) -> DatenLordResult<MetaData> {
     let etcd_delegate = EtcdDelegate::new(config.kv_addrs.clone()).await?;
@@ -233,6 +221,9 @@ async fn main() -> anyhow::Result<()> {
                     }
                 })
                 .await?;
+        }
+        NodeRole::SDK => {
+            panic!("SDK role is not supported yet");
         }
     }
 

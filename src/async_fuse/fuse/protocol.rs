@@ -78,11 +78,6 @@ pub const FUSE_KERNEL_MINOR_VERSION: u32 = 30;
 /// FUSE minor version number 7.31
 #[cfg(all(feature = "abi-7-31", not(feature = "abi-7-32")))]
 pub const FUSE_KERNEL_MINOR_VERSION: u32 = 31;
-/// The node ID of the root inode
-pub const FUSE_ROOT_ID: u64 = 1;
-
-/// The type of i-number
-pub type INum = u64;
 
 /// FUSE attribute `fuse_attr`
 #[repr(C)]
@@ -608,6 +603,8 @@ pub mod fuse_compat_configs {
 }
 
 pub use fuse_compat_configs::*;
+
+use crate::fs::fs_util::INum;
 
 /// FUSE entry response `fuse_entry_out`
 #[derive(Debug)]

@@ -4,20 +4,19 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::common::task_manager::{TaskName, TASK_MANAGER};
+use crate::config::{MemoryCacheConfig, SoftLimit, StorageConfig, StorageParams, StorageS3Config};
 use clippy_utilities::OverflowArithmetic;
-use datenlord::common::task_manager::{TaskName, TASK_MANAGER};
-use datenlord::config::{
-    MemoryCacheConfig, SoftLimit, StorageConfig, StorageParams, StorageS3Config,
-};
 use parking_lot::Mutex;
 use tokio_util::sync::CancellationToken;
 use tracing::level_filters::LevelFilter;
 use tracing::{debug, info}; // warn, error
 
+use crate::async_fuse::fuse::file_system::FuseFileSystem;
 use crate::async_fuse::fuse::{mount, session};
-use crate::async_fuse::memfs;
-use crate::async_fuse::memfs::kv_engine::{KVEngine, KVEngineType};
 use crate::common::logger::{init_logger, LogRole};
+use crate::fs::datenlordfs;
+use crate::fs::kv_engine::{etcd_impl, KVEngine, KVEngineType};
 use crate::new_storage::{BackendBuilder, MemoryCache, StorageManager, BLOCK_SIZE};
 
 pub const TEST_NODE_ID: &str = "test_node";
@@ -62,7 +61,7 @@ fn test_storage_config(is_s3: bool) -> StorageConfig {
 
 async fn run_fs(mount_point: &Path, is_s3: bool, token: CancellationToken) -> anyhow::Result<()> {
     let storage_config = test_storage_config(is_s3);
-    let kv_engine: Arc<memfs::kv_engine::etcd_impl::EtcdKVEngine> =
+    let kv_engine: Arc<etcd_impl::EtcdKVEngine> =
         Arc::new(KVEngineType::new(vec![TEST_ETCD_ENDPOINT.to_owned()]).await?);
 
     let storage = {
@@ -77,7 +76,7 @@ async fn run_fs(mount_point: &Path, is_s3: bool, token: CancellationToken) -> an
         StorageManager::new(cache, backend, block_size)
     };
 
-    let fs: memfs::MemFs<memfs::S3MetaData> = memfs::MemFs::new(
+    let fs: FuseFileSystem<datenlordfs::S3MetaData> = FuseFileSystem::new_datenlord_fs(
         mount_point
             .as_os_str()
             .to_str()
@@ -89,7 +88,7 @@ async fn run_fs(mount_point: &Path, is_s3: bool, token: CancellationToken) -> an
         storage,
     )
     .await?;
-    let ss = session::new_session_of_memfs(mount_point, fs).await?;
+    let ss = session::new_fuse_session(mount_point, fs).await?;
     ss.run(token).await?;
 
     Ok(())
