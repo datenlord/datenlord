@@ -1,14 +1,12 @@
 use bytes::BytesMut;
-use clap::Parser;
 use clippy_utilities::OverflowArithmetic;
 use core::panic;
 use datenlord::common::error::{DatenLordError, DatenLordResult};
 use datenlord::common::logger::init_logger;
 use datenlord::common::task_manager::{TaskName, TASK_MANAGER};
 use datenlord::config::{self, InnerConfig, NodeRole};
-use datenlord::fs::datenlordfs::direntry::FileType;
 use datenlord::fs::datenlordfs::{DatenLordFs, MetaData, S3MetaData};
-use datenlord::fs::fs_util::{CreateParam, FileAttr, INum, RenameParam, ROOT_ID};
+use datenlord::fs::fs_util::{CreateParam, FileAttr, RenameParam, ROOT_ID};
 use datenlord::fs::kv_engine::etcd_impl::EtcdKVEngine;
 use datenlord::fs::kv_engine::{KVEngine, KVEngineType};
 use datenlord::fs::virtualfs::VirtualFs;
@@ -18,22 +16,17 @@ use nix::fcntl::OFlag;
 use nix::sys::stat::SFlag;
 use once_cell::sync::Lazy;
 use parking_lot;
-use std::collections::VecDeque;
 use std::ffi::{c_void, CStr};
-use std::fs::File;
-use std::io::{Read, Write};
-use std::os::raw::{c_char, c_longlong, c_uint};
+use std::os::raw::{c_char, c_longlong, c_ulonglong};
 use std::path::Path;
 use std::ptr;
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime};
-use tokio::runtime;
-use tracing::{debug, error, info};
+use std::sync::Arc;
+use std::time::Duration;
+use tracing::{debug, error};
 
-use crate::error::datenlord_error;
 use crate::utils;
 
-// Lazy runtime for current thread
+/// Lazy runtime for current thread
 pub static RUNTIME: Lazy<tokio::runtime::Runtime> = Lazy::new(|| {
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -42,6 +35,7 @@ pub static RUNTIME: Lazy<tokio::runtime::Runtime> = Lazy::new(|| {
 });
 
 /// File attributes
+/// This structure is used to store the file attributes, which are used to store the file metadata.
 #[repr(C)]
 #[allow(non_camel_case_types)]
 pub struct datenlord_file_stat {
@@ -65,18 +59,15 @@ pub struct datenlord_file_stat {
 
 #[repr(C)]
 #[allow(non_camel_case_types)]
-pub struct datenlord_bytes {
-    pub data: *const u8,
-    pub len: usize,
-}
-
-#[repr(C)]
-#[allow(non_camel_case_types)]
+/// DatenLord SDK core data structure
+/// This structure is used to store the SDK instance, which is used to interact with the DatenLord SDK.
+/// We need to use init_sdk to initialize the SDK and free_sdk to release the SDK manually.
 pub struct datenlord_sdk {
     // Do not expose the internal structure, use c_void instead
     pub datenlordfs: *mut c_void,
 }
 
+/// Helper function to find the parent directory's attributes by the given path
 async fn find_parent_attr(
     path: &str,
     fs: Arc<DatenLordFs<S3MetaData>>,
@@ -107,6 +98,9 @@ async fn find_parent_attr(
 
 #[no_mangle]
 #[allow(clippy::unwrap_used)]
+/// Initialize the DatenLord SDK by the given config file
+///
+/// config: path to the config file
 pub extern "C" fn dl_init_sdk(config: *const c_char) -> *mut datenlord_sdk {
     // Provide a config file for initialization
     if config.is_null() {
@@ -119,19 +113,7 @@ pub extern "C" fn dl_init_sdk(config: *const c_char) -> *mut datenlord_sdk {
     // Parse the config file and initialize the SDK
     let mut arg_conf = config::Config::default();
     arg_conf.config_file = Some(config_str.to_string());
-    // arg_conf.storage.storage_type = "s3".to_string();
-    // arg_conf.storage.block_size = 524288;
-    // arg_conf.storage.s3_storage_config.access_key_id = "minioadmin".to_string();
-    // arg_conf.storage.s3_storage_config.endpoint_url = "http://localhost:9000".to_string();
-    // arg_conf.storage.s3_storage_config.secret_access_key = "minioadmin".to_string();
-    // arg_conf.storage.s3_storage_config.bucket_name = "mybucket".to_string();
-    // arg_conf.role = Some("sdk".to_string());
-    // arg_conf.node_name = Some("sdk".to_string());
-    // arg_conf.node_ip = Some("127.0.0.1".to_string());
-    // arg_conf.kv_server_list = vec!["127.0.0.1:2379".to_string()];
-    // arg_conf.mount_path = Some("/tmp/datenlord_data_dir".to_string());
 
-    println!("Config: {:?}", arg_conf);
     let arg_conf = config::Config::load_from_args(arg_conf) // Load config from file
         .unwrap_or_else(|e| {
             println!("Failed to load config: {:?}", e);
@@ -142,7 +124,6 @@ pub extern "C" fn dl_init_sdk(config: *const c_char) -> *mut datenlord_sdk {
         panic!("Failed to parse config: {:?}", e);
     });
 
-    println!("Config: {:?}", config);
     init_logger(config.role.into(), config.log_level);
 
     // Initialize the runtime
@@ -197,6 +178,9 @@ pub extern "C" fn dl_init_sdk(config: *const c_char) -> *mut datenlord_sdk {
     Box::into_raw(sdk)
 }
 
+/// Free the SDK instance
+///
+/// sdk: datenlord_sdk instance
 #[no_mangle]
 pub extern "C" fn dl_free_sdk(sdk: *mut datenlord_sdk) {
     // Stop daemon tasks
@@ -207,6 +191,12 @@ pub extern "C" fn dl_free_sdk(sdk: *mut datenlord_sdk) {
     }
 }
 
+/// Check if the given path exists
+///
+/// sdk: datenlord_sdk instance
+/// dir_path: path to the directory
+///
+/// Return: true if the path exists, otherwise false
 #[no_mangle]
 pub extern "C" fn dl_exists(sdk: *mut datenlord_sdk, dir_path: *const c_char) -> bool {
     if sdk.is_null() || dir_path.is_null() {
@@ -240,6 +230,12 @@ pub extern "C" fn dl_exists(sdk: *mut datenlord_sdk, dir_path: *const c_char) ->
     }
 }
 
+/// Create a directory
+///
+/// sdk: datenlord_sdk instance
+/// dir_path: path to the directory
+///
+/// If the directory is created successfully, return the inode number, otherwise -1
 #[no_mangle]
 pub extern "C" fn dl_mkdir(sdk: *mut datenlord_sdk, dir_path: *const c_char) -> c_longlong {
     if sdk.is_null() || dir_path.is_null() {
@@ -283,6 +279,13 @@ pub extern "C" fn dl_mkdir(sdk: *mut datenlord_sdk, dir_path: *const c_char) -> 
     }
 }
 
+/// Remove a directory
+///
+/// sdk: datenlord_sdk instance
+/// dir_path: path to the directory
+/// recursive: whether to remove the directory recursively, current not used
+///
+/// If the directory is removed successfully, return 0, otherwise -1
 #[no_mangle]
 pub extern "C" fn dl_rmdir(
     sdk: *mut datenlord_sdk,
@@ -315,6 +318,12 @@ pub extern "C" fn dl_rmdir(
     }
 }
 
+/// Remove a file
+///
+/// sdk: datenlord_sdk instance
+/// file_path: path to the file
+///
+/// If the file is removed successfully, return 0, otherwise -1
 #[no_mangle]
 pub extern "C" fn dl_remove(sdk: *mut datenlord_sdk, file_path: *const c_char) -> c_longlong {
     if sdk.is_null() || file_path.is_null() {
@@ -373,6 +382,13 @@ pub extern "C" fn dl_remove(sdk: *mut datenlord_sdk, file_path: *const c_char) -
     }
 }
 
+/// Rename a file
+///
+/// sdk: datenlord_sdk instance
+/// src_path: source file path
+/// dest_path: destination file path
+///
+/// If the file is renamed successfully, return 0, otherwise -1
 #[no_mangle]
 pub extern "C" fn dl_rename(
     sdk: *mut datenlord_sdk,
@@ -413,6 +429,12 @@ pub extern "C" fn dl_rename(
     }
 }
 
+/// Create a file
+///
+/// sdk: datenlord_sdk instance
+/// file_path: path to the file
+///
+/// If the file is created successfully, return the inode number, otherwise -1
 #[no_mangle]
 pub extern "C" fn dl_mknod(sdk: *mut datenlord_sdk, file_path: *const c_char) -> c_longlong {
     if sdk.is_null() || file_path.is_null() {
@@ -462,6 +484,13 @@ pub extern "C" fn dl_mknod(sdk: *mut datenlord_sdk, file_path: *const c_char) ->
     }
 }
 
+/// Get the file attributes
+///
+/// sdk: datenlord_sdk instance
+/// file_path: path to the file
+/// file_metadata: datenlord_file_stat instance
+///
+/// If the file attributes are retrieved successfully, return 0, otherwise -1
 #[no_mangle]
 pub extern "C" fn dl_stat(
     sdk: *mut datenlord_sdk,
@@ -518,26 +547,35 @@ pub extern "C" fn dl_stat(
     }
 }
 
+/// Write data to a file
+///
+/// sdk: datenlord_sdk instance
+/// file_path: path to the file
+/// buf: buffer to store the file content
+/// count: the size of the buffer
+///
+/// If the file is written successfully, return the number of bytes written, otherwise -1
 #[no_mangle]
 pub extern "C" fn dl_write_file(
     sdk: *mut datenlord_sdk,
     file_path: *const c_char,
-    content: datenlord_bytes,
+    buf: *const u8,
+    count: c_ulonglong,
 ) -> c_longlong {
-    if sdk.is_null() || file_path.is_null() || content.data.is_null() || content.len == 0 {
+    if sdk.is_null() || file_path.is_null() || buf.is_null() || count == 0 {
         error!("Invalid arguments");
         return -1;
     }
 
     let file_path_str = unsafe { CStr::from_ptr(file_path).to_string_lossy().into_owned() };
 
-    let data = unsafe { std::slice::from_raw_parts(content.data, content.len) };
+    let data = unsafe { std::slice::from_raw_parts(buf, count as usize) };
 
     let sdk_ref = unsafe { &*sdk };
     let fs = unsafe { Arc::from_raw(sdk_ref.datenlordfs as *const DatenLordFs<S3MetaData>) };
 
     let result = RUNTIME.handle().block_on(async {
-        info!("Writing file: {:?}", file_path_str);
+        debug!("Writing file: {:?}", file_path_str);
         match find_parent_attr(&file_path_str, fs.clone()).await {
             Ok((_, parent_attr)) => {
                 let path_components: Vec<&str> =
@@ -550,23 +588,19 @@ pub extern "C" fn dl_write_file(
                             .open(0, 0, file_attr.ino, OFlag::O_WRONLY.bits() as u32)
                             .await
                         {
-                            Ok(fh) => {
-                                info!("Writing the file: {:?}", file_path_str);
-                                info!("Writing the data: {:?}", data);
-                                match fs.write(file_attr.ino, fh, 0, data, 0).await {
-                                    Ok(_) => {
-                                        info!("Writing the file ok: {:?}", file_path_str);
-                                        match fs.release(file_attr.ino, fh, 0, 0, true).await {
-                                            Ok(_) => Ok(()),
-                                            Err(e) => {
-                                                error!("Failed to release file handle: {:?}", e);
-                                                Err(e)
-                                            }
+                            Ok(fh) => match fs.write(file_attr.ino, fh, 0, data, 0).await {
+                                Ok(_) => {
+                                    debug!("Writing the file ok: {:?}", file_path_str);
+                                    match fs.release(file_attr.ino, fh, 0, 0, true).await {
+                                        Ok(_) => Ok(()),
+                                        Err(e) => {
+                                            error!("Failed to release file handle: {:?}", e);
+                                            Err(e)
                                         }
                                     }
-                                    Err(e) => Err(e),
                                 }
-                            }
+                                Err(e) => Err(e),
+                            },
                             Err(e) => Err(e),
                         }
                     }
@@ -580,7 +614,10 @@ pub extern "C" fn dl_write_file(
     let _ = Arc::into_raw(fs);
 
     match result {
-        Ok(()) => 0,
+        Ok(()) => {
+            debug!("Write file: {:?}", file_path_str);
+            count as i64
+        }
         Err(e) => {
             error!("Failed to write file: {:?}", e);
             -1
@@ -588,13 +625,22 @@ pub extern "C" fn dl_write_file(
     }
 }
 
+/// Read a hole file
+///
+/// sdk: datenlord_sdk instance
+/// file_path: path to the file
+/// buf: buffer to store the file content
+/// count: the size of the buffer
+///
+/// If the file is read successfully, return the number of bytes read, otherwise -1
 #[no_mangle]
 pub extern "C" fn dl_read_file(
     sdk: *mut datenlord_sdk,
     file_path: *const c_char,
-    out_content: *mut datenlord_bytes,
+    mut buf: *const u8,
+    count: c_ulonglong,
 ) -> c_longlong {
-    if sdk.is_null() || file_path.is_null() || out_content.is_null() {
+    if sdk.is_null() || file_path.is_null() || buf.is_null() {
         error!("Invalid arguments");
         return -1;
     }
@@ -635,11 +681,8 @@ pub extern "C" fn dl_read_file(
                             .await
                         {
                             Ok(read_size) => {
-                                unsafe {
-                                    (*out_content).data = buffer.as_ptr();
-                                    (*out_content).len = read_size;
-                                }
-                                debug!("Read file: {:?}", file_path_str);
+                                buf = buffer.as_ptr();
+                                debug!("Read file: {:?} with size: {:?}", file_path_str, read_size);
                                 // Close this file handle
                                 fs.release(current_attr.ino, 0, 0, 0, true).await
                             }
@@ -656,7 +699,10 @@ pub extern "C" fn dl_read_file(
     let _ = Arc::into_raw(fs);
 
     match result {
-        Ok(()) => 0,
+        Ok(()) => {
+            debug!("Read file: {:?}", file_path_str);
+            count as i64
+        }
         Err(e) => {
             error!("Failed to read file: {:?}", e);
             -1

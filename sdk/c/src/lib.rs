@@ -1,6 +1,5 @@
-//! DatenLord Python SDK
+//! DatenLord C SDK
 
-pub mod error;
 pub mod file;
 pub mod sdk;
 pub mod utils;

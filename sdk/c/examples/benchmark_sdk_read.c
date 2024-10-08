@@ -60,29 +60,26 @@ int main() {
     struct timespec start_time, end_time;
 
     double read_latency[5];
-    datenlord_bytes read_content;
 
-    read_content.data = (uint8_t *)malloc(FILE_SIZE);
-    if (!read_content.data) {
+    data = (uint8_t *)malloc(FILE_SIZE);
+    if (!data) {
         printf("Failed to allocate memory for read content\n");
         dl_close(sdk, file_stat.ino, fd);
         free(data);
         dl_free_sdk(sdk);
         return 1;
     }
-    read_content.len = FILE_SIZE;
 
     for (int i = 0; i < 5; i++) {
         clock_gettime(CLOCK_MONOTONIC, &start_time);
 
-        res = dl_read(sdk, file_stat.ino, fd, &read_content, FILE_SIZE);
+        res = dl_read(sdk, file_stat.ino, fd, data, FILE_SIZE);
 
         clock_gettime(CLOCK_MONOTONIC, &end_time);
         if (res < 0) {
             printf("Failed to read from file\n");
             dl_close(sdk, file_stat.ino, fd);
             free(data);
-            free((void *)read_content.data);
             dl_free_sdk(sdk);
             return 1;
         }

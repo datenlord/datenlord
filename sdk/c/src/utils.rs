@@ -1,4 +1,3 @@
-use std::os::raw::c_int;
 use std::{collections::VecDeque, path::Path, sync::Arc, time::Duration};
 
 use datenlord::fs::fs_util::INum;
@@ -11,9 +10,6 @@ use datenlord::{
     },
 };
 use nix::fcntl::OFlag;
-use pyo3::ffi;
-use pyo3::prelude::*;
-use pyo3::pymethods;
 
 /// A directory entry type.
 pub struct Entry {

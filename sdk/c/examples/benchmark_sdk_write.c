@@ -51,7 +51,6 @@ int main() {
     }
     printf("File created successfully\n");
 
-    // 打开文件，并使用 O_RDWR 模式（读写模式），以及用户读写权限（S_IRUSR | S_IWUSR）
     unsigned long long fd = dl_open(sdk, file_path, O_RDWR);
     if (fd == 0) {
         printf("Failed to open file\n");
@@ -61,7 +60,6 @@ int main() {
     }
     printf("File opened successfully with file descriptor: %llu\n", fd);
 
-    // 获取文件的 inode 信息
     datenlord_file_stat file_stat;
     res = dl_stat(sdk, file_path, &file_stat);
     if (res < 0) {
@@ -73,16 +71,13 @@ int main() {
     }
     printf("File stat retrieved successfully, inode number: %lu\n", file_stat.ino);
 
-    // 初始化用于存储写入延迟时间的数组
     struct timespec start_time, end_time;
     double write_latency[5];
 
-    // 重复写入 5 次，测量每次的写入时间
     for (int i = 0; i < 5; i++) {
         clock_gettime(CLOCK_MONOTONIC, &start_time);
 
-        datenlord_bytes content = { .data = data, .len = FILE_SIZE };
-        res = dl_write(sdk, file_stat.ino, fd, content);
+        res = dl_write(sdk, file_stat.ino, fd, data, FILE_SIZE);
 
         clock_gettime(CLOCK_MONOTONIC, &end_time);
         if (res < 0) {

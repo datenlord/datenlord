@@ -8,7 +8,7 @@
 
 #define FILE_SIZE_MB 20
 #define FILE_SIZE (FILE_SIZE_MB * 1024 * 1024)
-#define READ_BUFFER_SIZE 4096
+#define READ_BUFFER_SIZE FILE_SIZE
 
 double get_time_diff(struct timespec start, struct timespec end) {
     return (end.tv_sec - start.tv_sec) + (end.tv_nsec - start.tv_nsec) / 1e9;
@@ -16,9 +16,9 @@ double get_time_diff(struct timespec start, struct timespec end) {
 
 void print_file_stat(const datenlord_file_stat *stat) {
     printf("File Attributes:\n");
-    printf("Inode: %llu\n", stat->ino);
-    printf("Size: %llu bytes\n", stat->size);
-    printf("Blocks: %llu\n", stat->blocks);
+    printf("Inode: %lu\n", stat->ino);
+    printf("Size: %lu bytes\n", stat->size);
+    printf("Blocks: %lu\n", stat->blocks);
     printf("Permissions: %u\n", stat->perm);
     printf("Number of Hard Links: %u\n", stat->nlink);
     printf("User ID: %u\n", stat->uid);
@@ -27,6 +27,7 @@ void print_file_stat(const datenlord_file_stat *stat) {
 }
 
 int main() {
+    // printf("size %ld \n", sizeof(int));
     datenlord_sdk *sdk = dl_init_sdk("config.toml");
     if (!sdk) {
         printf("Failed to initialize SDK\n");
@@ -78,11 +79,10 @@ int main() {
         return 1;
     }
     memset(data, 'A', FILE_SIZE);
-    datenlord_bytes content = {.data = data, .len = FILE_SIZE};
 
     struct timespec start_time, end_time;
     clock_gettime(CLOCK_MONOTONIC, &start_time);
-    if (dl_write(sdk, file_stat.ino, fd, content) < 0) {
+    if (dl_write(sdk, file_stat.ino, fd, data, FILE_SIZE) < 0) {
         printf("Failed to write to file");
         dl_close(sdk, file_stat.ino, fd);
         free(data);
@@ -93,12 +93,10 @@ int main() {
     double write_time = get_time_diff(start_time, end_time);
     printf("Write operation completed in %.6f seconds\n", write_time);
 
-    datenlord_bytes read_content;
-    read_content.data = (uint8_t *)malloc(READ_BUFFER_SIZE);
-    read_content.len = READ_BUFFER_SIZE;
+    data = (uint8_t *)malloc(READ_BUFFER_SIZE);
 
     clock_gettime(CLOCK_MONOTONIC, &start_time);
-    if (dl_read(sdk, file_stat.ino, fd, &read_content, READ_BUFFER_SIZE) < 0) {
+    if (dl_read(sdk, file_stat.ino, fd, data, READ_BUFFER_SIZE) < 0) {
         printf("Failed to read file");
         dl_close(sdk, file_stat.ino, fd);
         // free(read_content.data);

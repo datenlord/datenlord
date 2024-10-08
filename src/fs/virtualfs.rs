@@ -2,7 +2,6 @@
 use std::{path::Path, time::Duration};
 
 use async_trait::async_trait;
-use bytes::BytesMut;
 use tracing::warn;
 
 use crate::{
@@ -117,8 +116,7 @@ pub trait VirtualFs: Sync + Send {
         fh: u64,
         offset: u64,
         size: u32,
-        // Use buffer trait instead of Vec<u8> to avoid memory copy
-        buf: &mut BytesMut,
+        buf: &mut [u8],
     ) -> DatenLordResult<usize>;
 
     /// Write data

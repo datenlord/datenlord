@@ -19,7 +19,6 @@ use std::time::{Duration, SystemTime};
 
 use crate::metrics::FILESYSTEM_METRICS;
 use async_trait::async_trait;
-use bytes::BytesMut;
 use clippy_utilities::{Cast, OverflowArithmetic};
 pub use metadata::MetaData;
 use nix::errno::Errno;
@@ -466,8 +465,7 @@ impl<M: MetaData + Send + Sync + 'static> VirtualFs for DatenLordFs<M> {
         fh: u64,
         offset: u64,
         size: u32,
-        // Use buffer trait instead of Vec<u8> to avoid memory copy
-        buf: &mut BytesMut,
+        buf: &mut [u8],
     ) -> DatenLordResult<usize> {
         let start_time = tokio::time::Instant::now();
         let _timer = FILESYSTEM_METRICS.start_storage_operation_timer("read");
@@ -491,11 +489,13 @@ impl<M: MetaData + Send + Sync + 'static> VirtualFs for DatenLordFs<M> {
             size.cast()
         };
 
+        // TODO: use same buffer to avoid copy
         let result = self.storage.read(ino, fh, offset, read_size.cast()).await;
-        // Check the load result
         match result {
             Ok(content) => {
-                buf.extend_from_slice(&content);
+                assert!(content.len() <= buf.len());
+                #[allow(clippy::needless_range_loop)]
+                buf[..content.len()].copy_from_slice(&content);
                 debug!(
                     "datenlordfs callread() success, the result is: content length {:?}",
                     content.len()
