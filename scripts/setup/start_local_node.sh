@@ -12,7 +12,8 @@
 BUILD_FLAGS=$1
 
 . scripts/setup/config.sh
-. scripts/setup/setup_etcd.sh
+#. scripts/setup/setup_etcd.sh
+#. scripts/setup/setup_xline.sh
 
 if mount | grep -q "$DATENLORD_LOCAL_BIND_DIR"; then
     echo "$DATENLORD_LOCAL_BIND_DIR is mounted. Unmounting now."
