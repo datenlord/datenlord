@@ -8,6 +8,8 @@ use clippy_utilities::Cast;
 use nix::fcntl::OFlag;
 use parking_lot::{Mutex, RwLock};
 
+use crate::async_fuse::memfs::MetaData;
+
 use super::super::backend::Backend;
 use super::super::block_slice::offset_to_slice;
 use super::super::error::StorageResult;
@@ -56,12 +58,13 @@ impl FileHandleInner {
     /// Creates a new `FileHandleInner` instance.
     #[inline]
     #[allow(clippy::needless_pass_by_value)]
-    pub fn new(
+    pub fn new<M: MetaData + Send + Sync + 'static>(
         ino: u64,
         block_size: usize,
         cache: Arc<Mutex<MemoryCache<CacheKey, LruPolicy<CacheKey>>>>,
         backend: Arc<dyn Backend>,
         flag: OpenFlag,
+        metadata_client: Arc<M>,
     ) -> Self {
         let reader = match flag {
             OpenFlag::Read | OpenFlag::ReadAndWrite => Some(Arc::new(Reader::new(
@@ -78,6 +81,7 @@ impl FileHandleInner {
                 block_size,
                 Arc::clone(&cache),
                 Arc::clone(&backend),
+                metadata_client,
             ))),
             OpenFlag::Read => None,
         };
@@ -99,15 +103,16 @@ pub struct FileHandle {
 
 impl FileHandle {
     /// Creates a new `FileHandle` instance.
-    pub fn new(
+    pub fn new<M: MetaData + Send + Sync + 'static>(
         fh: u64,
         ino: u64,
         block_size: usize,
         cache: Arc<Mutex<MemoryCache<CacheKey, LruPolicy<CacheKey>>>>,
         backend: Arc<dyn Backend>,
         flag: OpenFlag,
+        metadata_client: Arc<M>,
     ) -> Self {
-        let inner = FileHandleInner::new(ino, block_size, cache, backend, flag);
+        let inner = FileHandleInner::new(ino, block_size, cache, backend, flag, metadata_client);
         let inner = Arc::new(RwLock::new(inner));
         FileHandle {
             fh,
@@ -281,8 +286,13 @@ impl Handles {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use crate::async_fuse::memfs::kv_engine::{KVEngine, KVEngineType};
+    use crate::async_fuse::memfs::{self, S3MetaData};
     use crate::new_storage::backend::backend_impl::tmp_fs_backend;
     use crate::new_storage::block::BLOCK_SIZE;
+
+    const TEST_NODE_ID: &str = "test_node";
+    const TEST_ETCD_ENDPOINT: &str = "127.0.0.1:2379";
 
     #[tokio::test]
     async fn test_file_handle() {
@@ -291,8 +301,21 @@ mod tests {
         let handles = Arc::new(Handles::new());
         let ino = 1;
         let fh = 1;
-        let file_handle =
-            FileHandleInner::new(ino, BLOCK_SIZE, cache, backend, OpenFlag::ReadAndWrite);
+        let kv_engine: Arc<memfs::kv_engine::etcd_impl::EtcdKVEngine> = Arc::new(
+            KVEngineType::new(vec![TEST_ETCD_ENDPOINT.to_owned()])
+                .await
+                .unwrap(),
+        );
+        let metadata_client = S3MetaData::new(kv_engine, TEST_NODE_ID).await.unwrap();
+
+        let file_handle = FileHandleInner::new(
+            ino,
+            BLOCK_SIZE,
+            cache,
+            backend,
+            OpenFlag::ReadAndWrite,
+            metadata_client,
+        );
         let file_handle = Arc::new(RwLock::new(file_handle));
         let file_handle = FileHandle {
             fh,

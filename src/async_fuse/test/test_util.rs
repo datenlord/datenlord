@@ -15,8 +15,8 @@ use tracing::level_filters::LevelFilter;
 use tracing::{debug, info}; // warn, error
 
 use crate::async_fuse::fuse::{mount, session};
-use crate::async_fuse::memfs;
 use crate::async_fuse::memfs::kv_engine::{KVEngine, KVEngineType};
+use crate::async_fuse::memfs::{self, MetaData};
 use crate::common::logger::{init_logger, LogRole};
 use crate::new_storage::{BackendBuilder, MemoryCache, StorageManager, BLOCK_SIZE};
 
@@ -62,9 +62,10 @@ fn test_storage_config(is_s3: bool) -> StorageConfig {
 
 async fn run_fs(mount_point: &Path, is_s3: bool, token: CancellationToken) -> anyhow::Result<()> {
     let storage_config = test_storage_config(is_s3);
+
     let kv_engine: Arc<memfs::kv_engine::etcd_impl::EtcdKVEngine> =
         Arc::new(KVEngineType::new(vec![TEST_ETCD_ENDPOINT.to_owned()]).await?);
-
+    let metadata_client = memfs::S3MetaData::new(kv_engine, TEST_NODE_ID).await?;
     let storage = {
         let storage_param = &storage_config.params;
         let memory_cache_config = &storage_config.memory_cache_config;
@@ -74,7 +75,8 @@ async fn run_fs(mount_point: &Path, is_s3: bool, token: CancellationToken) -> an
 
         let cache = Arc::new(Mutex::new(MemoryCache::new(capacity_in_blocks, block_size)));
         let backend = Arc::new(BackendBuilder::new(storage_param.clone()).build().await?);
-        StorageManager::new(cache, backend, block_size)
+
+        StorageManager::new(cache, backend, block_size, Arc::clone(&metadata_client))
     };
 
     let fs: memfs::MemFs<memfs::S3MetaData> = memfs::MemFs::new(
@@ -83,12 +85,11 @@ async fn run_fs(mount_point: &Path, is_s3: bool, token: CancellationToken) -> an
             .to_str()
             .unwrap_or_else(|| panic!("failed to convert to utf8 string")),
         CACHE_DEFAULT_CAPACITY,
-        kv_engine,
-        TEST_NODE_ID,
         &storage_config,
         storage,
-    )
-    .await?;
+        TEST_NODE_ID,
+        Arc::clone(&metadata_client),
+    );
     let ss = session::new_session_of_memfs(mount_point, fs).await?;
     ss.run(token).await?;
 

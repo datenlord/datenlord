@@ -45,10 +45,17 @@ pub struct OpenFiles {
     inner: Arc<Mutex<RawOpenFiles>>,
 }
 
+impl Default for OpenFiles {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl OpenFiles {
     /// Constructs a new `OpenFiles` collection.
     ///
     /// This initializes an empty collection of open files.
+    #[must_use]
     pub fn new() -> Self {
         OpenFiles {
             inner: Arc::new(Mutex::new(RawOpenFiles {
@@ -69,6 +76,7 @@ impl OpenFiles {
     /// Retrieves an `OpenFile` by its inode number.
     ///
     /// Panics if the file is not found.
+    #[must_use]
     pub fn get(&self, inum: INum) -> OpenFile {
         self.try_get(inum)
             .unwrap_or_else(|| panic!("Couldn't find the open file with inum={inum}"))
@@ -77,6 +85,7 @@ impl OpenFiles {
     /// Opens a file, adding it to the collection
     ///
     /// Returns a reference to the newly opened file.
+    #[must_use]
     pub fn open(&self, inum: INum, attr: FileAttr) -> OpenFile {
         let mut inner = self.inner.lock();
         let open_file = inner
@@ -94,6 +103,7 @@ impl OpenFiles {
     ///
     /// Increments the open count if the file is found. Returns `Some(OpenFile)`
     /// if successful, or `None` if the file is not in the collection.
+    #[must_use]
     pub fn try_open(&self, inum: INum) -> Option<OpenFile> {
         let mut inner = self.inner.lock();
         let open_file = inner.open_files.get_mut(&inum)?;
@@ -110,6 +120,7 @@ impl OpenFiles {
     /// if its open count reaches zero. Returns the `OpenFile` if it was
     /// removed, or `None` if it remains open.
     #[allow(clippy::unwrap_in_result)]
+    #[must_use]
     pub fn close(&self, inum: INum) -> Option<OpenFile> {
         let mut inner = self.inner.lock();
         let open_count = {

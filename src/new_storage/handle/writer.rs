@@ -4,16 +4,18 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use clippy_utilities::Cast;
+use hashbrown::HashSet;
 use parking_lot::{Mutex, RwLock};
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
-use tracing::{error, warn};
+use tracing::{debug, error, warn};
 
 use super::super::policy::LruPolicy;
 use super::super::{
     format_path, offset_to_slice, Backend, Block, BlockSlice, CacheKey, MemoryCache,
 };
+use crate::async_fuse::memfs::MetaData;
 use crate::new_storage::{StorageError, StorageResult};
 
 /// The `Writer` struct represents a struct responsible for writing blocks of
@@ -31,6 +33,10 @@ pub struct Writer {
     write_back_sender: Sender<Task>,
     /// The handle to the write back worker.
     write_back_handle: tokio::sync::Mutex<Option<JoinHandle<()>>>,
+    /// The sender to send meta task to the meta task worker.
+    meta_task_sender: Sender<MetaTask>,
+    /// The handle to the meta task worker.
+    meta_task_handle: tokio::sync::Mutex<Option<JoinHandle<()>>>,
     /// The access keys.
     access_keys: Mutex<Vec<CacheKey>>,
 }
@@ -45,6 +51,25 @@ impl std::fmt::Debug for Writer {
             .field("access_keys", &self.access_keys)
             .finish_non_exhaustive()
     }
+}
+
+/// The `MetaTask` enum represents the different types of meta tasks that the
+/// write back worker can perform.
+#[derive(Debug)]
+enum MetaTask {
+    /// A pending write task.
+    Pending(Arc<MetaCommitTask>),
+    /// A flush task, which means we need to flush the meta to the meta data server.
+    Flush(oneshot::Sender<Option<StorageError>>),
+    /// A finish task.
+    Finish(oneshot::Sender<Option<StorageError>>),
+}
+
+/// The `MetaCommitTask` struct represents a meta commit task.
+#[derive(Debug)]
+struct MetaCommitTask {
+    /// The inode number associated with the file being written.
+    ino: u64,
 }
 
 /// The `Task` enum represents the different types of tasks that the write back
@@ -72,6 +97,8 @@ struct WriteTask {
     block_id: u64,
     /// The block to be written.
     block: Arc<RwLock<Block>>,
+    /// Meta commit task sender, when current block is written back, we need to send a meta commit task.
+    meta_task_sender: Sender<MetaTask>,
 }
 
 /// Write a block back to the backend.
@@ -112,6 +139,24 @@ async fn write_back_block(task: Arc<WriteTask>) -> StorageResult<()> {
         }
     }
 
+    // Send the meta commit task.
+    let meta_task = Arc::new(MetaCommitTask { ino: task.ino });
+    match task
+        .meta_task_sender
+        .send(MetaTask::Pending(meta_task))
+        .await
+    {
+        Ok(()) => {
+            debug!(
+                "Send meta task successfully, current meta task is {:?}",
+                task
+            );
+        }
+        Err(e) => {
+            error!("Failed to send meta task, the error is {e}.");
+        }
+    }
+
     Ok(())
 }
 
@@ -135,6 +180,66 @@ async fn write_blocks(tasks: &Vec<Arc<WriteTask>>) -> Option<StorageError> {
         }
     }
     result
+}
+
+/// The `commit_meta_data` function represents the meta data commit operation.
+async fn commit_meta_data<M: MetaData + Send + Sync + 'static>(
+    metadata_client: Arc<M>,
+    to_be_committed_inos: &HashSet<u64>,
+) {
+    for ino in to_be_committed_inos {
+        if let Err(e) = metadata_client.write_remote_helper(ino.to_owned()).await {
+            error!("Failed to commit meta data, the error is {e}.");
+        }
+    }
+}
+
+/// The `meta_commit_work` function represents the meta commit worker.
+#[allow(clippy::pattern_type_mismatch)] // Raised by `tokio::select!`
+async fn meta_commit_work<M: MetaData + Send + Sync + 'static>(
+    metadata_client: Arc<M>,
+    mut meta_task_receiver: Receiver<MetaTask>,
+) {
+    // We will receive the meta write back message here and flush open_files status to meta data server,
+    let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
+    let mut to_be_committed_inos = HashSet::new();
+    loop {
+        tokio::select! {
+            Some(task) = meta_task_receiver.recv() => {
+                match task {
+                    MetaTask::Pending(meta_task) => {
+                        let ino = meta_task.ino;
+                        to_be_committed_inos.insert(ino);
+                    }
+                    MetaTask::Flush(tx) => {
+                        // Commit immediately.
+                        commit_meta_data(Arc::clone(&metadata_client), &to_be_committed_inos).await;
+                        to_be_committed_inos.clear();
+
+                        // Flush the open_files to the meta data server.
+                        if let Err(Some(e)) = tx.send(None) {
+                            error!("Failed to send storage error back to `Writer`, the error is {e}.");
+                        }
+                    }
+                    MetaTask::Finish(tx) => {
+                        // Commit immediately.
+                        commit_meta_data(Arc::clone(&metadata_client), &to_be_committed_inos).await;
+                        to_be_committed_inos.clear();
+
+                        // Flush the open_files to the meta data server.
+                        if let Err(Some(e)) = tx.send(None) {
+                            error!("Failed to send storage error back to `Writer`, the error is {e}.");
+                        }
+                        return;
+                    }
+                }
+            }
+            _ = interval.tick() => {
+                commit_meta_data(Arc::clone(&metadata_client), &to_be_committed_inos).await;
+                to_be_committed_inos.clear();
+            }
+        }
+    }
 }
 
 /// The `write_back_work` function represents the write back worker.
@@ -189,13 +294,15 @@ impl Writer {
     /// Create a new `Writer`.
     #[inline]
     #[must_use]
-    pub fn new(
+    pub fn new<M: MetaData + Send + Sync + 'static>(
         ino: u64,
         block_size: usize,
         cache: Arc<Mutex<MemoryCache<CacheKey, LruPolicy<CacheKey>>>>,
         backend: Arc<dyn Backend>,
+        metadata_client: Arc<M>,
     ) -> Self {
         let (tx, rx) = tokio::sync::mpsc::channel(100);
+        let (meta_task_tx, meta_task_rx) = tokio::sync::mpsc::channel(100);
         let mut writer = Writer {
             ino,
             block_size,
@@ -203,10 +310,15 @@ impl Writer {
             backend,
             write_back_sender: tx,
             write_back_handle: tokio::sync::Mutex::new(None),
+            meta_task_sender: meta_task_tx,
+            meta_task_handle: tokio::sync::Mutex::new(None),
             access_keys: Mutex::new(Vec::new()),
         };
         let handle = tokio::spawn(write_back_work(rx));
         writer.write_back_handle = tokio::sync::Mutex::new(Some(handle));
+
+        let meta_commit_handle = tokio::spawn(meta_commit_work(metadata_client, meta_task_rx));
+        writer.meta_task_handle = tokio::sync::Mutex::new(Some(meta_commit_handle));
         writer
     }
 
@@ -291,6 +403,7 @@ impl Writer {
                 ino: self.ino,
                 block_id,
                 block,
+                meta_task_sender: self.meta_task_sender.clone(),
             });
             self.write_back_sender
                 .send(Task::Pending(task))
@@ -317,6 +430,18 @@ impl Writer {
 
         rx.await
             .unwrap_or_else(|_| panic!("The sender should not be closed."))
+            .map_or(Ok(()), Err)?;
+
+        let (tx, rx) = oneshot::channel();
+        self.meta_task_sender
+            .send(MetaTask::Flush(tx))
+            .await
+            .unwrap_or_else(|_| {
+                panic!("Should not send command to meta task when the task quits.");
+            });
+
+        rx.await
+            .unwrap_or_else(|_| panic!("The sender should not be closed."))
             .map_or(Ok(()), Err)
     }
 
@@ -336,7 +461,6 @@ impl Writer {
     /// Closes the writer associated with the file handle.
     pub async fn close(&self) -> StorageResult<()> {
         let (tx, rx) = oneshot::channel();
-
         self.write_back_sender
             .send(Task::Finish(tx))
             .await
@@ -365,6 +489,31 @@ impl Writer {
 
         rx.await
             .unwrap_or_else(|_| panic!("The sender should not be closed."))
+            .map_or(Ok(()), Err)?;
+
+        let (tx, rx) = oneshot::channel();
+        // TODO: handle it by `TaskManager`
+        self.meta_task_sender
+            .send(MetaTask::Finish(tx))
+            .await
+            .unwrap_or_else(|_| {
+                panic!("Should not send command to meta task when the task quits.");
+            });
+
+        self.meta_task_handle
+            .lock()
+            .await
+            .take()
+            .unwrap_or_else(|| {
+                unreachable!("The `JoinHandle` should not be None.");
+            })
+            .await
+            .unwrap_or_else(|e| {
+                panic!("Failed to join the meta task: {e}");
+            });
+
+        rx.await
+            .unwrap_or_else(|_| panic!("The sender should not be closed."))
             .map_or(Ok(()), Err)
     }
 }
@@ -373,15 +522,28 @@ impl Writer {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use crate::async_fuse::memfs::kv_engine::{KVEngine, KVEngineType};
+    use crate::async_fuse::memfs::{self, S3MetaData};
     use crate::new_storage::backend::backend_impl::memory_backend;
     use crate::new_storage::block::BLOCK_SIZE;
 
     const IO_SIZE: usize = 128 * 1024;
+    const TEST_NODE_ID: &str = "test_node";
+    const TEST_ETCD_ENDPOINT: &str = "127.0.0.1:2379";
+
     #[tokio::test]
     async fn test_writer() {
         let backend = Arc::new(memory_backend().unwrap());
         let manger = Arc::new(Mutex::new(MemoryCache::new(10, BLOCK_SIZE)));
-        let writer = Writer::new(1, BLOCK_SIZE, Arc::clone(&manger), backend);
+
+        let kv_engine: Arc<memfs::kv_engine::etcd_impl::EtcdKVEngine> = Arc::new(
+            KVEngineType::new(vec![TEST_ETCD_ENDPOINT.to_owned()])
+                .await
+                .unwrap(),
+        );
+        let metadata_client = S3MetaData::new(kv_engine, TEST_NODE_ID).await.unwrap();
+
+        let writer = Writer::new(1, BLOCK_SIZE, Arc::clone(&manger), backend, metadata_client);
         let content = Bytes::from_static(&[b'1'; IO_SIZE]);
         let slice = BlockSlice::new(0, 0, content.len().cast());
         writer.write(&content, &[slice]).await.unwrap();

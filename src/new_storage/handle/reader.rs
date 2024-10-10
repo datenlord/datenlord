@@ -136,8 +136,14 @@ mod tests {
 
     use super::super::writer::Writer;
     use super::*;
+    use crate::async_fuse::memfs::kv_engine::{KVEngine, KVEngineType};
+    use crate::async_fuse::memfs::{self, MetaData, S3MetaData};
     use crate::new_storage::backend::backend_impl::memory_backend;
     use crate::new_storage::block::BLOCK_SIZE;
+
+    const IO_SIZE: usize = 128 * 1024;
+    const TEST_NODE_ID: &str = "test_node";
+    const TEST_ETCD_ENDPOINT: &str = "127.0.0.1:2379";
 
     #[tokio::test]
     async fn test_reader() {
@@ -146,8 +152,15 @@ mod tests {
         let content = Bytes::from(vec![b'1'; BLOCK_SIZE]);
         let slice = BlockSlice::new(0, 0, content.len().cast());
 
+        let kv_engine: Arc<memfs::kv_engine::etcd_impl::EtcdKVEngine> = Arc::new(
+            KVEngineType::new(vec![TEST_ETCD_ENDPOINT.to_owned()])
+                .await
+                .unwrap(),
+        );
+        let metadata_client = S3MetaData::new(kv_engine, TEST_NODE_ID).await.unwrap();
+
         let b = Arc::clone(&backend);
-        let writer = Writer::new(1, BLOCK_SIZE, Arc::clone(&manger), b);
+        let writer = Writer::new(1, BLOCK_SIZE, Arc::clone(&manger), b, metadata_client);
         writer.write(&content, &[slice]).await.unwrap();
         writer.flush().await.unwrap();
         writer.close().await.unwrap();
