@@ -107,7 +107,6 @@ async fn write_back_block(task: Arc<WriteTask>) -> StorageResult<()> {
             task.cache.lock().unpin(&CacheKey {
                 ino: task.ino,
                 block_id: task.block_id,
-                version: task.version,
             });
             break;
         }
@@ -220,12 +219,11 @@ impl Writer {
         let key = CacheKey {
             ino: self.ino,
             block_id,
-            version,
         };
 
         {
             let cache = self.cache.lock();
-            if let Some(block) = cache.fetch(&key) {
+            if let Some(block) = cache.fetch(&key, version) {
                 return Ok(block);
             }
         }
@@ -239,7 +237,7 @@ impl Writer {
         let block = {
             let mut cache = self.cache.lock();
             cache
-                .new_block(&key, &buf)
+                .new_block(&key, &buf, version)
                 .ok_or(StorageError::OutOfMemory)?
         };
 

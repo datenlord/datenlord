@@ -699,12 +699,12 @@ fn test_delete_file(mount_dir: &Path) -> anyhow::Result<()> {
 }
 
 #[cfg(test)]
-#[allow(dead_code)]
 fn test_open_file_permission(mount_dir: &Path) -> anyhow::Result<()> {
     info!("test open file permission");
     let file_path = Path::new(mount_dir).join("test_open_file_permission.txt");
 
     // Delete file if it exists
+    #[allow(clippy::restriction)]
     let _ = fs::remove_file(&file_path);
     // Make sure current data is flushed to backend with new version
     // Ref pr: https://github.com/datenlord/datenlord/pull/536

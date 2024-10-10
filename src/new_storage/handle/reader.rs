@@ -46,11 +46,9 @@ impl Reader {
         let key = CacheKey {
             ino: self.ino,
             block_id,
-            // Check current block is invalid or not.
-            version,
         };
         let cache = self.cache.lock();
-        cache.fetch(&key)
+        cache.fetch(&key, version)
     }
 
     /// Fetch the block from the backend storage system.
@@ -62,7 +60,6 @@ impl Reader {
         let key = CacheKey {
             ino: self.ino,
             block_id,
-            version,
         };
         let content = {
             let mut buf = vec![0; self.block_size];
@@ -71,7 +68,7 @@ impl Reader {
                 .await?;
             buf
         };
-        match self.cache.lock().new_block(&key, &content) {
+        match self.cache.lock().new_block(&key, &content, version) {
             Some(block) => Ok(block),
             None => Err(StorageError::OutOfMemory),
         }
@@ -96,6 +93,7 @@ impl Reader {
                 // Copy the data from the block to the buffer.
                 let block = block.read();
                 assert!(block.pin_count() >= 1);
+                assert!(block.version() == version, "Block version mismatch.");
                 let offset = slice.offset.cast();
                 let size: usize = slice.size.cast();
                 let end = offset + size;
@@ -112,7 +110,6 @@ impl Reader {
             self.cache.lock().unpin(&CacheKey {
                 ino: self.ino,
                 block_id,
-                version,
             });
         }
         Ok(buf.len())
