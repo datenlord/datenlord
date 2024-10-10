@@ -204,7 +204,7 @@ impl FileHandleInner {
         // Fetch the block from the cache manager.
         {
             let cache = self.cache.lock();
-            if let Some(block) = cache.fetch(&key) {
+            if let Some(block) = cache.fetch(&key, version) {
                 return Ok(block);
             }
         }
@@ -219,7 +219,7 @@ impl FileHandleInner {
         let block = {
             let mut cache = self.cache.lock();
             cache
-                .new_block(&key, &buf)
+                .new_block(&key, &buf, version)
                 .ok_or(StorageError::OutOfMemory)?
         };
 
@@ -587,14 +587,12 @@ impl FileHandle {
     /// Increase the open count of the file handle.
     pub async fn open(&self) {
         let _guard = self.open_close_lock.lock().await;
-        println!("try to get open filehandle lock ok {:?}", self.fh);
         self.inner.open();
     }
 
     /// Get and try to increase the open count of the file handle.
     pub async fn get_and_open(&self) -> bool {
         let _guard = self.open_close_lock.lock().await;
-        println!("try to get open filehandle lock ok {:?}", self.fh);
         if self.inner.open_cnt() > 0 {
             // Current file handle is opened by other process, increase the open count.
             self.inner.open();
@@ -609,14 +607,12 @@ impl FileHandle {
     #[must_use]
     pub async fn open_cnt(&self) -> u32 {
         let _guard = self.open_close_lock.lock().await;
-        println!("try to get open cnt filehandle lock ok {:?}", self.fh);
         self.inner.open_cnt()
     }
 
     /// Closes the file handle, closing both the reader and writer.
     pub async fn close(&self) -> StorageResult<bool> {
         let _guard = self.open_close_lock.lock().await;
-        println!("try to close filehandle lock ok {:?}", self.fh);
         info!("Close the file handle, ino: {}", self.fh);
         match self.inner.close().await {
             Ok(true) => {
@@ -626,13 +622,9 @@ impl FileHandle {
                 write_back_handle.await.unwrap_or_else(|e| {
                     error!("Failed to join the write back task: {e}");
                 });
-                println!("filehandle {:?} drop close filehandle ok", self.fh);
                 Ok(true)
             }
-            Ok(false) => {
-                println!("filehandle {:?} drop filehandle lock ok", self.fh);
-                Ok(false)
-            }
+            Ok(false) => Ok(false),
             Err(e) => Err(e),
         }
     }
