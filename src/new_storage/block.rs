@@ -44,7 +44,13 @@ pub struct Block {
     /// The dirty flag
     dirty: bool,
     /// The version of the block
-    version: usize,
+    version: u64,
+}
+
+impl AsRef<[u8]> for Block {
+    fn as_ref(&self) -> &[u8] {
+        &self.data
+    }
 }
 
 impl Debug for Block {
@@ -75,8 +81,13 @@ impl Block {
 
     /// Returns the current version of the block.
     #[must_use]
-    pub fn version(&self) -> usize {
+    pub fn version(&self) -> u64 {
         self.version
+    }
+
+    /// Set the version of the block.
+    pub fn set_version(&mut self, version: u64) {
+        self.version = version;
     }
 
     /// Increments the version of the block.

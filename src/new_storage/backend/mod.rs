@@ -13,10 +13,11 @@ use super::error::StorageResult;
 /// The `Backend` trait represents a backend storage system.
 #[async_trait]
 pub trait Backend: Debug + Send + Sync {
-    /// Reads data from the storage system into the given buffer.
-    async fn read(&self, path: &str, buf: &mut [u8]) -> StorageResult<usize>;
-    /// Writes data from the given buffer into the storage system.
-    async fn write(&self, path: &str, buf: &[u8]) -> StorageResult<()>;
+    /// Reads data from the storage system into the given buffer, support read with version if current backend system supports it.
+    async fn read(&self, path: &str, buf: &mut [u8], version: u64) -> StorageResult<usize>;
+    /// Writes data from the given buffer into the storage system, support write with version if current backend system supports it,
+    /// Current write implement might need to read the block from storage first, so this function need to sync with read function.
+    async fn write(&self, path: &str, buf: &[u8], version: u64) -> StorageResult<()>;
     /// Removes the data from the storage system.
     async fn remove(&self, path: &str) -> StorageResult<()>;
     /// Removes data with the specified prefix (usually a directory)
@@ -29,12 +30,14 @@ pub trait Backend: Debug + Send + Sync {
 async fn test_backend(backend: impl Backend) {
     let path = "test";
     let data = b"hello world";
-    backend.write(path, data).await.unwrap();
+    let version = 0;
+    backend.write(path, data, version).await.unwrap();
     let mut buf = vec![0_u8; data.len()];
-    backend.read(path, &mut buf).await.unwrap();
+    let version = 0;
+    backend.read(path, &mut buf, version).await.unwrap();
     assert_eq!(buf, data);
 
     backend.remove(path).await.unwrap();
-    let res = backend.read(path, &mut buf).await.unwrap();
+    let res = backend.read(path, &mut buf, version).await.unwrap();
     assert_eq!(res, 0);
 }

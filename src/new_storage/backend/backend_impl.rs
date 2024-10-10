@@ -112,7 +112,7 @@ impl BackendImpl {
 #[async_trait]
 impl Backend for BackendImpl {
     #[inline]
-    async fn read(&self, path: &str, buf: &mut [u8]) -> StorageResult<usize> {
+    async fn read(&self, path: &str, buf: &mut [u8], _version: u64) -> StorageResult<usize> {
         let len = buf.len();
         let mut reader = self.operator.reader(path).await?;
         let mut read_size = 0;
@@ -140,7 +140,7 @@ impl Backend for BackendImpl {
     }
 
     #[inline]
-    async fn write(&self, path: &str, buf: &[u8]) -> StorageResult<()> {
+    async fn write(&self, path: &str, buf: &[u8], _version: u64) -> StorageResult<()> {
         let mut writer = self.operator.writer(path).await?;
         writer.write_all(buf).await?;
         writer.close().await?;
@@ -199,14 +199,15 @@ mod tests {
     async fn test_remove_all() {
         let backend = tmp_fs_backend().unwrap();
         let mut buf = vec![0; 16];
-        backend.write("a/1", &buf).await.unwrap();
-        backend.write("a/2", &buf).await.unwrap();
+        let version = 0;
+        backend.write("a/1", &buf, version).await.unwrap();
+        backend.write("a/2", &buf, version).await.unwrap();
 
         backend.remove_all("a/").await.unwrap();
 
-        let size = backend.read("a/1", &mut buf).await.unwrap();
+        let size = backend.read("a/1", &mut buf, version).await.unwrap();
         assert_eq!(size, 0);
-        let size = backend.read("a/2", &mut buf).await.unwrap();
+        let size = backend.read("a/2", &mut buf, version).await.unwrap();
         assert_eq!(size, 0);
     }
 }

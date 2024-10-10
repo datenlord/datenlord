@@ -3,7 +3,6 @@
 use std::sync::Arc;
 
 use clippy_utilities::Cast;
-use hashbrown::HashSet;
 use parking_lot::{Mutex, RwLock};
 
 use super::super::policy::LruPolicy;
@@ -24,8 +23,6 @@ pub struct Reader {
     cache: Arc<Mutex<MemoryCache<CacheKey, LruPolicy<CacheKey>>>>,
     /// The backend storage system.
     backend: Arc<dyn Backend>,
-    /// A set of keys that tracks accessed cache blocks.
-    access_keys: Mutex<HashSet<CacheKey>>,
 }
 
 impl Reader {
@@ -41,32 +38,25 @@ impl Reader {
             block_size,
             cache,
             backend,
-            access_keys: Mutex::new(HashSet::new()),
         }
     }
 
     /// Try fetch the block from `MemoryCache`.
-    fn fetch_block_from_cache(&self, block_id: u64) -> Option<Arc<RwLock<Block>>> {
+    fn fetch_block_from_cache(&self, block_id: u64, version: u64) -> Option<Arc<RwLock<Block>>> {
         let key = CacheKey {
             ino: self.ino,
             block_id,
         };
         let cache = self.cache.lock();
-        cache.fetch(&key)
-    }
-
-    /// Mark the block as accessed.
-    fn access(&self, block_id: u64) {
-        let key = CacheKey {
-            ino: self.ino,
-            block_id,
-        };
-        let mut access_keys = self.access_keys.lock();
-        access_keys.insert(key);
+        cache.fetch(&key, version)
     }
 
     /// Fetch the block from the backend storage system.
-    async fn fetch_block_from_backend(&self, block_id: u64) -> StorageResult<Arc<RwLock<Block>>> {
+    async fn fetch_block_from_backend(
+        &self,
+        block_id: u64,
+        version: u64,
+    ) -> StorageResult<Arc<RwLock<Block>>> {
         let key = CacheKey {
             ino: self.ino,
             block_id,
@@ -74,11 +64,11 @@ impl Reader {
         let content = {
             let mut buf = vec![0; self.block_size];
             self.backend
-                .read(&format_path(self.ino, block_id), &mut buf)
+                .read(&format_path(self.ino, block_id), &mut buf, version)
                 .await?;
             buf
         };
-        match self.cache.lock().new_block(&key, &content) {
+        match self.cache.lock().new_block(&key, &content, version) {
             Some(block) => Ok(block),
             None => Err(StorageError::OutOfMemory),
         }
@@ -86,19 +76,24 @@ impl Reader {
 
     /// Reads data from the file starting at the given offset and up to the
     /// given length.
-    pub async fn read(&self, buf: &mut Vec<u8>, slices: &[BlockSlice]) -> StorageResult<usize> {
+    pub async fn read(
+        &self,
+        buf: &mut Vec<u8>,
+        slices: &[BlockSlice],
+        version: u64,
+    ) -> StorageResult<usize> {
         for slice in slices {
             let block_id = slice.block_id;
-            self.access(block_id);
             // Block's pin count is increased by 1.
-            let block = match self.fetch_block_from_cache(block_id) {
+            let block = match self.fetch_block_from_cache(block_id, version) {
                 Some(block) => block,
-                None => self.fetch_block_from_backend(block_id).await?,
+                None => self.fetch_block_from_backend(block_id, version).await?,
             };
             {
                 // Copy the data from the block to the buffer.
                 let block = block.read();
                 assert!(block.pin_count() >= 1);
+                assert!(block.version() == version, "Block version mismatch.");
                 let offset = slice.offset.cast();
                 let size: usize = slice.size.cast();
                 let end = offset + size;
@@ -121,11 +116,9 @@ impl Reader {
     }
 
     /// Close the reader and remove the accessed cache blocks.
+    #[allow(clippy::unused_self)]
     pub fn close(&self) {
-        let access_keys = self.access_keys.lock();
-        for key in access_keys.iter() {
-            self.cache.lock().remove(key);
-        }
+        // For continuous read/write, we do not need to clean these cache blocks.
     }
 }
 
@@ -148,20 +141,24 @@ mod tests {
 
         let b = Arc::clone(&backend);
         let writer = Writer::new(1, BLOCK_SIZE, Arc::clone(&manger), b);
-        writer.write(&content, &[slice]).await.unwrap();
+        let version = 0;
+        writer.write(&content, &[slice], version).await.unwrap();
         writer.flush().await.unwrap();
         writer.close().await.unwrap();
 
         let reader = Reader::new(1, BLOCK_SIZE, Arc::clone(&manger), backend);
         let slice = BlockSlice::new(0, 0, BLOCK_SIZE.cast());
         let mut buf = Vec::with_capacity(BLOCK_SIZE);
-        let size = reader.read(&mut buf, &[slice]).await.unwrap();
+        let version = 0;
+        let size = reader.read(&mut buf, &[slice], version).await.unwrap();
         assert_eq!(size, BLOCK_SIZE);
         assert_eq!(content, buf);
         let memory_size = manger.lock().len();
         assert_eq!(memory_size, 1);
         reader.close();
         let memory_size = manger.lock().len();
-        assert_eq!(memory_size, 0);
+        // assert_eq!(memory_size, 0);
+        // Current cache is not cleaned after close for continuous read/write.
+        assert_eq!(memory_size, 1);
     }
 }
