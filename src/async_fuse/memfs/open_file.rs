@@ -6,6 +6,8 @@ use parking_lot::{Mutex, RwLock};
 use super::fs_util::FileAttr;
 use crate::async_fuse::fuse::protocol::INum;
 
+/// Deprecated: The `OpenFile` struct is used for old storage, current new storage integrate
+/// with `FileHandle` struct.
 /// A structure representing an open file with its attributes and open count.
 ///
 /// The `attr` field contains the file attributes, while `open_cnt` keeps track

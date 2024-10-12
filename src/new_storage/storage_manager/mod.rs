@@ -2,6 +2,9 @@
 
 mod manager;
 
+/// File handle for the storage manager.
+pub mod handle;
+
 #[cfg(test)]
 mod tests;
 
