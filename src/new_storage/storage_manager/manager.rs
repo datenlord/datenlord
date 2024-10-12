@@ -33,15 +33,20 @@ impl Storage for StorageManager {
     /// handle.
     #[inline]
     fn open(&self, ino: u64, fh: u64, flag: OpenFlag) {
-        let handle = FileHandle::new(
-            fh,
-            ino,
-            self.block_size,
-            Arc::clone(&self.cache),
-            Arc::clone(&self.backend),
-            flag,
-        );
-        self.handles.add_handle(handle);
+        // Get existing file handle if it exists
+        if let Some(handle) = self.handles.get_handle(fh) {
+            handle.open();
+        } else {
+            let handle = FileHandle::new(
+                fh,
+                ino,
+                self.block_size,
+                Arc::clone(&self.cache),
+                Arc::clone(&self.backend),
+                flag,
+            );
+            self.handles.add_handle(handle);
+        }
     }
 
     /// Reads data from a file specified by the file handle, starting at the

@@ -1,5 +1,6 @@
 //! The implementation of user space file system
 mod fs_util;
+pub use fs_util::FileAttr;
 pub mod id_alloc;
 mod id_alloc_used;
 /// The KV engine module

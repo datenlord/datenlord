@@ -1,49 +1,86 @@
-//! The writer implementation.
+//! The file handle implementation
 
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+use std::sync::atomic::AtomicU32;
 use std::sync::Arc;
 
 use bytes::Bytes;
 use clippy_utilities::Cast;
+use nix::fcntl::OFlag;
 use parking_lot::{Mutex, RwLock};
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use tracing::{error, warn};
 
-use super::super::policy::LruPolicy;
-use super::super::{
-    format_path, offset_to_slice, Backend, Block, BlockSlice, CacheKey, MemoryCache,
-};
-use crate::new_storage::{StorageError, StorageResult};
+use crate::new_storage::{format_path, Block, BlockSlice, StorageError};
 
-/// The `Writer` struct represents a struct responsible for writing blocks of
-/// data to a backend storage system
-pub struct Writer {
-    /// The inode number associated with the writer
+use super::super::backend::Backend;
+use super::super::block_slice::offset_to_slice;
+use super::super::error::StorageResult;
+use super::super::policy::LruPolicy;
+use super::super::{CacheKey, MemoryCache};
+
+/// The `FileHandleInner` struct represents the inner state of a file handle.
+/// It contains the file handle, reader, and writer.
+pub struct FileHandleInner {
+    /// The inode number associated with the file being read.
     ino: u64,
+    /// Integrate openfiles in current strutcture, representing an open file with its attributes and open count.
+    /// The `attr` field contains the file attributes, while `open_cnt` keeps track
+    /// of the number of times this file is currently opened.
+    /// The number of times this file is currently opened.
+    open_cnt: AtomicU32,
     /// The block size
     block_size: usize,
-    /// The cache manager.
+    /// The `MemoryCache`
     cache: Arc<Mutex<MemoryCache<CacheKey, LruPolicy<CacheKey>>>>,
     /// The backend storage system.
     backend: Arc<dyn Backend>,
+    /// The access keys.
+    access_keys: Mutex<Vec<CacheKey>>,
     /// The sender to send tasks to the write back worker.
     write_back_sender: Sender<Task>,
     /// The handle to the write back worker.
     write_back_handle: tokio::sync::Mutex<Option<JoinHandle<()>>>,
-    /// The access keys.
-    access_keys: Mutex<Vec<CacheKey>>,
 }
 
-impl std::fmt::Debug for Writer {
+impl std::fmt::Debug for FileHandleInner {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Writer")
+        f.debug_struct("FileHandleInner")
             .field("ino", &self.ino)
             .field("block_size", &self.block_size)
             .field("cache", &self.cache)
             .field("backend", &self.backend)
             .field("access_keys", &self.access_keys)
             .finish_non_exhaustive()
+    }
+}
+
+/// The `OpenFlag` enum represents the mode in which a file is opened.
+#[derive(Debug, Clone, Copy)]
+pub enum OpenFlag {
+    /// Open the file for reading.
+    Read,
+    /// Open the file for writing.
+    Write,
+    /// Open the file for reading and writing.
+    ReadAndWrite,
+}
+
+impl From<u32> for OpenFlag {
+    fn from(value: u32) -> Self {
+        let write_flags = OFlag::O_APPEND | OFlag::O_WRONLY;
+
+        let flags = OFlag::from_bits_truncate(value.cast());
+        if flags.intersects(write_flags) {
+            Self::Write
+        } else if flags.intersects(OFlag::O_RDWR) {
+            Self::ReadAndWrite
+        } else {
+            Self::Read
+        }
     }
 }
 
@@ -185,10 +222,10 @@ async fn write_back_work(mut write_back_receiver: Receiver<Task>) {
     }
 }
 
-impl Writer {
-    /// Create a new `Writer`.
+impl FileHandleInner {
+    /// Creates a new `FileHandleInner` instance.
     #[inline]
-    #[must_use]
+    #[allow(clippy::needless_pass_by_value)]
     pub fn new(
         ino: u64,
         block_size: usize,
@@ -196,18 +233,21 @@ impl Writer {
         backend: Arc<dyn Backend>,
     ) -> Self {
         let (tx, rx) = tokio::sync::mpsc::channel(100);
-        let mut writer = Writer {
+        // TODO: Move to task manager
+        // let handle = TASK_MANAGER.spawn(TaskName::WriteBack, write_back_work(rx)).await;
+        let handle = tokio::spawn(write_back_work(rx));
+
+        FileHandleInner {
             ino,
             block_size,
             cache,
             backend,
-            write_back_sender: tx,
-            write_back_handle: tokio::sync::Mutex::new(None),
+            // The open count is initialized to 0, open() method will increase this flag.
+            open_cnt: AtomicU32::new(0),
             access_keys: Mutex::new(Vec::new()),
-        };
-        let handle = tokio::spawn(write_back_work(rx));
-        writer.write_back_handle = tokio::sync::Mutex::new(Some(handle));
-        writer
+            write_back_sender: tx,
+            write_back_handle: tokio::sync::Mutex::new(Some(handle)),
+        }
     }
 
     /// Record the block access.
@@ -228,6 +268,7 @@ impl Writer {
             block_id,
         };
 
+        // Fetch the block from the cache manager.
         {
             let cache = self.cache.lock();
             if let Some(block) = cache.fetch(&key) {
@@ -235,6 +276,7 @@ impl Writer {
             }
         }
 
+        // Fetch the block from the backend storage system.
         let path = format_path(self.ino, block_id);
         // There is a gap between the block is created and the content is read from the
         // backend. But according to the current design, concurrency
@@ -249,6 +291,39 @@ impl Writer {
         };
 
         Ok(block)
+    }
+
+    /// Reads data from the file starting at the given offset and up to the
+    /// given length.
+    pub async fn read(&self, buf: &mut Vec<u8>, slices: &[BlockSlice]) -> StorageResult<usize> {
+        for slice in slices {
+            let block_id = slice.block_id;
+            self.access(block_id);
+            // Block's pin count is increased by 1.
+            let block = self.fetch_block(block_id).await?;
+            {
+                // Copy the data from the block to the buffer.
+                let block = block.read();
+                assert!(block.pin_count() >= 1);
+                let offset = slice.offset.cast();
+                let size: usize = slice.size.cast();
+                let end = offset + size;
+                let block_size = block.len();
+                assert!(
+                    block_size >= end,
+                    "The size of block should be greater than {end}, but {block_size} found."
+                );
+                let slice = block
+                    .get(offset..end)
+                    .unwrap_or_else(|| unreachable!("The block is checked to be big enough."));
+                buf.extend_from_slice(slice);
+            }
+            self.cache.lock().unpin(&CacheKey {
+                ino: self.ino,
+                block_id,
+            });
+        }
+        Ok(buf.len())
     }
 
     /// Writes data to the file starting at the given offset.
@@ -333,8 +408,22 @@ impl Writer {
         Ok(())
     }
 
+    /// Increase the open count of the file handle.
+    pub fn open(&self) {
+        self.open_cnt
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+
     /// Closes the writer associated with the file handle.
     pub async fn close(&self) -> StorageResult<()> {
+        if self
+            .open_cnt
+            .fetch_sub(1, std::sync::atomic::Ordering::SeqCst)
+            > 0
+        {
+            return Ok(());
+        }
+
         let (tx, rx) = oneshot::channel();
 
         self.write_back_sender
@@ -369,26 +458,213 @@ impl Writer {
     }
 }
 
+/// The `FileHandle` struct represents a handle to an open file.
+/// It contains an `Arc` of `RwLock<FileHandleInner>`.
+#[derive(Debug, Clone)]
+pub struct FileHandle {
+    /// The file handle.
+    fh: u64,
+    /// The block size in bytes
+    block_size: usize,
+    /// The open flag for this file handle (read, write, or read and write)
+    flag: OpenFlag,
+    /// The inner file handle
+    inner: Arc<FileHandleInner>,
+}
+
+impl FileHandle {
+    /// Creates a new `FileHandle` instance.
+    pub fn new(
+        fh: u64,
+        ino: u64,
+        block_size: usize,
+        cache: Arc<Mutex<MemoryCache<CacheKey, LruPolicy<CacheKey>>>>,
+        backend: Arc<dyn Backend>,
+        flag: OpenFlag,
+    ) -> Self {
+        let inner = FileHandleInner::new(ino, block_size, cache, backend);
+        let inner = Arc::new(inner);
+        FileHandle {
+            fh,
+            block_size,
+            flag,
+            inner,
+        }
+    }
+
+    /// Returns the file handle.
+    #[must_use]
+    pub fn fh(&self) -> u64 {
+        self.fh
+    }
+
+    /// Gets a reader of this file handle.
+    ///
+    /// # Panic
+    /// Panics if the file handle is not allowed to be read.
+    fn reader(&self) -> Arc<FileHandleInner> {
+        match self.flag {
+            OpenFlag::Read | OpenFlag::ReadAndWrite => Arc::clone(&self.inner),
+            OpenFlag::Write => panic!("This file handle is not allowed to be read."),
+        }
+    }
+
+    /// Gets a writer of this file handle.
+    ///
+    /// # Panic
+    /// Panics if the file handle is not allowed to be written.
+    fn writer(&self) -> Arc<FileHandleInner> {
+        match self.flag {
+            OpenFlag::Write | OpenFlag::ReadAndWrite => Arc::clone(&self.inner),
+            OpenFlag::Read => panic!("This file handle is not allowed to be written."),
+        }
+    }
+
+    /// Reads data from the file starting at the given offset and up to the
+    /// given length.
+    pub async fn read(&self, offset: u64, len: u64) -> StorageResult<Vec<u8>> {
+        let reader = self.reader();
+        let slices = offset_to_slice(self.block_size.cast(), offset, len);
+        let mut buf = Vec::with_capacity(len.cast());
+        reader.read(&mut buf, &slices).await?;
+        Ok(buf)
+    }
+
+    /// Writes data to the file starting at the given offset.
+    pub async fn write(&self, offset: u64, buf: &[u8]) -> StorageResult<()> {
+        let writer = self.writer();
+        let slices = offset_to_slice(self.block_size.cast(), offset, buf.len().cast());
+        writer.write(buf, &slices).await
+    }
+
+    /// Extends the file from the old size to the new size.
+    pub async fn extend(&self, old_size: u64, new_size: u64) -> StorageResult<()> {
+        let writer = self.writer();
+        writer.extend(old_size, new_size).await
+    }
+
+    /// Flushes any pending writes to the file.
+    ///
+    /// Flush and fsync do not need to check how many times a file handle has been opened.
+    pub async fn flush(&self) -> StorageResult<()> {
+        self.inner.flush().await
+    }
+
+    /// Increase the open count of the file handle.
+    pub fn open(&self) {
+        self.inner.open();
+    }
+
+    /// Closes the file handle, closing both the reader and writer.
+    pub async fn close(&self) -> StorageResult<()> {
+        self.inner.close().await
+    }
+}
+
+/// Number of handle shards.
+const HANDLE_SHARD_NUM: usize = 100;
+
+/// The `Handles` struct represents a collection of file handles.
+/// It uses sharding to avoid lock contention.
+#[derive(Debug)]
+pub struct Handles {
+    /// Use shard to avoid lock contention
+    handles: [Arc<RwLock<Vec<FileHandle>>>; HANDLE_SHARD_NUM],
+}
+
+impl Default for Handles {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Handles {
+    /// Creates a new `Handles` instance.
+    #[must_use]
+    #[inline]
+    pub fn new() -> Self {
+        let mut handles: Vec<_> = Vec::with_capacity(HANDLE_SHARD_NUM);
+        for _ in 0..HANDLE_SHARD_NUM {
+            handles.push(Arc::new(RwLock::new(Vec::new())));
+        }
+        let handles: [_; HANDLE_SHARD_NUM] = handles.try_into().unwrap_or_else(|_| {
+            unreachable!("The length should match.");
+        });
+        Handles { handles }
+    }
+
+    /// Returns the shard index for the given file handle.
+    fn hash(fh: u64) -> usize {
+        let mut hasher = DefaultHasher::new();
+        fh.hash(&mut hasher);
+        (hasher.finish().cast::<usize>()) % HANDLE_SHARD_NUM
+    }
+
+    /// Gets a shard of the fh.
+    fn get_shard(&self, fh: u64) -> &Arc<RwLock<Vec<FileHandle>>> {
+        let idx = Self::hash(fh);
+        self.handles
+            .get(idx)
+            .unwrap_or_else(|| unreachable!("The array is ensured to be long enough."))
+    }
+
+    /// Adds a file handle to the collection.
+    pub fn add_handle(&self, fh: FileHandle) {
+        let shard = self.get_shard(fh.fh());
+        let mut shard_lock = shard.write();
+        shard_lock.push(fh);
+    }
+
+    /// Removes a file handle from the collection.'
+    #[must_use]
+    pub fn remove_handle(&self, fh: u64) -> Option<FileHandle> {
+        let shard = self.get_shard(fh);
+        let mut shard_lock = shard.write();
+        shard_lock
+            .iter()
+            .position(|h| h.fh() == fh)
+            .map(|pos| shard_lock.remove(pos))
+    }
+
+    /// Returns a file handle from the collection.
+    #[must_use]
+    pub fn get_handle(&self, fh: u64) -> Option<FileHandle> {
+        let shard = self.get_shard(fh);
+        let shard_lock = shard.read();
+        let fh = shard_lock.iter().find(|h| h.fh() == fh)?;
+        Some(fh.clone())
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
-    use crate::new_storage::backend::backend_impl::memory_backend;
+    use crate::new_storage::backend::backend_impl::tmp_fs_backend;
     use crate::new_storage::block::BLOCK_SIZE;
 
     const IO_SIZE: usize = 128 * 1024;
+
     #[tokio::test]
-    async fn test_writer() {
-        let backend = Arc::new(memory_backend().unwrap());
-        let manger = Arc::new(Mutex::new(MemoryCache::new(10, BLOCK_SIZE)));
-        let writer = Writer::new(1, BLOCK_SIZE, Arc::clone(&manger), backend);
-        let content = Bytes::from_static(&[b'1'; IO_SIZE]);
-        let slice = BlockSlice::new(0, 0, content.len().cast());
-        writer.write(&content, &[slice]).await.unwrap();
-        let memory_size = manger.lock().len();
-        assert_eq!(memory_size, 1);
-        writer.close().await.unwrap();
-        let memory_size = manger.lock().len();
-        assert_eq!(memory_size, 0);
+    async fn test_file_handle() {
+        let cache = Arc::new(Mutex::new(MemoryCache::new(100, BLOCK_SIZE)));
+        let backend = Arc::new(tmp_fs_backend().unwrap());
+        let handles = Arc::new(Handles::new());
+        let ino = 1;
+        let fh = 1;
+        let file_handle = FileHandleInner::new(ino, BLOCK_SIZE, cache, backend);
+        let file_handle = Arc::new(file_handle);
+        let file_handle = FileHandle {
+            fh,
+            block_size: BLOCK_SIZE,
+            flag: OpenFlag::ReadAndWrite,
+            inner: file_handle,
+        };
+        handles.add_handle(file_handle.clone());
+        let buf = vec![b'1', b'2', b'3', b'4'];
+        file_handle.write(0, &buf).await.unwrap();
+        let read_buf = file_handle.read(0, 4).await.unwrap();
+        assert_eq!(read_buf, buf);
+        file_handle.flush().await.unwrap();
     }
 }
