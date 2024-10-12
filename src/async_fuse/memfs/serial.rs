@@ -35,6 +35,9 @@ pub struct SerialFileAttr {
     gid: u32,
     /// Rdev
     rdev: u32,
+    /// Serial node version number, default is 0 for compatibility
+    #[serde(default)]
+    version: u64,
 }
 
 impl SerialFileAttr {
@@ -143,6 +146,7 @@ pub fn file_attr_to_serial(attr: &FileAttr) -> SerialFileAttr {
         uid: attr.uid,
         gid: attr.gid,
         rdev: attr.rdev,
+        version: attr.version,
     }
 }
 
@@ -168,6 +172,7 @@ pub const fn serial_to_file_attr(attr: &SerialFileAttr) -> FileAttr {
         uid: attr.uid,
         gid: attr.gid,
         rdev: attr.rdev,
+        version: attr.version,
     }
 }
 
@@ -216,6 +221,7 @@ mod test {
             uid: rng.gen(),
             gid: rng.gen(),
             rdev: rng.gen(),
+            version: rng.gen(),
         }
     }
 

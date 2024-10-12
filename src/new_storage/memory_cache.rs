@@ -93,12 +93,13 @@ where
     /// # Panic
     /// The method panics if `data` is longer than `BLOCK_SIZE`.
     #[inline]
-    pub fn new_block(&mut self, key: &K, data: &[u8]) -> Option<Arc<RwLock<Block>>> {
+    pub fn new_block(&mut self, key: &K, data: &[u8], version: u64) -> Option<Arc<RwLock<Block>>> {
         // Check if the key is already exist
         if let Some(block) = self.map.get(key) {
-            // access, then pin,return
+            // access, update version, then pin,return
             self.policy.access(key);
             let block = Arc::clone(block);
+            block.write().set_version(version);
             block.write().pin();
             return Some(block);
         }
@@ -132,6 +133,7 @@ where
                     panic!("Input data is longer than a block.");
                 })
                 .copy_from_slice(data);
+            block.set_version(version);
         }
         Some(new_block)
     }
@@ -154,8 +156,12 @@ where
 
     /// Fetches the block associated with the given key from the cache.
     #[inline]
-    pub fn fetch(&self, key: &K) -> Option<Arc<RwLock<Block>>> {
+    pub fn fetch(&self, key: &K, version: u64) -> Option<Arc<RwLock<Block>>> {
         let block = self.map.get(key).cloned()?;
+        if block.read().version() != version {
+            return None;
+        }
+
         self.policy.access(key);
         {
             let mut block = block.write();
@@ -238,7 +244,7 @@ mod tests {
         let cache_size = 10;
         let mut manager = prepare_cache(cache_size);
         {
-            let block_0 = manager.new_block(&0, &content).unwrap();
+            let block_0 = manager.new_block(&0, &content, 0).unwrap();
             let mut block_0 = block_0.write();
             block_0.copy_from_slice(&content);
             block_0.set_dirty(true);
@@ -246,7 +252,7 @@ mod tests {
 
         {
             // Check if block_0's content is correct.
-            let block_0 = manager.fetch(&0).unwrap();
+            let block_0 = manager.fetch(&0, 0).unwrap();
             {
                 let block_0 = block_0.read();
                 // TODO: fix storage error
@@ -259,7 +265,7 @@ mod tests {
 
         // Create blocks [1,2,3,4,5,6,7,8,9]
         for i in 1..cache_size {
-            let block = manager.new_block(&i, &content).unwrap();
+            let block = manager.new_block(&i, &content, 0).unwrap();
             let mut block = block.write();
             block.copy_from_slice(&content);
         }
@@ -267,7 +273,7 @@ mod tests {
         // Now the cache is full and all blocks are pinned.
         // We can't create a new block.
         {
-            assert!(manager.new_block(&cache_size, &content).is_none());
+            assert!(manager.new_block(&cache_size, &content, 0).is_none());
         }
 
         {
@@ -275,10 +281,10 @@ mod tests {
         }
 
         // This would evict block 1 and create a new block.
-        assert!(manager.new_block(&cache_size, &content).is_some());
+        assert!(manager.new_block(&cache_size, &content, 0).is_some());
         {
             // Try get block 1
-            assert!(manager.fetch(&1).is_none());
+            assert!(manager.fetch(&1, 0).is_none());
         }
     }
 
@@ -286,8 +292,8 @@ mod tests {
     fn test_new_same_block() {
         let content = vec![0_u8; BLOCK_SIZE];
         let mut manager = prepare_cache(10);
-        let block_1 = manager.new_block(&0, &content).unwrap();
-        let block_2 = manager.new_block(&0, &content).unwrap();
+        let block_1 = manager.new_block(&0, &content, 0).unwrap();
+        let block_2 = manager.new_block(&0, &content, 0).unwrap();
 
         assert!(Arc::ptr_eq(&block_1, &block_2));
     }
@@ -297,8 +303,8 @@ mod tests {
         let content = vec![0_u8; BLOCK_SIZE];
         let mut manager = prepare_cache(10);
 
-        let _block = manager.new_block(&1, &content).unwrap();
-        let _block = manager.new_block(&2, &content).unwrap();
+        let _block = manager.new_block(&1, &content, 0).unwrap();
+        let _block = manager.new_block(&2, &content, 0).unwrap();
 
         manager.unpin(&2);
 
@@ -312,16 +318,16 @@ mod tests {
         let content = vec![0_u8; BLOCK_SIZE];
         let mut manager = prepare_cache(10);
 
-        let block_1 = manager.new_block(&1, &content).unwrap();
+        let block_1 = manager.new_block(&1, &content, 0).unwrap();
         manager.remove(&1); // This will NOT remove the pinned block
-        let block_2 = manager.fetch(&1).unwrap();
+        let block_2 = manager.fetch(&1, 0).unwrap();
         assert!(Arc::ptr_eq(&block_1, &block_2));
 
         manager.unpin(&1);
         manager.unpin(&1);
         manager.remove(&1);
 
-        let block_3 = manager.fetch(&1);
+        let block_3 = manager.fetch(&1, 0);
         assert!(block_3.is_none());
     }
 }
