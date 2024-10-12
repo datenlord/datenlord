@@ -582,8 +582,9 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         let data_len: u64 = data.len().cast();
 
         let (old_size, _) = self.metadata.mtime_and_size(ino);
-        let result = self.storage.write(ino, fh, offset.cast(), &data).await;
+        let new_size = old_size.max(offset.cast::<u64>().overflow_add(data_len));
 
+        let result = self.storage.write(ino, fh, offset.cast(), &data, new_size).await;
         let new_mtime = match result {
             Ok(()) => SystemTime::now(),
             Err(e) => {
@@ -591,7 +592,6 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
             }
         };
 
-        let new_size = old_size.max(offset.cast::<u64>().overflow_add(data_len));
 
         let write_result = self
             .metadata

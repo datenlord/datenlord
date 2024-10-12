@@ -180,7 +180,7 @@ impl MetaData for S3MetaData {
         let open_file = self.open_files.get(ino);
 
         let (mtime, file_size) = {
-            let attr = open_file.read().attr;
+            let attr: super::FileAttr = open_file.read().attr;
             (attr.mtime, attr.size)
         };
 
