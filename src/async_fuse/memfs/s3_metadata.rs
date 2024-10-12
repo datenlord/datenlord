@@ -304,7 +304,12 @@ impl MetaData for S3MetaData {
                     storage.open(ino, dirty_attr_without_size).await;
 
                     storage
-                        .truncate(ino, old_attr.size.cast(), dirty_attr.size.cast())
+                        .truncate(
+                            ino,
+                            old_attr.size.cast(),
+                            dirty_attr.size.cast(),
+                            dirty_attr.version,
+                        )
                         .await?;
 
                     // Update local attr with new size
@@ -723,7 +728,12 @@ impl MetaData for S3MetaData {
     }
 
     /// Helper function to write remote meta data
-    async fn write_remote_size_helper(&self, ino: u64, size: u64) -> DatenLordResult<FileAttr> {
+    async fn write_remote_size_and_version_helper(
+        &self,
+        ino: u64,
+        size: u64,
+        version: u64,
+    ) -> DatenLordResult<FileAttr> {
         let mut node = self
             .get_node_from_kv_engine(ino)
             .await?
@@ -731,6 +741,7 @@ impl MetaData for S3MetaData {
         node.update_mtime_ctime_to_now();
         let mut attr = node.get_attr();
         attr.size = size;
+        attr.version = version;
         node.set_attr(attr);
         match self
             .kv_engine
@@ -743,7 +754,7 @@ impl MetaData for S3MetaData {
         {
             Ok(_) => {
                 debug!(
-                    "write_remote_size_helper() ino={} size={} isok={:?}",
+                    "write_remote_size_and_version_helper() ino={} size={} isok={:?}",
                     ino, size, true
                 );
                 Ok(attr)
@@ -751,7 +762,7 @@ impl MetaData for S3MetaData {
             Err(e) => {
                 return build_error_result_from_errno(
                     Errno::EIO,
-                    format!("write_remote_size_helper() failed to set kv, err={e:?}"),
+                    format!("write_remote_size_and_version_helper() failed to set kv, err={e:?}"),
                 );
             }
         }
