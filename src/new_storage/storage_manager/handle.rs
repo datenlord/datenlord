@@ -14,7 +14,7 @@ use parking_lot::{Mutex, RwLock};
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
-use tracing::{debug, error, warn};
+use tracing::{error, warn};
 
 use super::super::backend::Backend;
 use super::super::block_slice::offset_to_slice;
@@ -45,10 +45,6 @@ pub struct FileHandleInner {
     write_back_sender: Sender<Task>,
     /// The handle to the write back worker.
     write_back_handle: tokio::sync::Mutex<Option<JoinHandle<()>>>,
-    /// The sender to send meta task to the meta task worker.
-    meta_task_sender: Sender<MetaTask>,
-    /// The handle to the meta task worker.
-    meta_task_handle: tokio::sync::Mutex<Option<JoinHandle<()>>>,
 }
 
 impl std::fmt::Debug for FileHandleInner {
@@ -133,8 +129,8 @@ struct WriteTask {
     block_id: u64,
     /// The block to be written.
     block: Arc<RwLock<Block>>,
-    /// Meta commit task sender, when current block is written back, we need to send a meta commit task.
-    meta_task_sender: Sender<MetaTask>,
+    /// The file size in this operation.
+    file_size: u64,
 }
 
 /// Write a block back to the backend.
@@ -175,35 +171,21 @@ async fn write_back_block(task: Arc<WriteTask>) -> StorageResult<()> {
         }
     }
 
-    // Send the meta commit task.
-    let meta_task = Arc::new(MetaCommitTask { ino: task.ino });
-    match task
-        .meta_task_sender
-        .send(MetaTask::Pending(meta_task))
-        .await
-    {
-        Ok(()) => {
-            debug!(
-                "Send meta task successfully, current meta task is {:?}",
-                task
-            );
-        }
-        Err(e) => {
-            error!("Failed to send meta task, the error is {e}.");
-        }
-    }
-
     Ok(())
 }
 
 /// Write the blocks to the backend storage system concurrently.
-async fn write_blocks(tasks: &Vec<Arc<WriteTask>>) -> Option<StorageError> {
+async fn write_blocks<M: MetaData + Send + Sync + 'static>(
+    tasks: &Vec<Arc<WriteTask>>,
+    metadata_client: Arc<M>,
+) -> Option<StorageError> {
     let mut handles = Vec::new();
     let mut result = None;
     for task in tasks {
         let handle = tokio::spawn(write_back_block(Arc::clone(task)));
         handles.push(handle);
     }
+    // Make sure current blocks is finished.
     for handle in handles {
         match handle.await {
             Err(e) => {
@@ -215,6 +197,13 @@ async fn write_blocks(tasks: &Vec<Arc<WriteTask>>) -> Option<StorageError> {
             _ => {}
         }
     }
+
+    // Commit current metadata to the meta data server.
+    let ino = tasks[0].ino;
+    if let Err(e) = metadata_client.write_remote_helper(ino.to_owned()).await {
+        error!("Failed to commit meta data, the error is {e}.");
+    }
+
     result
 }
 
@@ -230,57 +219,12 @@ async fn commit_meta_data<M: MetaData + Send + Sync + 'static>(
     }
 }
 
-/// The `meta_commit_work` function represents the meta commit worker.
-#[allow(clippy::pattern_type_mismatch)] // Raised by `tokio::select!`
-async fn meta_commit_work<M: MetaData + Send + Sync + 'static>(
-    metadata_client: Arc<M>,
-    mut meta_task_receiver: Receiver<MetaTask>,
-) {
-    // We will receive the meta write back message here and flush open_files status to meta data server,
-    let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
-    let mut to_be_committed_inos = HashSet::new();
-    loop {
-        tokio::select! {
-            Some(task) = meta_task_receiver.recv() => {
-                match task {
-                    MetaTask::Pending(meta_task) => {
-                        let ino = meta_task.ino;
-                        to_be_committed_inos.insert(ino);
-                    }
-                    MetaTask::Flush(tx) => {
-                        // Commit immediately.
-                        commit_meta_data(Arc::clone(&metadata_client), &to_be_committed_inos).await;
-                        to_be_committed_inos.clear();
-
-                        // Flush the open_files to the meta data server.
-                        if let Err(Some(e)) = tx.send(None) {
-                            error!("Failed to send storage error back to `Writer`, the error is {e}.");
-                        }
-                    }
-                    MetaTask::Finish(tx) => {
-                        // Commit immediately.
-                        commit_meta_data(Arc::clone(&metadata_client), &to_be_committed_inos).await;
-                        to_be_committed_inos.clear();
-
-                        // Flush the open_files to the meta data server.
-                        if let Err(Some(e)) = tx.send(None) {
-                            error!("Failed to send storage error back to `Writer`, the error is {e}.");
-                        }
-                        return;
-                    }
-                }
-            }
-            _ = interval.tick() => {
-                commit_meta_data(Arc::clone(&metadata_client), &to_be_committed_inos).await;
-                to_be_committed_inos.clear();
-            }
-        }
-    }
-}
-
 /// The `write_back_work` function represents the write back worker.
 #[allow(clippy::pattern_type_mismatch)] // Raised by `tokio::select!`
-async fn write_back_work(mut write_back_receiver: Receiver<Task>) {
+async fn write_back_work<M: MetaData + Send + Sync + 'static>(
+    mut write_back_receiver: Receiver<Task>,
+    metadata_client: Arc<M>,
+) {
     //  Create a timer to flush the cache every 200ms.
     let mut interval = tokio::time::interval(std::time::Duration::from_millis(200));
     let mut tasks = Vec::new();
@@ -292,7 +236,7 @@ async fn write_back_work(mut write_back_receiver: Receiver<Task>) {
                     Task::Pending(task) => {
                         tasks.push(task);
                         if tasks.len() >= 10 {
-                            let res = write_blocks(&tasks).await;
+                            let res = write_blocks(&tasks, Arc::clone(&metadata_client)).await;
                             if let Some(e) = res {
                                 result.get_or_insert(e);
                             }
@@ -300,7 +244,7 @@ async fn write_back_work(mut write_back_receiver: Receiver<Task>) {
                         }
                     }
                     Task::Flush(tx) => {
-                        let res = write_blocks(&tasks).await;
+                        let res = write_blocks(&tasks, Arc::clone(&metadata_client)).await;
                         tasks.clear();
                         let res = result.take().or(res);
                         if let Err(Some(e)) = tx.send(res) {
@@ -308,18 +252,20 @@ async fn write_back_work(mut write_back_receiver: Receiver<Task>) {
                         }
                     }
                     Task::Finish(tx) => {
-                        let res = write_blocks(&tasks).await;
+                        let res = write_blocks(&tasks, Arc::clone(&metadata_client)).await;
                         tasks.clear();
                         let res = result.take().or(res);
                         if let Err(Some(e)) = tx.send(res) {
                             error!("Failed to send storage error back to `Writer`, the error is {e}.");
                         }
+
+                        // Check last write task size with mem attr
                         return;
                     }
                 }
             }
             _ = interval.tick() => {
-                write_blocks(&tasks).await;
+                write_blocks(&tasks, Arc::clone(&metadata_client)).await;
                 tasks.clear();
             }
         }
@@ -338,11 +284,9 @@ impl FileHandleInner {
         metadata_client: Arc<M>,
     ) -> Self {
         let (write_back_tx, write_back_rx) = tokio::sync::mpsc::channel(100);
-        let (meta_task_tx, meta_task_rx) = tokio::sync::mpsc::channel(100);
         // TODO: Move to task manager
         // let handle = TASK_MANAGER.spawn(TaskName::WriteBack, write_back_work(rx)).await;
-        let write_back_handle = tokio::spawn(write_back_work(write_back_rx));
-        let meta_task_handle = tokio::spawn(meta_commit_work(metadata_client, meta_task_rx));
+        let write_back_handle = tokio::spawn(write_back_work(write_back_rx, metadata_client));
 
         FileHandleInner {
             ino,
@@ -351,8 +295,6 @@ impl FileHandleInner {
             backend,
             // The open count is initialized to 0, open() method will increase this flag.
             open_cnt: AtomicU32::new(0),
-            meta_task_sender: meta_task_tx,
-            meta_task_handle: tokio::sync::Mutex::new(Some(meta_task_handle)),
             access_keys: Mutex::new(Vec::new()),
             write_back_sender: write_back_tx,
             write_back_handle: tokio::sync::Mutex::new(Some(write_back_handle)),
@@ -437,7 +379,7 @@ impl FileHandleInner {
 
     /// Writes data to the file starting at the given offset.
     #[inline]
-    pub async fn write(&self, buf: &[u8], slices: &[BlockSlice]) -> StorageResult<()> {
+    pub async fn write(&self, buf: &[u8], slices: &[BlockSlice], size: u64) -> StorageResult<()> {
         let mut consume_index = 0;
         for slice in slices {
             let block_id = slice.block_id;
@@ -475,7 +417,7 @@ impl FileHandleInner {
                 ino: self.ino,
                 block_id,
                 block,
-                meta_task_sender: self.meta_task_sender.clone(),
+                file_size: size,
             });
             self.write_back_sender
                 .send(Task::Pending(task))
@@ -502,18 +444,6 @@ impl FileHandleInner {
 
         rx.await
             .unwrap_or_else(|_| panic!("The sender should not be closed."))
-            .map_or(Ok(()), Err)?;
-
-        let (tx, rx) = oneshot::channel();
-        self.meta_task_sender
-            .send(MetaTask::Flush(tx))
-            .await
-            .unwrap_or_else(|_| {
-                panic!("Should not send command to meta task when the task quits.");
-            });
-
-        rx.await
-            .unwrap_or_else(|_| panic!("The sender should not be closed."))
             .map_or(Ok(()), Err)
     }
 
@@ -524,7 +454,7 @@ impl FileHandleInner {
         let slices = offset_to_slice(self.block_size.cast(), old_size, new_size - old_size);
         for slice in slices {
             let buf = vec![0_u8; slice.size.cast()];
-            self.write(&buf, &[slice]).await?;
+            self.write(&buf, &[slice], new_size).await?;
         }
 
         Ok(())
@@ -572,31 +502,6 @@ impl FileHandleInner {
                 self.cache.lock().remove(key);
             }
         }
-
-        rx.await
-            .unwrap_or_else(|_| panic!("The sender should not be closed."))
-            .map_or(Ok(()), Err)?;
-
-        let (tx, rx) = oneshot::channel();
-        // TODO: handle it by `TaskManager`
-        self.meta_task_sender
-            .send(MetaTask::Finish(tx))
-            .await
-            .unwrap_or_else(|_| {
-                panic!("Should not send command to meta task when the task quits.");
-            });
-
-        self.meta_task_handle
-            .lock()
-            .await
-            .take()
-            .unwrap_or_else(|| {
-                unreachable!("The `JoinHandle` should not be None.");
-            })
-            .await
-            .unwrap_or_else(|e| {
-                panic!("Failed to join the meta task: {e}");
-            });
 
         rx.await
             .unwrap_or_else(|_| panic!("The sender should not be closed."))
@@ -678,10 +583,10 @@ impl FileHandle {
     }
 
     /// Writes data to the file starting at the given offset.
-    pub async fn write(&self, offset: u64, buf: &[u8]) -> StorageResult<()> {
+    pub async fn write(&self, offset: u64, buf: &[u8], size: u64) -> StorageResult<()> {
         let writer = self.writer();
         let slices = offset_to_slice(self.block_size.cast(), offset, buf.len().cast());
-        writer.write(buf, &slices).await
+        writer.write(buf, &slices, size).await
     }
 
     /// Extends the file from the old size to the new size.
@@ -820,7 +725,7 @@ mod tests {
         };
         handles.add_handle(file_handle.clone());
         let buf = vec![b'1', b'2', b'3', b'4'];
-        file_handle.write(0, &buf).await.unwrap();
+        file_handle.write(0, &buf, 4).await.unwrap();
         let read_buf = file_handle.read(0, 4).await.unwrap();
         assert_eq!(read_buf, buf);
         file_handle.flush().await.unwrap();

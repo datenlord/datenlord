@@ -6,7 +6,7 @@ use async_trait::async_trait;
 
 use super::kv_engine::KVEngineType;
 use super::node::Node;
-use super::{CreateParam, RenameParam, SetAttrParam, StorageType};
+use super::{CreateParam, FileAttr, RenameParam, SetAttrParam, StorageType};
 use crate::async_fuse::fuse::fuse_reply::{ReplyDirectory, StatFsParam};
 use crate::async_fuse::fuse::protocol::{FuseAttr, INum};
 use crate::common::error::DatenLordResult;
@@ -118,7 +118,7 @@ pub trait MetaData {
     /// Return false if the file is not removed
     async fn forget(&self, ino: u64, nlookup: u64) -> DatenLordResult<bool>;
 
-    /// Helper function to read data
+    /// Helper function to read local data
     /// # Return
     /// Return a tuple of (file_size, modified_time)
     async fn read_helper(&self, ino: u64) -> DatenLordResult<(u64, SystemTime)>;

@@ -65,9 +65,9 @@ impl<M: MetaData + Send + Sync + 'static> Storage for StorageManager<M> {
     /// Writes data to a file specified by the file handle, starting at the
     /// given offset.
     #[inline]
-    async fn write(&self, _ino: u64, fh: u64, offset: u64, buf: &[u8]) -> StorageResult<()> {
+    async fn write(&self, _ino: u64, fh: u64, offset: u64, buf: &[u8], size: u64) -> StorageResult<()> {
         let handle = self.get_handle(fh);
-        handle.write(offset, buf).await?;
+        handle.write(offset, buf, size).await?;
         Ok(())
     }
 
@@ -84,9 +84,12 @@ impl<M: MetaData + Send + Sync + 'static> Storage for StorageManager<M> {
     async fn close(&self, fh: u64) -> StorageResult<()> {
         let handle = self
             .handles
-            .remove_handle(fh)
+            .get_handle(fh)
             .unwrap_or_else(|| panic!("Cannot close a file that is not open."));
         handle.close().await?;
+
+        // Remove the file handle from the handles map
+        let _ = self.handles.remove_handle(fh);
         Ok(())
     }
 
@@ -127,7 +130,7 @@ impl<M: MetaData + Send + Sync + 'static> Storage for StorageManager<M> {
                 Arc::clone(&self.metadata_client),
             );
             let fill_content = vec![0; fill_size];
-            handle.write(new_size, &fill_content).await?;
+            handle.write(new_size, &fill_content, new_size).await?;
             handle.close().await?;
         }
 
