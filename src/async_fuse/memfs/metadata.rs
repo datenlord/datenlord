@@ -67,13 +67,16 @@ pub trait MetaData {
     /// Rename helper to exchange on disk
     async fn rename(&self, context: ReqContext, param: RenameParam) -> DatenLordResult<()>;
 
-    /// Helper function to write data
-    async fn write_helper(
+    /// Helper function to write local data
+    async fn write_local_helper(
         &self,
         ino: u64,
         new_mtime: SystemTime,
         new_size: u64,
     ) -> DatenLordResult<()>;
+
+    /// Helper function to write remote data
+    async fn write_remote_helper(&self, ino: u64) -> DatenLordResult<()>;
 
     /// Helper function to get a open file's size and mtime
     /// # Return
@@ -85,7 +88,7 @@ pub trait MetaData {
     async fn set_fuse_fd(&self, fuse_fd: RawFd);
 
     /// Set Node's attribute
-    async fn setattr_helper(
+    async fn setattr_helper<M: MetaData + Send + Sync + 'static>(
         &self,
         context: ReqContext,
         ino: u64,
@@ -115,7 +118,7 @@ pub trait MetaData {
     /// Return false if the file is not removed
     async fn forget(&self, ino: u64, nlookup: u64) -> DatenLordResult<bool>;
 
-    /// Helper function to read data
+    /// Helper function to read local data
     /// # Return
     /// Return a tuple of (file_size, modified_time)
     async fn read_helper(&self, ino: u64) -> DatenLordResult<(u64, SystemTime)>;

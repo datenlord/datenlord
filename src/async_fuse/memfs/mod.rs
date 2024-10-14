@@ -1,5 +1,6 @@
 //! The implementation of user space file system
 mod fs_util;
+pub use fs_util::FileAttr;
 pub mod id_alloc;
 mod id_alloc_used;
 /// The KV engine module
@@ -11,7 +12,7 @@ pub mod direntry;
 mod metadata;
 mod node;
 /// Opened files
-mod open_file;
+pub mod open_file;
 /// fs metadata with S3 backend module
 mod s3_metadata;
 mod s3_node;
@@ -33,7 +34,6 @@ pub use s3_metadata::S3MetaData;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, error, info, instrument, warn};
 
-use self::kv_engine::KVEngineType;
 use crate::async_fuse::fuse::file_system::FileSystem;
 use crate::async_fuse::fuse::fuse_reply::{
     ReplyAttr, ReplyBMap, ReplyCreate, ReplyData, ReplyDirectory, ReplyEmpty, ReplyEntry,
@@ -47,7 +47,7 @@ use crate::common::error::{Context, DatenLordResult};
 use crate::new_storage::{Storage, StorageManager};
 
 /// The type of storage
-pub type StorageType = StorageManager;
+pub type StorageType = StorageManager<S3MetaData>;
 
 /// In-memory file system
 #[derive(Debug)]
@@ -168,20 +168,19 @@ pub fn check_type_supported(file_type: &SFlag) -> DatenLordResult<()> {
 impl<M: MetaData + Send + Sync + 'static> MemFs<M> {
     /// Create `FileSystem`
     #[allow(clippy::too_many_arguments)]
-    pub async fn new(
+    pub fn new(
         mount_point: &str,
         capacity: usize,
-        kv_engine: Arc<KVEngineType>,
-        node_id: &str,
         storage_config: &StorageConfig,
         storage: StorageType,
-    ) -> anyhow::Result<Self> {
+        node_id: &str,
+        metadata: Arc<M>,
+    ) -> Self {
         info!(
             "mount_point: ${}$, capacity: ${}$, node_id: {}, storage_config: {:?}",
             mount_point, capacity, node_id, storage_config
         );
-        let metadata = M::new(kv_engine, node_id).await?;
-        Ok(Self { metadata, storage })
+        Self { metadata, storage }
     }
 }
 
@@ -333,7 +332,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         };
         let set_res = self
             .metadata
-            .setattr_helper(context, ino, &param, &self.storage)
+            .setattr_helper::<S3MetaData>(context, ino, &param, &self.storage)
             .await;
         match set_res {
             Ok((ttl, fuse_attr)) => reply.attr(ttl, fuse_attr).await,
@@ -583,8 +582,12 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         let data_len: u64 = data.len().cast();
 
         let (old_size, _) = self.metadata.mtime_and_size(ino);
-        let result = self.storage.write(ino, fh, offset.cast(), &data).await;
+        let new_size = old_size.max(offset.cast::<u64>().overflow_add(data_len));
 
+        let result = self
+            .storage
+            .write(ino, fh, offset.cast(), &data, new_size)
+            .await;
         let new_mtime = match result {
             Ok(()) => SystemTime::now(),
             Err(e) => {
@@ -592,9 +595,10 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
             }
         };
 
-        let new_size = old_size.max(offset.cast::<u64>().overflow_add(data_len));
-
-        let write_result = self.metadata.write_helper(ino, new_mtime, new_size).await;
+        let write_result = self
+            .metadata
+            .write_local_helper(ino, new_mtime, new_size)
+            .await;
         match write_result {
             Ok(()) => reply.written(data_len.cast()).await,
             Err(e) => reply.error(e).await,
