@@ -125,7 +125,13 @@ async fn create_a_file(storage: Arc<StorageManager<S3MetaData>>, ino: u64) {
         let mut content = Vec::new();
         modify_data(&mut content, i as u64);
         storage
-            .write(ino, fh, (i * IO_SIZE) as u64, &content, ((i+1) * IO_SIZE) as u64)
+            .write(
+                ino,
+                fh,
+                (i * IO_SIZE) as u64,
+                &content,
+                ((i + 1) * IO_SIZE) as u64,
+            )
             .await
             .unwrap();
     }
@@ -393,7 +399,10 @@ async fn test_truncate() {
 
     let fh = CURRENT_FD.fetch_add(1, Ordering::SeqCst);
     storage.open(ino, fh, OpenFlag::ReadAndWrite);
-    storage.write(ino, fh, 0, &content, BLOCK_SIZE).await.unwrap();
+    storage
+        .write(ino, fh, 0, &content, block_size)
+        .await
+        .unwrap();
     storage.close(fh).await.unwrap();
     let size = backend
         .read(&format_path(ino, 1), &mut buffer)
@@ -464,7 +473,10 @@ async fn test_remove() {
 
     let fh = CURRENT_FD.fetch_add(1, Ordering::SeqCst);
     storage.open(ino, fh, OpenFlag::ReadAndWrite);
-    storage.write(ino, fh, 0, &content, BLOCK_SIZE).await.unwrap();
+    storage
+        .write(ino, fh, 0, &content, BLOCK_SIZE.cast())
+        .await
+        .unwrap();
     storage.close(fh).await.unwrap();
 
     storage.remove(ino).await.unwrap();

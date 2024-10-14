@@ -8,7 +8,6 @@ use std::sync::Arc;
 use crate::new_storage::{format_path, Block, BlockSlice, StorageError};
 use bytes::Bytes;
 use clippy_utilities::Cast;
-use hashbrown::HashSet;
 use nix::fcntl::OFlag;
 use parking_lot::{Mutex, RwLock};
 use tokio::sync::mpsc::{Receiver, Sender};
@@ -199,24 +198,15 @@ async fn write_blocks<M: MetaData + Send + Sync + 'static>(
     }
 
     // Commit current metadata to the meta data server.
-    let ino = tasks[0].ino;
-    if let Err(e) = metadata_client.write_remote_helper(ino.to_owned()).await {
+    let task = tasks.get(0)?;
+    if let Err(e) = metadata_client
+        .write_remote_helper(task.ino.to_owned())
+        .await
+    {
         error!("Failed to commit meta data, the error is {e}.");
     }
 
     result
-}
-
-/// The `commit_meta_data` function represents the meta data commit operation.
-async fn commit_meta_data<M: MetaData + Send + Sync + 'static>(
-    metadata_client: Arc<M>,
-    to_be_committed_inos: &HashSet<u64>,
-) {
-    for ino in to_be_committed_inos {
-        if let Err(e) = metadata_client.write_remote_helper(ino.to_owned()).await {
-            error!("Failed to commit meta data, the error is {e}.");
-        }
-    }
 }
 
 /// The `write_back_work` function represents the write back worker.
@@ -550,32 +540,17 @@ impl FileHandle {
         self.fh
     }
 
-    /// Gets a reader of this file handle.
-    ///
-    /// # Panic
-    /// Panics if the file handle is not allowed to be read.
-    fn reader(&self) -> Arc<FileHandleInner> {
-        match self.flag {
-            OpenFlag::Read | OpenFlag::ReadAndWrite => Arc::clone(&self.inner),
-            OpenFlag::Write => panic!("This file handle is not allowed to be read."),
-        }
-    }
-
-    /// Gets a writer of this file handle.
-    ///
-    /// # Panic
-    /// Panics if the file handle is not allowed to be written.
-    fn writer(&self) -> Arc<FileHandleInner> {
-        match self.flag {
-            OpenFlag::Write | OpenFlag::ReadAndWrite => Arc::clone(&self.inner),
-            OpenFlag::Read => panic!("This file handle is not allowed to be written."),
-        }
-    }
-
     /// Reads data from the file starting at the given offset and up to the
     /// given length.
     pub async fn read(&self, offset: u64, len: u64) -> StorageResult<Vec<u8>> {
-        let reader = self.reader();
+        let reader = match self.flag {
+            OpenFlag::Read | OpenFlag::ReadAndWrite => Arc::clone(&self.inner),
+            OpenFlag::Write => {
+                return Err(StorageError::Internal(anyhow::anyhow!(
+                    "This file handle is not allowed to be read."
+                )))
+            }
+        };
         let slices = offset_to_slice(self.block_size.cast(), offset, len);
         let mut buf = Vec::with_capacity(len.cast());
         reader.read(&mut buf, &slices).await?;
@@ -584,14 +559,28 @@ impl FileHandle {
 
     /// Writes data to the file starting at the given offset.
     pub async fn write(&self, offset: u64, buf: &[u8], size: u64) -> StorageResult<()> {
-        let writer = self.writer();
+        let writer = match self.flag {
+            OpenFlag::Write | OpenFlag::ReadAndWrite => Arc::clone(&self.inner),
+            OpenFlag::Read => {
+                return Err(StorageError::Internal(anyhow::anyhow!(
+                    "This file handle is not allowed to be written."
+                )))
+            }
+        };
         let slices = offset_to_slice(self.block_size.cast(), offset, buf.len().cast());
         writer.write(buf, &slices, size).await
     }
 
     /// Extends the file from the old size to the new size.
     pub async fn extend(&self, old_size: u64, new_size: u64) -> StorageResult<()> {
-        let writer = self.writer();
+        let writer = match self.flag {
+            OpenFlag::Write | OpenFlag::ReadAndWrite => Arc::clone(&self.inner),
+            OpenFlag::Read => {
+                return Err(StorageError::Internal(anyhow::anyhow!(
+                    "This file handle is not allowed to be written."
+                )))
+            }
+        };
         writer.extend(old_size, new_size).await
     }
 

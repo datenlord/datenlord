@@ -18,7 +18,14 @@ pub trait Storage {
     /// Writes data to a file specified by the inode number and file handle,
     /// starting at the given offset.
     /// The `size` parameter is the size of hole file in this operation.
-    async fn write(&self, ino: u64, fh: u64, offset: u64, buf: &[u8], size: u64) -> StorageResult<()>;
+    async fn write(
+        &self,
+        ino: u64,
+        fh: u64,
+        offset: u64,
+        buf: &[u8],
+        size: u64,
+    ) -> StorageResult<()>;
 
     /// Truncates a file specified by the inode number to a new size,
     /// given the old size and the new size.

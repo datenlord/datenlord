@@ -584,14 +584,16 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         let (old_size, _) = self.metadata.mtime_and_size(ino);
         let new_size = old_size.max(offset.cast::<u64>().overflow_add(data_len));
 
-        let result = self.storage.write(ino, fh, offset.cast(), &data, new_size).await;
+        let result = self
+            .storage
+            .write(ino, fh, offset.cast(), &data, new_size)
+            .await;
         let new_mtime = match result {
             Ok(()) => SystemTime::now(),
             Err(e) => {
                 return reply.error(e.into()).await;
             }
         };
-
 
         let write_result = self
             .metadata
