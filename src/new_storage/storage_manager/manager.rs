@@ -65,7 +65,14 @@ impl<M: MetaData + Send + Sync + 'static> Storage for StorageManager<M> {
     /// Writes data to a file specified by the file handle, starting at the
     /// given offset.
     #[inline]
-    async fn write(&self, _ino: u64, fh: u64, offset: u64, buf: &[u8], size: u64) -> StorageResult<()> {
+    async fn write(
+        &self,
+        _ino: u64,
+        fh: u64,
+        offset: u64,
+        buf: &[u8],
+        size: u64,
+    ) -> StorageResult<()> {
         let handle = self.get_handle(fh);
         handle.write(offset, buf, size).await?;
         Ok(())
@@ -89,8 +96,12 @@ impl<M: MetaData + Send + Sync + 'static> Storage for StorageManager<M> {
         handle.close().await?;
 
         // Remove the file handle from the handles map
-        let _ = self.handles.remove_handle(fh);
-        Ok(())
+        match self.handles.remove_handle(fh) {
+            Some(_) => Ok(()),
+            None => {
+                panic!("Cannot close a file that is not open.");
+            }
+        }
     }
 
     /// Truncates a file specified by the inode number to a new size, given the

@@ -6,7 +6,7 @@ use async_trait::async_trait;
 
 use super::kv_engine::KVEngineType;
 use super::node::Node;
-use super::{CreateParam, FileAttr, RenameParam, SetAttrParam, StorageType};
+use super::{CreateParam, RenameParam, SetAttrParam, StorageType};
 use crate::async_fuse::fuse::fuse_reply::{ReplyDirectory, StatFsParam};
 use crate::async_fuse::fuse::protocol::{FuseAttr, INum};
 use crate::common::error::DatenLordResult;
