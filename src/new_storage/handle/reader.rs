@@ -86,7 +86,7 @@ impl Reader {
 
     /// Reads data from the file starting at the given offset and up to the
     /// given length.
-    pub async fn read(&self, buf: &mut Vec<u8>, slices: &[BlockSlice]) -> StorageResult<usize> {
+    pub async fn read(&self, buf: &mut [u8], slices: &[BlockSlice]) -> StorageResult<usize> {
         for slice in slices {
             let block_id = slice.block_id;
             self.access(block_id);
@@ -110,7 +110,7 @@ impl Reader {
                 let slice = block
                     .get(offset..end)
                     .unwrap_or_else(|| unreachable!("The block is checked to be big enough."));
-                buf.extend_from_slice(slice);
+                buf.clone_from_slice(slice);
             }
             self.cache.lock().unpin(&CacheKey {
                 ino: self.ino,
@@ -121,11 +121,12 @@ impl Reader {
     }
 
     /// Close the reader and remove the accessed cache blocks.
+    #[allow(clippy::unwrap_used)]
     pub fn close(&self) {
-        let access_keys = self.access_keys.lock();
-        for key in access_keys.iter() {
-            self.cache.lock().remove(key);
-        }
+        // let access_keys = self.access_keys.lock();
+        // for key in access_keys.iter() {
+        //     self.cache.lock().remove(key);
+        // }
     }
 }
 

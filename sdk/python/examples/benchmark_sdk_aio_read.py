@@ -35,7 +35,8 @@ async def main():
         except Exception as e:
             handle_error(e)
 
-    file_base = "20mb_file"
+    # file_base = "20mb_file"
+    file_base = "1gb_file"
     # file_base = "100mb_file"
     write_latency = []
     read_latency = []

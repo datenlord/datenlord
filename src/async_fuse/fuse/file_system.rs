@@ -725,7 +725,9 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for FuseFileSystem<M> {
             ino, fh, offset, size, req,
         );
 
-        let mut buf = BytesMut::new();
+        // Try to use the buffer size as the size of the read buffer
+        let mut buf = BytesMut::with_capacity(size.cast());
+        buf.resize(size.cast(), 0);
 
         let read_res = self.virtual_fs.read(ino, fh, offset, size, &mut buf).await;
 

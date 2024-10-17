@@ -15,14 +15,16 @@ async def read_file(file_path):
 
 async def write_file(file_path):
     async with aiofiles.open(file_path, "wb") as f:
-        await f.write(b"a" * 100 * 1024 * 1024)
+        await f.write(b"a" * 32 * 1024 * 1024)
 
 
 async def main():
     # dir_path = '/home/lvbo/data/local_cache'
     dir_path = "/home/lvbo/data/datenlord_cache"
     # file_base = "20mb_file"
-    file_base = "100mb_file"
+    # file_base = "100mb_file"
+    file_base = "32mb_file"
+    # file_base = "256mb_file"
 
     for i in range(5):
         file_path = os.path.join(dir_path, f"{file_base}_{i}.bin")

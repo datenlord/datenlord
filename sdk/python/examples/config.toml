@@ -8,15 +8,15 @@ kv_server_list = [
 ]
 server_port = 8800
 scheduler_extender_port = 12345
-log_level = "debug"
+log_level = "error"
 
 [storage]
 storage_type = "s3"
-block_size = 4194304
+block_size = 134217728
 fs_storage_root = "/tmp/datenlord_backend"
 
 [storage.memory_cache_config]
-capacity = 8589934592
+capacity = 17179869184
 command_queue_limit = 1000
 write_back = true
 soft_limit = "3,5"
