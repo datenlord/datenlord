@@ -2,6 +2,8 @@ import sys
 import asyncio
 import time
 
+from pympler import asizeof
+
 from datenlordsdk import DatenLordSDK
 
 # clear the command line arguments
@@ -36,7 +38,8 @@ async def main():
             handle_error(e)
 
     # file_base = "20mb_file"
-    file_base = "1gb_file"
+    # file_base = "1gb_file"
+    file_base = "256mb_file"
     # file_base = "100mb_file"
     write_latency = []
     read_latency = []
@@ -51,8 +54,12 @@ async def main():
         start_time = time.time()
         try:
             fd.seek(0)
-            content = await fd.read()
+            # content = await fd.read()
+            content = fd.read()
+            print(f"Read {file_path} file, type: {type(content)}, length: {content.get_len()}")
+            # content = fd.alloc(1024 * 1024 * 256)
             end_time = time.time()
+            print(f"Read {file_path} file, time: {end_time - start_time:.6f} seconds, type: {type(content)}")
             read_latency.append(end_time - start_time)
         except Exception as e:
             handle_error(e)
@@ -75,7 +82,7 @@ async def main():
         start_time = time.time()
         try:
             fd = sdk.open(file_path, "rw")
-            content = await fd.read()
+            content = fd.read()
             fd.close()
             end_time = time.time()
             read_close_latency.append(end_time - start_time)

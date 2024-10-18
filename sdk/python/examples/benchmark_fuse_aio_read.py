@@ -24,7 +24,8 @@ async def write_file(file_path):
 
 async def main():
     # dir_path = '/home/lvbo/data/local_cache'
-    dir_path = "/home/lvbo/data/datenlord_cache"
+    #dir_path = "/home/lvbo/data/datenlord_cache"
+    dir_path = "/home/lvbo/juicefstmp"
     # file_base = "20mb_file"
     # file_base = "100mb_file"
     file_base = "256mb_file"

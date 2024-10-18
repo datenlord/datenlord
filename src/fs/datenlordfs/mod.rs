@@ -501,7 +501,7 @@ impl<M: MetaData + Send + Sync + 'static> VirtualFs for DatenLordFs<M> {
                 //     "datenlordfs callread() success, the result is: content length {:?}",
                 //     content.len()
                 // );
-                error!("ino: {:?} offset: {:?} read duration: {:?}", ino, offset, start_time.elapsed());
+                error!("ino: {:?} offset: {:?} read size: {:?} read duration: {:?}", ino, offset, read_size, start_time.elapsed());
                 Ok(buf.len())
             }
             Err(e) => {

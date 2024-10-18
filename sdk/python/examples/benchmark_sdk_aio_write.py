@@ -36,7 +36,8 @@ async def main():
             handle_error(e)
 
     # file_base = "20mb_file"
-    file_base = "1gb_file"
+    # file_base = "1gb_file"
+    file_base = "256mb_file"
     # file_base = "100mb_file"
     write_latency = []
     write_close_latency = []
@@ -57,13 +58,14 @@ async def main():
     for i in range(5):
         file_path = f"{test_dir}/{file_base}_{i}.bin"
         # file_content = "a" * 20 * 1024 * 1024  # 20 MB
-        file_content = "a" * 1024 * 1024 * 1024  # 20 MB
+        # file_content = "a" * 256 * 1024 * 1024  # 20 MB
+        file_content = bytes(256 * 1024 * 1024) # 256MB
         # file_content = "a" * 100 * 1024 * 1024  # 100 MB
         start_time = time.time()
         try:
             await sdk.mknod(file_path)
             fd = sdk.open(file_path, "rw")
-            await fd.write(file_content.encode())
+            await fd.write(file_content)
             write_end_time = time.time()
             write_latency.append(write_end_time - start_time)
 

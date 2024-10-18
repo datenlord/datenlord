@@ -7,11 +7,13 @@ use datenlord::fs::{
     virtualfs::VirtualFs,
 };
 use pyo3::{
-    exceptions::PyException, pyclass, pymethods, types::{PyBytes, PyBytesMethods}, Bound, IntoPy, PyAny, PyRef, PyResult, Python
+    exceptions::PyException, pyclass, pymethods, types::{PyByteArray, PyBytes, PyBytesMethods}, Bound, IntoPy, PyAny, PyRef, PyResult, Python
 };
 use pyo3_asyncio::tokio::future_into_py;
 use tokio::sync::Mutex;
 use tracing::error;
+use pyo3::ffi;
+use pyo3::prelude::*;
 
 use crate::utils::Buffer;
 
@@ -46,40 +48,83 @@ impl File {
 
 #[pymethods]
 impl File {
+    /// Alloc empty size PyBytes for test
+    #[pyo3(text_signature = "(size)")]
+    pub fn alloc<'a>(&'a self, py: Python<'a>, size: usize) -> PyResult<Bound<PyByteArray>> {
+        // Python::with_gil(|py| {
+            PyByteArray::new_bound_with(py, size, |data| {
+                Ok(())
+            })
+        // })
+    }
+
     /// Read and return at most size bytes, or if size is not given, until EOF.
     /// Read with seek(offset)
     #[pyo3(signature = (size=None,))]
-    pub fn read<'a>(&'a mut self, py: Python<'a>, size: Option<usize>) -> PyResult<Bound<PyAny>> {
+    pub fn read<'a>(&'a mut self, py: Python<'a>, size: Option<usize>) -> PyResult<Buffer> {
         let attr = self.attr.clone();
         let fd = self.fd;
         let fs = Arc::clone(&self.fs);
         // This operation does not support atomic update
         let offset = Arc::clone(&self.offset);
 
+        let size = size.unwrap_or(attr.size as usize);
+        let mut buffer = vec![0; size];
         // thread nums for preheat
-        let res = future_into_py(py, async move {
-            let size = size.unwrap_or(attr.size as usize);
+        // let res = future_into_py(py, async move {
+        let result = pyo3_asyncio::tokio::get_runtime().handle().block_on(async {
             let mut offset_guard = offset.lock().await;
             let offset = *offset_guard;
+            let start_time = tokio::time::Instant::now();
             // Read the file
-            let mut buffer = BytesMut::with_capacity(size);
+            // let mut buffer = BytesMut::with_capacity(size);
+            // buffer.resize(size, 0);
+            // let mut buffer = Vec::from(buffer.as_ref());
+            // let mut buffer = vec![0; size];
+            // let ptr = buffer.as_ptr() as *const std::ffi::c_char;
+            // let len = buffer.len() as ffi::Py_ssize_t;
+            // unsafe{
+            //     let _ = ffi::PyBytes_FromStringAndSize(ptr, len);
+            // }
+
+            error!("alloc buffer time: {:?}", start_time.elapsed());
             let read_size = fs
                 .read(attr.ino, fd, offset, buffer.capacity() as u32, &mut buffer)
                 .await
                 .map_err(|e| PyException::new_err(format!("read failed: {:?}", e)))?;
 
             if read_size == 0 {
-                return Ok(Python::with_gil(|py| py.None()));
+                // return Ok(Python::with_gil(|py| py.None()));
+                return Err(PyException::new_err("EOF"));
             }
 
             // Update current data offset
             *offset_guard += read_size as u64;
 
-            let bf = buffer.freeze().to_vec();
-            Python::with_gil(|py| Buffer::new(bf).into_bytes(py))
+            // Print current timestamp
+            error!("read time: {:?}", start_time.elapsed());
+
+            // let bf = buffer.freeze().to_vec();
+            // Python::with_gil(|py| {
+            //     // Buffer::new(bf).into_bytes(py)
+            //     // Buffer::new(buffer).into_bytes(py)
+            // let pybytes = PyBytes::new_bound_with(py, size, |data| {
+            //     Ok(())
+            // });
+            // Buffer::new(vec![0;1]).into_bytes(py)
+            //     // Ok(buffer.into_py(py))
+            //     // unsafe { PyObject::from_owned_ptr_or_err(py, ffi::PyBytes_FromObject(bf.as_ptr())) }
+            // })
+
+            Ok(())
         });
 
-        return res;
+        match result {
+            Ok(_) => {
+                Ok(Buffer::new(buffer))
+            },
+            Err(e) => Err(e),
+        }
     }
 
     /// Write the given bytes-like object, return the number of bytes written.

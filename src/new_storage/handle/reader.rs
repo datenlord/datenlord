@@ -5,6 +5,7 @@ use std::sync::Arc;
 use clippy_utilities::Cast;
 use hashbrown::HashSet;
 use parking_lot::{Mutex, RwLock};
+use tracing::error;
 
 use super::super::policy::LruPolicy;
 use super::super::{
@@ -103,6 +104,10 @@ impl Reader {
                 let size: usize = slice.size.cast();
                 let end = offset + size;
                 let block_size = block.len();
+                error!(
+                    "block_size: {}, offset: {}, size: {}, end: {}",
+                    block_size, offset, size, end
+                );
                 assert!(
                     block_size >= end,
                     "The size of block should be greater than {end}, but {block_size} found."
@@ -110,7 +115,8 @@ impl Reader {
                 let slice = block
                     .get(offset..end)
                     .unwrap_or_else(|| unreachable!("The block is checked to be big enough."));
-                buf.clone_from_slice(slice);
+                // buf.clone_from_slice(slice);
+                buf[offset..end].clone_from_slice(slice);
             }
             self.cache.lock().unpin(&CacheKey {
                 ino: self.ino,

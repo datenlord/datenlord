@@ -1,3 +1,4 @@
+use std::ffi::c_char;
 use std::os::raw::c_int;
 use std::{collections::VecDeque, path::Path, sync::Arc, time::Duration};
 
@@ -11,9 +12,12 @@ use datenlord::{
     },
 };
 use nix::fcntl::OFlag;
+use pyo3::buffer::PyBuffer;
 use pyo3::ffi;
 use pyo3::prelude::*;
 use pyo3::pymethods;
+use pyo3::types::PyBytes;
+use tracing::error;
 
 /// A bytes-like object that implements buffer protocol.
 /// Reference to opendal lib.
@@ -28,10 +32,12 @@ impl Buffer {
     }
 
     /// Consume self to build a bytes
-    pub fn into_bytes(self, py: Python) -> PyResult<Py<PyAny>> {
-        let buffer = self.into_py(py);
+    pub fn into_bytes(&self, py: Python) -> PyResult<Py<PyAny>> {
+        // let buffer = self.into_py(py);
+        let ptr = self.inner.as_ptr() as *const c_char;
+        let len = self.inner.len() as ffi::Py_ssize_t;
 
-        unsafe { PyObject::from_owned_ptr_or_err(py, ffi::PyBytes_FromObject(buffer.as_ptr())) }
+        unsafe { PyObject::from_owned_ptr_or_err(py, ffi::PyBytes_FromStringAndSize(ptr, len)) }
     }
 }
 
@@ -214,5 +220,15 @@ impl Buffer {
             return Err(PyErr::fetch(slf.py()));
         }
         Ok(())
+    }
+
+    unsafe fn __releasebuffer__(&mut self, view: *mut ffi::Py_buffer) {
+        unsafe {
+            ffi::PyBuffer_Release(view);
+        }
+    }
+
+    fn get_len(&self) -> usize {
+        self.inner.len()
     }
 }
