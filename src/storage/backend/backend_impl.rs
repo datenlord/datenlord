@@ -14,7 +14,7 @@ use prometheus::{exponential_buckets, linear_buckets};
 use tokio::time::sleep;
 use tracing::{error, warn};
 
-use crate::async_fuse::fuse::protocol::INum;
+use crate::fs::fs_util::INum;
 use crate::storage::error::StorageResult;
 use crate::storage::{Block, Storage};
 

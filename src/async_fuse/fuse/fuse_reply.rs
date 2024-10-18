@@ -285,6 +285,7 @@ impl_fuse_reply_new_for! {
 }
 
 use crate::common::error::DatenLordError;
+use crate::fs::fs_util::StatFsParam;
 
 /// Impl fuse reply error
 macro_rules! impl_fuse_reply_error_for{
@@ -496,27 +497,6 @@ impl ReplyWrite<'_> {
 pub struct ReplyStatFs<'a> {
     /// The inner raw reply
     reply: ReplyRaw<'a>,
-}
-
-/// POSIX statvfs parameters
-#[derive(Debug)]
-pub struct StatFsParam {
-    /// The number of blocks in the filesystem
-    pub blocks: u64,
-    /// The number of free blocks
-    pub bfree: u64,
-    /// The number of free blocks for non-privilege users
-    pub bavail: u64,
-    /// The number of inodes
-    pub files: u64,
-    /// The number of free inodes
-    pub f_free: u64,
-    /// Block size
-    pub bsize: u32,
-    /// Maximum file name length
-    pub namelen: u32,
-    /// Fragment size
-    pub frsize: u32,
 }
 
 impl ReplyStatFs<'_> {

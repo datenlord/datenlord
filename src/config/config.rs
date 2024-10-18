@@ -23,7 +23,7 @@ pub struct Config {
     #[clap(long = "node-ip", value_name = "VALUE")]
     /// Node ip
     pub node_ip: Option<String>,
-    #[clap(long = "log-level", value_name = "VALUE", default_value = "info")]
+    #[clap(long = "log-level", value_name = "VALUE", default_value = "debug")]
     /// Log level
     pub log_level: String,
     #[clap(long = "mount-path", value_name = "VALUE")]

@@ -10,24 +10,12 @@ use memchr::memchr;
 use nix::errno::Errno;
 use nix::sys::stat::SFlag;
 
-use crate::common::error::{DatenLordError, DatenLordResult};
-
 /// Format `nix::Error`
 // TODO: refactor this
 #[must_use]
 #[inline]
 pub fn format_nix_error(error: nix::Error) -> String {
     format!("{}, root cause: {:?}", error, error.source())
-}
-
-/// Build error result from `nix` error code
-/// # Errors
-///
-/// Return the built `Err(anyhow::Error(..))`
-pub fn build_error_result_from_errno<T>(error_code: Errno, err_msg: String) -> DatenLordResult<T> {
-    Err(DatenLordError::from(
-        anyhow::Error::new(error_code).context(err_msg),
-    ))
 }
 
 /// Convert `nix::errno::Errno` to `c_int`

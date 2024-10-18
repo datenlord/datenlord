@@ -138,7 +138,7 @@ pub enum DatenLordError {
         context: Vec<String>,
     },
 
-    /// Error caused by async_fuse::memfs::kv_engine
+    /// Error caused by fs::datenlordfs::kv_engine
     #[error("EtcdClientErr, the error is {:?}, context is {:#?}", .source, .context)]
     KVEngineErr {
         /// Error source

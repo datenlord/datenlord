@@ -1,4 +1,4 @@
-//! This is the storage managing mechanism implementation for the memfs
+//! This is the storage managing mechanism implementation for the datenlordfs
 
 mod backend;
 mod block;
