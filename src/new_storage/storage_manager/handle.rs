@@ -1,6 +1,7 @@
 //! The file handle implementation
 
 use std::collections::hash_map::DefaultHasher;
+use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::AtomicU32;
 use std::sync::Arc;
@@ -291,16 +292,6 @@ impl FileHandleInner {
         }
     }
 
-    /// Record the block access.
-    fn access(&self, block_id: u64) {
-        let key = CacheKey {
-            ino: self.ino,
-            block_id,
-        };
-        let mut access_keys = self.access_keys.lock();
-        access_keys.push(key);
-    }
-
     /// Fetch the block from the cache manager.
     #[inline]
     pub async fn fetch_block(&self, block_id: u64) -> StorageResult<Arc<RwLock<Block>>> {
@@ -339,7 +330,6 @@ impl FileHandleInner {
     pub async fn read(&self, buf: &mut Vec<u8>, slices: &[BlockSlice]) -> StorageResult<usize> {
         for slice in slices {
             let block_id = slice.block_id;
-            self.access(block_id);
             // Block's pin count is increased by 1.
             let block = self.fetch_block(block_id).await?;
             {
@@ -382,7 +372,6 @@ impl FileHandleInner {
             let write_content = buf
                 .get(consume_index..end)
                 .unwrap_or_else(|| unreachable!("The `buf` is checked to be long enough."));
-            self.access(block_id);
             let block = self.fetch_block(block_id).await?;
             {
                 let mut block = block.write();
@@ -485,13 +474,6 @@ impl FileHandleInner {
             .unwrap_or_else(|e| {
                 panic!("Failed to join the write back task: {e}");
             });
-
-        {
-            let keys = self.access_keys.lock();
-            for key in keys.iter() {
-                self.cache.lock().remove(key);
-            }
-        }
 
         rx.await
             .unwrap_or_else(|_| panic!("The sender should not be closed."))
@@ -610,7 +592,8 @@ const HANDLE_SHARD_NUM: usize = 100;
 #[derive(Debug)]
 pub struct Handles {
     /// Use shard to avoid lock contention
-    handles: [Arc<RwLock<Vec<FileHandle>>>; HANDLE_SHARD_NUM],
+    /// Update vec to hashmap to avoid duplicate file handle.
+    handles: [Arc<RwLock<HashMap<u64, FileHandle>>>; HANDLE_SHARD_NUM],
 }
 
 impl Default for Handles {
@@ -626,7 +609,7 @@ impl Handles {
     pub fn new() -> Self {
         let mut handles: Vec<_> = Vec::with_capacity(HANDLE_SHARD_NUM);
         for _ in 0..HANDLE_SHARD_NUM {
-            handles.push(Arc::new(RwLock::new(Vec::new())));
+            handles.push(Arc::new(RwLock::new(HashMap::new())));
         }
         let handles: [_; HANDLE_SHARD_NUM] = handles.try_into().unwrap_or_else(|_| {
             unreachable!("The length should match.");
@@ -642,7 +625,7 @@ impl Handles {
     }
 
     /// Gets a shard of the fh.
-    fn get_shard(&self, fh: u64) -> &Arc<RwLock<Vec<FileHandle>>> {
+    fn get_shard(&self, fh: u64) -> &Arc<RwLock<HashMap<u64, FileHandle>>> {
         let idx = Self::hash(fh);
         self.handles
             .get(idx)
@@ -653,7 +636,7 @@ impl Handles {
     pub fn add_handle(&self, fh: FileHandle) {
         let shard = self.get_shard(fh.fh());
         let mut shard_lock = shard.write();
-        shard_lock.push(fh);
+        shard_lock.insert(fh.fh(), fh);
     }
 
     /// Removes a file handle from the collection.'
@@ -661,10 +644,7 @@ impl Handles {
     pub fn remove_handle(&self, fh: u64) -> Option<FileHandle> {
         let shard = self.get_shard(fh);
         let mut shard_lock = shard.write();
-        shard_lock
-            .iter()
-            .position(|h| h.fh() == fh)
-            .map(|pos| shard_lock.remove(pos))
+        shard_lock.remove(&fh)
     }
 
     /// Returns a file handle from the collection.
@@ -672,7 +652,7 @@ impl Handles {
     pub fn get_handle(&self, fh: u64) -> Option<FileHandle> {
         let shard = self.get_shard(fh);
         let shard_lock = shard.read();
-        let fh = shard_lock.iter().find(|h| h.fh() == fh)?;
+        let fh = shard_lock.get(&fh)?;
         Some(fh.clone())
     }
 }
