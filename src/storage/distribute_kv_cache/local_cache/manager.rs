@@ -1,9 +1,10 @@
 use std::{
     collections::HashMap,
-    sync::{Arc, RwLock},
+    sync::{atomic::AtomicU64, Arc, RwLock},
 };
 
-use tracing::debug;
+use radix_trie::Trie;
+use tracing::{debug, error};
 
 use super::{
     backend::{Backend, FSBackend},
@@ -11,6 +12,8 @@ use super::{
     policy::{EvictPolicy, LRUPolicy},
     StorageResult,
 };
+
+const DEFAULT_INDEX_KEY: &str = "kvcacheindex";
 
 /// CacheManager struct to manage cache
 #[derive(Debug)]
@@ -73,28 +76,28 @@ where
     }
 }
 
-/// BlockManager struct to manage blocks
+/// KVBlockManager struct to manage blocks
 #[allow(dead_code)]
 #[derive(Debug)]
-pub struct BlockManager {
+pub struct KVBlockManager {
     /// CacheManager to manage blocks and metadata
     cache: Arc<RwLock<CacheManager<MetaData, LRUPolicy<MetaData>>>>,
-    /// Backend to interact with the storage, default is FSBackend
+    /// Backend to interact with the storage, default is FSBackend, we need to flush block to local fs
     backend: Arc<dyn Backend>,
 }
 
-impl BlockManager {
-    /// Create a new BlockManager
+impl KVBlockManager {
+    /// Create a new KVBlockManager
     pub fn new(backend: Arc<dyn Backend>) -> Self {
-        // Create a new LRUPolicy with a capacity of 1000
+        // Create a new LRUPolicy with a capacity of 2000
         // It will evict the least recently used block when the cache is full
         // TODO: Support mem limit and block size limit， current is block count limit
-        let policy = LRUPolicy::new(1000);
+        let policy = LRUPolicy::new(2000);
         let cache = Arc::new(RwLock::new(CacheManager::new(policy)));
-        BlockManager { cache, backend }
+        KVBlockManager { cache, backend }
     }
 
-    /// Create a new BlockManager with default FSBackend
+    /// Create a new KVBlockManager with default FSBackend
     pub fn default() -> Self {
         let backend = Arc::new(FSBackend::default());
         Self::new(backend)
@@ -198,9 +201,77 @@ impl BlockManager {
     }
 }
 
+/// IndexManager struct to manage kv cache index.
+#[allow(dead_code)]
+#[derive(Debug)]
+pub struct IndexManager {
+    /// Global Radix tree to store prefix index
+    index: Arc<RwLock<Trie<String, String>>>,
+    /// Global block id allocator
+    id_allocator: AtomicU64,
+}
+
+impl IndexManager {
+    /// Create a new IndexManager
+    pub fn new() -> Self {
+        IndexManager {
+            index: Arc::new(RwLock::new(Trie::new())),
+            id_allocator: AtomicU64::new(0),
+        }
+    }
+
+    /// Allocate a new block id
+    pub fn allocate_id(&self) -> u64 {
+        self.id_allocator.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Insert a new key-value pair into the index
+    pub fn insert(&self, key: String, value: String) {
+        match self.index.write() {
+            Ok(mut write_lock) => {
+                write_lock.insert(key, value);
+            }
+            Err(e) => {
+                error!("Failed to get write lock: {}", e);
+            }
+        }
+    }
+
+    /// Remove a key-value pair from the index
+    pub fn remove(&self, key: &str) {
+        match self.index.write() {
+            Ok(mut write_lock) => {
+                write_lock.remove(key);
+            }
+            Err(e) => {
+                error!("Failed to get write lock: {}", e);
+            }
+        }
+    }
+
+    /// Get the value by key from the index
+    pub fn get(&self, key: &str) -> Option<String> {
+        match self.index.read() {
+            Ok(read_lock) => read_lock.get(key).cloned(),
+            Err(e) => {
+                error!("Failed to get read lock: {}", e);
+                None
+            }
+        }
+    }
+}
 
 
 #[cfg(test)]
 mod tests {
-    // TODO...
+    use super::*;
+
+    #[test]
+    fn test_index_manager() {
+        let index_manager = IndexManager::new();
+        index_manager.insert("test".to_string(), "test".to_string());
+        assert_eq!(index_manager.get("test"), Some("test".to_string()));
+        index_manager.remove("test");
+        assert_eq!(index_manager.get("test"), None);
+    }
 }

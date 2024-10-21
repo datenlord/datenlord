@@ -26,7 +26,7 @@ use super::{
         node::{Node, NodeStatus},
     },
     config::DistributeCacheConfig,
-    local_cache::{backend::S3Backend, block::MetaData, manager::BlockManager},
+    local_cache::{backend::S3Backend, block::MetaData, manager::{IndexManager, KVBlockManager}},
     rpc::{
         common::ServerTimeoutOptions,
         message::{FileBlockRequest, FileBlockResponse, ReqType, RespType, StatusCode},
@@ -36,9 +36,9 @@ use super::{
     },
 };
 
-/// The handler for the RPC file block request.
+/// The handler for the RPC kv block request.
 #[derive(Debug)]
-pub struct FileBlockHandler {
+pub struct KVBlockHandler {
     /// The request header.
     header: ReqHeader,
     /// The file block request.
@@ -46,33 +46,33 @@ pub struct FileBlockHandler {
     /// The channel for sending the response.
     done_tx: mpsc::Sender<Vec<u8>>,
     /// Local cache manager
-    local_cache_manager: Arc<BlockManager>,
+    cache_manager: Arc<KVBlockManager>,
     /// Cluster manager
     cluster_manager: Arc<ClusterManager>,
 }
 
-impl FileBlockHandler {
-    /// Create a new file block handler.
+impl KVBlockHandler {
+    /// Create a new kv block handler.
     #[must_use]
     pub fn new(
         header: ReqHeader,
         request: FileBlockRequest,
         done_tx: mpsc::Sender<Vec<u8>>,
-        local_cache_manager: Arc<BlockManager>,
+        cache_manager: Arc<KVBlockManager>,
         cluster_manager: Arc<ClusterManager>,
     ) -> Self {
         Self {
             header,
             request,
             done_tx,
-            local_cache_manager,
+            cache_manager,
             cluster_manager,
         }
     }
 }
 
 #[async_trait]
-impl Job for FileBlockHandler {
+impl Job for KVBlockHandler {
     async fn run(&self) {
         let current_hash_ring_version = match self.cluster_manager.get_ring().await {
             Ok(ring) => ring.version(),
@@ -104,7 +104,7 @@ impl Job for FileBlockHandler {
             self.request.block_size,
         );
         // error!("current file block request: {:?}", self.request);
-        let block = self.local_cache_manager.read(meta_data).await;
+        let block = self.cache_manager.read(meta_data).await;
         if let Ok(block) = block {
             if let Some(block) = block {
                 // Check version
@@ -165,35 +165,77 @@ impl Job for FileBlockHandler {
     }
 }
 
-/// The file block handler for the RPC server.
+/// The handler for the RPC index  request.
+#[derive(Debug)]
+pub struct IndexHandler {
+    /// The request header.
+    header: ReqHeader,
+    /// The request body.
+    request: Vec<u8>,
+    /// The channel for sending the response.
+    done_tx: mpsc::Sender<Vec<u8>>,
+    /// Local index manager
+    index_manager: Arc<IndexManager>,
+}
+
+impl IndexHandler {
+    /// Create a new index handler.
+    #[must_use]
+    pub fn new(
+        header: ReqHeader,
+        request: Vec<u8>,
+        done_tx: mpsc::Sender<Vec<u8>>,
+        index_manager: Arc<IndexManager>,
+    ) -> Self {
+        Self {
+            header,
+            request,
+            done_tx,
+            index_manager,
+        }
+    }
+}
+
+#[async_trait]
+impl Job for IndexHandler {
+    async fn run(&self) {
+
+    }
+}
+
+/// The kv cache handler for the RPC server.
 #[derive(Clone, Debug)]
-pub struct BlockHandler {
+pub struct KVCacheHandler {
     /// The worker pool for the RPC server.
     worker_pool: Arc<WorkerPool>,
     /// Local cache manager
-    local_cache_manager: Arc<BlockManager>,
+    cache_manager: Arc<KVBlockManager>,
+    /// Local index manager
+    index_manager: Arc<IndexManager>,
     /// Cluster manager
     cluster_manager: Arc<ClusterManager>,
 }
 
-impl BlockHandler {
-    /// Create a new file block RPC server handler.
+impl KVCacheHandler {
+    /// Create a new file kv cache RPC server handler.
     #[must_use]
     pub fn new(
         worker_pool: Arc<WorkerPool>,
-        local_cache_manager: Arc<BlockManager>,
+        cache_manager: Arc<KVBlockManager>,
+        index_manager: Arc<IndexManager>,
         cluster_manager: Arc<ClusterManager>,
     ) -> Self {
         Self {
             worker_pool,
-            local_cache_manager,
+            cache_manager,
+            index_manager,
             cluster_manager,
         }
     }
 }
 
 #[async_trait]
-impl RpcServerConnectionHandler for BlockHandler {
+impl RpcServerConnectionHandler for KVCacheHandler {
     async fn dispatch(
         &self,
         req_header: ReqHeader,
@@ -222,11 +264,11 @@ impl RpcServerConnectionHandler for BlockHandler {
                 // Submit the handler to the worker pool
                 // When the handler is done, send the response to the done channel
                 // Response need to contain the response header and body
-                let handler = FileBlockHandler::new(
+                let handler = KVBlockHandler::new(
                     req_header,
                     req_body,
                     done_tx.clone(),
-                    Arc::clone(&self.local_cache_manager),
+                    Arc::clone(&self.cache_manager),
                     Arc::clone(&self.cluster_manager),
                 );
                 if let Ok(()) = self
@@ -255,7 +297,10 @@ pub struct DistributeCacheManager {
     config: DistributeCacheConfig,
     /// Local cache manager, we will use it to manage the local cache, and export manaually data for the cache
     /// We will share it in rpc request
-    local_cache_manager: Arc<BlockManager>,
+    cache_manager: Arc<KVBlockManager>,
+    /// Local index manager, we will use it to manage the local index, and export manaually data for the cache
+    /// We will share it in rpc request
+    index_manager: Arc<IndexManager>,
     /// The distribute cache cluster
     /// We will serve as a standalone server for cluster manager, and read current status from it
     cluster_manager: Arc<ClusterManager>,
@@ -304,7 +349,9 @@ impl DistributeCacheManager {
             .finish();
         let backend = Arc::new(S3Backend::new(operator));
 
-        let local_cache_manager = Arc::new(BlockManager::new(backend));
+        let cache_manager = Arc::new(KVBlockManager::new(backend));
+        // Init empty index manager, only master node will fill this struct and use it.
+        let index_manager = Arc::new(IndexManager::new());
 
         // Create a distribute cluster manager
         let init_current_node = Node::new(
@@ -317,7 +364,8 @@ impl DistributeCacheManager {
 
         Self {
             config: config.clone(),
-            local_cache_manager,
+            cache_manager,
+            index_manager,
             cluster_manager,
         }
     }
@@ -356,7 +404,8 @@ impl DistributeCacheManager {
             self.config.rpc_server_ip, self.config.rpc_server_port
         );
 
-        let local_cache_manager_clone = Arc::clone(&self.local_cache_manager);
+        let cache_manager_clone = Arc::clone(&self.cache_manager);
+        let index_manager_clone = Arc::clone(&self.index_manager);
         let cluster_manager_clone = Arc::clone(&self.cluster_manager);
         TASK_MANAGER
             .spawn(TaskName::DistributeCacheManager, |token| async move {
@@ -364,9 +413,10 @@ impl DistributeCacheManager {
                 // Default workpool for rpc server
                 // Default worker for file block handler is 10, default jobs is 100
                 let pool = Arc::new(WorkerPool::new(64, 1000));
-                let handler = BlockHandler::new(
+                let handler = KVCacheHandler::new(
                     Arc::clone(&pool),
-                    local_cache_manager_clone,
+                    cache_manager_clone,
+                    index_manager_clone,
                     cluster_manager_clone,
                 );
                 let server_timeout_options = ServerTimeoutOptions::default();

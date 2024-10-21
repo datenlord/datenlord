@@ -19,6 +19,16 @@ pub enum ReqType {
     KeepAliveRequest,
     /// The file block request.
     FileBlockRequest,
+    /// The kv cache index get request.
+    KVCacheIndexGetRequest,
+    /// The kv cache index put request.
+    KVCacheIndexPutRequest,
+    /// The kv cache index remove request.
+    KVCacheIndexRemoveRequest,
+    /// The kv block get request.
+    KVBlockGetRequest,
+    /// The kv block put request.
+    KVBlockPutRequest,
 }
 
 impl ReqType {
