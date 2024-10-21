@@ -7,8 +7,8 @@ use tokio_util::sync::CancellationToken;
 
 use self::memfs::kv_engine::KVEngineType;
 use crate::async_fuse::fuse::session;
-use crate::storage::distribute_cache::cluster::cluster_manager::ClusterManager;
-use crate::storage::distribute_cache::cluster::node::Node;
+use crate::storage::distribute_kv_cache::cluster::cluster_manager::ClusterManager;
+use crate::storage::distribute_kv_cache::cluster::node::Node;
 use crate::storage::policy::LruPolicy;
 use crate::storage::{BackendBuilder, BlockCoordinate, MemoryCacheBuilder, StorageManager};
 use crate::AsyncFuseArgs;

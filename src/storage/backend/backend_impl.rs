@@ -17,8 +17,8 @@ use tracing::{error, warn};
 
 use crate::async_fuse::fuse::protocol::INum;
 use crate::async_fuse::util::usize_to_u64;
-use crate::storage::distribute_cache::client::DistributeCacheClient;
-use crate::storage::distribute_cache::cluster::cluster_manager::ClusterManager;
+use crate::storage::distribute_kv_cache::client::DistributeCacheClient;
+use crate::storage::distribute_kv_cache::cluster::cluster_manager::ClusterManager;
 use crate::storage::error::StorageResult;
 use crate::storage::{Block, Storage};
 

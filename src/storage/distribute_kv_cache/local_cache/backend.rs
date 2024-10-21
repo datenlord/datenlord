@@ -5,7 +5,7 @@ use tracing::debug;
 
 use std::fmt::Debug;
 
-use crate::storage::distribute_cache::local_cache::block::BLOCK_SIZE;
+use crate::storage::distribute_kv_cache::local_cache::block::BLOCK_SIZE;
 
 use super::StorageResult;
 

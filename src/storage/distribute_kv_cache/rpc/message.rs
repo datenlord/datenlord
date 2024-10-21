@@ -345,7 +345,7 @@ impl Packet for FileBlockPacket {
 }
 #[cfg(test)]
 mod test {
-    use crate::storage::distribute_cache::rpc::utils::u64_to_usize;
+    use crate::storage::distribute_kv_cache::rpc::utils::u64_to_usize;
 
     use super::*;
 

@@ -87,7 +87,7 @@ use csi::scheduler_extender::SchedulerExtender;
 use datenlord::common::task_manager::{self, TaskName, TASK_MANAGER};
 use datenlord::config::{InnerConfig, NodeRole, StorageConfig, StorageParams};
 use datenlord::{config, metrics};
-use storage::distribute_cache;
+use storage::distribute_kv_cache;
 
 use crate::common::error::DatenLordResult;
 use crate::common::etcd_delegate::EtcdDelegate;
@@ -244,7 +244,7 @@ async fn main() -> anyhow::Result<()> {
             // TODO: separate the distribute cache task to new node role.
             if let Some(distribute_cache_config) = config.distribute_cache_config.clone() {
                 let distribute_cache_config_inner =
-                    distribute_cache::config::DistributeCacheConfig::new(
+                    distribute_kv_cache::config::DistributeCacheConfig::new(
                         distribute_cache_config.bind_ip,
                         distribute_cache_config.bind_port,
                     );
@@ -252,7 +252,7 @@ async fn main() -> anyhow::Result<()> {
                 match config.storage.params {
                     StorageParams::S3(s3config) => {
                         let distribute_cache_manager =
-                            distribute_cache::manager::DistributeCacheManager::new(
+                            distribute_kv_cache::manager::DistributeCacheManager::new(
                                 kv_engine,
                                 &distribute_cache_config_inner,
                                 &s3config,

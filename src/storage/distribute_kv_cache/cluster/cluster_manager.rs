@@ -932,7 +932,7 @@ mod tests {
 
     use crate::{
         async_fuse::memfs::kv_engine::{DeleteOption, KVEngine, KVEngineType, KeyType},
-        storage::distribute_cache::cluster::{
+        storage::distribute_kv_cache::cluster::{
             cluster_manager::{ClusterManager, ClusterManagerInner, SESSION_TIMEOUT_SEC},
             node::{Node, NodeStatus},
         },

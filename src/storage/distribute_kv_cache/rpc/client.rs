@@ -437,7 +437,7 @@ mod tests {
     use tokio::net::TcpListener;
 
     use crate::{
-        async_fuse::util::usize_to_u64, storage::distribute_cache::rpc::utils::get_u64_from_buf,
+        async_fuse::util::usize_to_u64, storage::distribute_kv_cache::rpc::utils::get_u64_from_buf,
     };
 
     use super::*;

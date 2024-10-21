@@ -31,17 +31,17 @@ mod tests {
     use std::time::Duration;
 
     use crate::connect_timeout;
-    use crate::storage::distribute_cache::rpc::client::RpcClient;
-    use crate::storage::distribute_cache::rpc::common::{
+    use crate::storage::distribute_kv_cache::rpc::client::RpcClient;
+    use crate::storage::distribute_kv_cache::rpc::common::{
         ClientTimeoutOptions, ServerTimeoutOptions,
     };
-    use crate::storage::distribute_cache::rpc::message::{
+    use crate::storage::distribute_kv_cache::rpc::message::{
         FileBlockPacket, FileBlockRequest, FileBlockResponse, ReqType, RespType, StatusCode,
     };
-    use crate::storage::distribute_cache::rpc::packet::{Decode, Encode, ReqHeader, RespHeader};
-    use crate::storage::distribute_cache::rpc::server::{RpcServer, RpcServerConnectionHandler};
-    use crate::storage::distribute_cache::rpc::utils::u64_to_usize;
-    use crate::storage::distribute_cache::rpc::workerpool::{Job, WorkerPool};
+    use crate::storage::distribute_kv_cache::rpc::packet::{Decode, Encode, ReqHeader, RespHeader};
+    use crate::storage::distribute_kv_cache::rpc::server::{RpcServer, RpcServerConnectionHandler};
+    use crate::storage::distribute_kv_cache::rpc::utils::u64_to_usize;
+    use crate::storage::distribute_kv_cache::rpc::workerpool::{Job, WorkerPool};
     use async_trait::async_trait;
     use bytes::BytesMut;
     use tokio::sync::mpsc;

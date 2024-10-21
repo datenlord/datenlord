@@ -17,7 +17,7 @@ use crate::{
         error::{DatenLordError, DatenLordResult},
         task_manager::{TaskName, TASK_MANAGER},
     },
-    storage::distribute_cache::rpc::packet::Decode,
+    storage::distribute_kv_cache::rpc::packet::Decode,
 };
 
 use super::{

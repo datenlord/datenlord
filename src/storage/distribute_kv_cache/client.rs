@@ -9,7 +9,7 @@ use crate::{
         task_manager::{TaskName, TASK_MANAGER},
     },
     connect_timeout,
-    storage::{distribute_cache::rpc::error::RpcError, Block},
+    storage::{distribute_kv_cache::rpc::error::RpcError, Block},
 };
 
 use super::{

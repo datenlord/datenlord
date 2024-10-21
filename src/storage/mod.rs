@@ -45,4 +45,4 @@ mod mock;
 pub use mock::MemoryStorage;
 
 /// The cache module for storage.
-pub mod distribute_cache;
+pub mod distribute_kv_cache;
