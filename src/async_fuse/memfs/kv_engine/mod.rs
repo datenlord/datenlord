@@ -9,10 +9,12 @@ use crate::common::error::{DatenLordError, DatenLordResult};
 
 /// The `KVEngineType` is used to provide support for metadata.
 /// We use this alias to avoid generic type.
-pub type KVEngineType = etcd_impl::EtcdKVEngine;
-
+//pub type KVEngineType = etcd_impl::EtcdKVEngine;
+pub type KVEngineType = xline_impl::XlineKVEngine;
 /// The etcd implementation of `KVEngine` and `MetaTxn`
 pub mod etcd_impl;
+/// The xline implementation of `KVEngine` and `MetaTxn`
+pub mod xline_impl;
 /// The `kv_utils` is used to provide some common functions for `KVEngine`
 pub mod kv_utils;
 
