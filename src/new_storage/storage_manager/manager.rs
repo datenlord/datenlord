@@ -5,8 +5,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use clippy_utilities::{Cast, OverflowArithmetic};
 use parking_lot::Mutex;
+use tracing::error;
 
-use crate::async_fuse::memfs::MetaData;
+use crate::async_fuse::memfs::{FileAttr, MetaData};
 
 use super::super::policy::LruPolicy;
 use super::super::{
@@ -51,6 +52,39 @@ impl<M: MetaData + Send + Sync + 'static> Storage for StorageManager<M> {
             );
             self.handles.add_handle(handle);
         }
+    }
+
+    /// Try to open a file with the given inode number and flags in opened file handles.
+    /// If the file is not opened, return false.
+    #[inline]
+    fn is_open(&self, ino: u64, flag: OpenFlag) -> bool {
+        if let Some(handle) = self.handles.get_handle(ino) {
+            // Check opened file handle with the same flag
+            if handle.flag() == flag {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Get the file attr of the file specified by the inode number.
+    /// Default implementation returns None.
+    async fn getattr(&self, ino: u64) -> StorageResult<FileAttr> {
+        let fh = self.get_handle(ino);
+        match fh.getattr().await {
+            Ok(attr) => Ok(attr),
+            Err(e) => {
+                error!("Failed to get attr: {:?}", e);
+                Err(e)
+            }
+        }
+    }
+
+    /// Set the file attr of the file specified by the inode number.
+    /// Default implementation does nothing.
+    async fn setattr(&self, ino: u64, attr: FileAttr) {
+        let fh = self.get_handle(ino);
+        fh.setattr(attr).await;
     }
 
     /// Reads data from a file specified by the file handle, starting at the

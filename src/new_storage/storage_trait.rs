@@ -2,6 +2,8 @@
 
 use async_trait::async_trait;
 
+use crate::{async_fuse::memfs::FileAttr, new_storage::StorageError};
+
 use super::{OpenFlag, StorageResult};
 
 /// The trait defines an interface for I/O operations.
@@ -11,6 +13,24 @@ pub trait Storage {
     /// Opens a file with the given inode number and flags, returning a file
     /// handle.
     fn open(&self, ino: u64, flag: OpenFlag);
+
+    /// Try to open a file with the given inode number and flags in opened file handles.
+    /// If the file is not opened, return false.
+    fn is_open(&self, ino: u64, flag: OpenFlag) -> bool {
+        false
+    }
+
+    /// Get the file attr of the file specified by the inode number.
+    /// Default implementation returns None.
+    async fn getattr(&self, ino: u64) -> StorageResult<FileAttr> {
+        Err(StorageError::Internal(anyhow::anyhow!(
+            "This file handle is not allowed to be written."
+        )))
+    }
+
+    /// Set the file attr of the file specified by the inode number.
+    /// Default implementation does nothing.
+    async fn setattr(&self, ino: u64, attr: FileAttr) {}
 
     /// Reads data from a file specified by the inode number and file handle,
     /// starting at the given offset and reading up to `len` bytes.

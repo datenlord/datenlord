@@ -1,12 +1,12 @@
 use std::os::unix::io::RawFd;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 use async_trait::async_trait;
 
 use super::kv_engine::KVEngineType;
 use super::node::Node;
-use super::{CreateParam, RenameParam, SetAttrParam, StorageType};
+use super::{CreateParam, FileAttr, RenameParam, SetAttrParam, StorageType};
 use crate::async_fuse::fuse::fuse_reply::{ReplyDirectory, StatFsParam};
 use crate::async_fuse::fuse::protocol::{FuseAttr, INum};
 use crate::common::error::DatenLordResult;
@@ -67,22 +67,8 @@ pub trait MetaData {
     /// Rename helper to exchange on disk
     async fn rename(&self, context: ReqContext, param: RenameParam) -> DatenLordResult<()>;
 
-    /// Helper function to write local data
-    async fn write_local_helper(
-        &self,
-        ino: u64,
-        new_mtime: SystemTime,
-        new_size: u64,
-    ) -> DatenLordResult<()>;
-
     /// Helper function to write remote data
-    async fn write_remote_helper(&self, ino: u64) -> DatenLordResult<()>;
-
-    /// Helper function to get a open file's size and mtime
-    /// # Return
-    /// Return a tuple of (file_size, modified_time)
-    /// It will not change the file's atime
-    fn mtime_and_size(&self, ino: u64) -> (u64, SystemTime);
+    async fn write_remote_helper(&self, ino: u64, new_attr: FileAttr) -> DatenLordResult<()>;
 
     /// Set fuse fd into `MetaData`
     async fn set_fuse_fd(&self, fuse_fd: RawFd);
@@ -106,11 +92,15 @@ pub trait MetaData {
         name: &str,
     ) -> DatenLordResult<Option<INum>>;
 
-    /// Get attribute of i-node by ino
-    async fn getattr(&self, ino: u64) -> DatenLordResult<(Duration, FuseAttr)>;
+    /// Get attribute of i-node by ino from remote
+    async fn get_remote_attr(&self, ino: u64) -> DatenLordResult<(Duration, FuseAttr)>;
 
-    /// Open a file or directory by ino and flags
-    async fn open(&self, context: ReqContext, ino: u64, flags: u32) -> DatenLordResult<u64>;
+    /// Open a file or directory by ino and flags from local, and return a file handler
+    async fn open_local(&self, context: ReqContext, ino: u64, flags: u32) -> DatenLordResult<u64>;
+
+    /// Open a file or directory by ino and flags from remote, and return a file handler
+    /// This function will be called at the first time when open a file
+    async fn open_remote(&self, context: ReqContext, ino: u64, flags: u32) -> DatenLordResult<u64>;
 
     /// Forget a i-node by ino
     /// # Return
@@ -121,7 +111,7 @@ pub trait MetaData {
     /// Helper function to read local data
     /// # Return
     /// Return a tuple of (file_size, modified_time)
-    async fn read_helper(&self, ino: u64) -> DatenLordResult<(u64, SystemTime)>;
+    // async fn read_helper(&self, ino: u64) -> DatenLordResult<(u64, SystemTime)>;
 
     /// Helper function to release dir
     async fn releasedir(&self, ino: u64, fh: u64) -> DatenLordResult<()>;

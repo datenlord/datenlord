@@ -12,7 +12,7 @@ pub mod direntry;
 mod metadata;
 mod node;
 /// Opened files
-pub mod open_file;
+// pub mod open_file;
 /// fs metadata with S3 backend module
 mod s3_metadata;
 mod s3_node;
@@ -21,7 +21,7 @@ mod s3_node;
 pub mod serial;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use async_trait::async_trait;
 use clippy_utilities::{Cast, OverflowArithmetic};
@@ -231,7 +231,21 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         let _timer = FILESYSTEM_METRICS.start_storage_operation_timer("getattr");
         let ino = req.nodeid();
         debug!("getattr(ino={}, req={:?})", ino, req);
-        match self.metadata.getattr(ino).await {
+
+        // Get from local storage first
+        if let Ok(file_attr) =  self.storage.getattr(ino).await {
+            debug!(
+                "getattr() successfully got the attr={:?} of ino={}",
+                file_attr, ino,
+            );
+            // TODO: Mock response ttl.
+            let ttl = Duration::new(3600, 0);
+            let fuse_attr = fs_util::convert_to_fuse_attr(file_attr);
+            return reply.attr(ttl, fuse_attr).await
+        }
+
+        // Get from remote metadata server
+        match self.metadata.get_remote_attr(ino).await {
             Ok((ttl, fuse_attr)) => {
                 debug!(
                     "getattr() successfully got the attr={:?} of ino={}",
@@ -271,15 +285,26 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
             gid: req.gid(),
         };
 
-        match self.metadata.open(context, ino, flags).await {
-            Ok(fd) => {
-                // Igonre fs fd number now.
-                self.storage.open(ino, flags.into());
-                reply.opened(fd, flags).await
+        // Check if the file is already opened
+        if self.storage.is_open(ino, flags.into()) {
+            match self.metadata.open_local(context, ino, flags).await {
+                Ok(fd) => reply.opened(fd, flags).await,
+                Err(e) => {
+                    debug!("open() failed, the error is: {:?}", e);
+                    reply.error(e).await
+                }
             }
-            Err(e) => {
-                debug!("open() failed, the error is: {:?}", e);
-                reply.error(e).await
+        } else {
+            match self.metadata.open_remote(context, ino, flags).await {
+                Ok(fd) => {
+                    // Igonre fs fd number now.
+                    self.storage.open(ino, flags.into());
+                    reply.opened(fd, flags).await
+                }
+                Err(e) => {
+                    debug!("open() failed, the error is: {:?}", e);
+                    reply.error(e).await
+                }
             }
         }
     }
@@ -336,7 +361,9 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
             .setattr_helper::<S3MetaData>(context, ino, &param, &self.storage)
             .await;
         match set_res {
-            Ok((ttl, fuse_attr)) => reply.attr(ttl, fuse_attr).await,
+            Ok((ttl, fuse_attr)) => {
+                return reply.attr(ttl, fuse_attr).await
+            }
             Err(e) => reply.error(e).await,
         }
     }
@@ -535,12 +562,13 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         let ino = req.nodeid();
         let offset: u64 = offset.cast();
 
-        let (file_size, _) = match self.metadata.read_helper(ino).await {
-            Ok((file_size, mtime)) => (file_size, mtime),
+        let fileattr = match self.storage.getattr(ino).await {
+            Ok(fileattr) => fileattr,
             Err(e) => {
-                return reply.error(e).await;
+                return reply.error(e.into()).await;
             }
         };
+        let file_size = fileattr.size;
 
         if offset >= file_size {
             return reply.data(Vec::<u8>::new()).await;
@@ -582,7 +610,14 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         let ino = req.nodeid();
         let data_len: u64 = data.len().cast();
 
-        let (old_size, _) = self.metadata.mtime_and_size(ino);
+        // Get local file attribute
+        let fileattr = match self.storage.getattr(ino).await {
+            Ok(fileattr) => fileattr,
+            Err(e) => {
+                return reply.error(e.into()).await;
+            }
+        };
+        let old_size = fileattr.size;
         let new_size = old_size.max(offset.cast::<u64>().overflow_add(data_len));
 
         let result = self
@@ -596,14 +631,12 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
             }
         };
 
-        let write_result = self
-            .metadata
-            .write_local_helper(ino, new_mtime, new_size)
-            .await;
-        match write_result {
-            Ok(()) => reply.written(data_len.cast()).await,
-            Err(e) => reply.error(e).await,
-        }
+        // Update local attr
+        fileattr.size = new_size;
+        fileattr.mtime = new_mtime;
+        self.storage.setattr(ino, fileattr).await;
+
+        reply.written(data_len.cast()).await
     }
 
     /// Flush method.

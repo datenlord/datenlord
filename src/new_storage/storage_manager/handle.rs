@@ -21,7 +21,7 @@ use super::super::block_slice::offset_to_slice;
 use super::super::error::StorageResult;
 use super::super::policy::LruPolicy;
 use super::super::{CacheKey, MemoryCache};
-use crate::async_fuse::memfs::MetaData;
+use crate::async_fuse::memfs::{FileAttr, MetaData};
 
 /// The `FileHandleInner` struct represents the inner state of a file handle.
 /// It contains the file handle, reader, and writer.
@@ -33,6 +33,8 @@ pub struct FileHandleInner {
     /// of the number of times this file is currently opened.
     /// The number of times this file is currently opened.
     open_cnt: AtomicU32,
+    /// Current file attributes.
+    attr: Arc<RwLock<FileAttr>>,
     /// The block size
     block_size: usize,
     /// The `MemoryCache`
@@ -79,7 +81,7 @@ struct MetaCommitTask {
 }
 
 /// The `OpenFlag` enum represents the mode in which a file is opened.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum OpenFlag {
     /// Open the file for reading.
     Read,
@@ -201,6 +203,7 @@ async fn write_blocks<M: MetaData + Send + Sync + 'static>(
     // Commit current metadata to the meta data server.
     let task = tasks.get(0)?;
     if let Err(e) = metadata_client
+    // TODO: use storage ref
         .write_remote_helper(task.ino.to_owned())
         .await
     {
@@ -286,10 +289,26 @@ impl FileHandleInner {
             backend,
             // The open count is initialized to 0, open() method will increase this flag.
             open_cnt: AtomicU32::new(0),
+            // init the file attributes
+            attr: Arc::new(RwLock::new(FileAttr::default())),
             access_keys: Mutex::new(Vec::new()),
             write_back_sender: write_back_tx,
             write_back_handle: tokio::sync::Mutex::new(Some(write_back_handle)),
         }
+    }
+
+    /// Get the open file attributes.
+    #[inline]
+    pub async fn getattr(&self) -> StorageResult<FileAttr> {
+        let attr = self.attr.read();
+        Ok(attr.clone())
+    }
+
+    /// Set the open file attributes.
+    #[inline]
+    pub async fn setattr(&self, attr: FileAttr) {
+        let mut old_attr = self.attr.write();
+        *old_attr = attr;
     }
 
     /// Fetch the block from the cache manager.
@@ -524,6 +543,12 @@ impl FileHandle {
         self.fh
     }
 
+    /// Returns the open flag.
+    #[must_use]
+    pub fn flag(&self) -> OpenFlag {
+        self.flag
+    }
+
     /// Reads data from the file starting at the given offset and up to the
     /// given length.
     pub async fn read(&self, offset: u64, len: u64) -> StorageResult<Vec<u8>> {
@@ -584,6 +609,16 @@ impl FileHandle {
     /// Closes the file handle, closing both the reader and writer.
     pub async fn close(&self) -> StorageResult<bool> {
         self.inner.close().await
+    }
+
+    /// Get the open file attributes.
+    pub async fn getattr(&self) -> StorageResult<FileAttr> {
+        self.inner.getattr().await
+    }
+
+    /// Set the open file attributes.
+    pub async fn setattr(&self, attr: FileAttr) {
+        self.inner.setattr(attr).await;
     }
 }
 
