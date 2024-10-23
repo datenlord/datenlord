@@ -36,13 +36,12 @@ impl<M: MetaData + Send + Sync + 'static> Storage for StorageManager<M> {
     /// Opens a file with the given inode number and flags, returning a new file
     /// handle.
     #[inline]
-    fn open(&self, ino: u64, fh: u64, flag: OpenFlag) {
+    fn open(&self, ino: u64, flag: OpenFlag) {
         // Get existing file handle if it exists
-        if let Some(handle) = self.handles.get_handle(fh) {
+        if let Some(handle) = self.handles.get_handle(ino) {
             handle.open();
         } else {
             let handle = FileHandle::new(
-                fh,
                 ino,
                 self.block_size,
                 Arc::clone(&self.cache),
@@ -57,51 +56,48 @@ impl<M: MetaData + Send + Sync + 'static> Storage for StorageManager<M> {
     /// Reads data from a file specified by the file handle, starting at the
     /// given offset and reading up to `len` bytes.
     #[inline]
-    async fn read(&self, _ino: u64, fh: u64, offset: u64, len: usize) -> StorageResult<Vec<u8>> {
-        let handle = self.get_handle(fh);
+    async fn read(&self, ino: u64, offset: u64, len: usize) -> StorageResult<Vec<u8>> {
+        let handle = self.get_handle(ino);
         handle.read(offset, len.cast()).await
     }
 
     /// Writes data to a file specified by the file handle, starting at the
     /// given offset.
     #[inline]
-    async fn write(
-        &self,
-        _ino: u64,
-        fh: u64,
-        offset: u64,
-        buf: &[u8],
-        size: u64,
-    ) -> StorageResult<()> {
-        let handle = self.get_handle(fh);
+    async fn write(&self, ino: u64, offset: u64, buf: &[u8], size: u64) -> StorageResult<()> {
+        let handle = self.get_handle(ino);
         handle.write(offset, buf, size).await?;
         Ok(())
     }
 
     /// Flushes any pending writes to a file specified by the file handle.
     #[inline]
-    async fn flush(&self, _ino: u64, fh: u64) -> StorageResult<()> {
-        let handle = self.get_handle(fh);
+    async fn flush(&self, ino: u64) -> StorageResult<()> {
+        let handle = self.get_handle(ino);
         handle.flush().await?;
         Ok(())
     }
 
     /// Closes a file specified by the file handle.
     #[inline]
-    async fn close(&self, fh: u64) -> StorageResult<()> {
+    async fn close(&self, ino: u64) -> StorageResult<()> {
         let handle = self
             .handles
-            .get_handle(fh)
+            .get_handle(ino)
             .unwrap_or_else(|| panic!("Cannot close a file that is not open."));
-        handle.close().await?;
+        let need_remove_flag = handle.close().await?;
 
-        // Remove the file handle from the handles map
-        match self.handles.remove_handle(fh) {
-            Some(_) => Ok(()),
-            None => {
-                panic!("Cannot close a file that is not open.");
+        if need_remove_flag {
+            // Remove the file handle from the handles map
+            match self.handles.remove_handle(ino) {
+                Some(_) => return Ok(()),
+                None => {
+                    panic!("Cannot close a file that is not open.");
+                }
             }
         }
+
+        Ok(())
     }
 
     /// Truncates a file specified by the inode number to a new size, given the
@@ -132,7 +128,6 @@ impl<M: MetaData + Send + Sync + 'static> Storage for StorageManager<M> {
                 return Ok(());
             }
             let handle = FileHandle::new(
-                0,
                 ino,
                 self.block_size,
                 Arc::clone(&self.cache),

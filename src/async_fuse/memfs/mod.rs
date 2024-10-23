@@ -273,7 +273,8 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
 
         match self.metadata.open(context, ino, flags).await {
             Ok(fd) => {
-                self.storage.open(ino, fd.cast(), flags.into());
+                // Igonre fs fd number now.
+                self.storage.open(ino, flags.into());
                 reply.opened(fd, flags).await
             }
             Err(e) => {
@@ -525,7 +526,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
     async fn read(
         &self,
         req: &Request<'_>,
-        fh: u64,
+        _fh: u64,
         offset: i64,
         size: u32,
         reply: ReplyData<'_>,
@@ -552,7 +553,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
             size.cast()
         };
 
-        let result = self.storage.read(ino, fh, offset, read_size.cast()).await;
+        let result = self.storage.read(ino, offset, read_size.cast()).await;
         // Check the load result
         match result {
             Ok(content) => reply.data(content).await,
@@ -571,7 +572,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
     async fn write(
         &self,
         req: &Request<'_>,
-        fh: u64,
+        _fh: u64,
         offset: i64,
         data: Vec<u8>,
         _flags: u32,
@@ -586,7 +587,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
 
         let result = self
             .storage
-            .write(ino, fh, offset.cast(), &data, new_size)
+            .write(ino, offset.cast(), &data, new_size)
             .await;
         let new_mtime = match result {
             Ok(()) => SystemTime::now(),
@@ -636,7 +637,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         // called multiple times for an open file, self must not really
         // close the file. This is important if used on a network
         // filesystem like NFS which flush the data/metadata on close()
-        match self.storage.flush(ino, fh).await {
+        match self.storage.flush(ino).await {
             Ok(()) => reply.ok().await,
             Err(e) => reply.error(e.into()).await,
         }
@@ -663,7 +664,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
     ) -> nix::Result<usize> {
         let _timer = FILESYSTEM_METRICS.start_storage_operation_timer("release");
         let ino = req.nodeid();
-        match self.storage.close(fh).await {
+        match self.storage.close(ino).await {
             Ok(()) => {}
             Err(e) => {
                 return reply.error(e.into()).await;
@@ -683,13 +684,13 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
     async fn fsync(
         &self,
         req: &Request<'_>,
-        fh: u64,
+        _fh: u64,
         _datasync: bool,
         reply: ReplyEmpty<'_>,
     ) -> nix::Result<usize> {
         let _timer = FILESYSTEM_METRICS.start_storage_operation_timer("fsync");
         let ino = req.nodeid();
-        match self.storage.flush(ino, fh).await {
+        match self.storage.flush(ino).await {
             Ok(()) => reply.ok().await,
             Err(e) => reply.error(e.into()).await,
         }

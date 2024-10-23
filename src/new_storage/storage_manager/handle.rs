@@ -14,7 +14,7 @@ use parking_lot::{Mutex, RwLock};
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
-use tracing::{error, warn};
+use tracing::{debug, error, warn};
 
 use super::super::backend::Backend;
 use super::super::block_slice::offset_to_slice;
@@ -446,13 +446,16 @@ impl FileHandleInner {
     }
 
     /// Closes the writer associated with the file handle.
-    pub async fn close(&self) -> StorageResult<()> {
+    /// If the open count is greater than 0, it will return false and do not remove this handle.
+    /// Otherwise, it will return true and remove this handle.
+    pub async fn close(&self) -> StorageResult<bool> {
         if self
             .open_cnt
             .fetch_sub(1, std::sync::atomic::Ordering::SeqCst)
             > 0
         {
-            return Ok(());
+            debug!("The file handle is still open by other processes.");
+            return Ok(false);
         }
 
         let (tx, rx) = oneshot::channel();
@@ -477,7 +480,7 @@ impl FileHandleInner {
 
         rx.await
             .unwrap_or_else(|_| panic!("The sender should not be closed."))
-            .map_or(Ok(()), Err)
+            .map_or(Ok(true), Err)
     }
 }
 
@@ -485,7 +488,7 @@ impl FileHandleInner {
 /// It contains an `Arc` of `RwLock<FileHandleInner>`.
 #[derive(Debug, Clone)]
 pub struct FileHandle {
-    /// The file handle.
+    /// The file handle(inode).
     fh: u64,
     /// The block size in bytes
     block_size: usize,
@@ -498,7 +501,6 @@ pub struct FileHandle {
 impl FileHandle {
     /// Creates a new `FileHandle` instance.
     pub fn new<M: MetaData + Send + Sync + 'static>(
-        fh: u64,
         ino: u64,
         block_size: usize,
         cache: Arc<Mutex<MemoryCache<CacheKey, LruPolicy<CacheKey>>>>,
@@ -509,7 +511,7 @@ impl FileHandle {
         let inner = FileHandleInner::new(ino, block_size, cache, backend, metadata_client);
         let inner = Arc::new(inner);
         FileHandle {
-            fh,
+            fh: ino,
             block_size,
             flag,
             inner,
@@ -533,6 +535,7 @@ impl FileHandle {
                 )))
             }
         };
+
         let slices = offset_to_slice(self.block_size.cast(), offset, len);
         let mut buf = Vec::with_capacity(len.cast());
         reader.read(&mut buf, &slices).await?;
@@ -579,7 +582,7 @@ impl FileHandle {
     }
 
     /// Closes the file handle, closing both the reader and writer.
-    pub async fn close(&self) -> StorageResult<()> {
+    pub async fn close(&self) -> StorageResult<bool> {
         self.inner.close().await
     }
 }
