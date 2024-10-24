@@ -100,7 +100,12 @@ pub trait MetaData {
 
     /// Open a file or directory by ino and flags from remote, and return a file handler
     /// This function will be called at the first time when open a file
-    async fn open_remote(&self, context: ReqContext, ino: u64, flags: u32) -> DatenLordResult<u64>;
+    async fn open_remote(
+        &self,
+        context: ReqContext,
+        ino: u64,
+        flags: u32,
+    ) -> DatenLordResult<(u64, FileAttr)>;
 
     /// Forget a i-node by ino
     /// # Return

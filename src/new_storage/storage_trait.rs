@@ -16,13 +16,13 @@ pub trait Storage {
 
     /// Try to open a file with the given inode number and flags in opened file handles.
     /// If the file is not opened, return false.
-    fn is_open(&self, ino: u64, flag: OpenFlag) -> bool {
+    fn is_open(&self, _ino: u64, _flag: OpenFlag) -> bool {
         false
     }
 
     /// Get the file attr of the file specified by the inode number.
     /// Default implementation returns None.
-    async fn getattr(&self, ino: u64) -> StorageResult<FileAttr> {
+    fn getattr(&self, _ino: u64) -> StorageResult<FileAttr> {
         Err(StorageError::Internal(anyhow::anyhow!(
             "This file handle is not allowed to be written."
         )))
@@ -30,7 +30,7 @@ pub trait Storage {
 
     /// Set the file attr of the file specified by the inode number.
     /// Default implementation does nothing.
-    async fn setattr(&self, ino: u64, attr: FileAttr) {}
+    fn setattr(&self, _ino: u64, _attr: FileAttr) {}
 
     /// Reads data from a file specified by the inode number and file handle,
     /// starting at the given offset and reading up to `len` bytes.

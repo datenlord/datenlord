@@ -703,7 +703,7 @@ unsafe fn fuse_dir_ent_in_raw(from: &FuseDirEnt) -> &[u8] {
     let base: *const u8 = <*const FuseDirEnt>::cast(from);
     unsafe {
         let bytes = slice::from_raw_parts(base, mem::size_of::<FuseDirEnt>());
-        return bytes
+        bytes
     }
 }
 

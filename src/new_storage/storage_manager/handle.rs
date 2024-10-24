@@ -13,8 +13,7 @@ use nix::fcntl::OFlag;
 use parking_lot::{Mutex, RwLock};
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::oneshot;
-use tokio::task::JoinHandle;
-use tracing::{debug, error, warn};
+use tracing::{debug, error, info, warn};
 
 use super::super::backend::Backend;
 use super::super::block_slice::offset_to_slice;
@@ -45,8 +44,6 @@ pub struct FileHandleInner {
     access_keys: Mutex<Vec<CacheKey>>,
     /// The sender to send tasks to the write back worker.
     write_back_sender: Sender<Task>,
-    /// The handle to the write back worker.
-    write_back_handle: tokio::sync::Mutex<Option<JoinHandle<()>>>,
 }
 
 impl std::fmt::Debug for FileHandleInner {
@@ -109,7 +106,7 @@ impl From<u32> for OpenFlag {
 /// The `Task` enum represents the different types of tasks that the write back
 /// worker can perform.
 #[derive(Debug)]
-enum Task {
+pub enum Task {
     /// A pending write task.
     Pending(Arc<WriteTask>),
     /// A flush task.
@@ -120,7 +117,7 @@ enum Task {
 
 /// The `WriteTask` struct represents a write task
 #[derive(Debug)]
-struct WriteTask {
+pub struct WriteTask {
     /// The cache manager.
     cache: Arc<Mutex<MemoryCache<CacheKey, LruPolicy<CacheKey>>>>,
     /// The backend storage system.
@@ -176,112 +173,17 @@ async fn write_back_block(task: Arc<WriteTask>) -> StorageResult<()> {
     Ok(())
 }
 
-/// Write the blocks to the backend storage system concurrently.
-async fn write_blocks<M: MetaData + Send + Sync + 'static>(
-    tasks: &Vec<Arc<WriteTask>>,
-    metadata_client: Arc<M>,
-) -> Option<StorageError> {
-    let mut handles = Vec::new();
-    let mut result = None;
-    for task in tasks {
-        let handle = tokio::spawn(write_back_block(Arc::clone(task)));
-        handles.push(handle);
-    }
-    // Make sure current blocks is finished.
-    for handle in handles {
-        match handle.await {
-            Err(e) => {
-                result = Some(StorageError::Internal(e.into()));
-            }
-            Ok(Err(e)) => {
-                result = Some(e);
-            }
-            _ => {}
-        }
-    }
-
-    // Commit current metadata to the meta data server.
-    let task = tasks.get(0)?;
-    if let Err(e) = metadata_client
-    // TODO: use storage ref
-        .write_remote_helper(task.ino.to_owned())
-        .await
-    {
-        error!("Failed to commit meta data, the error is {e}.");
-    }
-
-    result
-}
-
-/// The `write_back_work` function represents the write back worker.
-#[allow(clippy::pattern_type_mismatch)] // Raised by `tokio::select!`
-async fn write_back_work<M: MetaData + Send + Sync + 'static>(
-    mut write_back_receiver: Receiver<Task>,
-    metadata_client: Arc<M>,
-) {
-    //  Create a timer to flush the cache every 200ms.
-    let mut interval = tokio::time::interval(std::time::Duration::from_millis(200));
-    let mut tasks = Vec::new();
-    let mut result = None;
-    loop {
-        tokio::select! {
-            Some(task) = write_back_receiver.recv() => {
-                match task {
-                    Task::Pending(task) => {
-                        tasks.push(task);
-                        if tasks.len() >= 10 {
-                            let res = write_blocks(&tasks, Arc::clone(&metadata_client)).await;
-                            if let Some(e) = res {
-                                result.get_or_insert(e);
-                            }
-                            tasks.clear();
-                        }
-                    }
-                    Task::Flush(tx) => {
-                        let res = write_blocks(&tasks, Arc::clone(&metadata_client)).await;
-                        tasks.clear();
-                        let res = result.take().or(res);
-                        if let Err(Some(e)) = tx.send(res) {
-                            error!("Failed to send storage error back to `Writer`, the error is {e}.");
-                        }
-                    }
-                    Task::Finish(tx) => {
-                        let res = write_blocks(&tasks, Arc::clone(&metadata_client)).await;
-                        tasks.clear();
-                        let res = result.take().or(res);
-                        if let Err(Some(e)) = tx.send(res) {
-                            error!("Failed to send storage error back to `Writer`, the error is {e}.");
-                        }
-
-                        // Check last write task size with mem attr
-                        return;
-                    }
-                }
-            }
-            _ = interval.tick() => {
-                write_blocks(&tasks, Arc::clone(&metadata_client)).await;
-                tasks.clear();
-            }
-        }
-    }
-}
-
 impl FileHandleInner {
     /// Creates a new `FileHandleInner` instance.
     #[inline]
     #[allow(clippy::needless_pass_by_value)]
-    pub fn new<M: MetaData + Send + Sync + 'static>(
+    pub fn new(
         ino: u64,
         block_size: usize,
         cache: Arc<Mutex<MemoryCache<CacheKey, LruPolicy<CacheKey>>>>,
         backend: Arc<dyn Backend>,
-        metadata_client: Arc<M>,
+        write_back_tx: Sender<Task>,
     ) -> Self {
-        let (write_back_tx, write_back_rx) = tokio::sync::mpsc::channel(100);
-        // TODO: Move to task manager
-        // let handle = TASK_MANAGER.spawn(TaskName::WriteBack, write_back_work(rx)).await;
-        let write_back_handle = tokio::spawn(write_back_work(write_back_rx, metadata_client));
-
         FileHandleInner {
             ino,
             block_size,
@@ -293,20 +195,21 @@ impl FileHandleInner {
             attr: Arc::new(RwLock::new(FileAttr::default())),
             access_keys: Mutex::new(Vec::new()),
             write_back_sender: write_back_tx,
-            write_back_handle: tokio::sync::Mutex::new(Some(write_back_handle)),
         }
     }
 
     /// Get the open file attributes.
     #[inline]
-    pub async fn getattr(&self) -> StorageResult<FileAttr> {
+    pub fn getattr(&self) -> FileAttr {
+        debug!("Get attr for ino: {}", self.ino);
         let attr = self.attr.read();
-        Ok(attr.clone())
+        *attr
     }
 
     /// Set the open file attributes.
     #[inline]
-    pub async fn setattr(&self, attr: FileAttr) {
+    pub fn setattr(&self, attr: FileAttr) {
+        info!("Set attr for ino: {} attr: {:?}", self.ino, attr);
         let mut old_attr = self.attr.write();
         *old_attr = attr;
     }
@@ -484,22 +387,112 @@ impl FileHandleInner {
             .unwrap_or_else(|_| {
                 panic!("Should not send command to write back task when the task quits.");
             });
-        // TODO: handle it by `TaskManager`
-        self.write_back_handle
-            .lock()
-            .await
-            .take()
-            .unwrap_or_else(|| {
-                unreachable!("The `JoinHandle` should not be None.");
-            })
-            .await
-            .unwrap_or_else(|e| {
-                panic!("Failed to join the write back task: {e}");
-            });
 
         rx.await
             .unwrap_or_else(|_| panic!("The sender should not be closed."))
             .map_or(Ok(true), Err)
+    }
+
+    /// Write the blocks to the backend storage system concurrently.
+    async fn write_blocks<M: MetaData + Send + Sync + 'static>(
+        self: Arc<Self>,
+        tasks: &Vec<Arc<WriteTask>>,
+        metadata_client: Arc<M>,
+    ) -> Option<StorageError> {
+        let mut handles = Vec::new();
+        let mut result = None;
+        for task in tasks {
+            let handle = tokio::spawn(write_back_block(Arc::clone(task)));
+            handles.push(handle);
+        }
+        // Make sure current blocks is finished.
+        for handle in handles {
+            match handle.await {
+                Err(e) => {
+                    result = Some(StorageError::Internal(e.into()));
+                }
+                Ok(Err(e)) => {
+                    result = Some(e);
+                }
+                _ => {}
+            }
+        }
+
+        // Commit current metadata to the meta data server.
+        let task = tasks.get(0)?;
+        let ino = task.ino.to_owned();
+        let current_attr = self.getattr();
+        info!(
+            "Commit meta data for ino: {} with attr: {:?}",
+            ino, current_attr
+        );
+        if let Err(e) = metadata_client
+            // TODO: use storage ref
+            .write_remote_helper(ino, current_attr)
+            .await
+        {
+            error!("Failed to commit meta data, the error is {e}.");
+        }
+
+        result
+    }
+
+    /// The `write_back_work` function represents the write back worker.
+    #[allow(clippy::pattern_type_mismatch)] // Raised by `tokio::select!`
+    async fn write_back_work<M: MetaData + Send + Sync + 'static>(
+        self: Arc<Self>,
+        mut write_back_receiver: Receiver<Task>,
+        metadata_client: Arc<M>,
+    ) {
+        //  Create a timer to flush the cache every 200ms.
+        let mut interval = tokio::time::interval(std::time::Duration::from_millis(200));
+        let mut tasks = Vec::new();
+        let mut result = None;
+        loop {
+            tokio::select! {
+                Some(task) = write_back_receiver.recv() => {
+                    match task {
+                        Task::Pending(task) => {
+                            tasks.push(task);
+                            if tasks.len() >= 10 {
+                                let slf_clone = Arc::clone(&self);
+                                let res = slf_clone.write_blocks(&tasks, Arc::clone(&metadata_client)).await;
+                                if let Some(e) = res {
+                                    result.get_or_insert(e);
+                                }
+                                tasks.clear();
+                            }
+                        }
+                        Task::Flush(tx) => {
+                            let slf_clone = Arc::clone(&self);
+                            let res = slf_clone.write_blocks(&tasks, Arc::clone(&metadata_client)).await;
+                            tasks.clear();
+                            let res = result.take().or(res);
+                            if let Err(Some(e)) = tx.send(res) {
+                                error!("Failed to send storage error back to `Writer`, the error is {e}.");
+                            }
+                        }
+                        Task::Finish(tx) => {
+                            let slf_clone = Arc::clone(&self);
+                            let res = slf_clone.write_blocks(&tasks, Arc::clone(&metadata_client)).await;
+                            tasks.clear();
+                            let res = result.take().or(res);
+                            if let Err(Some(e)) = tx.send(res) {
+                                error!("Failed to send storage error back to `Writer`, the error is {e}.");
+                            }
+
+                            // Check last write task size with mem attr
+                            return;
+                        }
+                    }
+                }
+                _ = interval.tick() => {
+                    let slf_clone = Arc::clone(&self);
+                    slf_clone.write_blocks(&tasks, Arc::clone(&metadata_client)).await;
+                    tasks.clear();
+                }
+            }
+        }
     }
 }
 
@@ -515,6 +508,8 @@ pub struct FileHandle {
     flag: OpenFlag,
     /// The inner file handle
     inner: Arc<FileHandleInner>,
+    /// The write back handle
+    write_back_handle: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
 }
 
 impl FileHandle {
@@ -527,13 +522,25 @@ impl FileHandle {
         flag: OpenFlag,
         metadata_client: Arc<M>,
     ) -> Self {
-        let inner = FileHandleInner::new(ino, block_size, cache, backend, metadata_client);
-        let inner = Arc::new(inner);
+        let (write_back_tx, write_back_rx) = tokio::sync::mpsc::channel(100);
+        let inner = Arc::new(FileHandleInner::new(
+            ino,
+            block_size,
+            cache,
+            backend,
+            write_back_tx,
+        ));
+        let inner_clone = Arc::clone(&inner);
+        // TODO: Move handle to task manager
+        let write_back_handle =
+            tokio::spawn(inner_clone.write_back_work(write_back_rx, metadata_client));
+
         FileHandle {
             fh: ino,
             block_size,
             flag,
             inner,
+            write_back_handle: Arc::new(Mutex::new(Some(write_back_handle))),
         }
     }
 
@@ -607,18 +614,31 @@ impl FileHandle {
     }
 
     /// Closes the file handle, closing both the reader and writer.
-    pub async fn close(&self) -> StorageResult<bool> {
-        self.inner.close().await
+    pub async fn close(self) -> StorageResult<bool> {
+        match self.inner.close().await {
+            Ok(true) => {
+                let write_back_handle = self.write_back_handle.lock().take().unwrap_or_else(|| {
+                    unreachable!("The write back handle should be initialized.")
+                });
+                write_back_handle.await.unwrap_or_else(|e| {
+                    error!("Failed to join the write back task: {e}");
+                });
+                Ok(true)
+            }
+            Ok(false) => Ok(false),
+            Err(e) => Err(e),
+        }
     }
 
     /// Get the open file attributes.
-    pub async fn getattr(&self) -> StorageResult<FileAttr> {
-        self.inner.getattr().await
+    #[must_use]
+    pub fn getattr(&self) -> FileAttr {
+        self.inner.getattr()
     }
 
     /// Set the open file attributes.
-    pub async fn setattr(&self, attr: FileAttr) {
-        self.inner.setattr(attr).await;
+    pub fn setattr(&self, attr: FileAttr) {
+        self.inner.setattr(attr);
     }
 }
 
@@ -722,13 +742,18 @@ mod tests {
         let handles = Arc::new(Handles::new());
         let ino = 1;
         let fh = 1;
-        let file_handle = FileHandleInner::new(ino, BLOCK_SIZE, cache, backend, metadata_client);
+
+        let (write_back_tx, write_back_rx) = tokio::sync::mpsc::channel::<Task>(100);
+        let file_handle = FileHandleInner::new(ino, BLOCK_SIZE, cache, backend, write_back_tx);
         let file_handle = Arc::new(file_handle);
+        let file_handle_inner_clone = Arc::clone(&file_handle);
+        let write_back_handle = tokio::spawn(file_handle_inner_clone.write_back_work(write_back_rx, metadata_client));
         let file_handle = FileHandle {
             fh,
             block_size: BLOCK_SIZE,
             flag: OpenFlag::ReadAndWrite,
             inner: file_handle,
+            write_back_handle: Arc::new(Mutex::new(Some(write_back_handle))),
         };
         handles.add_handle(file_handle.clone());
         let buf = vec![b'1', b'2', b'3', b'4'];

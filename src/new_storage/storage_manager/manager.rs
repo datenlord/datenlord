@@ -5,9 +5,10 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use clippy_utilities::{Cast, OverflowArithmetic};
 use parking_lot::Mutex;
-use tracing::error;
+use tracing::info;
 
 use crate::async_fuse::memfs::{FileAttr, MetaData};
+use crate::new_storage::StorageError;
 
 use super::super::policy::LruPolicy;
 use super::super::{
@@ -60,56 +61,70 @@ impl<M: MetaData + Send + Sync + 'static> Storage for StorageManager<M> {
     fn is_open(&self, ino: u64, flag: OpenFlag) -> bool {
         if let Some(handle) = self.handles.get_handle(ino) {
             // Check opened file handle with the same flag
-            if handle.flag() == flag {
-                return true;
-            }
+            info!("handle flag: {:?} current flag: {:?}", handle.flag(), flag);
+            // if handle.flag() == flag {
+            // }
+            return true;
         }
         false
     }
 
     /// Get the file attr of the file specified by the inode number.
     /// Default implementation returns None.
-    async fn getattr(&self, ino: u64) -> StorageResult<FileAttr> {
-        let fh = self.get_handle(ino);
-        match fh.getattr().await {
-            Ok(attr) => Ok(attr),
-            Err(e) => {
-                error!("Failed to get attr: {:?}", e);
-                Err(e)
-            }
+    fn getattr(&self, ino: u64) -> StorageResult<FileAttr> {
+        match self.get_handle(ino) {
+            Some(fh) => Ok(fh.getattr()),
+            None => Err(StorageError::Internal(anyhow::anyhow!(
+                "This file handle is not exists."
+            ))),
         }
     }
 
     /// Set the file attr of the file specified by the inode number.
     /// Default implementation does nothing.
-    async fn setattr(&self, ino: u64, attr: FileAttr) {
-        let fh = self.get_handle(ino);
-        fh.setattr(attr).await;
+    #[inline]
+    fn setattr(&self, ino: u64, attr: FileAttr) {
+        match self.get_handle(ino) {
+            Some(fh) => fh.setattr(attr),
+            None => {
+                panic!("Cannot set attr for a file that is not open.");
+            }
+        }
     }
 
     /// Reads data from a file specified by the file handle, starting at the
     /// given offset and reading up to `len` bytes.
     #[inline]
     async fn read(&self, ino: u64, offset: u64, len: usize) -> StorageResult<Vec<u8>> {
-        let handle = self.get_handle(ino);
-        handle.read(offset, len.cast()).await
+        match self.get_handle(ino) {
+            Some(fh) => fh.read(offset, len.cast()).await,
+            None => {
+                panic!("Cannot read from a file that is not open.");
+            }
+        }
     }
 
     /// Writes data to a file specified by the file handle, starting at the
     /// given offset.
     #[inline]
     async fn write(&self, ino: u64, offset: u64, buf: &[u8], size: u64) -> StorageResult<()> {
-        let handle = self.get_handle(ino);
-        handle.write(offset, buf, size).await?;
-        Ok(())
+        match self.get_handle(ino) {
+            Some(fh) => fh.write(offset, buf, size).await,
+            None => {
+                panic!("Cannot write to a file that is not open.");
+            }
+        }
     }
 
     /// Flushes any pending writes to a file specified by the file handle.
     #[inline]
     async fn flush(&self, ino: u64) -> StorageResult<()> {
-        let handle = self.get_handle(ino);
-        handle.flush().await?;
-        Ok(())
+        match self.get_handle(ino) {
+            Some(fh) => fh.flush().await,
+            None => {
+                panic!("Cannot flush a file that is not open.");
+            }
+        }
     }
 
     /// Closes a file specified by the file handle.
@@ -214,9 +229,7 @@ impl<M: MetaData + Send + Sync + 'static> StorageManager<M> {
     ///
     /// # Panic
     /// Panics if the file of `fh` is not open.
-    fn get_handle(&self, fh: u64) -> FileHandle {
-        self.handles
-            .get_handle(fh)
-            .unwrap_or_else(|| panic!("Cannot get a file handle that is not open."))
+    fn get_handle(&self, fh: u64) -> Option<FileHandle> {
+        self.handles.get_handle(fh)
     }
 }

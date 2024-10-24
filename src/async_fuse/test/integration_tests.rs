@@ -88,6 +88,7 @@ fn test_file_manipulation_rust_way(mount_dir: &Path) -> anyhow::Result<()> {
     let file_path = Path::new(mount_dir).join("tmp.txt");
     fs::write(&file_path, FILE_CONTENT)?;
     let bytes = fs::read(&file_path)?;
+    println!("content length: {}", bytes.len());
     let content = String::from_utf8(bytes)?;
     fs::remove_file(&file_path)?; // immediate deletion
 

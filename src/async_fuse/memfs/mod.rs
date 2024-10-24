@@ -233,7 +233,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         debug!("getattr(ino={}, req={:?})", ino, req);
 
         // Get from local storage first
-        if let Ok(file_attr) =  self.storage.getattr(ino).await {
+        if let Ok(file_attr) = self.storage.getattr(ino) {
             debug!(
                 "getattr() successfully got the attr={:?} of ino={}",
                 file_attr, ino,
@@ -241,7 +241,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
             // TODO: Mock response ttl.
             let ttl = Duration::new(3600, 0);
             let fuse_attr = fs_util::convert_to_fuse_attr(file_attr);
-            return reply.attr(ttl, fuse_attr).await
+            return reply.attr(ttl, fuse_attr).await;
         }
 
         // Get from remote metadata server
@@ -287,6 +287,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
 
         // Check if the file is already opened
         if self.storage.is_open(ino, flags.into()) {
+            info!("open() file is already opened, ino={}", ino);
             match self.metadata.open_local(context, ino, flags).await {
                 Ok(fd) => reply.opened(fd, flags).await,
                 Err(e) => {
@@ -295,10 +296,13 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
                 }
             }
         } else {
+            info!("open() file is not opened, ino={}", ino);
             match self.metadata.open_remote(context, ino, flags).await {
-                Ok(fd) => {
+                Ok((fd, attr)) => {
                     // Igonre fs fd number now.
                     self.storage.open(ino, flags.into());
+                    // Update init file attr to opened handle.
+                    self.storage.setattr(ino, attr);
                     reply.opened(fd, flags).await
                 }
                 Err(e) => {
@@ -361,9 +365,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
             .setattr_helper::<S3MetaData>(context, ino, &param, &self.storage)
             .await;
         match set_res {
-            Ok((ttl, fuse_attr)) => {
-                return reply.attr(ttl, fuse_attr).await
-            }
+            Ok((ttl, fuse_attr)) => return reply.attr(ttl, fuse_attr).await,
             Err(e) => reply.error(e).await,
         }
     }
@@ -562,7 +564,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         let ino = req.nodeid();
         let offset: u64 = offset.cast();
 
-        let fileattr = match self.storage.getattr(ino).await {
+        let fileattr = match self.storage.getattr(ino) {
             Ok(fileattr) => fileattr,
             Err(e) => {
                 return reply.error(e.into()).await;
@@ -611,7 +613,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         let data_len: u64 = data.len().cast();
 
         // Get local file attribute
-        let fileattr = match self.storage.getattr(ino).await {
+        let mut fileattr = match self.storage.getattr(ino) {
             Ok(fileattr) => fileattr,
             Err(e) => {
                 return reply.error(e.into()).await;
@@ -634,7 +636,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         // Update local attr
         fileattr.size = new_size;
         fileattr.mtime = new_mtime;
-        self.storage.setattr(ino, fileattr).await;
+        self.storage.setattr(ino, fileattr);
 
         reply.written(data_len.cast()).await
     }

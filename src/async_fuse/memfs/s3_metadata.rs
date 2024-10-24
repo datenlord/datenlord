@@ -203,12 +203,22 @@ impl MetaData for S3MetaData {
     // }
 
     #[instrument(skip(self), err, ret)]
-    async fn open_local(&self, context: ReqContext, ino: u64, flags: u32) -> DatenLordResult<u64> {
+    async fn open_local(
+        &self,
+        _context: ReqContext,
+        _ino: u64,
+        _flags: u32,
+    ) -> DatenLordResult<u64> {
         return Ok(self.allocate_fd());
     }
 
     #[instrument(skip(self), err, ret)]
-    async fn open_remote(&self, context: ReqContext, ino: u64, flags: u32) -> DatenLordResult<u64> {
+    async fn open_remote(
+        &self,
+        context: ReqContext,
+        ino: u64,
+        flags: u32,
+    ) -> DatenLordResult<(u64, FileAttr)> {
         // TODO: handle open flags
         // <https://pubs.opengroup.org/onlinepubs/9699919799/functions/open.html>
 
@@ -232,7 +242,7 @@ impl MetaData for S3MetaData {
             Some(node) => {
                 let attr = node.get_attr();
                 attr.check_perm(context.uid, context.gid, access_mode)?;
-                return Ok(self.allocate_fd());
+                return Ok((self.allocate_fd(), attr));
             }
         }
     }
@@ -302,18 +312,18 @@ impl MetaData for S3MetaData {
                                 .await?;
 
                             // Update local attr
-                            match storage.getattr(ino).await {
+                            match storage.getattr(ino) {
                                 // The file is open, update the attr in `open_files`
-                                Ok(file_attr) => {
+                                Ok(mut file_attr) => {
                                     file_attr.size = dirty_attr.size;
-                                    file_attr.mtime = file_attr.mtime;
-                                    file_attr.ctime = file_attr.ctime;
+                                    file_attr.mtime = inode.get_attr().mtime;
+                                    file_attr.ctime = inode.get_attr().ctime;
                                     storage.setattr(ino, file_attr);
                                 }
                                 Err(e) => {
                                     debug!(
-                                        "setattr() failed to get opened attr of ino={} with error={:?}",
-                                        ino, e
+                                    "setattr() failed to get opened attr of ino={} with error={:?}",
+                                    ino, e
                                     );
                                 }
                             }
