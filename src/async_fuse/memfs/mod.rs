@@ -220,6 +220,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
             gid: req.gid(),
         };
         let lookup_res = self.metadata.lookup_helper(context, parent, name).await;
+        info!("lookup_res = {:?}", lookup_res);
         match lookup_res {
             Ok((ttl, fuse_attr, generation)) => reply.entry(ttl, fuse_attr, generation).await,
             Err(e) => reply.error(e).await,
@@ -227,6 +228,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
     }
 
     /// Get file attributes.
+    #[instrument(skip(self), err, ret)]
     async fn getattr(&self, req: &Request<'_>, reply: ReplyAttr<'_>) -> nix::Result<usize> {
         let _timer = FILESYSTEM_METRICS.start_storage_operation_timer("getattr");
         let ino = req.nodeid();
@@ -241,13 +243,17 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
             // TODO: Mock response ttl.
             let ttl = Duration::new(3600, 0);
             let fuse_attr = fs_util::convert_to_fuse_attr(file_attr);
+            info!(
+                "getattr() successfully got the attr={:?} of ino={}",
+                fuse_attr, ino
+            );
             return reply.attr(ttl, fuse_attr).await;
         }
 
         // Get from remote metadata server
         match self.metadata.get_remote_attr(ino).await {
             Ok((ttl, fuse_attr)) => {
-                debug!(
+                info!(
                     "getattr() successfully got the attr={:?} of ino={}",
                     fuse_attr, ino,
                 );
@@ -289,7 +295,11 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         if self.storage.is_open(ino, flags.into()) {
             info!("open() file is already opened, ino={}", ino);
             match self.metadata.open_local(context, ino, flags).await {
-                Ok(fd) => reply.opened(fd, flags).await,
+                Ok(fd) => {
+                    // Increase the open count
+                    self.storage.open(ino, flags.into());
+                    reply.opened(fd, flags).await
+                }
                 Err(e) => {
                     debug!("open() failed, the error is: {:?}", e);
                     reply.error(e).await
@@ -560,6 +570,10 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         size: u32,
         reply: ReplyData<'_>,
     ) -> nix::Result<usize> {
+        info!(
+            "read() called with req={:?} offset={} size={}",
+            req, offset, size
+        );
         let _timer = FILESYSTEM_METRICS.start_storage_operation_timer("read");
         let ino = req.nodeid();
         let offset: u64 = offset.cast();
@@ -571,6 +585,10 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
             }
         };
         let file_size = fileattr.size;
+        info!(
+            "read() ino={} offset={} size={} file_size={}",
+            ino, offset, size, file_size
+        );
 
         if offset >= file_size {
             return reply.data(Vec::<u8>::new()).await;

@@ -380,6 +380,8 @@ impl FileHandleInner {
             return Ok(false);
         }
 
+        info!("The file handle is closed, remove the file handle.");
+
         let (tx, rx) = oneshot::channel();
         self.write_back_sender
             .send(Task::Finish(tx))
@@ -747,7 +749,8 @@ mod tests {
         let file_handle = FileHandleInner::new(ino, BLOCK_SIZE, cache, backend, write_back_tx);
         let file_handle = Arc::new(file_handle);
         let file_handle_inner_clone = Arc::clone(&file_handle);
-        let write_back_handle = tokio::spawn(file_handle_inner_clone.write_back_work(write_back_rx, metadata_client));
+        let write_back_handle =
+            tokio::spawn(file_handle_inner_clone.write_back_work(write_back_rx, metadata_client));
         let file_handle = FileHandle {
             fh,
             block_size: BLOCK_SIZE,
