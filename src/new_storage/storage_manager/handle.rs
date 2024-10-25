@@ -190,7 +190,7 @@ impl FileHandleInner {
             cache,
             backend,
             // The open count is initialized to 0, open() method will increase this flag.
-            open_cnt: AtomicU32::new(0),
+            open_cnt: AtomicU32::new(1),
             // init the file attributes
             attr: Arc::new(RwLock::new(FileAttr::default())),
             access_keys: Mutex::new(Vec::new()),
@@ -365,6 +365,12 @@ impl FileHandleInner {
     pub fn open(&self) {
         self.open_cnt
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Get the open count of the file handle.
+    #[must_use]
+    pub fn open_cnt(&self) -> u32 {
+        self.open_cnt.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     /// Closes the writer associated with the file handle.
@@ -564,9 +570,10 @@ impl FileHandle {
         let reader = match self.flag {
             OpenFlag::Read | OpenFlag::ReadAndWrite => Arc::clone(&self.inner),
             OpenFlag::Write => {
-                return Err(StorageError::Internal(anyhow::anyhow!(
-                    "This file handle is not allowed to be read."
-                )))
+                // return Err(StorageError::Internal(anyhow::anyhow!(
+                //     "This file handle is not allowed to be read."
+                // )))
+                Arc::clone(&self.inner)
             }
         };
 
@@ -581,9 +588,10 @@ impl FileHandle {
         let writer = match self.flag {
             OpenFlag::Write | OpenFlag::ReadAndWrite => Arc::clone(&self.inner),
             OpenFlag::Read => {
-                return Err(StorageError::Internal(anyhow::anyhow!(
-                    "This file handle is not allowed to be written."
-                )))
+                // return Err(StorageError::Internal(anyhow::anyhow!(
+                //     "This file handle is not allowed to be written."
+                // )))
+                Arc::clone(&self.inner)
             }
         };
         let slices = offset_to_slice(self.block_size.cast(), offset, buf.len().cast());
@@ -615,8 +623,15 @@ impl FileHandle {
         self.inner.open();
     }
 
+    /// Get the open count of the file handle.
+    #[must_use]
+    pub fn open_cnt(&self) -> u32 {
+        self.inner.open_cnt()
+    }
+
     /// Closes the file handle, closing both the reader and writer.
     pub async fn close(self) -> StorageResult<bool> {
+        info!("Close the file handle, ino: {}", self.fh);
         match self.inner.close().await {
             Ok(true) => {
                 let write_back_handle = self.write_back_handle.lock().take().unwrap_or_else(|| {

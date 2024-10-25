@@ -59,12 +59,19 @@ impl<M: MetaData + Send + Sync + 'static> Storage for StorageManager<M> {
     /// If the file is not opened, return false.
     #[inline]
     fn is_open(&self, ino: u64, flag: OpenFlag) -> bool {
+        info!("is_open: ino: {}, flag: {:?}", ino, flag);
         if let Some(handle) = self.handles.get_handle(ino) {
             // Check opened file handle with the same flag
             info!("handle flag: {:?} current flag: {:?}", handle.flag(), flag);
             // if handle.flag() == flag {
             // }
-            return true;
+
+            // Check opened file handle status.
+            if handle.open_cnt() > 0 {
+                return true;
+            }
+            // TODO: blocking for the file handle is deleted.
+            return false;
         }
         false
     }
