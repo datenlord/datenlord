@@ -17,7 +17,7 @@ use crate::{
         error::{DatenLordError, DatenLordResult},
         task_manager::{TaskName, TASK_MANAGER},
     },
-    storage::distribute_kv_cache::rpc::packet::Decode,
+    storage::distribute_kv_cache::rpc::{message::{KVCacheIdAllocateRequest, KVCacheIdAllocateResponse, KVCacheIndexInsertRequest, KVCacheIndexInsertResponse, KVCacheIndexMatchResponse, KVCacheIndexRemoveRequest, KVCacheIndexRemoveResponse}, packet::Decode},
 };
 
 use super::{
@@ -29,12 +29,15 @@ use super::{
     local_cache::{backend::S3Backend, block::MetaData, manager::{IndexManager, KVBlockManager}},
     rpc::{
         common::ServerTimeoutOptions,
-        message::{FileBlockRequest, FileBlockResponse, ReqType, RespType, StatusCode},
+        message::{FileBlockRequest, FileBlockResponse, KVCacheIndexMatchRequest, ReqType, RespType, StatusCode},
         packet::{Encode, ReqHeader, RespHeader},
         server::{RpcServer, RpcServerConnectionHandler},
         workerpool::{Job, WorkerPool},
     },
 };
+
+/// Default radix index key
+const DEFAULT_INDEX_KEY: &str = "kvcacheindex";
 
 /// The handler for the RPC kv block request.
 #[derive(Debug)]
@@ -198,8 +201,59 @@ impl IndexHandler {
 
 #[async_trait]
 impl Job for IndexHandler {
+    /// Index handler inner run.
+    /// Support Block id allocation and prefix index management.
     async fn run(&self) {
+        // Get current request type
+        if let Ok(req_type) = ReqType::from_u8(self.header.op) {
+            match req_type {
+                ReqType::KVCacheIdAllocateRequest => {
+                    // Decode the request body
+                    let req_body = match FileBlockRequest::decode(&self.request) {
+                        Ok(req) => req,
+                        Err(err) => {
+                            debug!("Failed to decode index request: {:?}", err);
+                            return;
+                        }
+                    };
 
+                    debug!("IndexHandler: Received index request: {:?}", req_body);
+
+                    // Index request
+                    // Submit the handler to the worker pool
+                    // When the handler is done, send the response to the done channel
+                    // Response need to contain the response header and body
+                    // Prepare response body
+                    let mut resp_body_buffer = BytesMut::new();
+                    // Prepare response header
+                    let resp_header = RespHeader {
+                        seq: self.header.seq,
+                        op: RespType::IndexResponse.to_u8(),
+                        len: usize_to_u64(resp_body_buffer.len()),
+                    };
+                    let mut resp_header_buffer = BytesMut::new();
+                    resp_header.encode(&mut resp_header_buffer);
+                    // Combine response header and body
+                    resp_header_buffer.extend_from_slice(&resp_body_buffer);
+
+                    // Send response to the done channel
+                    match self.done_tx.send(resp_header_buffer.to_vec()).await {
+                        Ok(()) => {
+                            debug!("Sent response to done channel");
+                        }
+                        Err(err) => {
+                            error!("Failed to send response to done channel: {:?}", err);
+                        }
+                    }
+                }
+                _ => {
+                    debug!(
+                        "IndexHandler: Inner request type is not matched: {:?}",
+                        self.header.op
+                    );
+                }
+            }
+        }
     }
 }
 
@@ -244,47 +298,210 @@ impl RpcServerConnectionHandler for KVCacheHandler {
     ) {
         // Dispatch the handler for the connection
         if let Ok(req_type) = ReqType::from_u8(req_header.op) {
-            if let ReqType::FileBlockRequest = req_type {
-                // Try to read the request body
-                // Decode the request body
-                let req_body = match FileBlockRequest::decode(req_buffer) {
-                    Ok(req) => req,
-                    Err(err) => {
-                        debug!("Failed to decode file block request: {:?}", err);
-                        return;
-                    }
-                };
+            let mut resp_header_buffer = BytesMut::new();
 
-                debug!(
-                    "FileBlockRpcServerHandler: Received file block request: {:?}",
-                    req_body
-                );
+            match req_type {
+                ReqType::KVCacheIdAllocateRequest => {
+                    // Try to read the request body
+                    // Decode the request body
+                    let req_body = match KVCacheIdAllocateRequest::decode(req_buffer) {
+                        Ok(req) => req,
+                        Err(err) => {
+                            debug!("Failed to decode file block request: {:?}", err);
+                            return;
+                        }
+                    };
 
-                // File block request
-                // Submit the handler to the worker pool
-                // When the handler is done, send the response to the done channel
-                // Response need to contain the response header and body
-                let handler = KVBlockHandler::new(
-                    req_header,
-                    req_body,
-                    done_tx.clone(),
-                    Arc::clone(&self.cache_manager),
-                    Arc::clone(&self.cluster_manager),
-                );
-                if let Ok(()) = self
-                    .worker_pool
-                    .submit_job(Box::new(handler))
-                    .map_err(|err| {
-                        debug!("Failed to submit job: {:?}", err);
-                    })
-                {
-                    debug!("Submitted job to worker pool");
+                    debug!(
+                        "KVCacheIdAllocateRequest: Received request: {:?}",
+                        req_body
+                    );
+
+                    // Get next block id
+                    let block_id = self.index_manager.allocate_id();
+                    let mut kv_cache_id_allocate_resp = KVCacheIdAllocateResponse {
+                        block_size: req_body.block_size,
+                        kv_cache_id: block_id,
+                    };
+
+                    let mut resp_body_buffer = BytesMut::new();
+                    kv_cache_id_allocate_resp.encode(&mut resp_body_buffer);
+                    let resp_header = RespHeader {
+                        seq: req_header.seq,
+                        op: RespType::KVCacheIdAllocateResponse.to_u8(),
+                        len: usize_to_u64(resp_body_buffer.len()),
+                    };
+                    resp_header.encode(&mut resp_header_buffer);
+                    resp_header_buffer.extend_from_slice(&resp_body_buffer);
                 }
-            } else {
-                debug!(
-                    "FileBlockRpcServerHandler: Inner request type is not matched: {:?}",
-                    req_header.op
-                );
+                ReqType::KVCacheIndexInsertRequest => {
+                    // Try to read the request body
+                    // Decode the request body
+                    let req_body = match KVCacheIndexInsertRequest::decode(req_buffer) {
+                        Ok(req) => req,
+                        Err(err) => {
+                            debug!("Failed to decode index request: {:?}", err);
+                            return;
+                        }
+                    };
+
+                    debug!("KVCacheIndexInsertRequest: Received request: {:?}", req_body);
+
+                    let mut kv_cache_id_allocate_resp = match String::from_utf8(req_body.kv_cache_key) {
+                        Ok(key) => {
+                            // Insert the key-value pair into the index
+                            self.index_manager
+                                .insert(key, req_body.kv_cache_id.to_string());
+
+                            KVCacheIndexInsertResponse {
+                                block_size: req_body.block_size,
+                                kv_cache_id: req_body.kv_cache_id,
+                                status: StatusCode::Success,
+                            }
+                        },
+                        Err(err) => {
+                            error!("Failed to convert kv cache key to string: {:?}", err);
+
+                            KVCacheIndexInsertResponse {
+                                block_size: req_body.block_size,
+                                kv_cache_id: req_body.kv_cache_id,
+                                status: StatusCode::InternalError,
+                            }
+                        }
+                    };
+
+                    // Prepare response body
+                    let mut resp_body_buffer = BytesMut::new();
+                    // Prepare response header
+                    let resp_header = RespHeader {
+                        seq: req_header.seq,
+                        op: RespType::KVCacheIndexInsertResponse.to_u8(),
+                        len: usize_to_u64(resp_body_buffer.len()),
+                    };
+                    let mut resp_header_buffer = BytesMut::new();
+                    resp_header.encode(&mut resp_header_buffer);
+                    // Combine response header and body
+                    resp_header_buffer.extend_from_slice(&resp_body_buffer);
+                }
+                ReqType::KVCacheIndexRemoveRequest => {
+                    // Try to read the request body
+                    // Decode the request body
+                    let req_body = match KVCacheIndexRemoveRequest::decode(req_buffer) {
+                        Ok(req) => req,
+                        Err(err) => {
+                            debug!("Failed to decode index request: {:?}", err);
+                            return;
+                        }
+                    };
+
+                    debug!("KVCacheIndexRemoveRequest: Received request: {:?}", req_body);
+
+
+                    let mut kv_cache_id_allocate_resp = match String::from_utf8(req_body.kv_cache_key) {
+                        Ok(key) => {
+                            // Remove the key-value pair from the index
+                            self.index_manager.remove(&key);
+
+                            KVCacheIndexRemoveResponse {
+                                block_size: req_body.block_size,
+                                status: StatusCode::Success,
+                            }
+                        },
+                        Err(err) => {
+                            error!("Failed to convert kv cache key to string: {:?}", err);
+
+                            KVCacheIndexRemoveResponse {
+                                block_size: req_body.block_size,
+                                status: StatusCode::InternalError,
+                            }
+                        }
+                    };
+
+                    // Prepare response body
+                    let mut resp_body_buffer = BytesMut::new();
+                    // Prepare response header
+                    let resp_header = RespHeader {
+                        seq: req_header.seq,
+                        op: RespType::KVCacheIndexRemoveResponse.to_u8(),
+                        len: usize_to_u64(resp_body_buffer.len()),
+                    };
+                    let mut resp_header_buffer = BytesMut::new();
+                    resp_header.encode(&mut resp_header_buffer);
+                    // Combine response header and body
+                    resp_header_buffer.extend_from_slice(&resp_body_buffer);
+                }
+                ReqType::KVCacheIndexMatchRequest => {
+                    // Try to read the request body
+                    // Decode the request body
+                    let req_body = match KVCacheIndexMatchRequest::decode(req_buffer) {
+                        Ok(req) => req,
+                        Err(err) => {
+                            debug!("Failed to decode index request: {:?}", err);
+                            return;
+                        }
+                    };
+
+                    debug!("KVCacheIndexMatchRequest: Received request: {:?}", req_body);
+
+                    let mut kv_cache_id_allocate_resp = match String::from_utf8(req_body.kv_cache_key) {
+                        Ok(key) => {
+                            // Get the value by key from the index
+                            let value = self.index_manager.get(&key);
+
+                            match value {
+                                Some(value) => {
+                                    // Convert to u64
+
+                                    KVCacheIndexMatchResponse {
+                                        block_size: req_body.block_size,
+                                        kv_cache_id: req_body.kv_cache_id,
+                                    }
+                                },
+                                None => {
+                                    KVCacheIndexMatchResponse {
+                                        block_size: req_body.block_size,
+                                        kv_cache_id: req_body.kv_cache_id,
+                                        status: StatusCode::NotFound,
+                                    }
+                                }
+                            }
+                        },
+                        Err(err) => {
+                            error!("Failed to convert kv cache key to string: {:?}", err);
+
+                            KVCacheIndexInsertResponse {
+                                block_size: req_body.block_size,
+                                kv_cache_id: req_body.kv_cache_id,
+                                status: StatusCode::InternalError,
+                            }
+                        }
+                    };
+
+                    // Prepare response body
+                    let mut resp_body_buffer = BytesMut::new();
+                    // Prepare response header
+                    let resp_header = RespHeader {
+                        seq: req_header.seq,
+                        op: RespType::KVCacheIndexMatchResponse.to_u8(),
+                        len: usize_to_u64(resp_body_buffer.len()),
+                    };
+                    let mut resp_header_buffer = BytesMut::new();
+                    resp_header.encode(&mut resp_header_buffer);
+                    // Combine response header and body
+                    resp_header_buffer.extend_from_slice(&resp_body_buffer);
+                }
+                _ => {
+                    debug!("Inner request type is not matched: {:?}", req_header.op);
+                }
+            }
+
+            match done_tx.send(resp_header_buffer.to_vec()).await {
+                Ok(()) => {
+                    debug!("Sent response to done channel");
+                }
+                Err(err) => {
+                    error!("Failed to send response to done channel: {:?}", err);
+                }
             }
         }
     }

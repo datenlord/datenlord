@@ -13,8 +13,6 @@ use super::{
     StorageResult,
 };
 
-const DEFAULT_INDEX_KEY: &str = "kvcacheindex";
-
 /// CacheManager struct to manage cache
 #[derive(Debug)]
 pub struct CacheManager<K, P>

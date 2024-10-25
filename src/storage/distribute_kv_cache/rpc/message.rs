@@ -396,7 +396,7 @@ impl Packet for FileBlockPacket {
 #[derive(Debug, Default, Clone)]
 pub struct KVCacheIdAllocateRequest {
     /// The kv block size.
-    block_size: u64,
+    pub block_size: u64,
 }
 
 impl Encode for KVCacheIdAllocateRequest {
@@ -421,9 +421,9 @@ impl Decode for KVCacheIdAllocateRequest {
 #[derive(Debug, Default, Clone)]
 pub struct KVCacheIdAllocateResponse {
     /// The kv block size.
-    block_size: u64,
+    pub block_size: u64,
     /// The kv cache id.
-    kv_cache_id: u64,
+    pub kv_cache_id: u64,
 }
 
 impl Encode for KVCacheIdAllocateResponse {
@@ -453,9 +453,9 @@ impl Decode for KVCacheIdAllocateResponse {
 #[derive(Debug, Default, Clone)]
 pub struct KVCacheIndexMatchRequest {
     /// The kv block size.
-    block_size: u64,
+    pub block_size: u64,
     /// The kv cache key.
-    kv_cache_key: Vec<u8>,
+    pub kv_cache_key: Vec<u8>,
 }
 
 impl Encode for KVCacheIndexMatchRequest {
@@ -485,10 +485,10 @@ impl Decode for KVCacheIndexMatchRequest {
 #[derive(Debug, Default, Clone)]
 pub struct KVCacheIndexMatchResponse {
     /// The kv block size.
-    block_size: u64,
+    pub block_size: u64,
     /// The kv cache id, match success return kv cache id, otherwise return 0.
     /// TODO: support partial match
-    kv_cache_id: u64,
+    pub kv_cache_id: u64,
 }
 
 impl Encode for KVCacheIndexMatchResponse {
@@ -518,11 +518,11 @@ impl Decode for KVCacheIndexMatchResponse {
 #[derive(Debug, Default, Clone)]
 pub struct KVCacheIndexInsertRequest {
     /// The kv block size.
-    block_size: u64,
+    pub block_size: u64,
     /// The kv cache id, pair with kv cache key.
-    kv_cache_id: u64,
+    pub kv_cache_id: u64,
     /// The kv cache key.
-    kv_cache_key: Vec<u8>,
+    pub kv_cache_key: Vec<u8>,
 }
 
 impl Encode for KVCacheIndexInsertRequest {
@@ -555,11 +555,11 @@ impl Decode for KVCacheIndexInsertRequest {
 #[derive(Debug, Default, Clone)]
 pub struct KVCacheIndexInsertResponse {
     /// The kv block size.
-    block_size: u64,
+    pub block_size: u64,
     /// The kv cache id.
-    kv_cache_id: u64,
+    pub kv_cache_id: u64,
     /// The status of the response.
-    status: StatusCode,
+    pub status: StatusCode,
 }
 
 impl Encode for KVCacheIndexInsertResponse {
@@ -581,9 +581,9 @@ impl Encode for KVCacheIndexInsertResponse {
 #[derive(Debug, Default, Clone)]
 pub struct KVCacheIndexRemoveRequest {
     /// The kv block size.
-    block_size: u64,
+    pub block_size: u64,
     /// The kv cache key.
-    kv_cache_key: Vec<u8>,
+    pub kv_cache_key: Vec<u8>,
 }
 
 impl Encode for KVCacheIndexRemoveRequest {
@@ -613,9 +613,9 @@ impl Decode for KVCacheIndexRemoveRequest {
 #[derive(Debug, Default, Clone)]
 pub struct KVCacheIndexRemoveResponse {
     /// The kv block size.
-    block_size: u64,
+    pub block_size: u64,
     /// The status of the response.
-    status: StatusCode,
+    pub status: StatusCode,
 }
 
 impl Encode for KVCacheIndexRemoveResponse {
@@ -654,9 +654,9 @@ impl Decode for KVCacheIndexRemoveResponse {
 #[derive(Debug, Default, Clone)]
 pub struct KVBlockGetRequest {
     /// The kv block size.
-    block_size: u64,
+    pub block_size: u64,
     /// The kv cache id.
-    kv_cache_id: u64,
+    pub kv_cache_id: u64,
 }
 
 impl Encode for KVBlockGetRequest {
@@ -686,13 +686,13 @@ impl Decode for KVBlockGetRequest {
 #[derive(Debug, Default, Clone)]
 pub struct KVBlockGetResponse {
     /// The kv block size.
-    block_size: u64,
+    pub block_size: u64,
     /// The kv cache id.
-    kv_cache_id: u64,
+    pub kv_cache_id: u64,
     /// The status of the response.
-    status: StatusCode,
+    pub status: StatusCode,
     /// The data of the block.
-    data: Vec<u8>,
+    pub data: Vec<u8>,
 }
 
 impl Encode for KVBlockGetResponse {
@@ -747,11 +747,11 @@ impl Decode for KVBlockGetResponse {
 #[derive(Debug, Default, Clone)]
 pub struct KVBlockPutRequest {
     /// The kv block size.
-    block_size: u64,
+    pub block_size: u64,
     /// The kv cache id.
-    kv_cache_id: u64,
+    pub kv_cache_id: u64,
     /// The data of the block.
-    data: Vec<u8>,
+    pub data: Vec<u8>,
 }
 
 impl Encode for KVBlockPutRequest {
@@ -791,11 +791,11 @@ impl Decode for KVBlockPutRequest {
 #[derive(Debug, Default, Clone)]
 pub struct KVBlockPutResponse {
     /// The kv block size.
-    block_size: u64,
+    pub block_size: u64,
     /// The kv cache id.
-    kv_cache_id: u64,
+    pub kv_cache_id: u64,
     /// The status of the response.
-    status: StatusCode,
+    pub status: StatusCode,
 }
 
 impl Encode for KVBlockPutResponse {
