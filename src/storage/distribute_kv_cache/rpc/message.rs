@@ -30,7 +30,7 @@ pub enum ReqType {
     /// The kv block get request.
     KVBlockGetRequest,
     /// The kv block put request.
-    KVBlockPutRequest,
+    KVBlockBatchPutRequest,
 }
 
 impl ReqType {
@@ -44,7 +44,7 @@ impl ReqType {
             4 => Ok(Self::KVCacheIndexInsertRequest),
             5 => Ok(Self::KVCacheIndexRemoveRequest),
             6 => Ok(Self::KVBlockGetRequest),
-            7 => Ok(Self::KVBlockPutRequest),
+            7 => Ok(Self::KVBlockBatchPutRequest),
             _ => Err(RpcError::InternalError(format!(
                 "Invalid operation type: {op}"
             ))),
@@ -62,7 +62,7 @@ impl ReqType {
             Self::KVCacheIndexInsertRequest => 4,
             Self::KVCacheIndexRemoveRequest => 5,
             Self::KVBlockGetRequest => 6,
-            Self::KVBlockPutRequest => 7,
+            Self::KVBlockBatchPutRequest => 7,
         }
     }
 }
@@ -85,7 +85,7 @@ pub enum RespType {
     /// The kv block get response.
     KVBlockGetResponse,
     /// The kv block put response.
-    KVBlockPutResponse,
+    KVBlockBatchPutResponse,
 }
 
 impl RespType {
@@ -99,7 +99,7 @@ impl RespType {
             4 => Ok(Self::KVCacheIndexInsertResponse),
             5 => Ok(Self::KVCacheIndexRemoveResponse),
             6 => Ok(Self::KVBlockGetResponse),
-            7 => Ok(Self::KVBlockPutResponse),
+            7 => Ok(Self::KVBlockBatchPutResponse),
             _ => Err(RpcError::InternalError(format!(
                 "Invalid operation type: {op}"
             ))),
@@ -117,7 +117,7 @@ impl RespType {
             Self::KVCacheIndexInsertResponse => 4,
             Self::KVCacheIndexRemoveResponse => 5,
             Self::KVBlockGetResponse => 6,
-            Self::KVBlockPutResponse => 7,
+            Self::KVBlockBatchPutResponse => 7,
         }
     }
 }
@@ -489,6 +489,8 @@ pub struct KVCacheIndexMatchResponse {
     /// The kv cache id, match success return kv cache id, otherwise return 0.
     /// TODO: support partial match
     pub kv_cache_id: u64,
+    /// The status of the response.
+    pub status: StatusCode,
 }
 
 impl Encode for KVCacheIndexMatchResponse {
@@ -496,6 +498,13 @@ impl Encode for KVCacheIndexMatchResponse {
     fn encode(&self, buf: &mut BytesMut) {
         buf.put_u64(self.block_size.to_le());
         buf.put_u64(self.kv_cache_id.to_le());
+        match self.status {
+            StatusCode::Success => buf.put_u8(0),
+            StatusCode::NotFound => buf.put_u8(1),
+            StatusCode::InternalError => buf.put_u8(2),
+            // Not used here.
+            StatusCode::VersionMismatch => buf.put_u8(3),
+        }
     }
 }
 
@@ -507,9 +516,17 @@ impl Decode for KVCacheIndexMatchResponse {
         }
         let block_size = get_u64_from_buf(buf, 0)?;
         let kv_cache_id = get_u64_from_buf(buf, 8)?;
+        let status = match buf.get(16) {
+            Some(&0) => StatusCode::Success,
+            Some(&1) => StatusCode::NotFound,
+            Some(&2) => StatusCode::InternalError,
+            Some(&3) => StatusCode::VersionMismatch,
+            _ => return Err(RpcError::InternalError("Invalid status code".to_owned())),
+        };
         Ok(KVCacheIndexMatchResponse {
             block_size,
             kv_cache_id,
+            status,
         })
     }
 }
@@ -787,51 +804,102 @@ impl Decode for KVBlockPutRequest {
     }
 }
 
-/// The response to put kv block.
+/// The request to put multiple kv blocks.
 #[derive(Debug, Default, Clone)]
-pub struct KVBlockPutResponse {
-    /// The kv block size.
-    pub block_size: u64,
-    /// The kv cache id.
-    pub kv_cache_id: u64,
-    /// The status of the response.
-    pub status: StatusCode,
+pub struct KVBlockBatchPutRequest {
+    /// The kv block batch size.
+    pub batch_size: u64,
+    /// A list of kv block put requests.
+    pub blocks: Vec<KVBlockPutRequest>,
 }
 
-impl Encode for KVBlockPutResponse {
-    /// Encode the kv block put response into a byte buffer.
+impl Encode for KVBlockBatchPutRequest {
+    /// Encode the kv block batch put request into a byte buffer.
     fn encode(&self, buf: &mut BytesMut) {
-        buf.put_u64(self.block_size.to_le());
-        buf.put_u64(self.kv_cache_id.to_le());
-        match self.status {
-            StatusCode::Success => buf.put_u8(0),
-            StatusCode::NotFound => buf.put_u8(1),
-            StatusCode::InternalError => buf.put_u8(2),
-            // Not used here.
-            StatusCode::VersionMismatch => buf.put_u8(3),
+        buf.put_u64(self.batch_size.to_le());
+        for block in &self.blocks {
+            block.encode(buf);
         }
     }
 }
 
-impl Decode for KVBlockPutResponse {
-    /// Decode the byte buffer into a kv block put response.
+impl Decode for KVBlockBatchPutRequest {
+    /// Decode the byte buffer into a kv block batch put request.
     fn decode(buf: &[u8]) -> Result<Self, RpcError> {
-        if buf.len() < 17 {
+        if buf.len() < 8 {
+            return Err(RpcError::InternalError("Insufficient bytes".to_owned()));
+        }
+        let batch_size = get_u64_from_buf(buf, 0)?;
+        let mut blocks = Vec::new();
+        let mut offset = 8;
+        for _ in 0..batch_size {
+            let block = KVBlockPutRequest::decode(&buf[offset..])?;
+            offset += 16 + block.data.len();
+            blocks.push(block);
+        }
+        Ok(KVBlockBatchPutRequest { batch_size, blocks })
+    }
+}
+
+/// The response to put kv block.
+#[derive(Debug, Default, Clone)]
+pub struct KVBlockBatchPutResponse {
+    /// The kv block size.
+    pub block_size: u64,
+    /// The success batch size.
+    pub success_batch_size: u64,
+    /// The success kv cache ids.
+    pub success_kv_cache_ids: Vec<u64>,
+    /// The failed batch size.
+    pub failed_batch_size: u64,
+    /// The failed kv cache ids.
+    pub failed_kv_cache_ids: Vec<u64>,
+}
+
+impl Encode for KVBlockBatchPutResponse {
+    /// Encode the kv block batch put response into a byte buffer.
+    fn encode(&self, buf: &mut BytesMut) {
+        buf.put_u64(self.block_size.to_le());
+        buf.put_u64(self.success_batch_size.to_le());
+        for kv_cache_id in &self.success_kv_cache_ids {
+            buf.put_u64(kv_cache_id.to_le());
+        }
+        buf.put_u64(self.failed_batch_size.to_le());
+        for kv_cache_id in &self.failed_kv_cache_ids {
+            buf.put_u64(kv_cache_id.to_le());
+        }
+    }
+}
+
+impl Decode for KVBlockBatchPutResponse {
+    /// Decode the byte buffer into a kv block batch put response.
+    fn decode(buf: &[u8]) -> Result<Self, RpcError> {
+        if buf.len() < 16 {
             return Err(RpcError::InternalError("Insufficient bytes".to_owned()));
         }
         let block_size = get_u64_from_buf(buf, 0)?;
-        let kv_cache_id = get_u64_from_buf(buf, 8)?;
-        let status = match buf.get(16) {
-            Some(&0) => StatusCode::Success,
-            Some(&1) => StatusCode::NotFound,
-            Some(&2) => StatusCode::InternalError,
-            Some(&3) => StatusCode::VersionMismatch,
-            _ => return Err(RpcError::InternalError("Invalid status code".to_owned())),
-        };
-        Ok(KVBlockPutResponse {
+        let success_batch_size = get_u64_from_buf(buf, 8)?;
+        let mut success_kv_cache_ids = Vec::new();
+        let mut offset = 16;
+        for _ in 0..success_batch_size {
+            let kv_cache_id = get_u64_from_buf(buf, offset)?;
+            success_kv_cache_ids.push(kv_cache_id);
+            offset += 8;
+        }
+        let failed_batch_size = get_u64_from_buf(buf, offset)?;
+        offset += 8;
+        let mut failed_kv_cache_ids = Vec::new();
+        for _ in 0..failed_batch_size {
+            let kv_cache_id = get_u64_from_buf(buf, offset)?;
+            failed_kv_cache_ids.push(kv_cache_id);
+            offset += 8;
+        }
+        Ok(KVBlockBatchPutResponse {
             block_size,
-            kv_cache_id,
-            status,
+            success_batch_size,
+            success_kv_cache_ids,
+            failed_batch_size,
+            failed_kv_cache_ids,
         })
     }
 }

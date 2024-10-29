@@ -17,7 +17,18 @@ use crate::{
         error::{DatenLordError, DatenLordResult},
         task_manager::{TaskName, TASK_MANAGER},
     },
-    storage::distribute_kv_cache::rpc::{message::{KVCacheIdAllocateRequest, KVCacheIdAllocateResponse, KVCacheIndexInsertRequest, KVCacheIndexInsertResponse, KVCacheIndexMatchResponse, KVCacheIndexRemoveRequest, KVCacheIndexRemoveResponse}, packet::Decode},
+    storage::distribute_kv_cache::{
+        local_cache::block::Block,
+        rpc::{
+            message::{
+                KVBlockBatchPutRequest, KVBlockBatchPutResponse, KVBlockGetRequest,
+                KVCacheIdAllocateRequest, KVCacheIdAllocateResponse, KVCacheIndexInsertRequest,
+                KVCacheIndexInsertResponse, KVCacheIndexMatchResponse, KVCacheIndexRemoveRequest,
+                KVCacheIndexRemoveResponse,
+            },
+            packet::Decode,
+        },
+    },
 };
 
 use super::{
@@ -26,10 +37,17 @@ use super::{
         node::{Node, NodeStatus},
     },
     config::DistributeCacheConfig,
-    local_cache::{backend::S3Backend, block::MetaData, manager::{IndexManager, KVBlockManager}},
+    local_cache::{
+        backend::S3Backend,
+        block::MetaData,
+        manager::{BlockManager, IndexManager, KVBlockManager},
+    },
     rpc::{
         common::ServerTimeoutOptions,
-        message::{FileBlockRequest, FileBlockResponse, KVCacheIndexMatchRequest, ReqType, RespType, StatusCode},
+        message::{
+            FileBlockRequest, FileBlockResponse, KVBlockGetResponse, KVCacheIndexMatchRequest,
+            ReqType, RespType, StatusCode,
+        },
         packet::{Encode, ReqHeader, RespHeader},
         server::{RpcServer, RpcServerConnectionHandler},
         workerpool::{Job, WorkerPool},
@@ -37,11 +55,12 @@ use super::{
 };
 
 /// Default radix index key
+#[allow(dead_code)]
 const DEFAULT_INDEX_KEY: &str = "kvcacheindex";
 
-/// The handler for the RPC kv block request.
+/// The handler for the RPC file block request.
 #[derive(Debug)]
-pub struct KVBlockHandler {
+pub struct FileBlockHandler {
     /// The request header.
     header: ReqHeader,
     /// The file block request.
@@ -49,33 +68,33 @@ pub struct KVBlockHandler {
     /// The channel for sending the response.
     done_tx: mpsc::Sender<Vec<u8>>,
     /// Local cache manager
-    cache_manager: Arc<KVBlockManager>,
+    local_cache_manager: Arc<BlockManager>,
     /// Cluster manager
     cluster_manager: Arc<ClusterManager>,
 }
 
-impl KVBlockHandler {
-    /// Create a new kv block handler.
+impl FileBlockHandler {
+    /// Create a new file block handler.
     #[must_use]
     pub fn new(
         header: ReqHeader,
         request: FileBlockRequest,
         done_tx: mpsc::Sender<Vec<u8>>,
-        cache_manager: Arc<KVBlockManager>,
+        local_cache_manager: Arc<BlockManager>,
         cluster_manager: Arc<ClusterManager>,
     ) -> Self {
         Self {
             header,
             request,
             done_tx,
-            cache_manager,
+            local_cache_manager,
             cluster_manager,
         }
     }
 }
 
 #[async_trait]
-impl Job for KVBlockHandler {
+impl Job for FileBlockHandler {
     async fn run(&self) {
         let current_hash_ring_version = match self.cluster_manager.get_ring().await {
             Ok(ring) => ring.version(),
@@ -107,7 +126,7 @@ impl Job for KVBlockHandler {
             self.request.block_size,
         );
         // error!("current file block request: {:?}", self.request);
-        let block = self.cache_manager.read(meta_data).await;
+        let block = self.local_cache_manager.read(meta_data).await;
         if let Ok(block) = block {
             if let Some(block) = block {
                 // Check version
@@ -168,7 +187,257 @@ impl Job for KVBlockHandler {
     }
 }
 
-/// The handler for the RPC index  request.
+/// The file block handler for the RPC server.
+#[derive(Clone, Debug)]
+pub struct BlockHandler {
+    /// The worker pool for the RPC server.
+    worker_pool: Arc<WorkerPool>,
+    /// Local cache manager
+    local_cache_manager: Arc<BlockManager>,
+    /// Cluster manager
+    cluster_manager: Arc<ClusterManager>,
+}
+
+impl BlockHandler {
+    /// Create a new file block RPC server handler.
+    #[must_use]
+    pub fn new(
+        worker_pool: Arc<WorkerPool>,
+        local_cache_manager: Arc<BlockManager>,
+        cluster_manager: Arc<ClusterManager>,
+    ) -> Self {
+        Self {
+            worker_pool,
+            local_cache_manager,
+            cluster_manager,
+        }
+    }
+}
+
+#[async_trait]
+impl RpcServerConnectionHandler for BlockHandler {
+    async fn dispatch(
+        &self,
+        req_header: ReqHeader,
+        req_buffer: &[u8],
+        done_tx: mpsc::Sender<Vec<u8>>,
+    ) {
+        // Dispatch the handler for the connection
+        if let Ok(req_type) = ReqType::from_u8(req_header.op) {
+            if let ReqType::FileBlockRequest = req_type {
+                // Try to read the request body
+                // Decode the request body
+                let req_body = match FileBlockRequest::decode(req_buffer) {
+                    Ok(req) => req,
+                    Err(err) => {
+                        debug!("Failed to decode file block request: {:?}", err);
+                        return;
+                    }
+                };
+
+                debug!(
+                    "FileBlockRpcServerHandler: Received file block request: {:?}",
+                    req_body
+                );
+
+                // File block request
+                // Submit the handler to the worker pool
+                // When the handler is done, send the response to the done channel
+                // Response need to contain the response header and body
+                let handler = FileBlockHandler::new(
+                    req_header,
+                    req_body,
+                    done_tx.clone(),
+                    Arc::clone(&self.local_cache_manager),
+                    Arc::clone(&self.cluster_manager),
+                );
+                if let Ok(()) = self
+                    .worker_pool
+                    .submit_job(Box::new(handler))
+                    .map_err(|err| {
+                        debug!("Failed to submit job: {:?}", err);
+                    })
+                {
+                    debug!("Submitted job to worker pool");
+                }
+            } else {
+                debug!(
+                    "FileBlockRpcServerHandler: Inner request type is not matched: {:?}",
+                    req_header.op
+                );
+            }
+        }
+    }
+}
+
+/// The handler for the RPC kv cache block request.
+#[derive(Debug)]
+pub struct KVBlockHandler {
+    /// The request header.
+    header: ReqHeader,
+    /// The request body.
+    request: Vec<u8>,
+    /// The channel for sending the response.
+    done_tx: mpsc::Sender<Vec<u8>>,
+    /// Local index manager
+    cache_manager: Arc<KVBlockManager>,
+}
+
+impl KVBlockHandler {
+    /// Create a new kv block handler.
+    #[must_use]
+    pub fn new(
+        header: ReqHeader,
+        request: Vec<u8>,
+        done_tx: mpsc::Sender<Vec<u8>>,
+        cache_manager: Arc<KVBlockManager>,
+    ) -> Self {
+        Self {
+            header,
+            request,
+            done_tx,
+            cache_manager,
+        }
+    }
+}
+
+#[async_trait]
+impl Job for KVBlockHandler {
+    /// KV block handler inner run.
+    /// Support Block get and batch put.
+    async fn run(&self) {
+        // Get current request type
+        if let Ok(req_type) = ReqType::from_u8(self.header.op) {
+            let mut resp_header_buffer = BytesMut::new();
+            let req_buffer = &self.request;
+            let req_header = &self.header;
+            match req_type {
+                ReqType::KVBlockGetRequest => {
+                    // Try to read the request body
+                    // Decode the request body
+                    let req_body = match KVBlockGetRequest::decode(req_buffer) {
+                        Ok(req) => req,
+                        Err(err) => {
+                            debug!("Failed to decode file block request: {:?}", err);
+                            return;
+                        }
+                    };
+
+                    debug!("KVBlockGetRequest: Received request: {:?}", req_body);
+                    let mut kv_block_get_resp = KVBlockGetResponse {
+                        kv_cache_id: req_body.kv_cache_id,
+                        block_size: 0,
+                        status: StatusCode::InternalError,
+                        data: vec![],
+                    };
+
+                    // Get the block by id
+                    let metadata = MetaData::new(req_body.kv_cache_id, 0, 0, 0);
+                    let block = self.cache_manager.read(metadata).await;
+                    if let Ok(block) = block {
+                        if let Some(block) = block {
+                            let data = block.get_data();
+                            if data.len() as u64 != req_body.block_size {
+                                kv_block_get_resp = KVBlockGetResponse {
+                                    kv_cache_id: req_body.kv_cache_id,
+                                    block_size: req_body.block_size,
+                                    status: StatusCode::InternalError,
+                                    data,
+                                };
+                            } else {
+                                kv_block_get_resp = KVBlockGetResponse {
+                                    kv_cache_id: req_body.kv_cache_id,
+                                    block_size: req_body.block_size,
+                                    status: StatusCode::InternalError,
+                                    data: vec![],
+                                };
+                            }
+                        }
+                    };
+
+                    // Prepare response body
+                    let mut resp_body_buffer = BytesMut::new();
+                    kv_block_get_resp.encode(&mut resp_body_buffer);
+                    // Prepare response header
+                    let resp_header = RespHeader {
+                        seq: req_header.seq,
+                        op: RespType::FileBlockResponse.to_u8(),
+                        len: usize_to_u64(resp_body_buffer.len()),
+                    };
+                    resp_header.encode(&mut resp_header_buffer);
+                    // Combine response header and body
+                    resp_header_buffer.extend_from_slice(&resp_body_buffer);
+                }
+                ReqType::KVBlockBatchPutRequest => {
+                    // Try to read the request body
+                    // Decode the request body
+                    let req_body = match KVBlockBatchPutRequest::decode(req_buffer) {
+                        Ok(req) => req,
+                        Err(err) => {
+                            debug!("Failed to decode file block request: {:?}", err);
+                            return;
+                        }
+                    };
+
+                    debug!("KVBlockBatchPutRequest: Received request: {:?}", req_body);
+                    let mut success_ids = vec![];
+                    let mut failed_ids = vec![];
+                    for block in req_body.blocks.into_iter() {
+                        let meta_data = MetaData::new(block.kv_cache_id, 0, 0, 0);
+                        let kv_block = Block::new(meta_data, block.data);
+                        match self.cache_manager.write(&kv_block).await {
+                            Ok(_) => {
+                                success_ids.push(block.kv_cache_id);
+                            }
+                            Err(err) => {
+                                error!("Failed to put block into cache: {:?}", err);
+                                failed_ids.push(block.kv_cache_id);
+                            }
+                        }
+                    }
+
+                    let kv_block_batch_put_resp = KVBlockBatchPutResponse {
+                        block_size: req_body.batch_size,
+                        success_batch_size: success_ids.len() as u64,
+                        success_kv_cache_ids: success_ids,
+                        failed_batch_size: failed_ids.len() as u64,
+                        failed_kv_cache_ids: failed_ids,
+                    };
+
+                    // Prepare response body
+                    let mut resp_body_buffer = BytesMut::new();
+                    kv_block_batch_put_resp.encode(&mut resp_body_buffer);
+                    // Prepare response header
+                    let resp_header = RespHeader {
+                        seq: req_header.seq,
+                        op: RespType::FileBlockResponse.to_u8(),
+                        len: usize_to_u64(resp_body_buffer.len()),
+                    };
+                    resp_header.encode(&mut resp_header_buffer);
+                    // Combine response header and body
+                    resp_header_buffer.extend_from_slice(&resp_body_buffer);
+                }
+                _ => {
+                    debug!(
+                        "KVBlockHandler: Inner request type is not matched: {:?}",
+                        self.header.op
+                    );
+                }
+            }
+
+            match self.done_tx.send(resp_header_buffer.to_vec()).await {
+                Ok(()) => {
+                    debug!("Sent response to done channel");
+                }
+                Err(err) => {
+                    error!("Failed to send response to done channel: {:?}", err);
+                }
+            }
+        }
+    }
+}
+
+/// The handler for the RPC kv cache index  request.
 #[derive(Debug)]
 pub struct IndexHandler {
     /// The request header.
@@ -206,100 +475,9 @@ impl Job for IndexHandler {
     async fn run(&self) {
         // Get current request type
         if let Ok(req_type) = ReqType::from_u8(self.header.op) {
-            match req_type {
-                ReqType::KVCacheIdAllocateRequest => {
-                    // Decode the request body
-                    let req_body = match FileBlockRequest::decode(&self.request) {
-                        Ok(req) => req,
-                        Err(err) => {
-                            debug!("Failed to decode index request: {:?}", err);
-                            return;
-                        }
-                    };
-
-                    debug!("IndexHandler: Received index request: {:?}", req_body);
-
-                    // Index request
-                    // Submit the handler to the worker pool
-                    // When the handler is done, send the response to the done channel
-                    // Response need to contain the response header and body
-                    // Prepare response body
-                    let mut resp_body_buffer = BytesMut::new();
-                    // Prepare response header
-                    let resp_header = RespHeader {
-                        seq: self.header.seq,
-                        op: RespType::IndexResponse.to_u8(),
-                        len: usize_to_u64(resp_body_buffer.len()),
-                    };
-                    let mut resp_header_buffer = BytesMut::new();
-                    resp_header.encode(&mut resp_header_buffer);
-                    // Combine response header and body
-                    resp_header_buffer.extend_from_slice(&resp_body_buffer);
-
-                    // Send response to the done channel
-                    match self.done_tx.send(resp_header_buffer.to_vec()).await {
-                        Ok(()) => {
-                            debug!("Sent response to done channel");
-                        }
-                        Err(err) => {
-                            error!("Failed to send response to done channel: {:?}", err);
-                        }
-                    }
-                }
-                _ => {
-                    debug!(
-                        "IndexHandler: Inner request type is not matched: {:?}",
-                        self.header.op
-                    );
-                }
-            }
-        }
-    }
-}
-
-/// The kv cache handler for the RPC server.
-#[derive(Clone, Debug)]
-pub struct KVCacheHandler {
-    /// The worker pool for the RPC server.
-    worker_pool: Arc<WorkerPool>,
-    /// Local cache manager
-    cache_manager: Arc<KVBlockManager>,
-    /// Local index manager
-    index_manager: Arc<IndexManager>,
-    /// Cluster manager
-    cluster_manager: Arc<ClusterManager>,
-}
-
-impl KVCacheHandler {
-    /// Create a new file kv cache RPC server handler.
-    #[must_use]
-    pub fn new(
-        worker_pool: Arc<WorkerPool>,
-        cache_manager: Arc<KVBlockManager>,
-        index_manager: Arc<IndexManager>,
-        cluster_manager: Arc<ClusterManager>,
-    ) -> Self {
-        Self {
-            worker_pool,
-            cache_manager,
-            index_manager,
-            cluster_manager,
-        }
-    }
-}
-
-#[async_trait]
-impl RpcServerConnectionHandler for KVCacheHandler {
-    async fn dispatch(
-        &self,
-        req_header: ReqHeader,
-        req_buffer: &[u8],
-        done_tx: mpsc::Sender<Vec<u8>>,
-    ) {
-        // Dispatch the handler for the connection
-        if let Ok(req_type) = ReqType::from_u8(req_header.op) {
             let mut resp_header_buffer = BytesMut::new();
-
+            let req_buffer = &self.request;
+            let req_header = &self.header;
             match req_type {
                 ReqType::KVCacheIdAllocateRequest => {
                     // Try to read the request body
@@ -312,14 +490,11 @@ impl RpcServerConnectionHandler for KVCacheHandler {
                         }
                     };
 
-                    debug!(
-                        "KVCacheIdAllocateRequest: Received request: {:?}",
-                        req_body
-                    );
+                    debug!("KVCacheIdAllocateRequest: Received request: {:?}", req_body);
 
                     // Get next block id
                     let block_id = self.index_manager.allocate_id();
-                    let mut kv_cache_id_allocate_resp = KVCacheIdAllocateResponse {
+                    let kv_cache_id_allocate_resp = KVCacheIdAllocateResponse {
                         block_size: req_body.block_size,
                         kv_cache_id: block_id,
                     };
@@ -345,20 +520,23 @@ impl RpcServerConnectionHandler for KVCacheHandler {
                         }
                     };
 
-                    debug!("KVCacheIndexInsertRequest: Received request: {:?}", req_body);
+                    debug!(
+                        "KVCacheIndexInsertRequest: Received request: {:?}",
+                        req_body
+                    );
 
-                    let mut kv_cache_id_allocate_resp = match String::from_utf8(req_body.kv_cache_key) {
+                    let kv_cache_index_insert_resp = match String::from_utf8(req_body.kv_cache_key)
+                    {
                         Ok(key) => {
                             // Insert the key-value pair into the index
-                            self.index_manager
-                                .insert(key, req_body.kv_cache_id.to_string());
+                            self.index_manager.insert(key, req_body.kv_cache_id);
 
                             KVCacheIndexInsertResponse {
                                 block_size: req_body.block_size,
                                 kv_cache_id: req_body.kv_cache_id,
                                 status: StatusCode::Success,
                             }
-                        },
+                        }
                         Err(err) => {
                             error!("Failed to convert kv cache key to string: {:?}", err);
 
@@ -372,6 +550,7 @@ impl RpcServerConnectionHandler for KVCacheHandler {
 
                     // Prepare response body
                     let mut resp_body_buffer = BytesMut::new();
+                    kv_cache_index_insert_resp.encode(&mut resp_body_buffer);
                     // Prepare response header
                     let resp_header = RespHeader {
                         seq: req_header.seq,
@@ -394,19 +573,22 @@ impl RpcServerConnectionHandler for KVCacheHandler {
                         }
                     };
 
-                    debug!("KVCacheIndexRemoveRequest: Received request: {:?}", req_body);
+                    debug!(
+                        "KVCacheIndexRemoveRequest: Received request: {:?}",
+                        req_body
+                    );
 
-
-                    let mut kv_cache_id_allocate_resp = match String::from_utf8(req_body.kv_cache_key) {
+                    let kv_cache_index_remove_resp = match String::from_utf8(req_body.kv_cache_key)
+                    {
                         Ok(key) => {
                             // Remove the key-value pair from the index
-                            self.index_manager.remove(&key);
+                            self.index_manager.remove(key);
 
                             KVCacheIndexRemoveResponse {
                                 block_size: req_body.block_size,
                                 status: StatusCode::Success,
                             }
-                        },
+                        }
                         Err(err) => {
                             error!("Failed to convert kv cache key to string: {:?}", err);
 
@@ -419,6 +601,7 @@ impl RpcServerConnectionHandler for KVCacheHandler {
 
                     // Prepare response body
                     let mut resp_body_buffer = BytesMut::new();
+                    kv_cache_index_remove_resp.encode(&mut resp_body_buffer);
                     // Prepare response header
                     let resp_header = RespHeader {
                         seq: req_header.seq,
@@ -443,35 +626,29 @@ impl RpcServerConnectionHandler for KVCacheHandler {
 
                     debug!("KVCacheIndexMatchRequest: Received request: {:?}", req_body);
 
-                    let mut kv_cache_id_allocate_resp = match String::from_utf8(req_body.kv_cache_key) {
+                    let kv_cache_id_allocate_resp = match String::from_utf8(req_body.kv_cache_key) {
                         Ok(key) => {
                             // Get the value by key from the index
                             let value = self.index_manager.get(&key);
 
                             match value {
-                                Some(value) => {
-                                    // Convert to u64
-
-                                    KVCacheIndexMatchResponse {
-                                        block_size: req_body.block_size,
-                                        kv_cache_id: req_body.kv_cache_id,
-                                    }
+                                Some(value) => KVCacheIndexMatchResponse {
+                                    block_size: req_body.block_size,
+                                    kv_cache_id: value,
+                                    status: StatusCode::Success,
                                 },
-                                None => {
-                                    KVCacheIndexMatchResponse {
-                                        block_size: req_body.block_size,
-                                        kv_cache_id: req_body.kv_cache_id,
-                                        status: StatusCode::NotFound,
-                                    }
-                                }
+                                None => KVCacheIndexMatchResponse {
+                                    block_size: req_body.block_size,
+                                    kv_cache_id: 0,
+                                    status: StatusCode::NotFound,
+                                },
                             }
-                        },
+                        }
                         Err(err) => {
                             error!("Failed to convert kv cache key to string: {:?}", err);
-
-                            KVCacheIndexInsertResponse {
+                            KVCacheIndexMatchResponse {
                                 block_size: req_body.block_size,
-                                kv_cache_id: req_body.kv_cache_id,
+                                kv_cache_id: 0,
                                 status: StatusCode::InternalError,
                             }
                         }
@@ -479,6 +656,7 @@ impl RpcServerConnectionHandler for KVCacheHandler {
 
                     // Prepare response body
                     let mut resp_body_buffer = BytesMut::new();
+                    kv_cache_id_allocate_resp.encode(&mut resp_body_buffer);
                     // Prepare response header
                     let resp_header = RespHeader {
                         seq: req_header.seq,
@@ -491,16 +669,108 @@ impl RpcServerConnectionHandler for KVCacheHandler {
                     resp_header_buffer.extend_from_slice(&resp_body_buffer);
                 }
                 _ => {
-                    debug!("Inner request type is not matched: {:?}", req_header.op);
+                    debug!(
+                        "IndexHandler: Inner request type is not matched: {:?}",
+                        self.header.op
+                    );
                 }
             }
 
-            match done_tx.send(resp_header_buffer.to_vec()).await {
+            match self.done_tx.send(resp_header_buffer.to_vec()).await {
                 Ok(()) => {
                     debug!("Sent response to done channel");
                 }
                 Err(err) => {
                     error!("Failed to send response to done channel: {:?}", err);
+                }
+            }
+        }
+    }
+}
+
+/// The kv cache handler for the RPC server.
+#[derive(Clone, Debug)]
+pub struct KVCacheHandler {
+    /// The worker pool for the RPC server.
+    worker_pool: Arc<WorkerPool>,
+    /// Local cache manager
+    cache_manager: Arc<KVBlockManager>,
+    /// Local index manager
+    index_manager: Arc<IndexManager>,
+}
+
+impl KVCacheHandler {
+    /// Create a new file kv cache RPC server handler.
+    #[must_use]
+    pub fn new(
+        worker_pool: Arc<WorkerPool>,
+        cache_manager: Arc<KVBlockManager>,
+        index_manager: Arc<IndexManager>,
+    ) -> Self {
+        Self {
+            worker_pool,
+            cache_manager,
+            index_manager,
+        }
+    }
+}
+
+#[async_trait]
+impl RpcServerConnectionHandler for KVCacheHandler {
+    async fn dispatch(
+        &self,
+        req_header: ReqHeader,
+        req_buffer: &[u8],
+        done_tx: mpsc::Sender<Vec<u8>>,
+    ) {
+        // Dispatch the handler for the connection
+        if let Ok(req_type) = ReqType::from_u8(req_header.op) {
+            // Dispatch current kv cache request to index or block handler.
+            match req_type {
+                ReqType::KVCacheIdAllocateRequest
+                | ReqType::KVCacheIndexInsertRequest
+                | ReqType::KVCacheIndexRemoveRequest
+                | ReqType::KVCacheIndexMatchRequest => {
+                    // Dispatch the index handler
+                    let handler = IndexHandler::new(
+                        req_header,
+                        req_buffer.to_vec(),
+                        done_tx,
+                        Arc::clone(&self.index_manager),
+                    );
+                    if let Ok(()) = self
+                        .worker_pool
+                        .submit_job(Box::new(handler))
+                        .map_err(|err| {
+                            debug!("Failed to submit job: {:?}", err);
+                        })
+                    {
+                        debug!("Submitted job to worker pool");
+                    }
+                }
+                ReqType::KVBlockGetRequest | ReqType::KVBlockBatchPutRequest => {
+                    // Dispatch the block handler
+                    let handler = KVBlockHandler::new(
+                        req_header,
+                        req_buffer.to_vec(),
+                        done_tx,
+                        Arc::clone(&self.cache_manager),
+                    );
+                    if let Ok(()) = self
+                        .worker_pool
+                        .submit_job(Box::new(handler))
+                        .map_err(|err| {
+                            debug!("Failed to submit job: {:?}", err);
+                        })
+                    {
+                        debug!("Submitted job to worker pool");
+                    }
+                }
+                _ => {
+                    debug!(
+                        "KVCacheHandler: Request type is not matched: {:?}",
+                        req_header.op
+                    );
                 }
             }
         }
@@ -514,6 +784,7 @@ pub struct DistributeCacheManager {
     config: DistributeCacheConfig,
     /// Local cache manager, we will use it to manage the local cache, and export manaually data for the cache
     /// We will share it in rpc request
+    /// TODO: Support block manager trait to support different block manager.
     cache_manager: Arc<KVBlockManager>,
     /// Local index manager, we will use it to manage the local index, and export manaually data for the cache
     /// We will share it in rpc request
@@ -623,7 +894,6 @@ impl DistributeCacheManager {
 
         let cache_manager_clone = Arc::clone(&self.cache_manager);
         let index_manager_clone = Arc::clone(&self.index_manager);
-        let cluster_manager_clone = Arc::clone(&self.cluster_manager);
         TASK_MANAGER
             .spawn(TaskName::DistributeCacheManager, |token| async move {
                 // Create rpc server
@@ -634,7 +904,6 @@ impl DistributeCacheManager {
                     Arc::clone(&pool),
                     cache_manager_clone,
                     index_manager_clone,
-                    cluster_manager_clone,
                 );
                 let server_timeout_options = ServerTimeoutOptions::default();
                 // Create a new rpc server with max 100 workers and 1000 jobs
