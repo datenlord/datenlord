@@ -546,8 +546,8 @@ impl Encode for KVCacheIndexInsertRequest {
     /// Encode the kv cache index insert request into a byte buffer.
     fn encode(&self, buf: &mut BytesMut) {
         buf.put_u64(self.block_size.to_le());
-        buf.put_slice(&self.kv_cache_key);
         buf.put_u64(self.kv_cache_id.to_le());
+        buf.put_slice(&self.kv_cache_key);
     }
 }
 
@@ -558,8 +558,8 @@ impl Decode for KVCacheIndexInsertRequest {
             return Err(RpcError::InternalError("Insufficient bytes".to_owned()));
         }
         let block_size = get_u64_from_buf(buf, 0)?;
-        let kv_cache_key = buf[8..].to_vec();
-        let kv_cache_id = get_u64_from_buf(buf, 8 + kv_cache_key.len())?;
+        let kv_cache_id = get_u64_from_buf(buf, 8)?;
+        let kv_cache_key = buf[16..].to_vec();
         Ok(KVCacheIndexInsertRequest {
             block_size,
             kv_cache_key,
@@ -594,7 +594,31 @@ impl Encode for KVCacheIndexInsertResponse {
     }
 }
 
+impl Decode for KVCacheIndexInsertResponse {
+    /// Decode the byte buffer into a kv cache index insert response.
+    fn decode(buf: &[u8]) -> Result<Self, RpcError> {
+        if buf.len() < 17 {
+            return Err(RpcError::InternalError("Insufficient bytes".to_owned()));
+        }
+        let block_size = get_u64_from_buf(buf, 0)?;
+        let kv_cache_id = get_u64_from_buf(buf, 8)?;
+        let status = match buf.get(16) {
+            Some(&0) => StatusCode::Success,
+            Some(&1) => StatusCode::NotFound,
+            Some(&2) => StatusCode::InternalError,
+            Some(&3) => StatusCode::VersionMismatch,
+            _ => return Err(RpcError::InternalError("Invalid status code".to_owned())),
+        };
+        Ok(KVCacheIndexInsertResponse {
+            block_size,
+            kv_cache_id,
+            status,
+        })
+    }
+}
+
 /// The request to remove kv cache index.
+/// TODO: check both kv_cache_id and kv_cache_key to make sure current deletion is correct.
 #[derive(Debug, Default, Clone)]
 pub struct KVCacheIndexRemoveRequest {
     /// The kv block size.

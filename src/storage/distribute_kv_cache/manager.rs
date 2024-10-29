@@ -326,7 +326,7 @@ impl Job for KVBlockHandler {
                     debug!("KVBlockGetRequest: Received request: {:?}", req_body);
                     let mut kv_block_get_resp = KVBlockGetResponse {
                         kv_cache_id: req_body.kv_cache_id,
-                        block_size: 0,
+                        block_size: req_body.block_size,
                         status: StatusCode::InternalError,
                         data: vec![],
                     };
@@ -337,7 +337,7 @@ impl Job for KVBlockHandler {
                     if let Ok(block) = block {
                         if let Some(block) = block {
                             let data = block.get_data();
-                            if data.len() as u64 != req_body.block_size {
+                            if data.len() as u64 == req_body.block_size {
                                 kv_block_get_resp = KVBlockGetResponse {
                                     kv_cache_id: req_body.kv_cache_id,
                                     block_size: req_body.block_size,
@@ -361,7 +361,7 @@ impl Job for KVBlockHandler {
                     // Prepare response header
                     let resp_header = RespHeader {
                         seq: req_header.seq,
-                        op: RespType::FileBlockResponse.to_u8(),
+                        op: RespType::KVBlockGetResponse.to_u8(),
                         len: usize_to_u64(resp_body_buffer.len()),
                     };
                     resp_header.encode(&mut resp_header_buffer);
@@ -410,7 +410,7 @@ impl Job for KVBlockHandler {
                     // Prepare response header
                     let resp_header = RespHeader {
                         seq: req_header.seq,
-                        op: RespType::FileBlockResponse.to_u8(),
+                        op: RespType::KVBlockBatchPutResponse.to_u8(),
                         len: usize_to_u64(resp_body_buffer.len()),
                     };
                     resp_header.encode(&mut resp_header_buffer);
@@ -494,6 +494,7 @@ impl Job for IndexHandler {
 
                     // Get next block id
                     let block_id = self.index_manager.allocate_id();
+                    println!("block_id: {:?}", block_id);
                     let kv_cache_id_allocate_resp = KVCacheIdAllocateResponse {
                         block_size: req_body.block_size,
                         kv_cache_id: block_id,
@@ -524,6 +525,7 @@ impl Job for IndexHandler {
                         "KVCacheIndexInsertRequest: Received request: {:?}",
                         req_body
                     );
+                    println!("KVCacheIndexInsertRequest: Received request: {:?}", req_body);
 
                     let kv_cache_index_insert_resp = match String::from_utf8(req_body.kv_cache_key)
                     {
@@ -557,7 +559,6 @@ impl Job for IndexHandler {
                         op: RespType::KVCacheIndexInsertResponse.to_u8(),
                         len: usize_to_u64(resp_body_buffer.len()),
                     };
-                    let mut resp_header_buffer = BytesMut::new();
                     resp_header.encode(&mut resp_header_buffer);
                     // Combine response header and body
                     resp_header_buffer.extend_from_slice(&resp_body_buffer);
@@ -608,7 +609,6 @@ impl Job for IndexHandler {
                         op: RespType::KVCacheIndexRemoveResponse.to_u8(),
                         len: usize_to_u64(resp_body_buffer.len()),
                     };
-                    let mut resp_header_buffer = BytesMut::new();
                     resp_header.encode(&mut resp_header_buffer);
                     // Combine response header and body
                     resp_header_buffer.extend_from_slice(&resp_body_buffer);
@@ -663,7 +663,6 @@ impl Job for IndexHandler {
                         op: RespType::KVCacheIndexMatchResponse.to_u8(),
                         len: usize_to_u64(resp_body_buffer.len()),
                     };
-                    let mut resp_header_buffer = BytesMut::new();
                     resp_header.encode(&mut resp_header_buffer);
                     // Combine response header and body
                     resp_header_buffer.extend_from_slice(&resp_body_buffer);
@@ -936,5 +935,268 @@ impl DistributeCacheManager {
             })?;
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use std::sync::Arc;
+
+    use bytes::BytesMut;
+
+    use crate::storage::distribute_kv_cache::{local_cache::{block::BLOCK_SIZE, manager::{IndexManager, KVBlockManager}}, manager::KVCacheHandler, rpc::{message, packet::{self, Decode, Encode}, server::RpcServerConnectionHandler, workerpool::WorkerPool}};
+
+    /// Test index handler and block handler
+
+    fn setup() -> (Arc<KVBlockManager>, Arc<IndexManager>) {
+        (Arc::new(KVBlockManager::default()), Arc::new(IndexManager::new()))
+    }
+
+    #[tokio::test]
+    async fn test_kv_cache_id_alloc_handler() {
+        let (cache_manager, index_manager) = setup();
+        let pool = Arc::new(WorkerPool::new(64, 1000));
+        let handler = KVCacheHandler::new(
+            Arc::clone(&pool),
+            cache_manager,
+            index_manager,
+        );
+
+        // Test alloc id request, the first alloc id should be 0
+        let (done_tx, mut done_rx) = tokio::sync::mpsc::channel(1);
+        let req_header = packet::ReqHeader {
+            seq: 1,
+            op: message::ReqType::KVCacheIdAllocateRequest.to_u8(),
+            len: 0,
+        };
+        let mut req_buffer = BytesMut::new();
+        let request = message::KVCacheIdAllocateRequest {
+            block_size: BLOCK_SIZE as u64,
+        };
+        request.encode(&mut req_buffer);
+        handler.dispatch(req_header, &req_buffer, done_tx).await;
+        let resp_buffer = done_rx.recv().await.unwrap();
+        let resp_header = packet::RespHeader::decode(&resp_buffer).unwrap();
+        assert_eq!(resp_header.op, message::RespType::KVCacheIdAllocateResponse.to_u8());
+        let resp_body_buffer = resp_buffer.split_at(packet::RESP_HEADER_SIZE as usize).1;
+        let resp_body = message::KVCacheIdAllocateResponse::decode(&resp_body_buffer).unwrap();
+        assert_eq!(resp_body.kv_cache_id, 0);
+
+        // Test alloc id request, the second alloc id should be 1
+        let (done_tx, mut done_rx) = tokio::sync::mpsc::channel(1);
+        let req_header = packet::ReqHeader {
+            seq: 1,
+            op: message::ReqType::KVCacheIdAllocateRequest.to_u8(),
+            len: 0,
+        };
+        let mut req_buffer = BytesMut::new();
+        let request = message::KVCacheIdAllocateRequest {
+            block_size: BLOCK_SIZE as u64,
+        };
+        request.encode(&mut req_buffer);
+        handler.dispatch(req_header, &req_buffer, done_tx).await;
+        let resp_buffer = done_rx.recv().await.unwrap();
+        let resp_header = packet::RespHeader::decode(&resp_buffer).unwrap();
+        assert_eq!(resp_header.op, message::RespType::KVCacheIdAllocateResponse.to_u8());
+        let resp_body_buffer = resp_buffer.split_at(packet::RESP_HEADER_SIZE as usize).1;
+        let resp_body = message::KVCacheIdAllocateResponse::decode(&resp_body_buffer).unwrap();
+        assert_eq!(resp_body.kv_cache_id, 1);
+
+        println!("resp_body: {:?}", resp_body);
+    }
+
+    #[tokio::test]
+    async fn test_kv_cache_index_handler() {
+        let (cache_manager, index_manager) = setup();
+        let pool = Arc::new(WorkerPool::new(64, 1000));
+        let handler = KVCacheHandler::new(
+            Arc::clone(&pool),
+            cache_manager,
+            index_manager,
+        );
+
+        // Test insert index request
+        let (done_tx, mut done_rx) = tokio::sync::mpsc::channel(1);
+        let req_header = packet::ReqHeader {
+            seq: 1,
+            op: message::ReqType::KVCacheIndexInsertRequest.to_u8(),
+            len: 0,
+        };
+        let mut req_buffer = BytesMut::new();
+        let request = message::KVCacheIndexInsertRequest {
+            block_size: BLOCK_SIZE as u64,
+            kv_cache_id: 0,
+            kv_cache_key: "test_key".as_bytes().to_vec(),
+        };
+        request.encode(&mut req_buffer);
+        handler.dispatch(req_header, &req_buffer, done_tx).await;
+        let resp_buffer = done_rx.recv().await.unwrap();
+        let resp_header = packet::RespHeader::decode(&resp_buffer).unwrap();
+        assert_eq!(resp_header.op, message::RespType::KVCacheIndexInsertResponse.to_u8());
+        let resp_body_buffer = resp_buffer.split_at(packet::RESP_HEADER_SIZE as usize).1;
+        let resp_body = message::KVCacheIndexInsertResponse::decode(&resp_body_buffer).unwrap();
+        assert_eq!(resp_body.status, message::StatusCode::Success);
+
+        println!("resp_body: {:?}", resp_body);
+
+        // Test match index request success
+        let (done_tx, mut done_rx) = tokio::sync::mpsc::channel(1);
+        let req_header = packet::ReqHeader {
+            seq: 1,
+            op: message::ReqType::KVCacheIndexMatchRequest.to_u8(),
+            len: 0,
+        };
+        let mut req_buffer = BytesMut::new();
+        let request = message::KVCacheIndexMatchRequest {
+            block_size: BLOCK_SIZE as u64,
+            kv_cache_key: "test_key".as_bytes().to_vec(),
+        };
+        request.encode(&mut req_buffer);
+        handler.dispatch(req_header, &req_buffer, done_tx).await;
+        let resp_buffer = done_rx.recv().await.unwrap();
+        let resp_header = packet::RespHeader::decode(&resp_buffer).unwrap();
+        assert_eq!(resp_header.op, message::RespType::KVCacheIndexMatchResponse.to_u8());
+        let resp_body_buffer = resp_buffer.split_at(packet::RESP_HEADER_SIZE as usize).1;
+        let resp_body = message::KVCacheIndexMatchResponse::decode(&resp_body_buffer).unwrap();
+        assert_eq!(resp_body.status, message::StatusCode::Success);
+        assert_eq!(resp_body.kv_cache_id, 0);
+
+        println!("resp_body: {:?}", resp_body);
+
+        // Test match index request failed
+        let (done_tx, mut done_rx) = tokio::sync::mpsc::channel(1);
+        let req_header = packet::ReqHeader {
+            seq: 1,
+            op: message::ReqType::KVCacheIndexMatchRequest.to_u8(),
+            len: 0,
+        };
+        let mut req_buffer = BytesMut::new();
+        let request = message::KVCacheIndexMatchRequest {
+            block_size: BLOCK_SIZE as u64,
+            kv_cache_key: "test_key2".as_bytes().to_vec(),
+        };
+        request.encode(&mut req_buffer);
+        handler.dispatch(req_header, &req_buffer, done_tx).await;
+        let resp_buffer = done_rx.recv().await.unwrap();
+        let resp_header = packet::RespHeader::decode(&resp_buffer).unwrap();
+        assert_eq!(resp_header.op, message::RespType::KVCacheIndexMatchResponse.to_u8());
+        let resp_body_buffer = resp_buffer.split_at(packet::RESP_HEADER_SIZE as usize).1;
+        let resp_body = message::KVCacheIndexMatchResponse::decode(&resp_body_buffer).unwrap();
+        assert_eq!(resp_body.status, message::StatusCode::NotFound);
+        assert_eq!(resp_body.kv_cache_id, 0);
+
+        println!("resp_body: {:?}", resp_body);
+
+        // Test remove index request
+        let (done_tx, mut done_rx) = tokio::sync::mpsc::channel(1);
+        let req_header = packet::ReqHeader {
+            seq: 1,
+            op: message::ReqType::KVCacheIndexRemoveRequest.to_u8(),
+            len: 0,
+        };
+        let mut req_buffer = BytesMut::new();
+        let request = message::KVCacheIndexRemoveRequest {
+            block_size: BLOCK_SIZE as u64,
+            kv_cache_key: "test_key".as_bytes().to_vec(),
+        };
+        request.encode(&mut req_buffer);
+        handler.dispatch(req_header, &req_buffer, done_tx).await;
+        let resp_buffer = done_rx.recv().await.unwrap();
+        let resp_header = packet::RespHeader::decode(&resp_buffer).unwrap();
+        assert_eq!(resp_header.op, message::RespType::KVCacheIndexRemoveResponse.to_u8());
+        let resp_body_buffer = resp_buffer.split_at(packet::RESP_HEADER_SIZE as usize).1;
+        let resp_body = message::KVCacheIndexRemoveResponse::decode(&resp_body_buffer).unwrap();
+        assert_eq!(resp_body.status, message::StatusCode::Success);
+
+        // Test match index request failed
+        let (done_tx, mut done_rx) = tokio::sync::mpsc::channel(1);
+        let req_header = packet::ReqHeader {
+            seq: 1,
+            op: message::ReqType::KVCacheIndexMatchRequest.to_u8(),
+            len: 0,
+        };
+        let mut req_buffer = BytesMut::new();
+        let request = message::KVCacheIndexMatchRequest {
+            block_size: BLOCK_SIZE as u64,
+            kv_cache_key: "test_key".as_bytes().to_vec(),
+        };
+        request.encode(&mut req_buffer);
+        handler.dispatch(req_header, &req_buffer, done_tx).await;
+        let resp_buffer = done_rx.recv().await.unwrap();
+        let resp_header = packet::RespHeader::decode(&resp_buffer).unwrap();
+        assert_eq!(resp_header.op, message::RespType::KVCacheIndexMatchResponse.to_u8());
+        let resp_body_buffer = resp_buffer.split_at(packet::RESP_HEADER_SIZE as usize).1;
+        let resp_body = message::KVCacheIndexMatchResponse::decode(&resp_body_buffer).unwrap();
+        assert_eq!(resp_body.status, message::StatusCode::NotFound);
+        assert_eq!(resp_body.kv_cache_id, 0);
+
+        println!("resp_body: {:?}", resp_body);
+    }
+
+    #[tokio::test]
+    async fn test_kv_block_handler() {
+        let (cache_manager, index_manager) = setup();
+        let pool = Arc::new(WorkerPool::new(64, 1000));
+        let handler = KVCacheHandler::new(
+            Arc::clone(&pool),
+            cache_manager,
+            index_manager,
+        );
+
+        // Test batch put block request
+        let (done_tx, mut done_rx) = tokio::sync::mpsc::channel(1);
+        let req_header = packet::ReqHeader {
+            seq: 1,
+            op: message::ReqType::KVBlockBatchPutRequest.to_u8(),
+            len: 0,
+        };
+        let mut req_buffer = BytesMut::new();
+        let request = message::KVBlockBatchPutRequest {
+            batch_size: 1,
+            blocks: vec![message::KVBlockPutRequest {
+                block_size: BLOCK_SIZE as u64,
+                kv_cache_id: 0,
+                data: vec![0; BLOCK_SIZE],
+            }],
+        };
+        request.encode(&mut req_buffer);
+        handler.dispatch(req_header, &req_buffer, done_tx).await;
+        let resp_buffer = done_rx.recv().await.unwrap();
+        let resp_header = packet::RespHeader::decode(&resp_buffer).unwrap();
+        assert_eq!(resp_header.op, message::RespType::KVBlockBatchPutResponse.to_u8());
+        let resp_body_buffer = resp_buffer.split_at(packet::RESP_HEADER_SIZE as usize).1;
+        let resp_body = message::KVBlockBatchPutResponse::decode(&resp_body_buffer).unwrap();
+        assert_eq!(resp_body.block_size, 1);
+        assert_eq!(resp_body.success_kv_cache_ids, vec![0]);
+        assert_eq!(resp_body.success_batch_size, 1);
+        assert_eq!(resp_body.failed_batch_size, 0);
+
+        println!("resp_body: {:?}", resp_body);
+
+        // Test get block request
+        let (done_tx, mut done_rx) = tokio::sync::mpsc::channel(1);
+        let req_header = packet::ReqHeader {
+            seq: 1,
+            op: message::ReqType::KVBlockGetRequest.to_u8(),
+            len: 0,
+        };
+        let mut req_buffer = BytesMut::new();
+        let request = message::KVBlockGetRequest {
+            kv_cache_id: 0,
+            block_size: BLOCK_SIZE as u64,
+        };
+        request.encode(&mut req_buffer);
+        handler.dispatch(req_header, &req_buffer, done_tx).await;
+        let resp_buffer = done_rx.recv().await.unwrap();
+        let resp_header = packet::RespHeader::decode(&resp_buffer).unwrap();
+        assert_eq!(resp_header.op, message::RespType::KVBlockGetResponse.to_u8());
+        let resp_body_buffer = resp_buffer.split_at(packet::RESP_HEADER_SIZE as usize).1;
+        let resp_body = message::KVBlockGetResponse::decode(&resp_body_buffer).unwrap();
+        assert_eq!(resp_body.status, message::StatusCode::InternalError);
+        assert_eq!(resp_body.kv_cache_id, 0);
+        assert_eq!(resp_body.block_size, BLOCK_SIZE as u64);
+        assert_eq!(resp_body.data.len(), BLOCK_SIZE);
+
     }
 }
