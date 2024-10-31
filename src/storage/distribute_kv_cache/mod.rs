@@ -18,5 +18,8 @@ pub mod config;
 /// Distribute cache client
 pub mod client;
 
+/// Distribute kv cache client
+pub mod kvclient;
+
 /// Distribute cache tests
 pub mod tests;

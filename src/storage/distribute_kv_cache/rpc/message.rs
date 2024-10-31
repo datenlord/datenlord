@@ -1,4 +1,4 @@
-use std::mem;
+use std::{fmt, mem};
 
 use async_trait::async_trait;
 use bytes::{BufMut, BytesMut};
@@ -925,6 +925,166 @@ impl Decode for KVBlockBatchPutResponse {
             failed_batch_size,
             failed_kv_cache_ids,
         })
+    }
+}
+
+pub trait KVCacheRequestPacketType: Encode + Send + Sync + 'static + fmt::Debug {}
+pub trait KVCacheResponsePacketType: Decode + Send + Sync + 'static + fmt::Debug {}
+
+/// The kv cache request packet for client
+/// This struct impl packet trait and support kv cache request and response
+pub struct KVCachePacket {
+    /// The sequence number of the packet.
+    pub seq: u64,
+    /// The operation type of the packet.
+    pub op: u8,
+    /// The timestamp of the packet.
+    pub timestamp: u64,
+    /// The file block request struct.
+    pub request: Box<dyn KVCacheRequestPacketType>,
+    /// The buffer of the packet, used to store response data.
+    pub response: Option<Box<dyn KVCacheResponsePacketType>>,
+    /// The sender to send response back to caller.
+    pub done_tx: flume::Sender<Result<Box<dyn KVCacheRequestPacketType>, Box<dyn KVCacheResponsePacketType>>>,
+}
+
+impl fmt::Debug for  KVCachePacket {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("KVCachePacket")
+            .field("seq", &self.seq)
+            .field("op", &self.op)
+            .field("timestamp", &self.timestamp)
+            .finish()
+    }
+}
+
+impl KVCachePacket {
+    /// Create a new kv cache packet.
+    #[must_use]
+    pub fn new(
+        op: u8,
+        kv_cache_request: Box<dyn KVCacheRequestPacketType>,
+        done_tx: flume::Sender<Result<Box<dyn KVCacheRequestPacketType>, Box<dyn KVCacheResponsePacketType>>>,
+    ) -> Self {
+        Self {
+            op,
+            // Will be auto set by client
+            seq: 0,
+            // TODO: Take owner of this request?
+            request: kv_cache_request,
+            timestamp: 0,
+            response: None,
+            done_tx,
+        }
+    }
+}
+
+impl Encode for KVCachePacket {
+    /// Encode the kv cache packet into a byte buffer.
+    fn encode(&self, buffer: &mut BytesMut) {
+        self.request.encode(buffer);
+    }
+}
+
+
+#[async_trait]
+impl Packet for KVCachePacket {
+    /// Get the sequence number of the packet.
+    fn seq(&self) -> u64 {
+        self.seq
+    }
+
+    /// Set the sequence number of the packet.
+    fn set_seq(&mut self, seq: u64) {
+        self.seq = seq;
+    }
+
+    /// Get the operation type of the packet.
+    fn op(&self) -> u8 {
+        self.op
+    }
+
+    /// Set the operation type of the packet.
+    fn set_op(&mut self, op: u8) {
+        self.op = op;
+    }
+
+    /// Get the timestamp of the packet.
+    fn set_timestamp(&mut self, timestamp: u64) {
+        self.timestamp = timestamp;
+    }
+
+    /// get the timestamp of the packet.
+    fn get_timestamp(&self) -> u64 {
+        self.timestamp
+    }
+
+    /// Set response data to current packet
+    fn set_resp_data(&mut self, data: &[u8]) -> Result<(), RpcError> {
+        let response_type = RespType::from_u8(self.op)?;
+        match response_type {
+            RespType::KVCacheIdAllocateResponse => {
+                self.response = Some(KVCacheIdAllocateResponse::decode(data)?);
+            }
+            RespType::KVCacheIndexMatchResponse => {
+                self.response = Some(KVCacheIndexMatchResponse::decode(data)?);
+            }
+            RespType::KVCacheIndexInsertResponse => {
+                self.response = Some(KVCacheIndexInsertResponse::decode(data)?);
+            }
+            RespType::KVCacheIndexRemoveResponse => {
+                self.response = Some(KVCacheIndexRemoveResponse::decode(data)?);
+            }
+            RespType::KVBlockGetResponse => {
+                self.response = Some(KVBlockGetResponse::decode(data)?);
+            }
+            RespType::KVBlockBatchPutResponse => {
+                self.response = Some(KVBlockBatchPutResponse::decode(data)?);
+            }
+            _ => {
+                return Err(RpcError::InternalError("Invalid response type".to_owned()));
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Get the response data of the packet.
+    async fn set_result(self, status: Result<(), RpcError>) {
+        match status {
+            Ok(()) => {
+                if let Some(resp) = self.response {
+                    match self.done_tx.send_async(Ok(resp)).await {
+                        Ok(()) => {}
+                        Err(err) => {
+                            warn!("Failed to set result: {:?}", err);
+                        }
+                    }
+                } else {
+                    warn!("Failed to set result: response is None");
+                    match self.done_tx.send_async(Err(self.request.clone())).await {
+                        Ok(()) => {}
+                        Err(err) => {
+                            warn!("Failed to set result: {:?}", err);
+                        }
+                    }
+                }
+            }
+            Err(err) => {
+                warn!("Failed to set result: {:?}", err);
+                match self.done_tx.send_async(Err(self.request.clone())).await {
+                    Ok(()) => {}
+                    Err(err) => {
+                        warn!("Failed to set result: {:?}", err);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Get request size to construct request header
+    fn get_req_len(&self) -> u64 {
+        usize_to_u64(mem::size_of_val(&self.request))
     }
 }
 
