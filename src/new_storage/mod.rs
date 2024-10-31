@@ -21,7 +21,7 @@ pub use block::BLOCK_SIZE;
 pub use block_slice::{offset_to_slice, BlockSlice};
 pub use error::{StorageError, StorageResult};
 pub use memory_cache::{CacheKey, MemoryCache};
-pub use storage_manager::handle::{FileHandle, Handles, OpenFlag};
+pub use storage_manager::handle::{FileHandle, Handles};
 pub use storage_manager::StorageManager;
 pub use storage_trait::Storage;
 pub use utils::{format_file_path, format_path};

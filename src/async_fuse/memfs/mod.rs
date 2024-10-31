@@ -292,12 +292,12 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         };
 
         // Check if the file is already opened
-        if self.storage.is_open(ino, flags.into()) {
+        if self.storage.is_open(ino) {
             info!("open() file is already opened, ino={}", ino);
             match self.metadata.open_local(context, ino, flags).await {
                 Ok(fd) => {
                     // Increase the open count
-                    self.storage.open(ino, flags.into());
+                    self.storage.open(ino);
                     reply.opened(fd, flags).await
                 }
                 Err(e) => {
@@ -310,7 +310,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
             match self.metadata.open_remote(context, ino, flags).await {
                 Ok((fd, attr)) => {
                     // Igonre fs fd number now.
-                    self.storage.open(ino, flags.into());
+                    self.storage.open(ino);
                     // Update init file attr to opened handle.
                     self.storage.setattr(ino, attr);
                     reply.opened(fd, flags).await

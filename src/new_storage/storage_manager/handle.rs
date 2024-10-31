@@ -9,7 +9,6 @@ use std::sync::Arc;
 use crate::new_storage::{format_path, Block, BlockSlice, StorageError};
 use bytes::Bytes;
 use clippy_utilities::Cast;
-use nix::fcntl::OFlag;
 use parking_lot::{Mutex, RwLock};
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::oneshot;
@@ -75,32 +74,6 @@ enum MetaTask {
 struct MetaCommitTask {
     /// The inode number associated with the file being written.
     ino: u64,
-}
-
-/// The `OpenFlag` enum represents the mode in which a file is opened.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum OpenFlag {
-    /// Open the file for reading.
-    Read,
-    /// Open the file for writing.
-    Write,
-    /// Open the file for reading and writing.
-    ReadAndWrite,
-}
-
-impl From<u32> for OpenFlag {
-    fn from(value: u32) -> Self {
-        let write_flags = OFlag::O_APPEND | OFlag::O_WRONLY;
-
-        let flags = OFlag::from_bits_truncate(value.cast());
-        if flags.intersects(write_flags) {
-            Self::Write
-        } else if flags.intersects(OFlag::O_RDWR) {
-            Self::ReadAndWrite
-        } else {
-            Self::Read
-        }
-    }
 }
 
 /// The `Task` enum represents the different types of tasks that the write back
@@ -377,10 +350,11 @@ impl FileHandleInner {
     /// If the open count is greater than 0, it will return false and do not remove this handle.
     /// Otherwise, it will return true and remove this handle.
     pub async fn close(&self) -> StorageResult<bool> {
+        // Decrease the open count of the file handle, fetch sub will return the previous value.
         if self
             .open_cnt
             .fetch_sub(1, std::sync::atomic::Ordering::SeqCst)
-            > 0
+            > 1
         {
             debug!("The file handle is still open by other processes.");
             return Ok(false);
@@ -512,8 +486,6 @@ pub struct FileHandle {
     fh: u64,
     /// The block size in bytes
     block_size: usize,
-    /// The open flag for this file handle (read, write, or read and write)
-    flag: OpenFlag,
     /// The inner file handle
     inner: Arc<FileHandleInner>,
     /// The write back handle
@@ -527,7 +499,6 @@ impl FileHandle {
         block_size: usize,
         cache: Arc<Mutex<MemoryCache<CacheKey, LruPolicy<CacheKey>>>>,
         backend: Arc<dyn Backend>,
-        flag: OpenFlag,
         metadata_client: Arc<M>,
     ) -> Self {
         let (write_back_tx, write_back_rx) = tokio::sync::mpsc::channel(100);
@@ -546,7 +517,6 @@ impl FileHandle {
         FileHandle {
             fh: ino,
             block_size,
-            flag,
             inner,
             write_back_handle: Arc::new(Mutex::new(Some(write_back_handle))),
         }
@@ -558,57 +528,24 @@ impl FileHandle {
         self.fh
     }
 
-    /// Returns the open flag.
-    #[must_use]
-    pub fn flag(&self) -> OpenFlag {
-        self.flag
-    }
-
     /// Reads data from the file starting at the given offset and up to the
     /// given length.
     pub async fn read(&self, offset: u64, len: u64) -> StorageResult<Vec<u8>> {
-        let reader = match self.flag {
-            OpenFlag::Read | OpenFlag::ReadAndWrite => Arc::clone(&self.inner),
-            OpenFlag::Write => {
-                // return Err(StorageError::Internal(anyhow::anyhow!(
-                //     "This file handle is not allowed to be read."
-                // )))
-                Arc::clone(&self.inner)
-            }
-        };
-
         let slices = offset_to_slice(self.block_size.cast(), offset, len);
         let mut buf = Vec::with_capacity(len.cast());
-        reader.read(&mut buf, &slices).await?;
+        self.inner.read(&mut buf, &slices).await?;
         Ok(buf)
     }
 
     /// Writes data to the file starting at the given offset.
     pub async fn write(&self, offset: u64, buf: &[u8], size: u64) -> StorageResult<()> {
-        let writer = match self.flag {
-            OpenFlag::Write | OpenFlag::ReadAndWrite => Arc::clone(&self.inner),
-            OpenFlag::Read => {
-                // return Err(StorageError::Internal(anyhow::anyhow!(
-                //     "This file handle is not allowed to be written."
-                // )))
-                Arc::clone(&self.inner)
-            }
-        };
         let slices = offset_to_slice(self.block_size.cast(), offset, buf.len().cast());
-        writer.write(buf, &slices, size).await
+        self.inner.write(buf, &slices, size).await
     }
 
     /// Extends the file from the old size to the new size.
     pub async fn extend(&self, old_size: u64, new_size: u64) -> StorageResult<()> {
-        let writer = match self.flag {
-            OpenFlag::Write | OpenFlag::ReadAndWrite => Arc::clone(&self.inner),
-            OpenFlag::Read => {
-                return Err(StorageError::Internal(anyhow::anyhow!(
-                    "This file handle is not allowed to be written."
-                )))
-            }
-        };
-        writer.extend(old_size, new_size).await
+        self.inner.extend(old_size, new_size).await
     }
 
     /// Flushes any pending writes to the file.
@@ -640,6 +577,7 @@ impl FileHandle {
                 write_back_handle.await.unwrap_or_else(|e| {
                     error!("Failed to join the write back task: {e}");
                 });
+                println!("Close handle ok");
                 Ok(true)
             }
             Ok(false) => Ok(false),
@@ -769,7 +707,6 @@ mod tests {
         let file_handle = FileHandle {
             fh,
             block_size: BLOCK_SIZE,
-            flag: OpenFlag::ReadAndWrite,
             inner: file_handle,
             write_back_handle: Arc::new(Mutex::new(Some(write_back_handle))),
         };

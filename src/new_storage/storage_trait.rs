@@ -4,7 +4,7 @@ use async_trait::async_trait;
 
 use crate::{async_fuse::memfs::FileAttr, new_storage::StorageError};
 
-use super::{OpenFlag, StorageResult};
+use super::StorageResult;
 
 /// The trait defines an interface for I/O operations.
 /// Current mapping is single inode -> single filehandle.
@@ -12,11 +12,11 @@ use super::{OpenFlag, StorageResult};
 pub trait Storage {
     /// Opens a file with the given inode number and flags, returning a file
     /// handle.
-    fn open(&self, ino: u64, flag: OpenFlag);
+    fn open(&self, ino: u64);
 
     /// Try to open a file with the given inode number and flags in opened file handles.
     /// If the file is not opened, return false.
-    fn is_open(&self, _ino: u64, _flag: OpenFlag) -> bool {
+    fn is_open(&self, _ino: u64) -> bool {
         false
     }
 

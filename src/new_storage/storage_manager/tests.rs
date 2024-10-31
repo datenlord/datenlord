@@ -22,7 +22,7 @@ use rand::{thread_rng, Rng};
 use rand_distr::Zipf;
 
 use super::super::backend::memory_backend::MemoryBackend;
-use super::super::{Backend, MemoryCache, OpenFlag, Storage, StorageManager};
+use super::super::{Backend, MemoryCache, Storage, StorageManager};
 use crate::async_fuse::memfs::kv_engine::{KVEngine, KVEngineType};
 use crate::async_fuse::memfs::{self, MetaData, S3MetaData};
 use crate::new_storage::block::BLOCK_SIZE;
@@ -89,9 +89,8 @@ fn check_data(data: &[u8], user_index: u64) {
 
 // Open a read file handle ,read to end, but don't close the handle
 async fn warm_up(storage: Arc<StorageManager<S3MetaData>>, ino: u64) {
-    let flag = OpenFlag::Read;
     let _fh = CURRENT_FD.fetch_add(1, Ordering::SeqCst);
-    storage.open(ino, flag);
+    storage.open(ino);
     for i in 0..TOTAL_TEST_BLOCKS {
         let buf = storage
             .read(ino, (i * IO_SIZE) as u64, IO_SIZE)
@@ -102,9 +101,8 @@ async fn warm_up(storage: Arc<StorageManager<S3MetaData>>, ino: u64) {
 }
 
 async fn seq_read(storage: Arc<StorageManager<S3MetaData>>, ino: u64) {
-    let flag = OpenFlag::Read;
     let _fh = CURRENT_FD.fetch_add(1, Ordering::SeqCst);
-    storage.open(ino, flag);
+    storage.open(ino);
     for i in 0..TOTAL_TEST_BLOCKS {
         let buf = storage
             .read(ino, (i * IO_SIZE) as u64, IO_SIZE)
@@ -117,9 +115,8 @@ async fn seq_read(storage: Arc<StorageManager<S3MetaData>>, ino: u64) {
 }
 
 async fn create_a_file(storage: Arc<StorageManager<S3MetaData>>, ino: u64) {
-    let flag = OpenFlag::Write;
     let _fh = CURRENT_FD.fetch_add(1, Ordering::SeqCst);
-    storage.open(ino, flag);
+    storage.open(ino);
     let start = std::time::Instant::now();
     for i in 0..TOTAL_TEST_BLOCKS {
         let mut content = Vec::new();
@@ -262,9 +259,8 @@ async fn concurrency_read_with_write() {
 }
 
 async fn scan_worker(storage: Arc<StorageManager<S3MetaData>>, ino: u64, time: u64) -> usize {
-    let flag = OpenFlag::Read;
     let _fh = CURRENT_FD.fetch_add(1, Ordering::SeqCst);
-    storage.open(ino, flag);
+    storage.open(ino);
     let start = tokio::time::Instant::now();
     let mut i = 0;
     let mut scan_cnt = 0;
@@ -282,9 +278,8 @@ async fn scan_worker(storage: Arc<StorageManager<S3MetaData>>, ino: u64, time: u
 }
 
 async fn get_worker(storage: Arc<StorageManager<S3MetaData>>, ino: u64, time: u64) -> usize {
-    let flag = OpenFlag::Read;
     let _fh = CURRENT_FD.fetch_add(1, Ordering::SeqCst);
-    storage.open(ino, flag);
+    storage.open(ino);
     let start = tokio::time::Instant::now();
 
     // 初始化 Zipfian 分布
@@ -400,7 +395,7 @@ async fn test_truncate() {
     let mut buffer = vec![0; BLOCK_SIZE];
 
     let _fh = CURRENT_FD.fetch_add(1, Ordering::SeqCst);
-    storage.open(ino, OpenFlag::ReadAndWrite);
+    storage.open(ino);
     storage.write(ino, 0, &content, block_size).await.unwrap();
     storage.close(ino).await.unwrap();
     let size = backend
@@ -471,7 +466,7 @@ async fn test_remove() {
     let mut buffer = vec![0; BLOCK_SIZE];
 
     let _fh = CURRENT_FD.fetch_add(1, Ordering::SeqCst);
-    storage.open(ino, OpenFlag::ReadAndWrite);
+    storage.open(ino);
     storage
         .write(ino, 0, &content, BLOCK_SIZE.cast())
         .await

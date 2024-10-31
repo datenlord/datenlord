@@ -12,8 +12,8 @@ use crate::new_storage::StorageError;
 
 use super::super::policy::LruPolicy;
 use super::super::{
-    format_file_path, format_path, Backend, CacheKey, FileHandle, Handles, MemoryCache, OpenFlag,
-    Storage, StorageResult,
+    format_file_path, format_path, Backend, CacheKey, FileHandle, Handles, MemoryCache, Storage,
+    StorageResult,
 };
 
 /// The `Storage` struct represents a storage system that implements the
@@ -35,10 +35,11 @@ pub struct StorageManager<M: MetaData + Send + Sync + 'static> {
 
 #[async_trait]
 impl<M: MetaData + Send + Sync + 'static> Storage for StorageManager<M> {
-    /// Opens a file with the given inode number and flags, returning a new file
-    /// handle.
+    /// Opens a file with the given inode number, returning a new file
+    /// handle, in client side will check the open flag, so we don't need to
+    /// check it here.
     #[inline]
-    fn open(&self, ino: u64, flag: OpenFlag) {
+    fn open(&self, ino: u64) {
         // Get existing file handle if it exists
         if let Some(handle) = self.handles.get_handle(ino) {
             handle.open();
@@ -48,7 +49,6 @@ impl<M: MetaData + Send + Sync + 'static> Storage for StorageManager<M> {
                 self.block_size,
                 Arc::clone(&self.cache),
                 Arc::clone(&self.backend),
-                flag,
                 Arc::clone(&self.metadata_client),
             );
             self.handles.add_handle(handle);
@@ -58,14 +58,9 @@ impl<M: MetaData + Send + Sync + 'static> Storage for StorageManager<M> {
     /// Try to open a file with the given inode number and flags in opened file handles.
     /// If the file is not opened, return false.
     #[inline]
-    fn is_open(&self, ino: u64, flag: OpenFlag) -> bool {
-        info!("is_open: ino: {}, flag: {:?}", ino, flag);
+    fn is_open(&self, ino: u64) -> bool {
+        info!("is_open: ino: {}", ino);
         if let Some(handle) = self.handles.get_handle(ino) {
-            // Check opened file handle with the same flag
-            info!("handle flag: {:?} current flag: {:?}", handle.flag(), flag);
-            // if handle.flag() == flag {
-            // }
-
             // Check opened file handle status.
             if handle.open_cnt() > 0 {
                 return true;
@@ -142,6 +137,7 @@ impl<M: MetaData + Send + Sync + 'static> Storage for StorageManager<M> {
             .get_handle(ino)
             .unwrap_or_else(|| panic!("Cannot close a file that is not open."));
         let need_remove_flag = handle.close().await?;
+        println!("need_remove_flag: {}", need_remove_flag);
 
         if need_remove_flag {
             // Remove the file handle from the handles map
@@ -188,7 +184,6 @@ impl<M: MetaData + Send + Sync + 'static> Storage for StorageManager<M> {
                 self.block_size,
                 Arc::clone(&self.cache),
                 Arc::clone(&self.backend),
-                OpenFlag::Write,
                 Arc::clone(&self.metadata_client),
             );
             let fill_content = vec![0; fill_size];
