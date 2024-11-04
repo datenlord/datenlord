@@ -23,8 +23,8 @@ pub enum ReqType {
     KVCacheIdAllocateRequest,
     /// The kv cache index get request.
     KVCacheIndexMatchRequest,
-    /// The kv cache index put request.
-    KVCacheIndexInsertRequest,
+    /// The kv cache index batch insert request.
+    KVCacheIndexBatchInsertRequest,
     /// The kv cache index remove request.
     KVCacheIndexRemoveRequest,
     /// The kv block get request.
@@ -41,7 +41,7 @@ impl ReqType {
             1 => Ok(Self::FileBlockRequest),
             2 => Ok(Self::KVCacheIdAllocateRequest),
             3 => Ok(Self::KVCacheIndexMatchRequest),
-            4 => Ok(Self::KVCacheIndexInsertRequest),
+            4 => Ok(Self::KVCacheIndexBatchInsertRequest),
             5 => Ok(Self::KVCacheIndexRemoveRequest),
             6 => Ok(Self::KVBlockGetRequest),
             7 => Ok(Self::KVBlockBatchPutRequest),
@@ -59,7 +59,7 @@ impl ReqType {
             Self::FileBlockRequest => 1,
             Self::KVCacheIdAllocateRequest => 2,
             Self::KVCacheIndexMatchRequest => 3,
-            Self::KVCacheIndexInsertRequest => 4,
+            Self::KVCacheIndexBatchInsertRequest => 4,
             Self::KVCacheIndexRemoveRequest => 5,
             Self::KVBlockGetRequest => 6,
             Self::KVBlockBatchPutRequest => 7,
@@ -489,8 +489,14 @@ pub struct KVCacheIndexMatchResponse {
     /// The kv cache id, match success return kv cache id, otherwise return 0.
     /// TODO: support partial match
     pub kv_cache_id: u64,
+    /// The kv cache offset
+    pub offset: u64,
+    /// The kv cache size
+    pub size: u64,
     /// The status of the response.
     pub status: StatusCode,
+    /// The node address
+    pub node_address: Vec<u8>,
 }
 
 impl Encode for KVCacheIndexMatchResponse {
@@ -498,6 +504,8 @@ impl Encode for KVCacheIndexMatchResponse {
     fn encode(&self, buf: &mut BytesMut) {
         buf.put_u64(self.block_size.to_le());
         buf.put_u64(self.kv_cache_id.to_le());
+        buf.put_u64(self.offset.to_le());
+        buf.put_u64(self.size.to_le());
         match self.status {
             StatusCode::Success => buf.put_u8(0),
             StatusCode::NotFound => buf.put_u8(1),
@@ -505,6 +513,7 @@ impl Encode for KVCacheIndexMatchResponse {
             // Not used here.
             StatusCode::VersionMismatch => buf.put_u8(3),
         }
+        buf.put_slice(&self.node_address);
     }
 }
 
@@ -516,17 +525,23 @@ impl Decode for KVCacheIndexMatchResponse {
         }
         let block_size = get_u64_from_buf(buf, 0)?;
         let kv_cache_id = get_u64_from_buf(buf, 8)?;
-        let status = match buf.get(16) {
+        let offset = get_u64_from_buf(buf, 16)?;
+        let size = get_u64_from_buf(buf, 24)?;
+        let status = match buf.get(32) {
             Some(&0) => StatusCode::Success,
             Some(&1) => StatusCode::NotFound,
             Some(&2) => StatusCode::InternalError,
             Some(&3) => StatusCode::VersionMismatch,
             _ => return Err(RpcError::InternalError("Invalid status code".to_owned())),
         };
+        let node_address = buf.get(33..).unwrap_or(&[]).to_vec();
         Ok(KVCacheIndexMatchResponse {
             block_size,
             kv_cache_id,
+            offset,
+            size,
             status,
+            node_address,
         })
     }
 }
@@ -538,6 +553,10 @@ pub struct KVCacheIndexInsertRequest {
     pub block_size: u64,
     /// The kv cache id, pair with kv cache key.
     pub kv_cache_id: u64,
+    /// The kv cache offset
+    pub offset: u64,
+    /// The kv cache size
+    pub size: u64,
     /// The kv cache key.
     pub kv_cache_key: Vec<u8>,
 }
@@ -547,6 +566,8 @@ impl Encode for KVCacheIndexInsertRequest {
     fn encode(&self, buf: &mut BytesMut) {
         buf.put_u64(self.block_size.to_le());
         buf.put_u64(self.kv_cache_id.to_le());
+        buf.put_u64(self.offset.to_le());
+        buf.put_u64(self.size.to_le());
         buf.put_slice(&self.kv_cache_key);
     }
 }
@@ -559,10 +580,14 @@ impl Decode for KVCacheIndexInsertRequest {
         }
         let block_size = get_u64_from_buf(buf, 0)?;
         let kv_cache_id = get_u64_from_buf(buf, 8)?;
-        let kv_cache_key = buf[16..].to_vec();
+        let offset = get_u64_from_buf(buf, 16)?;
+        let size = get_u64_from_buf(buf, 24)?;
+        let kv_cache_key = buf[32..].to_vec();
         Ok(KVCacheIndexInsertRequest {
             block_size,
             kv_cache_key,
+            offset,
+            size,
             kv_cache_id,
         })
     }
@@ -613,6 +638,51 @@ impl Decode for KVCacheIndexInsertResponse {
             block_size,
             kv_cache_id,
             status,
+        })
+    }
+}
+
+/// The request to batch insert kv cache index.
+#[derive(Debug, Default, Clone)]
+pub struct KVCacheIndexBatchInsertRequest {
+    /// The batch size
+    pub batch_size: u64,
+    /// The kv cache index list
+    pub indexes: Vec<KVCacheIndexInsertRequest>,
+    /// The node address
+    pub node_address: Vec<u8>,
+}
+
+impl Encode for KVCacheIndexBatchInsertRequest {
+    /// Encode the kv cache index batch insert request into a byte buffer.
+    fn encode(&self, buf: &mut BytesMut) {
+        buf.put_u64(self.batch_size.to_le());
+        for index in &self.indexes {
+            index.encode(buf);
+        }
+        buf.put_slice(&self.node_address);
+    }
+}
+
+impl Decode for KVCacheIndexBatchInsertRequest {
+    /// Decode the byte buffer into a kv cache index batch insert request.
+    fn decode(buf: &[u8]) -> Result<Self, RpcError> {
+        if buf.len() < 8 {
+            return Err(RpcError::InternalError("Insufficient bytes".to_owned()));
+        }
+        let batch_size = get_u64_from_buf(buf, 0)?;
+        let mut indexes = Vec::new();
+        let mut offset = 8;
+        for _ in 0..batch_size {
+            let index = KVCacheIndexInsertRequest::decode(&buf[offset..])?;
+            offset += 16 + index.kv_cache_key.len();
+            indexes.push(index);
+        }
+        let node_address = buf[offset..].to_vec();
+        Ok(KVCacheIndexBatchInsertRequest {
+            batch_size,
+            indexes,
+            node_address,
         })
     }
 }
@@ -936,7 +1006,7 @@ pub enum KVCacheRequest {
     /// The request to match kv cache index.
     KVCacheIndexMatchRequest(KVCacheIndexMatchRequest),
     /// The request to insert kv cache index.
-    KVCacheIndexInsertRequest(KVCacheIndexInsertRequest),
+    KVCacheIndexBatchInsertRequest(KVCacheIndexBatchInsertRequest),
     /// The request to remove kv cache index.
     KVCacheIndexRemoveRequest(KVCacheIndexRemoveRequest),
     /// The request to get kv block.
@@ -951,7 +1021,7 @@ impl Encode for KVCacheRequest {
         match self {
             Self::KVCacheIdAllocateRequest(request) => request.encode(buf),
             Self::KVCacheIndexMatchRequest(request) => request.encode(buf),
-            Self::KVCacheIndexInsertRequest(request) => request.encode(buf),
+            Self::KVCacheIndexBatchInsertRequest(request) => request.encode(buf),
             Self::KVCacheIndexRemoveRequest(request) => request.encode(buf),
             Self::KVBlockGetRequest(request) => request.encode(buf),
             Self::KVBlockBatchPutRequest(request) => request.encode(buf),
@@ -975,9 +1045,9 @@ impl KVCacheRequest {
                 let request = KVCacheIndexMatchRequest::decode(buf)?;
                 Ok(Self::KVCacheIndexMatchRequest(request))
             }
-            ReqType::KVCacheIndexInsertRequest => {
-                let request = KVCacheIndexInsertRequest::decode(buf)?;
-                Ok(Self::KVCacheIndexInsertRequest(request))
+            ReqType::KVCacheIndexBatchInsertRequest => {
+                let request = KVCacheIndexBatchInsertRequest::decode(buf)?;
+                Ok(Self::KVCacheIndexBatchInsertRequest(request))
             }
             ReqType::KVCacheIndexRemoveRequest => {
                 let request = KVCacheIndexRemoveRequest::decode(buf)?;
@@ -1081,7 +1151,7 @@ pub struct KVCachePacket {
     pub done_tx: flume::Sender<Result<KVCacheResponse, KVCacheRequest>>,
 }
 
-impl fmt::Debug for  KVCachePacket {
+impl fmt::Debug for KVCachePacket {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("KVCachePacket")
             .field("seq", &self.seq)
@@ -1118,7 +1188,6 @@ impl Encode for KVCachePacket {
         self.request.encode(buffer);
     }
 }
-
 
 #[async_trait]
 impl Packet for KVCachePacket {
@@ -1157,22 +1226,37 @@ impl Packet for KVCachePacket {
         let response_type = RespType::from_u8(self.op)?;
         match response_type {
             RespType::KVCacheIdAllocateResponse => {
-                self.response = Some(KVCacheResponse::decode(RespType::KVCacheIdAllocateResponse, data)?);
+                self.response = Some(KVCacheResponse::decode(
+                    RespType::KVCacheIdAllocateResponse,
+                    data,
+                )?);
             }
             RespType::KVCacheIndexMatchResponse => {
-                self.response = Some(KVCacheResponse::decode(RespType::KVCacheIndexMatchResponse, data)?);
+                self.response = Some(KVCacheResponse::decode(
+                    RespType::KVCacheIndexMatchResponse,
+                    data,
+                )?);
             }
             RespType::KVCacheIndexInsertResponse => {
-                self.response = Some(KVCacheResponse::decode(RespType::KVCacheIndexInsertResponse, data)?);
+                self.response = Some(KVCacheResponse::decode(
+                    RespType::KVCacheIndexInsertResponse,
+                    data,
+                )?);
             }
             RespType::KVCacheIndexRemoveResponse => {
-                self.response = Some(KVCacheResponse::decode(RespType::KVCacheIndexRemoveResponse, data)?);
+                self.response = Some(KVCacheResponse::decode(
+                    RespType::KVCacheIndexRemoveResponse,
+                    data,
+                )?);
             }
             RespType::KVBlockGetResponse => {
                 self.response = Some(KVCacheResponse::decode(RespType::KVBlockGetResponse, data)?);
             }
             RespType::KVBlockBatchPutResponse => {
-                self.response = Some(KVCacheResponse::decode(RespType::KVBlockBatchPutResponse, data)?);
+                self.response = Some(KVCacheResponse::decode(
+                    RespType::KVBlockBatchPutResponse,
+                    data,
+                )?);
             }
             _ => {
                 return Err(RpcError::InternalError("Invalid response type".to_owned()));

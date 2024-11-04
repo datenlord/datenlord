@@ -9,7 +9,6 @@ use crate::{
         task_manager::{TaskName, TASK_MANAGER},
     },
     connect_timeout,
-    storage::{distribute_kv_cache::rpc::error::RpcError, Block},
 };
 
 use super::{
@@ -17,35 +16,262 @@ use super::{
     rpc::{
         client::RpcClient,
         common::ClientTimeoutOptions,
-        message::{FileBlockPacket, FileBlockRequest, FileBlockResponse},
-        utils::u64_to_usize,
+        message::{
+            KVBlockBatchPutRequest, KVBlockGetRequest, KVBlockPutRequest, KVCacheIdAllocateRequest,
+            KVCacheIndexBatchInsertRequest, KVCacheIndexInsertRequest, KVCacheIndexMatchRequest,
+            KVCacheIndexRemoveRequest, KVCachePacket, KVCacheRequest, KVCacheResponse, ReqType,
+        },
     },
 };
 
 /// Duration to check the rpc client cache
 const RPC_CLIENT_CACHE_CHECK_DURATION: u64 = 60;
 
-/// Get block path by `ino`, `mtime`, `block_id` and `block_size`
-fn get_block_path_id(ino: u64, mtime: u64, block_id: u64, block_size: u64) -> String {
-    format!("{}_{}_{}_{}", ino, mtime, block_id, block_size)
+/// Unused kv block id
+const UNUSED_KV_BLOCK_ID: u64 = 0;
+
+/// KVBlock instance
+///
+/// |--------KVBlock-----| => single kv block data
+/// |cache1|cache2|cache3| => contains kv cache data = cache1, cache2, cache3
+/// |0-----|1-----|2-----| => prefix = 0, 1, 2
+///
+/// TODO: Hold the kv cache and fetch from local cache
+#[derive(Debug, Clone)]
+pub struct KVBlock {
+    /// The block id
+    pub block_id: u64,
+    /// The block data, contains one or more kv cache data
+    pub data: Vec<u8>,
+}
+
+/// KVCache instance metadata
+///
+/// Set current kv cache metadata info to single kv block
+#[derive(Debug, Clone)]
+pub struct KVCacheMeta {
+    /// The kv block id
+    pub block_id: u64,
+    /// The kv cache offset
+    pub offset: u64,
+    /// The kv cache size
+    pub size: u64,
+    /// The kv cache id
+    pub prefix: String,
+}
+
+/// Local block cache
+#[derive(Debug, Clone)]
+struct LocalBlockCache {
+    /// The block data
+    block_cache: KVBlock,
+    /// The block metas
+    block_metas: Vec<KVCacheMeta>,
+}
+
+impl LocalBlockCache {
+    /// Create a new local block cache
+    pub fn new(block_id: u64, block_size: u64) -> Self {
+        Self {
+            block_cache: KVBlock {
+                block_id,
+                data: Vec::with_capacity(block_size as usize),
+            },
+            block_metas: Vec::new(),
+        }
+    }
+
+    /// Insert a kv cache to the local block cache
+    pub fn insert(&mut self, kv_cache_meta: KVCacheMeta, data: Vec<u8>) -> DatenLordResult<()> {
+        // Check current block id is equal to the kv cache block id
+        if self.block_cache.block_id == UNUSED_KV_BLOCK_ID {
+            return Err(DatenLordError::DistributeCacheManagerErr {
+                context: vec![format!(
+                    "Failed to insert kv cache to the block cache, block id is invalid with UNUSED_KV_BLOCK_ID"
+                )],
+            });
+        }
+
+        // Check current block size is enough
+        if self.block_cache.data.len() + data.len() > self.block_cache.data.capacity() {
+            return Err(DatenLordError::DistributeCacheManagerErr {
+                context: vec![format!(
+                    "Failed to insert kv cache to the block cache, block size is not enough"
+                )],
+            });
+        }
+
+        // 1. Insert the kv cache data to the block cache
+        self.block_cache.data.extend_from_slice(&data);
+
+        // 2. Insert the kv cache meta to the block metas
+        self.block_metas.push(kv_cache_meta);
+
+        Ok(())
+    }
+
+    /// Get the block id
+    pub fn get_block_id(&self) -> u64 {
+        self.block_cache.block_id
+    }
+
+    /// Get next offset
+    pub fn get_next_offset(&self) -> u64 {
+        self.block_cache.data.len() as u64
+    }
+
+    /// Clear the local block cache with new block id
+    pub fn clear(&mut self, new_block_id: u64) {
+        self.block_cache.block_id = new_block_id;
+        self.block_cache.data.clear();
+        self.block_metas.clear();
+    }
+
+    /// Get KVBlock
+    pub fn get_kv_block(&self) -> KVBlock {
+        self.block_cache.clone()
+    }
+
+    /// Get KVCacheMeta
+    pub fn get_kv_cache_metas(&self) -> Vec<KVCacheMeta> {
+        self.block_metas.clone()
+    }
 }
 
 /// The distribute cache client
 #[derive(Debug, Clone)]
 pub struct DistributeCacheClient {
-    /// The cluster manager, only used to watch hashring changes
-    cluster_manager: Arc<ClusterManager>,
-    /// The rpc client cache
-    rpc_client_cache: Arc<Mutex<HashMap<String, RpcClient<FileBlockPacket>>>>,
+    /// The distirbute cache inner
+    inner: DistributeCacheClientInner,
+    /// Single block cache, used to collect the block data from the infer side.
+    block_cache: Arc<Mutex<LocalBlockCache>>,
 }
 
 impl DistributeCacheClient {
     /// Create a new distribute cache client
-    pub fn new(cluster_manager: Arc<ClusterManager>) -> Self {
+    pub fn new(cluster_manager: Arc<ClusterManager>, block_size: u64) -> Self {
+        let inner = DistributeCacheClientInner::new(cluster_manager, block_size);
+        Self {
+            inner,
+            block_cache: Arc::new(Mutex::new(LocalBlockCache::new(0, block_size))),
+        }
+    }
+
+    /// Start the distribute cache client watch task
+    pub async fn start_watch(&self) -> DatenLordResult<()> {
+        // Start the watch task
+        self.inner.start_watch().await
+    }
+
+    /// Try to load the block from the distribute cache
+    pub async fn try_load(&self, prefix: String, data: &mut [u8]) -> DatenLordResult<()> {
+        // 1. Match prefix to get the block id and target node
+        let (kv_block_meta, node_address) = self.inner.match_prefix(prefix.clone()).await?;
+
+        // 2. TODO: check current node has the local block cache
+
+        // 3. Get the block from the distribute cache
+        // TODO: update string key with u64
+        let block_data = match self
+            .inner
+            .get_block(node_address, kv_block_meta.block_id)
+            .await
+        {
+            Ok(data) => data,
+            Err(err) => {
+                // Inform master to delete this key
+                self.inner.remove_index(prefix).await?;
+
+                return Err(DatenLordError::DistributeCacheManagerErr {
+                    context: vec![format!("Failed to get block: {:?}", err)],
+                });
+            }
+        };
+
+        // 4. Copy the block data to the data with kv cache meta offset and size
+        let offset = kv_block_meta.offset as usize;
+        let size = kv_block_meta.size as usize;
+        // TODO: Check range or update with bytesmut
+        data.copy_from_slice(&block_data[offset..offset + size]);
+
+        Ok(())
+    }
+
+    /// Insert a block to the distribute cache
+    pub async fn insert(&self, prefix: String, data: Vec<u8>) -> DatenLordResult<()> {
+        // 1. fill current block cache
+        let mut block_cache = self.block_cache.lock().await;
+        let mut current_block_id = block_cache.get_block_id();
+
+        if current_block_id == UNUSED_KV_BLOCK_ID {
+            let new_block_id = self.inner.alloc_block_id().await?;
+            block_cache.clear(new_block_id);
+            current_block_id = new_block_id;
+        }
+
+        let next_offset = block_cache.get_next_offset();
+        let kv_cache_meta = KVCacheMeta {
+            block_id: current_block_id,
+            offset: next_offset,
+            size: data.len() as u64,
+            prefix: prefix,
+        };
+
+        match block_cache.insert(kv_cache_meta, data) {
+            Ok(()) => {
+                debug!(
+                    "Insert kv cache to the block cache with block id: {:?}",
+                    current_block_id
+                );
+            }
+            Err(err) => {
+                debug!("Failed to insert kv cache to the block cache: {:?}, try to allocate new block cache", err);
+                // 2. current block cache is full, we will insert this block to the distribute cache
+                // and clear the block cache
+                let kv_block = block_cache.get_kv_block();
+                let kv_cache_metas = block_cache.get_kv_cache_metas();
+
+                // Insert the block to the distribute cache
+                let node = self
+                    .inner
+                    .cluster_manager
+                    .get_node(kv_block.block_id.to_string())
+                    .await?;
+                let addr = format!("{}:{}", node.ip(), node.port());
+                self.inner.put_blocks(addr.clone(), vec![kv_block]).await?;
+
+                // If ok, insert the indexes to the distribute cache
+                self.inner.insert_indexes(kv_cache_metas, addr).await?;
+
+                // If ok, clear the block cache
+                let current_block_id = self.inner.alloc_block_id().await?;
+                block_cache.clear(current_block_id);
+            }
+        }
+
+        Ok(())
+    }
+}
+
+/// The distribute cache client
+#[derive(Debug, Clone)]
+pub struct DistributeCacheClientInner {
+    /// The cluster manager, only used to watch hashring changes
+    cluster_manager: Arc<ClusterManager>,
+    /// The rpc client cache
+    rpc_client_cache: Arc<Mutex<HashMap<String, Arc<RpcClient<KVCachePacket>>>>>,
+    /// Block size
+    block_size: u64,
+}
+
+impl DistributeCacheClientInner {
+    /// Create a new distribute cache client
+    pub fn new(cluster_manager: Arc<ClusterManager>, block_size: u64) -> Self {
         let rpc_client_cache = Arc::new(Mutex::new(HashMap::new()));
         Self {
             cluster_manager,
             rpc_client_cache,
+            block_size,
         }
     }
 
@@ -95,122 +321,319 @@ impl DistributeCacheClient {
         Ok(())
     }
 
-    /// Read the block from the distribute cache
-    /// We will try to get the cache node with the block info, and create a rpc client to read this block from distribute cache
-    pub async fn read_block(
-        &self,
-        ino: u64,
-        block_id: u64,
-        mtime: u64,
-        block_size: u64,
-    ) -> DatenLordResult<Block> {
-        // Get the cache indexer id
-        let block_path_id = get_block_path_id(ino, mtime, block_id, block_size);
-
+    /// Allocate block id from the distribute cache
+    async fn alloc_block_id(&self) -> DatenLordResult<u64> {
         // Get the cache node with the block id
-        let cache_node = self
-            .cluster_manager
-            .get_node(block_path_id)
-            .await
-            .map_err(|err| DatenLordError::DistributeCacheManagerErr {
-                context: vec![format!("Failed to get cache node: {:?}", err)],
-            })?;
-        let addr = format!("{}:{}", cache_node.ip(), cache_node.port());
+        let master_node = self.cluster_manager.get_master_node().await?;
+        let addr = format!("{}:{}", master_node.ip(), master_node.port());
 
-        let (tx, rx) = flume::unbounded::<Result<FileBlockResponse, FileBlockRequest>>();
-        // Send file block request
-        let current_ring = self.cluster_manager.get_ring().await.map_err(|err| {
+        let (tx, rx) = flume::unbounded::<Result<KVCacheResponse, KVCacheRequest>>();
+        let kv_cache_id_allocate_request =
+            KVCacheRequest::KVCacheIdAllocateRequest(KVCacheIdAllocateRequest {
+                block_size: self.block_size,
+            });
+        let mut packet = KVCachePacket::new(
+            ReqType::KVCacheIdAllocateRequest.to_u8(),
+            kv_cache_id_allocate_request,
+            tx.clone(),
+        );
+        let rpc_client = self.get_client(addr.clone()).await?;
+        rpc_client.send_request(&mut packet).await.map_err(|err| {
             DatenLordError::DistributeCacheManagerErr {
-                context: vec![format!("Failed to get ring: {:?}", err)],
+                context: vec![format!("Failed to send request: {:?}", err)],
             }
         })?;
-        let block_request = FileBlockRequest {
-            block_id: block_id,
-            block_size: block_size,
-            file_id: ino,
-            block_version: mtime,
-            hash_ring_version: current_ring.version(),
-        };
-        let mut packet = FileBlockPacket::new(&block_request, tx.clone());
 
-        let start_time = tokio::time::Instant::now();
-
-        {
-            // Add a cache to hold the rpc client
-            let mut rpc_client_cache = self.rpc_client_cache.lock().await;
-            if rpc_client_cache.contains_key(&addr) {
-                // If the rpc client is already in the cache, we will use it directly
-                let rpc_client = rpc_client_cache.get(&addr).unwrap();
-                // TODO: Test connection first, if current connection is not available, we will try to return quickly and delete this rpc client
-                // But, it might cause a lot of latency, so we just check the connection and remove it when the connection is not available
-
-                rpc_client.send_request(&mut packet).await.map_err(|err| {
-                    match err {
-                        RpcError::Timeout(_) => {
-                            // If the rpc client is timeout, we will remove it from the cache
-                            rpc_client_cache.remove(&addr);
-                        }
-                        RpcError::InvalidRequest(_)
-                        | RpcError::InvalidResponse(_)
-                        | RpcError::InternalError(_) => {}
-                    }
-
-                    DatenLordError::DistributeCacheManagerErr {
-                        context: vec![format!("Failed to send request: {:?}", err)],
-                    }
-                })?;
-            } else {
-                // If the rpc client is not in the cache, we will create a new one
-                // Create rpc client from the cache node
-
-                // Create rpc client from the cache node
-                // TODO: put the rpc client into a pool, so we can use the rpc client
-                //      to read the block from the cache node with keepalive
-                let timeout_options = ClientTimeoutOptions {
-                    read_timeout: Duration::from_secs(10),
-                    write_timeout: Duration::from_secs(10),
-                    task_timeout: Duration::from_secs(10),
-                    keep_alive_timeout: Duration::from_secs(10),
-                };
-                let addr_clone = addr.clone();
-                let connect_stream =
-                    connect_timeout!(addr_clone, timeout_options.read_timeout).await?;
-                let rpc_client =
-                    RpcClient::<FileBlockPacket>::new(connect_stream, &timeout_options);
-                rpc_client.start_recv();
-
-                // Test connection first, if current connection is not available, we will try to return quickly
-                rpc_client.ping().await.map_err(|err| {
-                    DatenLordError::DistributeCacheManagerErr {
-                        context: vec![format!("Failed to ping cache node: {:?}", err)],
-                    }
-                })?;
-
-                // TODO: Change to other node?
-
-                rpc_client.send_request(&mut packet).await.map_err(|err| {
-                    DatenLordError::DistributeCacheManagerErr {
-                        context: vec![format!("Failed to send request: {:?}", err)],
-                    }
-                })?;
-
-                // Add the rpc client to the cache
-                rpc_client_cache.insert(addr.clone(), rpc_client);
+        match rx.recv_async().await {
+            Ok(Ok(response)) => match response {
+                KVCacheResponse::KVCacheIdAllocateResponse(response) => {
+                    return Ok(response.kv_cache_id);
+                }
+                _ => {
+                    return Err(DatenLordError::DistributeCacheManagerErr {
+                        context: vec![format!("Failed to read block: {:?}", response)],
+                    });
+                }
+            },
+            Ok(Err(err)) => {
+                return Err(DatenLordError::DistributeCacheManagerErr {
+                    context: vec![format!("Failed to read block: {:?}", err)],
+                });
+            }
+            Err(_) => {
+                return Err(DatenLordError::DistributeCacheManagerErr {
+                    context: vec![format!("Failed to read block")],
+                });
             }
         }
-        let elapsed = start_time.elapsed();
-        error!("Read block from cache node: {} cost: {:?}", addr, elapsed);
+    }
 
-        // Async read the block from the cache node
+    /// Match the prefix and get block id from the distribute cache
+    /// return the kv cache meta info and remote node address
+    async fn match_prefix(&self, prefix: String) -> DatenLordResult<(KVCacheMeta, String)> {
+        let raw_prefix = prefix.clone();
+        let prefix = prefix.into_bytes();
+        // Get the cache node with the block id
+        let master_node = self.cluster_manager.get_master_node().await?;
+        let addr = format!("{}:{}", master_node.ip(), master_node.port());
+
+        let (tx, rx) = flume::unbounded::<Result<KVCacheResponse, KVCacheRequest>>();
+        let kv_cache_index_match_request =
+            KVCacheRequest::KVCacheIndexMatchRequest(KVCacheIndexMatchRequest {
+                block_size: self.block_size,
+                kv_cache_key: prefix,
+            });
+        let mut packet = KVCachePacket::new(
+            ReqType::KVCacheIndexMatchRequest.to_u8(),
+            kv_cache_index_match_request,
+            tx.clone(),
+        );
+        let rpc_client = self.get_client(addr.clone()).await?;
+        rpc_client.send_request(&mut packet).await.map_err(|err| {
+            DatenLordError::DistributeCacheManagerErr {
+                context: vec![format!("Failed to send request: {:?}", err)],
+            }
+        })?;
+
+        match rx.recv_async().await {
+            Ok(Ok(response)) => match response {
+                KVCacheResponse::KVCacheIndexMatchResponse(response) => {
+                    let node_address = String::from_utf8(response.node_address).map_err(|err| {
+                        DatenLordError::DistributeCacheManagerErr {
+                            context: vec![format!("Failed to parse node address: {:?}", err)],
+                        }
+                    })?;
+                    return Ok((
+                        KVCacheMeta {
+                            block_id: response.kv_cache_id,
+                            offset: response.offset,
+                            size: response.size,
+                            prefix: raw_prefix,
+                        },
+                        node_address,
+                    ));
+                }
+                _ => {
+                    return Err(DatenLordError::DistributeCacheManagerErr {
+                        context: vec![format!("Failed to read block: {:?}", response)],
+                    });
+                }
+            },
+            Ok(Err(err)) => {
+                return Err(DatenLordError::DistributeCacheManagerErr {
+                    context: vec![format!("Failed to read block: {:?}", err)],
+                });
+            }
+            Err(_) => {
+                return Err(DatenLordError::DistributeCacheManagerErr {
+                    context: vec![format!("Failed to read block")],
+                });
+            }
+        }
+    }
+
+    /// Insert a index to the distribute cache
+    async fn insert_indexes(
+        &self,
+        kv_cache_meta_list: Vec<KVCacheMeta>,
+        node_address: String,
+    ) -> DatenLordResult<()> {
+        // Get the cache node with the block id
+        let master_node = self.cluster_manager.get_master_node().await?;
+        let addr = format!("{}:{}", master_node.ip(), master_node.port());
+
+        // Generate Vec<KVCacheIndexInsertRequest>
+        let mut kv_cache_index_insert_requests = Vec::new();
+        for item in kv_cache_meta_list.into_iter() {
+            kv_cache_index_insert_requests.push(KVCacheIndexInsertRequest {
+                block_size: self.block_size,
+                kv_cache_id: item.block_id,
+                offset: item.offset,
+                size: item.size,
+                kv_cache_key: item.prefix.into_bytes(),
+            });
+        }
+
+        let (tx, rx) = flume::unbounded::<Result<KVCacheResponse, KVCacheRequest>>();
+        let kv_cache_index_batch_insert_request =
+            KVCacheRequest::KVCacheIndexBatchInsertRequest(KVCacheIndexBatchInsertRequest {
+                batch_size: kv_cache_index_insert_requests.len() as u64,
+                indexes: kv_cache_index_insert_requests,
+                node_address: node_address.into_bytes(),
+            });
+        let mut packet = KVCachePacket::new(
+            ReqType::KVCacheIndexBatchInsertRequest.to_u8(),
+            kv_cache_index_batch_insert_request,
+            tx.clone(),
+        );
+        let rpc_client = self.get_client(addr.clone()).await?;
+        rpc_client.send_request(&mut packet).await.map_err(|err| {
+            DatenLordError::DistributeCacheManagerErr {
+                context: vec![format!("Failed to send request: {:?}", err)],
+            }
+        })?;
+
+        match rx.recv_async().await {
+            Ok(Ok(response)) => match response {
+                KVCacheResponse::KVCacheIndexRemoveResponse(_) => {
+                    return Ok(());
+                }
+                _ => {
+                    return Err(DatenLordError::DistributeCacheManagerErr {
+                        context: vec![format!("Failed to read block: {:?}", response)],
+                    });
+                }
+            },
+            Ok(Err(err)) => {
+                return Err(DatenLordError::DistributeCacheManagerErr {
+                    context: vec![format!("Failed to read block: {:?}", err)],
+                });
+            }
+            Err(_) => {
+                return Err(DatenLordError::DistributeCacheManagerErr {
+                    context: vec![format!("Failed to read block")],
+                });
+            }
+        }
+    }
+
+    /// Remove a index from the distribute cache
+    async fn remove_index(&self, prefix: String) -> DatenLordResult<()> {
+        let prefix = prefix.into_bytes();
+
+        // Get the cache node with the block id
+        let master_node = self.cluster_manager.get_master_node().await?;
+        let addr = format!("{}:{}", master_node.ip(), master_node.port());
+
+        let (tx, rx) = flume::unbounded::<Result<KVCacheResponse, KVCacheRequest>>();
+        let kv_cache_index_remove_request =
+            KVCacheRequest::KVCacheIndexRemoveRequest(KVCacheIndexRemoveRequest {
+                block_size: self.block_size,
+                kv_cache_key: prefix,
+            });
+        let mut packet = KVCachePacket::new(
+            ReqType::KVCacheIndexRemoveRequest.to_u8(),
+            kv_cache_index_remove_request,
+            tx.clone(),
+        );
+        let rpc_client = self.get_client(addr.clone()).await?;
+        rpc_client.send_request(&mut packet).await.map_err(|err| {
+            DatenLordError::DistributeCacheManagerErr {
+                context: vec![format!("Failed to send request: {:?}", err)],
+            }
+        })?;
+
+        match rx.recv_async().await {
+            Ok(Ok(response)) => match response {
+                KVCacheResponse::KVCacheIndexRemoveResponse(_) => {
+                    return Ok(());
+                }
+                _ => {
+                    return Err(DatenLordError::DistributeCacheManagerErr {
+                        context: vec![format!("Failed to read block: {:?}", response)],
+                    });
+                }
+            },
+            Ok(Err(err)) => {
+                return Err(DatenLordError::DistributeCacheManagerErr {
+                    context: vec![format!("Failed to read block: {:?}", err)],
+                });
+            }
+            Err(_) => {
+                return Err(DatenLordError::DistributeCacheManagerErr {
+                    context: vec![format!("Failed to read block")],
+                });
+            }
+        }
+    }
+
+    /// Get the kv block from the distribute cache node
+    async fn get_block(&self, addr: String, kv_cache_id: u64) -> DatenLordResult<Vec<u8>> {
+        let (tx, rx) = flume::unbounded::<Result<KVCacheResponse, KVCacheRequest>>();
+        let kv_cache_request = KVCacheRequest::KVBlockGetRequest(KVBlockGetRequest {
+            block_size: self.block_size,
+            kv_cache_id,
+        });
+        let mut packet = KVCachePacket::new(
+            ReqType::KVBlockGetRequest.to_u8(),
+            kv_cache_request,
+            tx.clone(),
+        );
+        let rpc_client = self.get_client(addr.clone()).await?;
+        rpc_client.send_request(&mut packet).await.map_err(|err| {
+            DatenLordError::DistributeCacheManagerErr {
+                context: vec![format!("Failed to send request: {:?}", err)],
+            }
+        })?;
+
+        match rx.recv_async().await {
+            Ok(Ok(response)) => match response {
+                KVCacheResponse::KVBlockGetResponse(response) => {
+                    return Ok(response.data);
+                }
+                _ => {
+                    return Err(DatenLordError::DistributeCacheManagerErr {
+                        context: vec![format!("Failed to read block: {:?}", response)],
+                    });
+                }
+            },
+            Ok(Err(err)) => {
+                return Err(DatenLordError::DistributeCacheManagerErr {
+                    context: vec![format!("Failed to read block: {:?}", err)],
+                });
+            }
+            Err(_) => {
+                return Err(DatenLordError::DistributeCacheManagerErr {
+                    context: vec![format!("Failed to read block")],
+                });
+            }
+        }
+    }
+
+    /// Batch put the kv block to the distribute cache node with same addr
+    async fn put_blocks(&self, addr: String, kv_blocks: Vec<KVBlock>) -> DatenLordResult<()> {
+        // Create a Vec<KVBlockPutRequest> for batch put
+        let mut kv_block_put_requests = Vec::new();
+        for item in kv_blocks.into_iter() {
+            kv_block_put_requests.push(KVBlockPutRequest {
+                block_size: self.block_size,
+                kv_cache_id: item.block_id,
+                data: item.data,
+            });
+        }
+
+        let (tx, rx) = flume::unbounded::<Result<KVCacheResponse, KVCacheRequest>>();
+        let kv_cache_batch_put_request =
+            KVCacheRequest::KVBlockBatchPutRequest(KVBlockBatchPutRequest {
+                batch_size: kv_block_put_requests.len() as u64,
+                blocks: kv_block_put_requests,
+            });
+        let mut packet = KVCachePacket::new(
+            ReqType::KVBlockBatchPutRequest.to_u8(),
+            kv_cache_batch_put_request,
+            tx.clone(),
+        );
+        let rpc_client = self.get_client(addr.clone()).await?;
+        rpc_client.send_request(&mut packet).await.map_err(|err| {
+            DatenLordError::DistributeCacheManagerErr {
+                context: vec![format!("Failed to send request: {:?}", err)],
+            }
+        })?;
+
         match rx.recv_async().await {
             Ok(Ok(response)) => {
-                // TODO: ignore hashring version is not match error, this case
-                // will be processed in the future.
-
-                return Ok(Block::from_slice(
-                    u64_to_usize(response.block_size),
-                    &response.data,
-                ));
+                match response {
+                    KVCacheResponse::KVBlockBatchPutResponse(response) => {
+                        // TODO: show block result here.
+                        debug!("Batch put blocks: {:?}", response);
+                        return Ok(());
+                    }
+                    _ => {
+                        return Err(DatenLordError::DistributeCacheManagerErr {
+                            context: vec![format!("Failed to read block: {:?}", response)],
+                        });
+                    }
+                }
             }
             Ok(Err(err)) => {
                 return Err(DatenLordError::DistributeCacheManagerErr {
@@ -222,6 +645,48 @@ impl DistributeCacheClient {
                     context: vec![format!("Failed to read block")],
                 });
             }
+        }
+    }
+
+    async fn get_client(&self, addr: String) -> DatenLordResult<Arc<RpcClient<KVCachePacket>>> {
+        let mut rpc_client_cache = self.rpc_client_cache.lock().await;
+        if rpc_client_cache.contains_key(&addr) {
+            let rpc_client =
+                rpc_client_cache
+                    .get(&addr)
+                    .ok_or(DatenLordError::DistributeCacheManagerErr {
+                        context: vec![format!("Failed to get rpc client")],
+                    })?;
+
+            // TODO: add client closed check here and remove it.
+            Ok(rpc_client.to_owned())
+        } else {
+            let timeout_options = ClientTimeoutOptions {
+                read_timeout: Duration::from_secs(10),
+                write_timeout: Duration::from_secs(10),
+                task_timeout: Duration::from_secs(10),
+                keep_alive_timeout: Duration::from_secs(10),
+            };
+            let addr_clone = addr.clone();
+            let connect_stream = connect_timeout!(addr_clone, timeout_options.read_timeout).await?;
+            let rpc_client = RpcClient::<KVCachePacket>::new(connect_stream, &timeout_options);
+            rpc_client.start_recv();
+
+            // TODO: add ping into a loop.
+            rpc_client
+                .ping()
+                .await
+                .map_err(|err| DatenLordError::DistributeCacheManagerErr {
+                    context: vec![format!("Failed to ping cache node: {:?}", err)],
+                })?;
+
+            let rpc_client = rpc_client_cache
+                .insert(addr.clone(), Arc::new(rpc_client))
+                .ok_or(DatenLordError::DistributeCacheManagerErr {
+                    context: vec![format!("Failed to insert rpc client")],
+                })?;
+
+            Ok(rpc_client)
         }
     }
 }

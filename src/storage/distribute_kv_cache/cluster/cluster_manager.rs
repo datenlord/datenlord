@@ -41,6 +41,12 @@ impl ClusterManager {
         self.inner.get_current_node()
     }
 
+    /// Get master node
+    #[must_use]
+    pub async fn get_master_node(&self) -> DatenLordResult<MasterNodeInfo> {
+        self.inner.get_master_node().await
+    }
+
     /// Get current hashring
     pub async fn get_ring(&self) -> DatenLordResult<Ring<Node>> {
         self.inner.get_ring(false).await
@@ -897,6 +903,27 @@ impl ClusterManagerInner {
     /// Get current node
     pub fn get_current_node(&self) -> Node {
         self.node.load().as_ref().clone()
+    }
+
+    /// Get master node
+    pub async fn get_master_node(&self) -> DatenLordResult<MasterNodeInfo> {
+        let master_key = &KeyType::CacheMasterNode;
+        let master_node_info = self.kv_engine.get(master_key).await.map_err(|e| {
+            warn!("Failed to get master node from etcd: {:?}", e);
+            DatenLordError::CacheClusterErr {
+                context: vec![format!("Failed to get master node from etcd")],
+            }
+        })?;
+
+        if let Some(ValueType::Json(master_json)) = master_node_info {
+            let master_node: MasterNodeInfo = serde_json::from_value(master_json)?;
+            return Ok(master_node);
+        }
+
+        warn!("Master is not existed, try to campaign master");
+        Err(DatenLordError::CacheClusterErr {
+            context: vec![format!("Master is not existed, try to campaign master")],
+        })
     }
 
     /// Update current node

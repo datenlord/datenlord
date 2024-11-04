@@ -329,8 +329,8 @@ impl KVBlockManager {
 #[allow(dead_code)]
 #[derive(Debug)]
 pub struct IndexManager {
-    /// Global Radix tree to store prefix index, key is prompt, value is block id
-    index: Arc<RwLock<Trie<String, u64>>>,
+    /// Global Radix tree to store prefix index, key is prompt, value is (block id, offset, size, address)
+    index: Arc<RwLock<Trie<String, String>>>,
     /// Global block id allocator
     id_allocator: AtomicU64,
 }
@@ -351,7 +351,7 @@ impl IndexManager {
     }
 
     /// Insert a new key-value pair into the index
-    pub fn insert(&self, key: String, value: u64) {
+    pub fn insert(&self, key: String, value: String) {
         match self.index.write() {
             Ok(mut write_lock) => {
                 write_lock.insert(key, value);
@@ -375,7 +375,7 @@ impl IndexManager {
     }
 
     /// Get the value by key from the index
-    pub fn get(&self, key: &str) -> Option<u64> {
+    pub fn get(&self, key: &str) -> Option<String> {
         match self.index.read() {
             Ok(read_lock) => read_lock.get(key).cloned(),
             Err(e) => {
@@ -393,9 +393,9 @@ mod tests {
     #[test]
     fn test_index_manager() {
         let index_manager = IndexManager::new();
-        index_manager.insert("test".to_string(), 123);
-        assert_eq!(index_manager.get("test"), Some(123));
-        index_manager.remove("test".to_string());
+        index_manager.insert("test".to_owned(), "123".to_owned());
+        assert_eq!(index_manager.get("test"), Some("123".to_owned()));
+        index_manager.remove("test".to_owned());
         assert_eq!(index_manager.get("test"), None);
     }
 }
