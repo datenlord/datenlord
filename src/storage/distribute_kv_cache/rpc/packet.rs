@@ -30,6 +30,12 @@ pub trait Decode {
         Self: Sized;
 }
 
+/// The ActualSize trait is used to get the actual size of the data structure.
+pub trait ActualSize {
+    /// Get the actual size of the data structure
+    fn actual_size(&self) -> u64;
+}
+
 /// The message module contains the data structures shared between the client and server.
 /// Assume the cluster only contains one version server, so we won't consider the compatibility
 #[derive(Debug)]

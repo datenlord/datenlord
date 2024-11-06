@@ -204,6 +204,8 @@ where
             len: req_len,
         };
 
+        debug!("{:?} Try to send request: {:?}", self, req_header);
+
         // concate req_header and req_buffer
         if let Ok(()) = self.send_data(&req_header, Some(req_packet)).await {
             debug!("{:?} Sent request success: {:?}", self, req_packet.seq());
@@ -241,7 +243,10 @@ where
                         .store(current_timestamp, std::sync::atomic::Ordering::Release);
                     // Update the received keep alive seq
                     if let Ok(resp_type) = RespType::from_u8(header.op) {
-                        if let RespType::FileBlockResponse = resp_type {
+                        if let RespType::KeepAliveResponse = resp_type {
+                            // Keep alive response, receive_header will handle this op.
+                            debug!("{:?} Received keep alive response: {:?}", self, header);
+                        } else {
                             debug!("{:?} Received response header: {:?}", self, header);
                             // Try to read to buffer
                             match self.recv_len(header.len).await {

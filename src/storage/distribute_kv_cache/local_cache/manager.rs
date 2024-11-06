@@ -298,13 +298,10 @@ impl KVBlockManager {
         self.cache.write().unwrap().put(meta.clone(), block_ref);
 
         // Write the block to the storage
-        let _ = self
+        self
             .backend
             .store(&relative_path, block.get_data().as_slice())
             .await
-            .map_err(|e| format!("Failed to write block: {}", e));
-
-        Ok(())
     }
 
     /// Invalidate the block
@@ -315,13 +312,10 @@ impl KVBlockManager {
 
         // Remove the block from the storage
         let relative_path = meta_data.to_id();
-        let _ = self
+        self
             .backend
             .remove(&relative_path)
             .await
-            .map_err(|e| format!("Failed to remove block: {}", e));
-
-        Ok(())
     }
 }
 

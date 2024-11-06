@@ -2,34 +2,35 @@ use std::{fmt, mem};
 
 use async_trait::async_trait;
 use bytes::{BufMut, BytesMut};
+use clippy_utilities::OverflowArithmetic;
 use tracing::warn;
 
 use crate::async_fuse::util::usize_to_u64;
 
 use super::{
     error::RpcError,
-    packet::{Decode, Encode, Packet},
-    utils::get_u64_from_buf,
+    packet::{ActualSize, Decode, Encode, Packet},
+    utils::{get_u64_from_buf, u64_to_usize},
 };
 
 /// The request type of the request.
 #[derive(Debug)]
 pub enum ReqType {
-    /// The keep alive request.
+    /// The keep alive request 0.
     KeepAliveRequest,
-    /// The file block request.
+    /// The file block request 1.
     FileBlockRequest,
-    /// The block allocate request.
+    /// The block allocate request 2.
     KVCacheIdAllocateRequest,
-    /// The kv cache index get request.
+    /// The kv cache index get request 3.
     KVCacheIndexMatchRequest,
-    /// The kv cache index batch insert request.
+    /// The kv cache index batch insert request 4.
     KVCacheIndexBatchInsertRequest,
-    /// The kv cache index remove request.
+    /// The kv cache index remove request 5.
     KVCacheIndexRemoveRequest,
-    /// The kv block get request.
+    /// The kv block get request 6.
     KVBlockGetRequest,
-    /// The kv block put request.
+    /// The kv block put request 7.
     KVBlockBatchPutRequest,
 }
 
@@ -417,6 +418,13 @@ impl Decode for KVCacheIdAllocateRequest {
     }
 }
 
+impl ActualSize for KVCacheIdAllocateRequest {
+    /// Get the actual size of the request.
+    fn actual_size(&self) -> u64 {
+        usize_to_u64(mem::size_of_val(&self.block_size))
+    }
+}
+
 /// The response to allocate a global kv cache id.
 #[derive(Debug, Default, Clone)]
 pub struct KVCacheIdAllocateResponse {
@@ -478,6 +486,15 @@ impl Decode for KVCacheIndexMatchRequest {
             block_size,
             kv_cache_key,
         })
+    }
+}
+
+impl ActualSize for KVCacheIndexMatchRequest {
+    /// Get the actual size of the request.
+    fn actual_size(&self) -> u64 {
+        let kv_cache_key_len = usize_to_u64(self.kv_cache_key.len());
+        let block_size_len = usize_to_u64(mem::size_of_val(&self.block_size));
+        kv_cache_key_len.overflow_add(block_size_len)
     }
 }
 
@@ -557,6 +574,8 @@ pub struct KVCacheIndexInsertRequest {
     pub offset: u64,
     /// The kv cache size
     pub size: u64,
+    /// The key length
+    pub kv_cache_key_len: u64,
     /// The kv cache key.
     pub kv_cache_key: Vec<u8>,
 }
@@ -568,6 +587,7 @@ impl Encode for KVCacheIndexInsertRequest {
         buf.put_u64(self.kv_cache_id.to_le());
         buf.put_u64(self.offset.to_le());
         buf.put_u64(self.size.to_le());
+        buf.put_u64(self.kv_cache_key_len.to_le());
         buf.put_slice(&self.kv_cache_key);
     }
 }
@@ -582,14 +602,34 @@ impl Decode for KVCacheIndexInsertRequest {
         let kv_cache_id = get_u64_from_buf(buf, 8)?;
         let offset = get_u64_from_buf(buf, 16)?;
         let size = get_u64_from_buf(buf, 24)?;
-        let kv_cache_key = buf[32..].to_vec();
+        let kv_cache_key_len = get_u64_from_buf(buf, 32)?;
+        let kv_cache_key = buf[40..40+u64_to_usize(kv_cache_key_len)].to_vec();
         Ok(KVCacheIndexInsertRequest {
             block_size,
             kv_cache_key,
             offset,
             size,
+            kv_cache_key_len,
             kv_cache_id,
         })
+    }
+}
+
+impl ActualSize for KVCacheIndexInsertRequest {
+    /// Get the actual size of the request.
+    fn actual_size(&self) -> u64 {
+        let kv_cache_key_len = usize_to_u64(self.kv_cache_key.len());
+        let block_size_len = usize_to_u64(mem::size_of_val(&self.block_size));
+        let kv_cache_id_len = usize_to_u64(mem::size_of_val(&self.kv_cache_id));
+        let offset_len = usize_to_u64(mem::size_of_val(&self.offset));
+        let size_len = usize_to_u64(mem::size_of_val(&self.size));
+        let kv_cache_key_len_len = usize_to_u64(mem::size_of_val(&self.kv_cache_key_len));
+        kv_cache_key_len
+            .overflow_add(block_size_len)
+            .overflow_add(kv_cache_id_len)
+            .overflow_add(offset_len)
+            .overflow_add(size_len)
+            .overflow_add(kv_cache_key_len_len)
     }
 }
 
@@ -675,7 +715,7 @@ impl Decode for KVCacheIndexBatchInsertRequest {
         let mut offset = 8;
         for _ in 0..batch_size {
             let index = KVCacheIndexInsertRequest::decode(&buf[offset..])?;
-            offset += 16 + index.kv_cache_key.len();
+            offset += u64_to_usize(index.actual_size());
             indexes.push(index);
         }
         let node_address = buf[offset..].to_vec();
@@ -684,6 +724,18 @@ impl Decode for KVCacheIndexBatchInsertRequest {
             indexes,
             node_address,
         })
+    }
+}
+
+impl ActualSize for KVCacheIndexBatchInsertRequest {
+    /// Get the actual size of the request.
+    fn actual_size(&self) -> u64 {
+        let mut size = usize_to_u64(mem::size_of_val(&self.batch_size));
+        for index in &self.indexes {
+            size = size.overflow_add(index.actual_size());
+        }
+        size = size.overflow_add(usize_to_u64(self.node_address.len()));
+        size
     }
 }
 
@@ -717,6 +769,15 @@ impl Decode for KVCacheIndexRemoveRequest {
             block_size,
             kv_cache_key,
         })
+    }
+}
+
+impl ActualSize for KVCacheIndexRemoveRequest {
+    /// Get the actual size of the request.
+    fn actual_size(&self) -> u64 {
+        let kv_cache_key_len = usize_to_u64(self.kv_cache_key.len());
+        let block_size_len = usize_to_u64(mem::size_of_val(&self.block_size));
+        kv_cache_key_len.overflow_add(block_size_len)
     }
 }
 
@@ -790,6 +851,15 @@ impl Decode for KVBlockGetRequest {
             block_size,
             kv_cache_id,
         })
+    }
+}
+
+impl ActualSize for KVBlockGetRequest {
+    /// Get the actual size of the request.
+    fn actual_size(&self) -> u64 {
+        let block_size_len = usize_to_u64(mem::size_of_val(&self.block_size));
+        let kv_cache_id_len = usize_to_u64(mem::size_of_val(&self.kv_cache_id));
+        block_size_len.overflow_add(kv_cache_id_len)
     }
 }
 
@@ -898,6 +968,16 @@ impl Decode for KVBlockPutRequest {
     }
 }
 
+impl ActualSize for KVBlockPutRequest {
+    /// Get the actual size of the request.
+    fn actual_size(&self) -> u64 {
+        let data_len = usize_to_u64(self.data.len());
+        let block_size_len = usize_to_u64(mem::size_of_val(&self.block_size));
+        let kv_cache_id_len = usize_to_u64(mem::size_of_val(&self.kv_cache_id));
+        data_len.overflow_add(block_size_len).overflow_add(kv_cache_id_len)
+    }
+}
+
 /// The request to put multiple kv blocks.
 #[derive(Debug, Default, Clone)]
 pub struct KVBlockBatchPutRequest {
@@ -932,6 +1012,17 @@ impl Decode for KVBlockBatchPutRequest {
             blocks.push(block);
         }
         Ok(KVBlockBatchPutRequest { batch_size, blocks })
+    }
+}
+
+impl ActualSize for KVBlockBatchPutRequest {
+    /// Get the actual size of the request.
+    fn actual_size(&self) -> u64 {
+        let mut size = usize_to_u64(mem::size_of_val(&self.batch_size));
+        for block in &self.blocks {
+            size = size.overflow_add(block.actual_size());
+        }
+        size
     }
 }
 
@@ -1025,6 +1116,20 @@ impl Encode for KVCacheRequest {
             Self::KVCacheIndexRemoveRequest(request) => request.encode(buf),
             Self::KVBlockGetRequest(request) => request.encode(buf),
             Self::KVBlockBatchPutRequest(request) => request.encode(buf),
+        }
+    }
+}
+
+impl ActualSize for KVCacheRequest {
+    /// Get the actual size of the request.
+    fn actual_size(&self) -> u64 {
+        match self {
+            Self::KVCacheIdAllocateRequest(request) => request.actual_size(),
+            Self::KVCacheIndexMatchRequest(request) => request.actual_size(),
+            Self::KVCacheIndexBatchInsertRequest(request) => request.actual_size(),
+            Self::KVCacheIndexRemoveRequest(request) => request.actual_size(),
+            Self::KVBlockGetRequest(request) => request.actual_size(),
+            Self::KVBlockBatchPutRequest(request) => request.actual_size(),
         }
     }
 }
@@ -1301,7 +1406,7 @@ impl Packet for KVCachePacket {
 
     /// Get request size to construct request header
     fn get_req_len(&self) -> u64 {
-        usize_to_u64(mem::size_of_val(&self.request))
+        self.request.actual_size()
     }
 }
 

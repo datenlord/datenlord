@@ -426,6 +426,11 @@ impl Job for KVBlockHandler {
                         }
                     }
 
+                    debug!(
+                        "KVBlockBatchPutRequest: Success ids: {:?}, Failed ids: {:?}",
+                        success_ids, failed_ids
+                    );
+
                     let kv_block_batch_put_resp = KVBlockBatchPutResponse {
                         block_size: req_body.batch_size,
                         success_batch_size: success_ids.len() as u64,
@@ -822,6 +827,7 @@ impl RpcServerConnectionHandler for KVCacheHandler {
         req_buffer: &[u8],
         done_tx: mpsc::Sender<Vec<u8>>,
     ) {
+        debug!("KVCacheHandler: Received request: {:?}", req_header);
         // Dispatch the handler for the connection
         if let Ok(req_type) = ReqType::from_u8(req_header.op) {
             // Dispatch current kv cache request to index or block handler.
@@ -1045,7 +1051,7 @@ mod tests {
 
     use bytes::BytesMut;
 
-    use crate::storage::distribute_kv_cache::{
+    use crate::{async_fuse::util::usize_to_u64, storage::distribute_kv_cache::{
         local_cache::{
             block::BLOCK_SIZE,
             manager::{IndexManager, KVBlockManager},
@@ -1057,7 +1063,7 @@ mod tests {
             server::RpcServerConnectionHandler,
             workerpool::WorkerPool,
         },
-    };
+    }};
 
     /// Test index handler and block handler
 
@@ -1144,6 +1150,7 @@ mod tests {
                 kv_cache_id: 0,
                 offset: 0,
                 size: 0,
+                kv_cache_key_len: usize_to_u64("test_key".as_bytes().to_vec().len()),
                 kv_cache_key: "test_key".as_bytes().to_vec(),
             }],
             node_address: "test_key".as_bytes().to_vec(),

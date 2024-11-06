@@ -4,11 +4,10 @@ use tokio::sync::Mutex;
 use tracing::{debug, error, warn};
 
 use crate::{
-    common::{
+    async_fuse::util::usize_to_u64, common::{
         error::{DatenLordError, DatenLordResult},
         task_manager::{TaskName, TASK_MANAGER},
-    },
-    connect_timeout,
+    }, connect_timeout
 };
 
 use super::{
@@ -20,7 +19,7 @@ use super::{
             KVBlockBatchPutRequest, KVBlockGetRequest, KVBlockPutRequest, KVCacheIdAllocateRequest,
             KVCacheIndexBatchInsertRequest, KVCacheIndexInsertRequest, KVCacheIndexMatchRequest,
             KVCacheIndexRemoveRequest, KVCachePacket, KVCacheRequest, KVCacheResponse, ReqType,
-        },
+        }, utils::u64_to_usize,
     },
 };
 
@@ -41,6 +40,8 @@ const UNUSED_KV_BLOCK_ID: u64 = 0;
 pub struct KVBlock {
     /// The block id
     pub block_id: u64,
+    /// The block size
+    pub block_size: u64,
     /// The block data, contains one or more kv cache data
     pub data: Vec<u8>,
 }
@@ -75,6 +76,7 @@ impl LocalBlockCache {
         Self {
             block_cache: KVBlock {
                 block_id: UNUSED_KV_BLOCK_ID,
+                block_size,
                 data: Vec::with_capacity(block_size as usize),
             },
             block_metas: Vec::new(),
@@ -129,7 +131,11 @@ impl LocalBlockCache {
 
     /// Get KVBlock
     pub fn get_kv_block(&self) -> KVBlock {
-        self.block_cache.clone()
+        let mut current_block = self.block_cache.clone();
+        // Return a copy of the block data
+        current_block.data.resize(u64_to_usize(self.block_cache.block_size), 0);
+
+        current_block
     }
 
     /// Get KVCacheMeta
@@ -140,17 +146,17 @@ impl LocalBlockCache {
 
 /// The distribute cache client
 #[derive(Debug, Clone)]
-pub struct DistributeCacheClient {
+pub struct DistributeKVCacheClient {
     /// The distirbute cache inner
-    inner: DistributeCacheClientInner,
+    inner: DistributeKVCacheClientInner,
     /// Single block cache, used to collect the block data from the infer side.
     block_cache: Arc<Mutex<LocalBlockCache>>,
 }
 
-impl DistributeCacheClient {
+impl DistributeKVCacheClient {
     /// Create a new distribute cache client
     pub fn new(cluster_manager: Arc<ClusterManager>, block_size: u64) -> Self {
-        let inner = DistributeCacheClientInner::new(cluster_manager, block_size);
+        let inner = DistributeKVCacheClientInner::new(cluster_manager, block_size);
         Self {
             inner,
             block_cache: Arc::new(Mutex::new(LocalBlockCache::new(block_size))),
@@ -164,7 +170,7 @@ impl DistributeCacheClient {
     }
 
     /// Try to load the block from the distribute cache
-    pub async fn try_load(&self, prefix: String, data: &mut [u8]) -> DatenLordResult<()> {
+    pub async fn try_load(&self, prefix: String) -> DatenLordResult<Vec<u8>> {
         // 1. Match prefix to get the block id and target node
         let (kv_block_meta, node_address) = self.inner.match_prefix(prefix.clone()).await?;
 
@@ -192,9 +198,10 @@ impl DistributeCacheClient {
         let offset = kv_block_meta.offset as usize;
         let size = kv_block_meta.size as usize;
         // TODO: Check range or update with bytesmut
-        data.copy_from_slice(&block_data[offset..offset + size]);
+        let mut data = Vec::with_capacity(size);
+        data.extend_from_slice(&block_data[offset..offset + size]);
 
-        Ok(())
+        Ok(data)
     }
 
     /// Insert a block to the distribute cache
@@ -202,9 +209,14 @@ impl DistributeCacheClient {
         // 1. fill current block cache
         let mut block_cache = self.block_cache.lock().await;
         let mut current_block_id = block_cache.get_block_id();
+        debug!(
+            "Insert kv cache to the block cache with block id: {:?}",
+            current_block_id
+        );
 
-        if current_block_id == UNUSED_KV_BLOCK_ID {
+        while current_block_id == UNUSED_KV_BLOCK_ID {
             let new_block_id = self.inner.alloc_block_id().await?;
+            debug!("Alloc new block id: {:?}", new_block_id);
             block_cache.clear(new_block_id);
             current_block_id = new_block_id;
         }
@@ -220,7 +232,7 @@ impl DistributeCacheClient {
         match block_cache.insert(kv_cache_meta, data) {
             Ok(()) => {
                 debug!(
-                    "Insert kv cache to the block cache with block id: {:?}",
+                    "Insert kv cache to the block cache with block id: {:?} successfully",
                     current_block_id
                 );
             }
@@ -255,7 +267,7 @@ impl DistributeCacheClient {
 
 /// The distribute cache client
 #[derive(Debug, Clone)]
-pub struct DistributeCacheClientInner {
+pub struct DistributeKVCacheClientInner {
     /// The cluster manager, only used to watch hashring changes
     cluster_manager: Arc<ClusterManager>,
     /// The rpc client cache
@@ -264,7 +276,7 @@ pub struct DistributeCacheClientInner {
     block_size: u64,
 }
 
-impl DistributeCacheClientInner {
+impl DistributeKVCacheClientInner {
     /// Create a new distribute cache client
     pub fn new(cluster_manager: Arc<ClusterManager>, block_size: u64) -> Self {
         let rpc_client_cache = Arc::new(Mutex::new(HashMap::new()));
@@ -445,12 +457,14 @@ impl DistributeCacheClientInner {
         // Generate Vec<KVCacheIndexInsertRequest>
         let mut kv_cache_index_insert_requests = Vec::new();
         for item in kv_cache_meta_list.into_iter() {
+            let kv_cache_key = item.prefix.into_bytes();
             kv_cache_index_insert_requests.push(KVCacheIndexInsertRequest {
                 block_size: self.block_size,
                 kv_cache_id: item.block_id,
                 offset: item.offset,
                 size: item.size,
-                kv_cache_key: item.prefix.into_bytes(),
+                kv_cache_key_len: usize_to_u64(kv_cache_key.len()),
+                kv_cache_key,
             });
         }
 
@@ -475,7 +489,7 @@ impl DistributeCacheClientInner {
 
         match rx.recv_async().await {
             Ok(Ok(response)) => match response {
-                KVCacheResponse::KVCacheIndexRemoveResponse(_) => {
+                KVCacheResponse::KVCacheIndexInsertResponse(_) => {
                     return Ok(());
                 }
                 _ => {
@@ -680,13 +694,10 @@ impl DistributeCacheClientInner {
                     context: vec![format!("Failed to ping cache node: {:?}", err)],
                 })?;
 
-            let rpc_client = rpc_client_cache
-                .insert(addr.clone(), Arc::new(rpc_client))
-                .ok_or(DatenLordError::DistributeCacheManagerErr {
-                    context: vec![format!("Failed to insert rpc client")],
-                })?;
+            let client = Arc::new(rpc_client);
+            rpc_client_cache.insert(addr.clone(), Arc::clone(&client));
 
-            Ok(rpc_client)
+            Ok(client)
         }
     }
 }

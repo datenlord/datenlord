@@ -107,7 +107,7 @@ impl Block {
     /// Create a new Block instance
     pub fn new(meta_data: MetaData, data: Vec<u8>) -> Self {
         // Make sure data length is BLOCK_SIZE
-        debug_assert!(data.len() == BLOCK_SIZE);
+        // debug_assert!(data.len() == BLOCK_SIZE);
 
         Block { meta_data, data }
     }
