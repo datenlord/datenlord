@@ -71,10 +71,10 @@ struct LocalBlockCache {
 
 impl LocalBlockCache {
     /// Create a new local block cache
-    pub fn new(block_id: u64, block_size: u64) -> Self {
+    pub fn new(block_size: u64) -> Self {
         Self {
             block_cache: KVBlock {
-                block_id,
+                block_id: UNUSED_KV_BLOCK_ID,
                 data: Vec::with_capacity(block_size as usize),
             },
             block_metas: Vec::new(),
@@ -153,7 +153,7 @@ impl DistributeCacheClient {
         let inner = DistributeCacheClientInner::new(cluster_manager, block_size);
         Self {
             inner,
-            block_cache: Arc::new(Mutex::new(LocalBlockCache::new(0, block_size))),
+            block_cache: Arc::new(Mutex::new(LocalBlockCache::new(block_size))),
         }
     }
 
@@ -688,5 +688,87 @@ impl DistributeCacheClientInner {
 
             Ok(rpc_client)
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::{KVCacheMeta, LocalBlockCache};
+
+
+    /// Test local block cache operations
+    /// 1. Insert kv cache to the local block cache
+    /// 2. Get the block id
+    /// 3. Get the next offset
+    /// 4. Clear the local block cache with new block id
+    /// 5. Get KVBlock
+    /// 6. Get KVCacheMeta
+    #[tokio::test]
+    async fn test_local_block_cache() {
+        // Create a new local block cache with 64 block size
+        let mut local_block_cache = LocalBlockCache::new(64);
+
+        let fetched_block_id = 1;
+        local_block_cache.clear(fetched_block_id);
+
+        let data = vec![1u8; 10];
+        let offset = local_block_cache.get_next_offset();
+        let kv_cache_meta = KVCacheMeta {
+            block_id: fetched_block_id,
+            offset: offset,
+            size: data.len() as u64,
+            prefix: "test1".to_string(),
+        };
+        let insert_result = local_block_cache.insert(kv_cache_meta, data).is_ok();
+        assert!(insert_result);
+
+        let data = vec![2u8; 30];
+        let offset = local_block_cache.get_next_offset();
+        let kv_cache_meta = KVCacheMeta {
+            block_id: fetched_block_id,
+            offset: offset,
+            size: data.len() as u64,
+            prefix: "test2".to_string(),
+        };
+        let insert_result = local_block_cache.insert(kv_cache_meta, data).is_ok();
+        assert!(insert_result);
+
+        // Current local block cache is full
+        let data = vec![3u8; 30];
+        let offset = local_block_cache.get_next_offset();
+        let kv_cache_meta = KVCacheMeta {
+            block_id: fetched_block_id,
+            offset: offset,
+            size: data.len() as u64,
+            prefix: "test3".to_string(),
+        };
+        let insert_result = local_block_cache.insert(kv_cache_meta, data).is_ok();
+        assert!(!insert_result);
+
+        let current_kv_block = local_block_cache.get_kv_block();
+        assert_eq!(current_kv_block.block_id, fetched_block_id);
+        assert_eq!(current_kv_block.data.len(), 40);
+        assert_eq!(current_kv_block.data[0], 1u8);
+        assert_eq!(current_kv_block.data[10], 2u8);
+
+        let current_kv_cache_metas = local_block_cache.get_kv_cache_metas();
+        assert_eq!(current_kv_cache_metas.len(), 2);
+        assert_eq!(current_kv_cache_metas[0].block_id, fetched_block_id);
+        assert_eq!(current_kv_cache_metas[0].offset, 0);
+        assert_eq!(current_kv_cache_metas[0].size, 10);
+        assert_eq!(current_kv_cache_metas[0].prefix, "test1");
+        assert_eq!(current_kv_cache_metas[1].block_id, fetched_block_id);
+        assert_eq!(current_kv_cache_metas[1].offset, 10);
+        assert_eq!(current_kv_cache_metas[1].size, 30);
+        assert_eq!(current_kv_cache_metas[1].prefix, "test2");
+
+        // Clean the local block cache
+        let new_block_id = 2;
+        local_block_cache.clear(new_block_id);
+        assert_eq!(local_block_cache.get_block_id(), new_block_id);
+        assert_eq!(local_block_cache.get_next_offset(), 0);
+        assert_eq!(local_block_cache.get_kv_block().block_id, new_block_id);
+        assert_eq!(local_block_cache.get_kv_cache_metas().len(), 0);
     }
 }
