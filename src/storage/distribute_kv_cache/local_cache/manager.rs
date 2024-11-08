@@ -378,6 +378,27 @@ impl IndexManager {
             }
         }
     }
+
+    /// Get longest prefix match value by key from the index and value
+    pub fn get_longest_kv(&self, key: &str) -> Option<(String, String)> {
+        match self.index.read() {
+            Ok(read_lock) => {
+                match read_lock.get_ancestor_key(key) {
+                    Some(ancestor_key) => {
+                    match read_lock.get_ancestor_value(key) {
+                            Some(value) => Some((ancestor_key.clone(), value.clone())),
+                            None => None,
+                        }
+                    }
+                    None => None,
+                }
+            },
+            Err(e) => {
+                error!("Failed to get read lock: {}", e);
+                None
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -391,5 +412,14 @@ mod tests {
         assert_eq!(index_manager.get("test"), Some("123".to_owned()));
         index_manager.remove("test".to_owned());
         assert_eq!(index_manager.get("test"), None);
+
+        // Test longest prefix match
+        index_manager.insert("test".to_owned(), "123".to_owned());
+        index_manager.insert("test1".to_owned(), "1234".to_owned());
+        index_manager.insert("test2".to_owned(), "12345".to_owned());
+        assert_eq!(index_manager.get_longest_kv("test"), Some(("test".to_owned(), "123".to_owned())));
+        assert_eq!(index_manager.get_longest_kv("test1"), Some(("test1".to_owned(), "1234".to_owned())));
+        assert_eq!(index_manager.get_longest_kv("test2"), Some(("test2".to_owned(), "12345".to_owned())));
+        assert_eq!(index_manager.get_longest_kv("test3"), Some(("test".to_owned(), "123".to_owned())));
     }
 }

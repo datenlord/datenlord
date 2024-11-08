@@ -503,8 +503,9 @@ impl ActualSize for KVCacheIndexMatchRequest {
 pub struct KVCacheIndexMatchResponse {
     /// The kv block size.
     pub block_size: u64,
+    /// The kv cache key length, used to identify the longest match length.
+    pub kv_cache_key_len: u64,
     /// The kv cache id, match success return kv cache id, otherwise return 0.
-    /// TODO: support partial match
     pub kv_cache_id: u64,
     /// The kv cache offset
     pub offset: u64,
@@ -520,6 +521,7 @@ impl Encode for KVCacheIndexMatchResponse {
     /// Encode the kv cache index match response into a byte buffer.
     fn encode(&self, buf: &mut BytesMut) {
         buf.put_u64(self.block_size.to_le());
+        buf.put_u64(self.kv_cache_key_len.to_le());
         buf.put_u64(self.kv_cache_id.to_le());
         buf.put_u64(self.offset.to_le());
         buf.put_u64(self.size.to_le());
@@ -541,19 +543,21 @@ impl Decode for KVCacheIndexMatchResponse {
             return Err(RpcError::InternalError("Insufficient bytes".to_owned()));
         }
         let block_size = get_u64_from_buf(buf, 0)?;
-        let kv_cache_id = get_u64_from_buf(buf, 8)?;
-        let offset = get_u64_from_buf(buf, 16)?;
-        let size = get_u64_from_buf(buf, 24)?;
-        let status = match buf.get(32) {
+        let kv_cache_key_len = get_u64_from_buf(buf, 8)?;
+        let kv_cache_id = get_u64_from_buf(buf, 16)?;
+        let offset = get_u64_from_buf(buf, 24)?;
+        let size = get_u64_from_buf(buf, 32)?;
+        let status = match buf.get(40) {
             Some(&0) => StatusCode::Success,
             Some(&1) => StatusCode::NotFound,
             Some(&2) => StatusCode::InternalError,
             Some(&3) => StatusCode::VersionMismatch,
             _ => return Err(RpcError::InternalError("Invalid status code".to_owned())),
         };
-        let node_address = buf.get(33..).unwrap_or(&[]).to_vec();
+        let node_address = buf.get(41..).unwrap_or(&[]).to_vec();
         Ok(KVCacheIndexMatchResponse {
             block_size,
+            kv_cache_key_len,
             kv_cache_id,
             offset,
             size,

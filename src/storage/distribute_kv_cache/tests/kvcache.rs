@@ -123,13 +123,15 @@ mod tests {
 
         // Test get 1 from the kv cache client
         let prefix = "test1";
-        let buf = kvcacheclient.try_load(prefix.to_owned()).await.unwrap();
+        let (matched_prefix, buf) = kvcacheclient.try_load(prefix.to_owned()).await.unwrap();
+        assert_eq!(matched_prefix, "test1");
         assert_eq!(buf.len(), 30);
         assert!(buf.iter().all(|&x| x == 1));
 
         // Test get 2 from the kv cache client
         let prefix = "test2";
-        let buf = kvcacheclient.try_load(prefix.to_owned()).await.unwrap();
+        let (matched_prefix, buf) = kvcacheclient.try_load(prefix.to_owned()).await.unwrap();
+        assert_eq!(matched_prefix, "test2");
         assert_eq!(buf.len(), 30);
         assert!(buf.iter().all(|&x| x == 2));
         println!("{:?}", buf);
@@ -138,5 +140,12 @@ mod tests {
         let prefix = "test4";
         let load_result = kvcacheclient.try_load(prefix.to_owned()).await;
         assert!(load_result.is_err());
+
+        // Test get 111 from the kv cache client, should return partial result
+        let prefix = "test111";
+        let (matched_prefix, buf) = kvcacheclient.try_load(prefix.to_owned()).await.unwrap();
+        assert_eq!(matched_prefix, "test1");
+        assert_eq!(buf.len(), 30);
+        assert!(buf.iter().all(|&x| x == 1));
     }
 }

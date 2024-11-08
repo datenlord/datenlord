@@ -57,7 +57,7 @@ pub struct KVCacheMeta {
     pub offset: u64,
     /// The kv cache size
     pub size: u64,
-    /// The kv cache id
+    /// The kv cache prefix
     pub prefix: String,
 }
 
@@ -169,8 +169,8 @@ impl DistributeKVCacheClient {
         self.inner.start_watch().await
     }
 
-    /// Try to load the block from the distribute cache
-    pub async fn try_load(&self, prefix: String) -> DatenLordResult<Vec<u8>> {
+    /// Try to load the block from the distribute cache, return sub string with the prefix
+    pub async fn try_load(&self, prefix: String) -> DatenLordResult<(String, Vec<u8>)> {
         // 1. Match prefix to get the block id and target node
         let (kv_block_meta, node_address) = self.inner.match_prefix(prefix.clone()).await?;
 
@@ -201,7 +201,7 @@ impl DistributeKVCacheClient {
         let mut data = Vec::with_capacity(size);
         data.extend_from_slice(&block_data[offset..offset + size]);
 
-        Ok(data)
+        Ok((kv_block_meta.prefix, data))
     }
 
     /// Insert a block to the distribute cache
@@ -382,6 +382,8 @@ impl DistributeKVCacheClientInner {
 
     /// Match the prefix and get block id from the distribute cache
     /// return the kv cache meta info and remote node address
+    ///
+    /// Support to find
     async fn match_prefix(&self, prefix: String) -> DatenLordResult<(KVCacheMeta, String)> {
         let raw_prefix = prefix.clone();
         let prefix = prefix.into_bytes();
@@ -420,7 +422,8 @@ impl DistributeKVCacheClientInner {
                             block_id: response.kv_cache_id,
                             offset: response.offset,
                             size: response.size,
-                            prefix: raw_prefix,
+                            // Get sub string from the raw prefix
+                            prefix: raw_prefix[0..u64_to_usize(response.kv_cache_key_len)].to_string(),
                         },
                         node_address,
                     ));

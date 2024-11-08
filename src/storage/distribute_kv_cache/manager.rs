@@ -706,10 +706,10 @@ impl Job for IndexHandler {
                     let kv_cache_id_allocate_resp = match String::from_utf8(req_body.kv_cache_key) {
                         Ok(key) => {
                             // Get the value by key from the index
-                            let value = self.index_manager.get(&key);
+                            let longest_kv = self.index_manager.get_longest_kv(&key);
 
-                            match value {
-                                Some(value) => match parse_kv_cache_index_value(&value) {
+                            match longest_kv {
+                                Some((key, value)) => match parse_kv_cache_index_value(&value) {
                                     Ok((block_id, offset, size, addr)) => {
                                         debug!(
                                             "KVCacheIndexMatchRequest: Matched value: {:?}",
@@ -717,6 +717,7 @@ impl Job for IndexHandler {
                                         );
                                         KVCacheIndexMatchResponse {
                                             block_size: req_body.block_size,
+                                            kv_cache_key_len: usize_to_u64(key.len()),
                                             kv_cache_id: block_id,
                                             offset,
                                             size,
@@ -728,6 +729,7 @@ impl Job for IndexHandler {
                                         error!("Failed to parse kv cache index value: {:?}", err);
                                         KVCacheIndexMatchResponse {
                                             block_size: req_body.block_size,
+                                            kv_cache_key_len: 0,
                                             kv_cache_id: 0,
                                             offset: 0,
                                             size: 0,
@@ -738,6 +740,7 @@ impl Job for IndexHandler {
                                 },
                                 None => KVCacheIndexMatchResponse {
                                     block_size: req_body.block_size,
+                                    kv_cache_key_len: 0,
                                     kv_cache_id: 0,
                                     offset: 0,
                                     size: 0,
@@ -750,6 +753,7 @@ impl Job for IndexHandler {
                             error!("Failed to convert kv cache key to string: {:?}", err);
                             KVCacheIndexMatchResponse {
                                 block_size: req_body.block_size,
+                                kv_cache_key_len: 0,
                                 kv_cache_id: 0,
                                 offset: 0,
                                 size: 0,
