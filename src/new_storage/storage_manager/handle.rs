@@ -174,8 +174,8 @@ impl FileHandleInner {
     /// Get the open file attributes.
     #[inline]
     pub fn getattr(&self) -> FileAttr {
-        debug!("Get attr for ino: {}", self.ino);
         let attr = self.attr.read();
+        info!("Get attr for ino: {} attr: {:?}", self.ino, *attr);
         println!("get attr {:?}", *attr);
         *attr
     }
@@ -543,7 +543,8 @@ impl FileHandle {
 
     /// Writes data to the file starting at the given offset.
     pub async fn write(&self, offset: u64, buf: &[u8], size: u64) -> StorageResult<()> {
-        let slices = offset_to_slice(self.block_size.cast(), offset, buf.len().cast());
+        let slices: smallvec::SmallVec<[BlockSlice; 2]> =
+            offset_to_slice(self.block_size.cast(), offset, buf.len().cast());
         self.inner.write(buf, &slices, size).await
     }
 

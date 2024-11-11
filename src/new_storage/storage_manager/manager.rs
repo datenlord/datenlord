@@ -41,7 +41,7 @@ impl<M: MetaData + Send + Sync + 'static> Storage for StorageManager<M> {
     #[inline]
     #[allow(clippy::unwrap_used)]
     async fn open(&self, ino: u64) {
-        println!("try to open filehandle {ino:?}");
+        info!("try to open filehandle {ino:?}");
         // Get existing file handle if it exists
         if let Some(handle) = self.handles.get_handle(ino).await {
             // Try to get lock, if it is locked, it means the file handle is being closed.
@@ -58,7 +58,7 @@ impl<M: MetaData + Send + Sync + 'static> Storage for StorageManager<M> {
             self.handles.add_handle(handle).await;
         }
 
-        println!(
+        info!(
             "open filehandle {:?} count",
             self.handles.get_handle(ino).await.unwrap().open_cnt().await
         );
@@ -93,6 +93,7 @@ impl<M: MetaData + Send + Sync + 'static> Storage for StorageManager<M> {
     /// Default implementation does nothing.
     #[inline]
     async fn setattr(&self, ino: u64, attr: FileAttr) {
+        info!("setattr: ino: {} with attr: {:?}", ino, attr);
         match self.get_handle(ino).await {
             Some(fh) => fh.setattr(attr),
             None => {
@@ -139,12 +140,12 @@ impl<M: MetaData + Send + Sync + 'static> Storage for StorageManager<M> {
     /// Closes a file specified by the file handle.
     #[inline]
     async fn close(&self, ino: u64) -> StorageResult<()> {
-        println!("try to close filehandle {:?}", ino);
+        info!("try to close filehandle {:?}", ino);
         if let Some(_fh) = self.handles.close_handle(ino).await? {
-            println!("close filehandle {ino:?} ok");
+            info!("close filehandle {ino:?} ok");
             Ok(())
         } else {
-            println!("close filehandle {ino:?} ok");
+            info!("close filehandle {ino:?} ok");
             Ok(())
         }
     }
@@ -153,6 +154,10 @@ impl<M: MetaData + Send + Sync + 'static> Storage for StorageManager<M> {
     /// old size.
     #[inline]
     async fn truncate(&self, ino: u64, old_size: u64, new_size: u64) -> StorageResult<()> {
+        info!(
+            "truncate: ino: {} old_size: {} new_size: {}",
+            ino, old_size, new_size
+        );
         // If new_size == old_size, do nothing
         if new_size >= old_size {
             return Ok(());
@@ -176,16 +181,23 @@ impl<M: MetaData + Send + Sync + 'static> Storage for StorageManager<M> {
             if fill_size == self.block_size {
                 return Ok(());
             }
-            let handle = FileHandle::new(
-                ino,
-                self.block_size,
-                Arc::clone(&self.cache),
-                Arc::clone(&self.backend),
-                Arc::clone(&self.metadata_client),
-            );
+
             let fill_content = vec![0; fill_size];
-            handle.write(new_size, &fill_content, new_size).await?;
-            handle.close().await?;
+            let opened = self.try_open(ino).await;
+            if !opened {
+                self.open(ino).await;
+            }
+
+            match self.get_handle(ino).await {
+                Some(fh) => {
+                    fh.write(new_size, &fill_content, new_size).await?;
+                }
+                None => {
+                    panic!("Cannot write to a file that is not open.");
+                }
+            }
+
+            self.close(ino).await?;
         }
 
         Ok(())

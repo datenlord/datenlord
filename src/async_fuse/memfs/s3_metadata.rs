@@ -298,57 +298,70 @@ impl MetaData for S3MetaData {
         storage: &StorageType,
     ) -> DatenLordResult<(Duration, FuseAttr)> {
         let ttl = Duration::new(MY_TTL_SEC, 0);
-        let (res, retry) = retry_txn!(TXN_RETRY_LIMIT, {
-            let mut txn = self.kv_engine.new_meta_txn().await;
-            let mut inode = self.get_inode_from_txn(txn.as_mut(), ino).await?;
-            let remote_attr = inode.get_attr();
-            let dirty_attr_for_reply =
-                match remote_attr.setattr_precheck(param, context.uid, context.gid)? {
-                    Some(dirty_attr) => {
-                        if remote_attr.size != dirty_attr.size {
-                            inode.update_mtime_ctime_to_now();
-                            storage
-                                .truncate(ino, remote_attr.size.cast(), dirty_attr.size.cast())
-                                .await?;
+        let mut txn = self.kv_engine.new_meta_txn().await;
+        let mut inode = self.get_inode_from_txn(txn.as_mut(), ino).await?;
+        let remote_attr = inode.get_attr();
+        let req_context = context.clone();
+        let dirty_attr_for_reply =
+            match remote_attr.setattr_precheck(param, context.uid, context.gid)? {
+                Some(dirty_attr) => {
+                    info!(
+                        "setattr() ino={} new_attr={:?} old_attr={:?}",
+                        ino, dirty_attr, remote_attr
+                    );
+                    if remote_attr.size != dirty_attr.size {
+                        inode.update_mtime_ctime_to_now();
 
-                            // Update local attr
-                            match storage.getattr(ino).await {
-                                // The file is open, update the attr in `open_files`
-                                Ok(mut file_attr) => {
-                                    file_attr.size = dirty_attr.size;
-                                    file_attr.mtime = inode.get_attr().mtime;
-                                    file_attr.ctime = inode.get_attr().ctime;
-                                    storage.setattr(ino, file_attr).await;
-                                }
-                                Err(e) => {
-                                    debug!(
+                        // Put current work to filehandle
+                        if !storage.try_open(ino).await {
+                            // If current filehandle is not existed, we need to open it and init metadata
+                            storage.open(ino).await;
+                            // Use max permission to open the file
+                            let read_with_write_perm = 6; // OFlag::O_RDWR
+                            let (_, attr) = self
+                                .open_remote(req_context, ino, read_with_write_perm)
+                                .await?;
+                            storage.setattr(ino, attr).await;
+                        }
+
+                        storage
+                            .truncate(ino, remote_attr.size.cast(), dirty_attr.size.cast())
+                            .await?;
+
+                        // Update local attr
+                        match storage.getattr(ino).await {
+                            // The file is open, update the attr in `open_files`
+                            Ok(mut file_attr) => {
+                                info!(
+                                    "setattr() ino={} old attr {:?} to new attr={:?}",
+                                    ino, file_attr, dirty_attr,
+                                );
+                                file_attr.size = dirty_attr.size;
+                                file_attr.mtime = dirty_attr.mtime;
+                                file_attr.ctime = dirty_attr.ctime;
+                                storage.setattr(ino, file_attr).await;
+                            }
+                            Err(e) => {
+                                info!(
                                     "setattr() failed to get opened attr of ino={} with error={:?}",
                                     ino, e
-                                    );
-                                }
+                                );
                             }
                         }
-                        inode.set_attr(dirty_attr);
-                        dirty_attr
-                    }
-                    None => {
-                        // setattr did not change any attribute.
-                        return Ok((ttl, fs_util::convert_to_fuse_attr(remote_attr)));
-                    }
-                };
 
-            txn.set(
-                &KeyType::INum2Node(ino),
-                &ValueType::Node(inode.to_serial_node()),
-            );
+                        // Close current filehandle
+                        storage.close(ino).await?;
+                    }
+                    inode.set_attr(dirty_attr);
+                    dirty_attr
+                }
+                None => {
+                    // setattr did not change any attribute.
+                    return Ok((ttl, fs_util::convert_to_fuse_attr(remote_attr)));
+                }
+            };
 
-            (
-                txn.commit().await,
-                (ttl, fs_util::convert_to_fuse_attr(dirty_attr_for_reply)),
-            )
-        });
-        FILESYSTEM_METRICS.observe_storage_operation_throughput(retry, "setattr");
-        res
+        Ok((ttl, fs_util::convert_to_fuse_attr(dirty_attr_for_reply)))
     }
 
     #[instrument(skip(self), err, ret)]
