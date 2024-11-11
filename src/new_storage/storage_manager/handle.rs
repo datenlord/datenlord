@@ -402,8 +402,7 @@ impl FileHandleInner {
         }
 
         // Commit current metadata to the meta data server.
-        let task = tasks.get(0)?;
-        let ino = task.ino.to_owned();
+        let ino = self.ino;
         let current_attr = self.getattr();
         info!(
             "Commit meta data for ino: {} with attr: {:?}",

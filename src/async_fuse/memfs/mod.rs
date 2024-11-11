@@ -220,7 +220,6 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
             gid: req.gid(),
         };
         let lookup_res = self.metadata.lookup_helper(context, parent, name).await;
-        info!("lookup_res = {:?}", lookup_res);
         match lookup_res {
             Ok((ttl, fuse_attr, generation)) => reply.entry(ttl, fuse_attr, generation).await,
             Err(e) => reply.error(e).await,
