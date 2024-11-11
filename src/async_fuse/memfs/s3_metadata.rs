@@ -331,15 +331,15 @@ impl MetaData for S3MetaData {
                         // Update local attr
                         match storage.getattr(ino).await {
                             // The file is open, update the attr in `open_files`
-                            Ok(mut file_attr) => {
+                            Ok(file_attr) => {
                                 info!(
                                     "setattr() ino={} old attr {:?} to new attr={:?}",
                                     ino, file_attr, dirty_attr,
                                 );
-                                file_attr.size = dirty_attr.size;
-                                file_attr.mtime = dirty_attr.mtime;
-                                file_attr.ctime = dirty_attr.ctime;
-                                storage.setattr(ino, file_attr).await;
+                                // file_attr.size = dirty_attr.size;
+                                // file_attr.mtime = dirty_attr.mtime;
+                                // file_attr.ctime = dirty_attr.ctime;
+                                storage.setattr(ino, dirty_attr).await;
                             }
                             Err(e) => {
                                 info!(
@@ -352,7 +352,14 @@ impl MetaData for S3MetaData {
                         // Close current filehandle
                         storage.close(ino).await?;
                     }
+                    // Update remote attr
                     inode.set_attr(dirty_attr);
+                    txn.set(
+                        &KeyType::INum2Node(ino),
+                        &ValueType::Node(inode.to_serial_node()),
+                    );
+                    txn.commit().await?;
+
                     dirty_attr
                 }
                 None => {
