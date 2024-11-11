@@ -21,7 +21,7 @@ crate-type = ["cdylib", "staticlib"]
 doc = false
 
 [dependencies]
-datenlord = { path = "../../" }
+datenlord = { path = "../../../" }
 clap = { version = "4", features = ["derive"] }
 once_cell = "1.17.1"
 bytes = "1.6.0"
