@@ -235,7 +235,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         debug!("getattr(ino={}, req={:?})", ino, req);
 
         // Get from local storage first
-        if let Ok(file_attr) = self.storage.getattr(ino) {
+        if let Ok(file_attr) = self.storage.getattr(ino).await {
             debug!(
                 "getattr() successfully got the attr={:?} of ino={}",
                 file_attr, ino,
@@ -292,12 +292,12 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         };
 
         // Check if the file is already opened
-        if self.storage.is_open(ino) {
+        if self.storage.is_open(ino).await {
             info!("open() file is already opened, ino={}", ino);
             match self.metadata.open_local(context, ino, flags).await {
                 Ok(fd) => {
                     // Increase the open count
-                    self.storage.open(ino);
+                    self.storage.open(ino).await;
                     reply.opened(fd, flags).await
                 }
                 Err(e) => {
@@ -310,9 +310,9 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
             match self.metadata.open_remote(context, ino, flags).await {
                 Ok((fd, attr)) => {
                     // Igonre fs fd number now.
-                    self.storage.open(ino);
+                    self.storage.open(ino).await;
                     // Update init file attr to opened handle.
-                    self.storage.setattr(ino, attr);
+                    self.storage.setattr(ino, attr).await;
                     reply.opened(fd, flags).await
                 }
                 Err(e) => {
@@ -578,7 +578,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         let ino = req.nodeid();
         let offset: u64 = offset.cast();
 
-        let fileattr = match self.storage.getattr(ino) {
+        let fileattr = match self.storage.getattr(ino).await {
             Ok(fileattr) => fileattr,
             Err(e) => {
                 return reply.error(e.into()).await;
@@ -631,7 +631,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         let data_len: u64 = data.len().cast();
 
         // Get local file attribute
-        let mut fileattr = match self.storage.getattr(ino) {
+        let mut fileattr = match self.storage.getattr(ino).await {
             Ok(fileattr) => fileattr,
             Err(e) => {
                 return reply.error(e.into()).await;
@@ -654,7 +654,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         // Update local attr
         fileattr.size = new_size;
         fileattr.mtime = new_mtime;
-        self.storage.setattr(ino, fileattr);
+        self.storage.setattr(ino, fileattr).await;
 
         reply.written(data_len.cast()).await
     }

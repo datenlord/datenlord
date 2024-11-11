@@ -490,6 +490,8 @@ pub struct FileHandle {
     inner: Arc<FileHandleInner>,
     /// The write back handle
     write_back_handle: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
+    /// The lock to synchronize open and close calls.
+    open_close_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl FileHandle {
@@ -519,6 +521,7 @@ impl FileHandle {
             block_size,
             inner,
             write_back_handle: Arc::new(Mutex::new(Some(write_back_handle))),
+            open_close_lock: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 
@@ -556,7 +559,8 @@ impl FileHandle {
     }
 
     /// Increase the open count of the file handle.
-    pub fn open(&self) {
+    pub async fn open(&self) {
+        let _guard = self.open_close_lock.lock().await;
         self.inner.open();
     }
 
@@ -567,7 +571,8 @@ impl FileHandle {
     }
 
     /// Closes the file handle, closing both the reader and writer.
-    pub async fn close(self) -> StorageResult<bool> {
+    pub async fn close(&self) -> StorageResult<bool> {
+        let _guard = self.open_close_lock.lock().await;
         info!("Close the file handle, ino: {}", self.fh);
         match self.inner.close().await {
             Ok(true) => {
@@ -577,7 +582,7 @@ impl FileHandle {
                 write_back_handle.await.unwrap_or_else(|e| {
                     error!("Failed to join the write back task: {e}");
                 });
-                println!("Close handle ok");
+                println!("filehandle {:?} Close handle ok", self.fh);
                 Ok(true)
             }
             Ok(false) => Ok(false),
@@ -606,7 +611,7 @@ const HANDLE_SHARD_NUM: usize = 100;
 pub struct Handles {
     /// Use shard to avoid lock contention
     /// Update vec to hashmap to avoid duplicate file handle.
-    handles: [Arc<RwLock<HashMap<u64, FileHandle>>>; HANDLE_SHARD_NUM],
+    handles: [Arc<tokio::sync::RwLock<HashMap<u64, FileHandle>>>; HANDLE_SHARD_NUM],
 }
 
 impl Default for Handles {
@@ -622,7 +627,7 @@ impl Handles {
     pub fn new() -> Self {
         let mut handles: Vec<_> = Vec::with_capacity(HANDLE_SHARD_NUM);
         for _ in 0..HANDLE_SHARD_NUM {
-            handles.push(Arc::new(RwLock::new(HashMap::new())));
+            handles.push(Arc::new(tokio::sync::RwLock::new(HashMap::new())));
         }
         let handles: [_; HANDLE_SHARD_NUM] = handles.try_into().unwrap_or_else(|_| {
             unreachable!("The length should match.");
@@ -638,7 +643,7 @@ impl Handles {
     }
 
     /// Gets a shard of the fh.
-    fn get_shard(&self, fh: u64) -> &Arc<RwLock<HashMap<u64, FileHandle>>> {
+    fn get_shard(&self, fh: u64) -> &Arc<tokio::sync::RwLock<HashMap<u64, FileHandle>>> {
         let idx = Self::hash(fh);
         self.handles
             .get(idx)
@@ -646,27 +651,48 @@ impl Handles {
     }
 
     /// Adds a file handle to the collection.
-    pub fn add_handle(&self, fh: FileHandle) {
+    pub async fn add_handle(&self, fh: FileHandle) {
         let shard = self.get_shard(fh.fh());
-        let mut shard_lock = shard.write();
+        let mut shard_lock = shard.write().await;
         shard_lock.insert(fh.fh(), fh);
     }
 
     /// Removes a file handle from the collection.'
     #[must_use]
-    pub fn remove_handle(&self, fh: u64) -> Option<FileHandle> {
+    pub async fn remove_handle(&self, fh: u64) -> Option<FileHandle> {
         let shard = self.get_shard(fh);
-        let mut shard_lock = shard.write();
+        let mut shard_lock = shard.write().await;
         shard_lock.remove(&fh)
     }
 
     /// Returns a file handle from the collection.
     #[must_use]
-    pub fn get_handle(&self, fh: u64) -> Option<FileHandle> {
+    pub async fn get_handle(&self, fh: u64) -> Option<FileHandle> {
         let shard = self.get_shard(fh);
-        let shard_lock = shard.read();
+        let shard_lock = shard.read().await;
         let fh = shard_lock.get(&fh)?;
         Some(fh.clone())
+    }
+
+    /// Close and remove current filehandle.
+    pub async fn close_handle(&self, fh: u64) -> StorageResult<Option<FileHandle>> {
+        let shard = self.get_shard(fh);
+        let mut shard_lock = shard.write().await;
+        let filehandle = shard_lock.get(&fh).ok_or_else(
+            || StorageError::Internal(anyhow::anyhow!("Cannot close a file that is not open.")),
+        )?;
+        let need_remove_flag = filehandle.close().await?;
+        if need_remove_flag {
+            // Remove the file handle from the handles map
+            match shard_lock.remove(&fh) {
+                Some(filehandle) => return Ok(Some(filehandle)),
+                None => {
+                    panic!("Cannot close a file that is not open.");
+                }
+            }
+        }
+
+        Ok(None)
     }
 }
 
@@ -709,8 +735,9 @@ mod tests {
             block_size: BLOCK_SIZE,
             inner: file_handle,
             write_back_handle: Arc::new(Mutex::new(Some(write_back_handle))),
+            open_close_lock: Arc::new(tokio::sync::Mutex::new(())),
         };
-        handles.add_handle(file_handle.clone());
+        handles.add_handle(file_handle.clone()).await;
         let buf = vec![b'1', b'2', b'3', b'4'];
         file_handle.write(0, &buf, 4).await.unwrap();
         let read_buf = file_handle.read(0, 4).await.unwrap();

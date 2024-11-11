@@ -39,10 +39,13 @@ impl<M: MetaData + Send + Sync + 'static> Storage for StorageManager<M> {
     /// handle, in client side will check the open flag, so we don't need to
     /// check it here.
     #[inline]
-    fn open(&self, ino: u64) {
+    #[allow(clippy::unwrap_used)]
+    async fn open(&self, ino: u64) {
+        println!("try to open filehandle {:?}", ino);
         // Get existing file handle if it exists
-        if let Some(handle) = self.handles.get_handle(ino) {
-            handle.open();
+        if let Some(handle) = self.handles.get_handle(ino).await {
+            // Try to get lock, if it is locked, it means the file handle is being closed.
+            handle.open().await;
         } else {
             let handle = FileHandle::new(
                 ino,
@@ -51,16 +54,18 @@ impl<M: MetaData + Send + Sync + 'static> Storage for StorageManager<M> {
                 Arc::clone(&self.backend),
                 Arc::clone(&self.metadata_client),
             );
-            self.handles.add_handle(handle);
+            self.handles.add_handle(handle).await;
         }
+
+        println!("open filehandle {:?} count", self.handles.get_handle(ino).await.unwrap().open_cnt());
     }
 
     /// Try to open a file with the given inode number and flags in opened file handles.
     /// If the file is not opened, return false.
     #[inline]
-    fn is_open(&self, ino: u64) -> bool {
+    async fn is_open(&self, ino: u64) -> bool {
         info!("is_open: ino: {}", ino);
-        if let Some(handle) = self.handles.get_handle(ino) {
+        if let Some(handle) = self.handles.get_handle(ino).await {
             // Check opened file handle status.
             if handle.open_cnt() > 0 {
                 return true;
@@ -73,8 +78,8 @@ impl<M: MetaData + Send + Sync + 'static> Storage for StorageManager<M> {
 
     /// Get the file attr of the file specified by the inode number.
     /// Default implementation returns None.
-    fn getattr(&self, ino: u64) -> StorageResult<FileAttr> {
-        match self.get_handle(ino) {
+    async fn getattr(&self, ino: u64) -> StorageResult<FileAttr> {
+        match self.get_handle(ino).await {
             Some(fh) => Ok(fh.getattr()),
             None => Err(StorageError::Internal(anyhow::anyhow!(
                 "This file handle is not exists."
@@ -85,8 +90,8 @@ impl<M: MetaData + Send + Sync + 'static> Storage for StorageManager<M> {
     /// Set the file attr of the file specified by the inode number.
     /// Default implementation does nothing.
     #[inline]
-    fn setattr(&self, ino: u64, attr: FileAttr) {
-        match self.get_handle(ino) {
+    async fn setattr(&self, ino: u64, attr: FileAttr) {
+        match self.get_handle(ino).await {
             Some(fh) => fh.setattr(attr),
             None => {
                 panic!("Cannot set attr for a file that is not open.");
@@ -98,7 +103,7 @@ impl<M: MetaData + Send + Sync + 'static> Storage for StorageManager<M> {
     /// given offset and reading up to `len` bytes.
     #[inline]
     async fn read(&self, ino: u64, offset: u64, len: usize) -> StorageResult<Vec<u8>> {
-        match self.get_handle(ino) {
+        match self.get_handle(ino).await {
             Some(fh) => fh.read(offset, len.cast()).await,
             None => {
                 panic!("Cannot read from a file that is not open.");
@@ -110,7 +115,7 @@ impl<M: MetaData + Send + Sync + 'static> Storage for StorageManager<M> {
     /// given offset.
     #[inline]
     async fn write(&self, ino: u64, offset: u64, buf: &[u8], size: u64) -> StorageResult<()> {
-        match self.get_handle(ino) {
+        match self.get_handle(ino).await {
             Some(fh) => fh.write(offset, buf, size).await,
             None => {
                 panic!("Cannot write to a file that is not open.");
@@ -121,7 +126,7 @@ impl<M: MetaData + Send + Sync + 'static> Storage for StorageManager<M> {
     /// Flushes any pending writes to a file specified by the file handle.
     #[inline]
     async fn flush(&self, ino: u64) -> StorageResult<()> {
-        match self.get_handle(ino) {
+        match self.get_handle(ino).await {
             Some(fh) => fh.flush().await,
             None => {
                 panic!("Cannot flush a file that is not open.");
@@ -132,24 +137,16 @@ impl<M: MetaData + Send + Sync + 'static> Storage for StorageManager<M> {
     /// Closes a file specified by the file handle.
     #[inline]
     async fn close(&self, ino: u64) -> StorageResult<()> {
-        let handle = self
-            .handles
-            .get_handle(ino)
-            .unwrap_or_else(|| panic!("Cannot close a file that is not open."));
-        let need_remove_flag = handle.close().await?;
-        println!("need_remove_flag: {}", need_remove_flag);
-
-        if need_remove_flag {
-            // Remove the file handle from the handles map
-            match self.handles.remove_handle(ino) {
-                Some(_) => return Ok(()),
-                None => {
-                    panic!("Cannot close a file that is not open.");
-                }
+        println!("try to close filehandle {:?}", ino);
+        match self.handles.close_handle(ino).await? {
+            Some(_fh) => {
+                println!("close filehandle {:?} ok", ino);
+                Ok(())
+            }
+            None => {
+                panic!("Cannot close a file that is not open.");
             }
         }
-
-        Ok(())
     }
 
     /// Truncates a file specified by the inode number to a new size, given the
@@ -231,7 +228,7 @@ impl<M: MetaData + Send + Sync + 'static> StorageManager<M> {
     ///
     /// # Panic
     /// Panics if the file of `fh` is not open.
-    fn get_handle(&self, fh: u64) -> Option<FileHandle> {
-        self.handles.get_handle(fh)
+    async fn get_handle(&self, fh: u64) -> Option<FileHandle> {
+        self.handles.get_handle(fh).await
     }
 }

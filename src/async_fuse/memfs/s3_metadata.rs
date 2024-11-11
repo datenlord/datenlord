@@ -312,13 +312,13 @@ impl MetaData for S3MetaData {
                                 .await?;
 
                             // Update local attr
-                            match storage.getattr(ino) {
+                            match storage.getattr(ino).await {
                                 // The file is open, update the attr in `open_files`
                                 Ok(mut file_attr) => {
                                     file_attr.size = dirty_attr.size;
                                     file_attr.mtime = inode.get_attr().mtime;
                                     file_attr.ctime = inode.get_attr().ctime;
-                                    storage.setattr(ino, file_attr);
+                                    storage.setattr(ino, file_attr).await;
                                 }
                                 Err(e) => {
                                     debug!(

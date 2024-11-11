@@ -12,17 +12,17 @@ use super::StorageResult;
 pub trait Storage {
     /// Opens a file with the given inode number and flags, returning a file
     /// handle.
-    fn open(&self, ino: u64);
+    async fn open(&self, ino: u64);
 
     /// Try to open a file with the given inode number and flags in opened file handles.
     /// If the file is not opened, return false.
-    fn is_open(&self, _ino: u64) -> bool {
+    async fn is_open(&self, _ino: u64) -> bool {
         false
     }
 
     /// Get the file attr of the file specified by the inode number.
     /// Default implementation returns None.
-    fn getattr(&self, _ino: u64) -> StorageResult<FileAttr> {
+    async fn getattr(&self, _ino: u64) -> StorageResult<FileAttr> {
         Err(StorageError::Internal(anyhow::anyhow!(
             "This file handle is not allowed to be written."
         )))
@@ -30,7 +30,7 @@ pub trait Storage {
 
     /// Set the file attr of the file specified by the inode number.
     /// Default implementation does nothing.
-    fn setattr(&self, _ino: u64, _attr: FileAttr) {}
+    async fn setattr(&self, _ino: u64, _attr: FileAttr) {}
 
     /// Reads data from a file specified by the inode number and file handle,
     /// starting at the given offset and reading up to `len` bytes.
