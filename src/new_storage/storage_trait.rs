@@ -16,7 +16,7 @@ pub trait Storage {
 
     /// Try to open a file with the given inode number and flags in opened file handles.
     /// If the file is not opened, return false.
-    async fn is_open(&self, _ino: u64) -> bool {
+    async fn try_open(&self, _ino: u64) -> bool {
         false
     }
 

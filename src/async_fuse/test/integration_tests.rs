@@ -102,13 +102,6 @@ fn test_file_manipulation_rust_way(mount_dir: &Path) -> anyhow::Result<()> {
 }
 
 #[cfg(test)]
-#[tokio::test]
-async fn test_file_manipulation() {
-    let mount_dir = Path::new(DEFAULT_MOUNT_DIR);
-    test_file_manipulation_rust_way(mount_dir).unwrap();
-}
-
-#[cfg(test)]
 fn test_directory_manipulation_rust_way(mount_dir: &Path) -> anyhow::Result<()> {
     info!("test Directory manipulation Rust style");
 

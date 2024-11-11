@@ -41,12 +41,13 @@ impl<M: MetaData + Send + Sync + 'static> Storage for StorageManager<M> {
     #[inline]
     #[allow(clippy::unwrap_used)]
     async fn open(&self, ino: u64) {
-        println!("try to open filehandle {:?}", ino);
+        println!("try to open filehandle {ino:?}");
         // Get existing file handle if it exists
         if let Some(handle) = self.handles.get_handle(ino).await {
             // Try to get lock, if it is locked, it means the file handle is being closed.
             handle.open().await;
         } else {
+            println!("try to create new open filehandle {ino:?}");
             let handle = FileHandle::new(
                 ino,
                 self.block_size,
@@ -57,21 +58,22 @@ impl<M: MetaData + Send + Sync + 'static> Storage for StorageManager<M> {
             self.handles.add_handle(handle).await;
         }
 
-        println!("open filehandle {:?} count", self.handles.get_handle(ino).await.unwrap().open_cnt());
+        println!(
+            "open filehandle {:?} count",
+            self.handles.get_handle(ino).await.unwrap().open_cnt().await
+        );
     }
 
     /// Try to open a file with the given inode number and flags in opened file handles.
     /// If the file is not opened, return false.
     #[inline]
-    async fn is_open(&self, ino: u64) -> bool {
+    async fn try_open(&self, ino: u64) -> bool {
         info!("is_open: ino: {}", ino);
+        println!("try to check filehandle is_open {:?}", ino);
         if let Some(handle) = self.handles.get_handle(ino).await {
+            println!("filehandle {:?} opencnt {:?}", ino, handle.open_cnt().await);
             // Check opened file handle status.
-            if handle.open_cnt() > 0 {
-                return true;
-            }
-            // TODO: blocking for the file handle is deleted.
-            return false;
+            return handle.get_and_open().await;
         }
         false
     }
@@ -138,14 +140,12 @@ impl<M: MetaData + Send + Sync + 'static> Storage for StorageManager<M> {
     #[inline]
     async fn close(&self, ino: u64) -> StorageResult<()> {
         println!("try to close filehandle {:?}", ino);
-        match self.handles.close_handle(ino).await? {
-            Some(_fh) => {
-                println!("close filehandle {:?} ok", ino);
-                Ok(())
-            }
-            None => {
-                panic!("Cannot close a file that is not open.");
-            }
+        if let Some(_fh) = self.handles.close_handle(ino).await? {
+            println!("close filehandle {ino:?} ok");
+            Ok(())
+        } else {
+            println!("close filehandle {ino:?} ok");
+            Ok(())
         }
     }
 

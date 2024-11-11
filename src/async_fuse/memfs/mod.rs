@@ -292,12 +292,12 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         };
 
         // Check if the file is already opened
-        if self.storage.is_open(ino).await {
+        if self.storage.try_open(ino).await {
             info!("open() file is already opened, ino={}", ino);
             match self.metadata.open_local(context, ino, flags).await {
                 Ok(fd) => {
                     // Increase the open count
-                    self.storage.open(ino).await;
+                    // self.storage.open(ino).await;
                     reply.opened(fd, flags).await
                 }
                 Err(e) => {

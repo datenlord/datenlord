@@ -176,6 +176,7 @@ impl FileHandleInner {
     pub fn getattr(&self) -> FileAttr {
         debug!("Get attr for ino: {}", self.ino);
         let attr = self.attr.read();
+        println!("get attr {:?}", *attr);
         *attr
     }
 
@@ -561,18 +562,36 @@ impl FileHandle {
     /// Increase the open count of the file handle.
     pub async fn open(&self) {
         let _guard = self.open_close_lock.lock().await;
+        println!("try to get open filehandle lock ok {:?}", self.fh);
         self.inner.open();
     }
 
+    /// Get and try to increase the open count of the file handle.
+    pub async fn get_and_open(&self) -> bool {
+        let _guard = self.open_close_lock.lock().await;
+        println!("try to get open filehandle lock ok {:?}", self.fh);
+        if self.inner.open_cnt() > 0 {
+            // Current file handle is opened by other process, increase the open count.
+            self.inner.open();
+            return true;
+        }
+
+        false
+    }
+
     /// Get the open count of the file handle.
+    /// Be careful, do not split the `open_cnt` with open and close operation.
     #[must_use]
-    pub fn open_cnt(&self) -> u32 {
+    pub async fn open_cnt(&self) -> u32 {
+        let _guard = self.open_close_lock.lock().await;
+        println!("try to get open cnt filehandle lock ok {:?}", self.fh);
         self.inner.open_cnt()
     }
 
     /// Closes the file handle, closing both the reader and writer.
     pub async fn close(&self) -> StorageResult<bool> {
         let _guard = self.open_close_lock.lock().await;
+        println!("try to close filehandle lock ok {:?}", self.fh);
         info!("Close the file handle, ino: {}", self.fh);
         match self.inner.close().await {
             Ok(true) => {
@@ -582,10 +601,13 @@ impl FileHandle {
                 write_back_handle.await.unwrap_or_else(|e| {
                     error!("Failed to join the write back task: {e}");
                 });
-                println!("filehandle {:?} Close handle ok", self.fh);
+                println!("filehandle {:?} drop close filehandle ok", self.fh);
                 Ok(true)
             }
-            Ok(false) => Ok(false),
+            Ok(false) => {
+                println!("filehandle {:?} drop filehandle lock ok", self.fh);
+                Ok(false)
+            }
             Err(e) => Err(e),
         }
     }
@@ -678,9 +700,9 @@ impl Handles {
     pub async fn close_handle(&self, fh: u64) -> StorageResult<Option<FileHandle>> {
         let shard = self.get_shard(fh);
         let mut shard_lock = shard.write().await;
-        let filehandle = shard_lock.get(&fh).ok_or_else(
-            || StorageError::Internal(anyhow::anyhow!("Cannot close a file that is not open.")),
-        )?;
+        let filehandle = shard_lock.get(&fh).ok_or_else(|| {
+            StorageError::Internal(anyhow::anyhow!("Cannot close a file that is not open."))
+        })?;
         let need_remove_flag = filehandle.close().await?;
         if need_remove_flag {
             // Remove the file handle from the handles map
