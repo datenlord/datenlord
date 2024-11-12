@@ -186,6 +186,15 @@ impl<M: MetaData + Send + Sync + 'static> Storage for StorageManager<M> {
             let opened = self.try_open(ino).await;
             if !opened {
                 self.open(ino).await;
+                match self.metadata_client.get_remote_attr(ino).await {
+                    Ok((_, mut file_attr)) => {
+                        file_attr.size = new_size;
+                        self.setattr(ino, file_attr).await;
+                    }
+                    Err(e) => {
+                        panic!("Cannot get file attr: {:?}", e);
+                    }
+                }
             }
 
             match self.get_handle(ino).await {

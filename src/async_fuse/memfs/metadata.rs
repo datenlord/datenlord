@@ -68,7 +68,7 @@ pub trait MetaData {
     async fn rename(&self, context: ReqContext, param: RenameParam) -> DatenLordResult<()>;
 
     /// Helper function to write remote data
-    async fn write_remote_helper(&self, ino: u64, new_attr: FileAttr) -> DatenLordResult<()>;
+    async fn write_remote_size_helper(&self, ino: u64, size: u64) -> DatenLordResult<()>;
 
     /// Set fuse fd into `MetaData`
     async fn set_fuse_fd(&self, fuse_fd: RawFd);
@@ -93,7 +93,7 @@ pub trait MetaData {
     ) -> DatenLordResult<Option<INum>>;
 
     /// Get attribute of i-node by ino from remote
-    async fn get_remote_attr(&self, ino: u64) -> DatenLordResult<(Duration, FuseAttr)>;
+    async fn get_remote_attr(&self, ino: u64) -> DatenLordResult<(Duration, FileAttr)>;
 
     /// Open a file or directory by ino and flags from local, and return a file handler
     async fn open_local(&self, context: ReqContext, ino: u64, flags: u32) -> DatenLordResult<u64>;

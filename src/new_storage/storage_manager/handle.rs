@@ -405,12 +405,11 @@ impl FileHandleInner {
         let ino = self.ino;
         let current_attr = self.getattr();
         info!(
-            "Commit meta data for ino: {} with attr: {:?}",
-            ino, current_attr
+            "Commit meta data for ino: {} with attr size: {:?}",
+            ino, current_attr.size
         );
         if let Err(e) = metadata_client
-            // TODO: use storage ref
-            .write_remote_helper(ino, current_attr)
+            .write_remote_size_helper(ino, current_attr.size)
             .await
         {
             error!("Failed to commit meta data, the error is {e}.");

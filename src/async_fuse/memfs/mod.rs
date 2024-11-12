@@ -251,11 +251,12 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
 
         // Get from remote metadata server
         match self.metadata.get_remote_attr(ino).await {
-            Ok((ttl, fuse_attr)) => {
+            Ok((ttl, file_attr)) => {
                 info!(
                     "getattr() successfully got the attr={:?} of ino={}",
-                    fuse_attr, ino,
+                    file_attr, ino,
                 );
+                let fuse_attr = fs_util::convert_to_fuse_attr(file_attr);
                 reply.attr(ttl, fuse_attr).await
             }
             Err(err) => {
