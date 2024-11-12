@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use clippy_utilities::OverflowArithmetic;
 use opendal::{raw::oio::ReadExt, services::Fs, ErrorKind, Operator};
 use tokio::io::AsyncWriteExt;
 
@@ -20,20 +21,28 @@ pub trait Backend: Debug + Send + Sync {
 /// The `FSBackend` struct represents a backend storage system that uses the filesystem.
 #[derive(Debug)]
 pub struct FSBackend {
+    /// The operator of the storage system.
     operator: Operator,
 }
 
 impl FSBackend {
     /// Creates a new `FSBackend` instance with the given `Operator`.
+    #[must_use]
+    #[inline]
     pub fn new(operator: Operator) -> Self {
         Self { operator }
     }
 
     /// Create a tmp backend
+    #[inline]
     pub fn default() -> Self {
         let mut builder = Fs::default();
         builder.root("/tmp/backend/");
-        let operator = Operator::new(builder).unwrap().finish();
+        // Create a new operator with the builder, map panic if failed, do not use unwrap()
+        let operator = match Operator::new(builder) {
+            Ok(operator) => operator.finish(),
+            Err(e) => panic!("Failed to create operator: {e:?}"),
+        };
         Self { operator }
     }
 }
@@ -43,7 +52,7 @@ impl Backend for FSBackend {
     /// Reads data from the storage system into the given buffer.
     #[inline]
     async fn read(&self, path: &str, buf: &mut [u8]) -> StorageResult<usize> {
-        let mut reader = self.operator.reader(path).await?;
+        let reader = self.operator.reader(path).await?;
         let mut read_size = 0;
 
         loop {
@@ -54,7 +63,7 @@ impl Backend for FSBackend {
                     if size == 0 {
                         break;
                     }
-                    read_size += size;
+                    read_size.overflow_add(size);
                 }
                 Err(e) => {
                     // If not found just return 0.

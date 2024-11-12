@@ -47,27 +47,31 @@ impl MetaData {
         }
     }
 
-    /// Get the inum of the MetaData
+    /// Get the inum of the `MetaData`
     pub fn get_inum(&self) -> u64 {
         self.inum
     }
 
-    /// Get the version of the MetaData
+    /// Get the version of the `MetaData`
+    #[inline]
     pub fn get_version(&self) -> i64 {
         self.version
     }
 
-    /// Get the offset of the MetaData
+    /// Get the offset of the `MetaData`
+    #[inline]
     pub fn get_offset(&self) -> u64 {
         self.offset
     }
 
-    /// Get the size of the MetaData
+    /// Get the size of the `MetaData`
+    #[inline]
     pub fn get_size(&self) -> u64 {
         self.size
     }
 
-    /// Convert the MetaData to a string
+    /// Convert the `MetaData` to a string
+    #[inline]
     pub fn to_id(&self) -> String {
         format!(
             "{}_{}_{}_{}",
@@ -75,7 +79,7 @@ impl MetaData {
         )
     }
 
-    /// Create a MetaData from a string
+    /// Create a `MetaData` from a string
     pub fn from_id(id: &str) -> Option<Self> {
         let parts: Vec<&str> = id.split('_').collect();
         if parts.len() != 4 {

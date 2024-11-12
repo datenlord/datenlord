@@ -55,13 +55,11 @@ impl<K: Clone + Hash + Eq> EvictPolicy<K> for LRUPolicy<K> {
             // Move the accessed key to the end to mark it as most recently used.
             // If the key does not exist, it inserts a new entry marked as non-evictable by
             // default (false).
-            if !inner.contains_key(&key) {
+            if !inner.contains_key(key) {
                 // Before adding a new key, check if we reach the capacity.
-                if inner.len() == self.capacity {
-                    // Reach the capacity, panic
-                    // This should be handled by the caller, not the policy.
-                    panic!("Capacity reached");
-                }
+                // Reach the capacity, panic
+                // This should be handled by the caller, not the policy.
+                assert!(!(inner.len() == self.capacity), "Capacity reached");
                 inner.insert(key.clone(), false);
             } else {
                 inner.to_back(key);

@@ -146,10 +146,10 @@ impl BlockManager {
                 self.cache.put(meta_data.clone(), block_ref);
 
                 return Ok(Some(block));
-            } else {
-                // TODO: Read the block from the s3 backend storage
-                return Ok(None);
             }
+
+            // TODO: Read the block from the s3 backend storage
+            Ok(None);
         }
     }
 

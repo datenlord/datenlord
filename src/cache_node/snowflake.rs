@@ -86,15 +86,21 @@ impl Snowflake {
         let mut timestamp = self.time_gen();
         while timestamp <= last_timestamp {
             timestamp = self.time_gen();
+            // Sleep for 10 millisecond
+            std::thread::sleep(std::time::Duration::from_millis(10));
         }
         timestamp
     }
 
+    #[allow(clippy::unused_self)]
     fn time_gen(&self) -> i64 {
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("Time went backwards")
-            .as_millis() as i64
+        match SystemTime::now()
+            .duration_since(UNIX_EPOCH) {
+            Ok(n) => n.as_millis() as i64,
+            Err(_) => {
+                panic!("SystemTime before UNIX EPOCH!");
+            }
+        }
     }
 }
 

@@ -13,7 +13,7 @@ pub mod manager;
 pub mod policy;
 
 /// The snowflake module.
-pub mod snowflake;
+// pub mod snowflake;
 
 /// The result of storage operation.
 pub type StorageResult<T> = Result<T, StorageError>;
