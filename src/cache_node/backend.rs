@@ -25,17 +25,11 @@ pub struct FSBackend {
     operator: Operator,
 }
 
-impl FSBackend {
-    /// Creates a new `FSBackend` instance with the given `Operator`.
-    #[must_use]
-    #[inline]
-    pub fn new(operator: Operator) -> Self {
-        Self { operator }
-    }
-
+impl Default for FSBackend {
     /// Create a tmp backend
     #[inline]
-    pub fn default() -> Self {
+    #[must_use]
+    fn default() -> Self {
         let mut builder = Fs::default();
         builder.root("/tmp/backend/");
         // Create a new operator with the builder, map panic if failed, do not use unwrap()
@@ -47,12 +41,21 @@ impl FSBackend {
     }
 }
 
+impl FSBackend {
+    /// Creates a new `FSBackend` instance with the given `Operator`.
+    #[inline]
+    #[must_use]
+    pub fn new(operator: Operator) -> Self {
+        Self { operator }
+    }
+}
+
 #[async_trait]
 impl Backend for FSBackend {
     /// Reads data from the storage system into the given buffer.
     #[inline]
     async fn read(&self, path: &str, buf: &mut [u8]) -> StorageResult<usize> {
-        let reader = self.operator.reader(path).await?;
+        let mut reader = self.operator.reader(path).await?;
         let mut read_size = 0;
 
         loop {
@@ -63,7 +66,7 @@ impl Backend for FSBackend {
                     if size == 0 {
                         break;
                     }
-                    read_size.overflow_add(size);
+                    read_size = read_size.overflow_add(size);
                 }
                 Err(e) => {
                     // If not found just return 0.
