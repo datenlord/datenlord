@@ -29,6 +29,10 @@ jobs:
   audit:
     name: Audit
     runs-on: ubuntu-latest
+    env:
+      # https://github.com/datenlord/datenlord/actions/runs/11811977077/job/32906419874?pr=525
+      # debug will cause unexcept json parsing error
+      RUST_LOG: error
     steps:
     - uses: actions/checkout@v3
     - uses: rustsec/audit-check@v1.4.1
