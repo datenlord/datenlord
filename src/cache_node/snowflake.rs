@@ -56,7 +56,7 @@ impl Snowflake {
     }
 
     /// Generate the next ID
-    pub fn next_id(&mut self) -> i64 {
+    pub async fn next_id(&mut self) -> i64 {
         let mut timestamp = self.time_gen();
 
         if timestamp < self.last_timestamp {
@@ -69,7 +69,7 @@ impl Snowflake {
         if self.last_timestamp == timestamp {
             self.sequence = (self.sequence + 1) & SEQUENCE_MASK;
             if self.sequence == 0 {
-                timestamp = self.til_next_millis(self.last_timestamp);
+                timestamp = self.til_next_millis(self.last_timestamp).await;
             }
         } else {
             self.sequence = 0;
@@ -82,12 +82,12 @@ impl Snowflake {
             | self.sequence
     }
 
-    fn til_next_millis(&self, last_timestamp: i64) -> i64 {
+    async fn til_next_millis(&self, last_timestamp: i64) -> i64 {
         let mut timestamp = self.time_gen();
         while timestamp <= last_timestamp {
             timestamp = self.time_gen();
             // Sleep for 10 millisecond
-            std::thread::sleep(std::time::Duration::from_millis(10));
+            tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
         }
         timestamp
     }
@@ -108,20 +108,20 @@ impl Snowflake {
 mod tests {
     use super::*;
 
-    #[test]
+    #[tokio::test]
     fn test_unique_id_generation() {
         let mut generator = Snowflake::new(0, 0);
-        let id1 = generator.next_id();
-        let id2 = generator.next_id();
+        let id1 = generator.next_id().await;
+        let id2 = generator.next_id().await;
         assert_ne!(id1, id2, "Generated IDs should be unique");
     }
 
-    #[test]
+    #[tokio::test]
     fn test_sequence_rollover() {
         let mut generator = Snowflake::new(0, 0);
         generator.last_timestamp = generator.time_gen();
         for _ in 0..=SEQUENCE_MASK {
-            generator.next_id();
+            generator.next_id().await;
         }
         assert_eq!(
             generator.sequence, 0,
