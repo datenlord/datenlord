@@ -22,7 +22,9 @@ use rand::{thread_rng, Rng};
 use rand_distr::Zipf;
 
 use super::super::backend::memory_backend::MemoryBackend;
-use super::super::{Backend, MemoryCache, OpenFlag, Storage, StorageManager};
+use super::super::{Backend, MemoryCache, Storage, StorageManager};
+use crate::async_fuse::memfs::kv_engine::{KVEngine, KVEngineType};
+use crate::async_fuse::memfs::{self, FileAttr, MetaData, S3MetaData};
 use crate::new_storage::block::BLOCK_SIZE;
 use crate::new_storage::format_path;
 
@@ -44,6 +46,11 @@ const TOTAL_TEST_BLOCKS: usize = 256;
 const TOTAL_SIZE: usize = TOTAL_TEST_BLOCKS * BLOCK_SIZE / 1024 / 1024;
 
 const IO_SIZE: usize = 1024;
+
+// Test node id
+const TEST_NODE_ID: &str = "test_node";
+// Test etcd endpoint
+const TEST_ETCD_ENDPOINT: &str = "127.0.0.1:2379";
 
 /// Fd Allocator
 static CURRENT_FD: AtomicU64 = AtomicU64::new(4);
@@ -81,49 +88,51 @@ fn check_data(data: &[u8], user_index: u64) {
 }
 
 // Open a read file handle ,read to end, but don't close the handle
-async fn warm_up(storage: Arc<StorageManager>, ino: u64) {
-    let flag = OpenFlag::Read;
-    let fh = CURRENT_FD.fetch_add(1, Ordering::SeqCst);
-    storage.open(ino, fh, flag);
+async fn warm_up(storage: Arc<StorageManager<S3MetaData>>, ino: u64) {
+    let _fh = CURRENT_FD.fetch_add(1, Ordering::SeqCst);
+    storage.open(ino, FileAttr::default()).await;
     for i in 0..TOTAL_TEST_BLOCKS {
         let buf = storage
-            .read(ino, fh, (i * IO_SIZE) as u64, IO_SIZE)
+            .read(ino, (i * IO_SIZE) as u64, IO_SIZE)
             .await
             .unwrap();
         assert_eq!(buf.len(), IO_SIZE);
     }
 }
 
-async fn seq_read(storage: Arc<StorageManager>, ino: u64) {
-    let flag = OpenFlag::Read;
-    let fh = CURRENT_FD.fetch_add(1, Ordering::SeqCst);
-    storage.open(ino, fh, flag);
+async fn seq_read(storage: Arc<StorageManager<S3MetaData>>, ino: u64) {
+    let _fh = CURRENT_FD.fetch_add(1, Ordering::SeqCst);
+    storage.open(ino, FileAttr::default()).await;
     for i in 0..TOTAL_TEST_BLOCKS {
         let buf = storage
-            .read(10, fh, (i * IO_SIZE) as u64, IO_SIZE)
+            .read(ino, (i * IO_SIZE) as u64, IO_SIZE)
             .await
             .unwrap();
         assert_eq!(buf.len(), IO_SIZE);
         check_data(&buf, i as u64);
     }
-    storage.close(fh).await.unwrap();
+    storage.close(ino).await.unwrap();
 }
 
-async fn create_a_file(storage: Arc<StorageManager>, ino: u64) {
-    let flag = OpenFlag::Write;
-    let fh = CURRENT_FD.fetch_add(1, Ordering::SeqCst);
-    storage.open(ino, fh, flag);
+async fn create_a_file(storage: Arc<StorageManager<S3MetaData>>, ino: u64) {
+    let _fh = CURRENT_FD.fetch_add(1, Ordering::SeqCst);
+    storage.open(ino, FileAttr::default()).await;
     let start = std::time::Instant::now();
     for i in 0..TOTAL_TEST_BLOCKS {
         let mut content = Vec::new();
         modify_data(&mut content, i as u64);
         storage
-            .write(ino, fh, (i * IO_SIZE) as u64, &content)
+            .write(
+                ino,
+                (i * IO_SIZE) as u64,
+                &content,
+                ((i + 1) * IO_SIZE) as u64,
+            )
             .await
             .unwrap();
     }
-    storage.flush(ino, fh).await.unwrap();
-    storage.close(fh).await.unwrap();
+    storage.flush(ino).await.unwrap();
+    storage.close(ino).await.unwrap();
     let end = std::time::Instant::now();
     let throughput = TOTAL_SIZE.lossy_cast() / (end - start).as_secs_f64();
     println!(
@@ -145,9 +154,25 @@ async fn concurrency_read() {
     let backend = Arc::new(MemoryBackend::new(BACKEND_LATENCY));
     // Only 1 file, 256 blocks , the cache will never miss
     let manager = Arc::new(Mutex::new(MemoryCache::new(500, BLOCK_SIZE)));
-    let storage = Arc::new(StorageManager::new(manager, backend, BLOCK_SIZE));
+
+    let kv_engine: Arc<memfs::kv_engine::etcd_impl::EtcdKVEngine> = Arc::new(
+        KVEngineType::new(vec![TEST_ETCD_ENDPOINT.to_owned()])
+            .await
+            .unwrap(),
+    );
+    let metadata_client = S3MetaData::new(kv_engine, TEST_NODE_ID).await.unwrap();
+
+    let storage = Arc::new(StorageManager::new(
+        manager,
+        backend,
+        BLOCK_SIZE,
+        metadata_client,
+    ));
+    println!("111");
     create_a_file(Arc::clone(&storage), 10).await;
+    println!("222");
     warm_up(Arc::clone(&storage), 10).await;
+    println!("333");
     // Concurrency read ,thread num : 1,2,4,8
     for i in 0..5 {
         let mut tasks = vec![];
@@ -188,7 +213,20 @@ async fn concurrency_read_with_write() {
         2 * TOTAL_TEST_BLOCKS + 10,
         BLOCK_SIZE,
     )));
-    let storage = Arc::new(StorageManager::new(manager, backend, BLOCK_SIZE));
+
+    let kv_engine: Arc<memfs::kv_engine::etcd_impl::EtcdKVEngine> = Arc::new(
+        KVEngineType::new(vec![TEST_ETCD_ENDPOINT.to_owned()])
+            .await
+            .unwrap(),
+    );
+    let metadata_client = S3MetaData::new(kv_engine, TEST_NODE_ID).await.unwrap();
+
+    let storage = Arc::new(StorageManager::new(
+        manager,
+        backend,
+        BLOCK_SIZE,
+        metadata_client,
+    ));
     create_a_file(Arc::clone(&storage), 10).await;
     warm_up(Arc::clone(&storage), 10).await;
     // Concurrency read ,thread num : 1,2,4,8
@@ -220,16 +258,15 @@ async fn concurrency_read_with_write() {
     }
 }
 
-async fn scan_worker(storage: Arc<StorageManager>, ino: u64, time: u64) -> usize {
-    let flag = OpenFlag::Read;
-    let fh = CURRENT_FD.fetch_add(1, Ordering::SeqCst);
-    storage.open(ino, fh, flag);
+async fn scan_worker(storage: Arc<StorageManager<S3MetaData>>, ino: u64, time: u64) -> usize {
+    let _fh = CURRENT_FD.fetch_add(1, Ordering::SeqCst);
+    storage.open(ino, FileAttr::default()).await;
     let start = tokio::time::Instant::now();
     let mut i = 0;
     let mut scan_cnt = 0;
     while tokio::time::Instant::now() - start < tokio::time::Duration::from_secs(time) {
         let buf = storage
-            .read(ino, fh, (i * IO_SIZE) as u64, IO_SIZE)
+            .read(ino, (i * IO_SIZE) as u64, IO_SIZE)
             .await
             .unwrap();
         assert_eq!(buf.len(), IO_SIZE);
@@ -240,10 +277,9 @@ async fn scan_worker(storage: Arc<StorageManager>, ino: u64, time: u64) -> usize
     scan_cnt
 }
 
-async fn get_worker(storage: Arc<StorageManager>, ino: u64, time: u64) -> usize {
-    let flag = OpenFlag::Read;
-    let fh = CURRENT_FD.fetch_add(1, Ordering::SeqCst);
-    storage.open(ino, fh, flag);
+async fn get_worker(storage: Arc<StorageManager<S3MetaData>>, ino: u64, time: u64) -> usize {
+    let _fh = CURRENT_FD.fetch_add(1, Ordering::SeqCst);
+    storage.open(ino, FileAttr::default()).await;
     let start = tokio::time::Instant::now();
 
     // 初始化 Zipfian 分布
@@ -255,7 +291,7 @@ async fn get_worker(storage: Arc<StorageManager>, ino: u64, time: u64) -> usize 
         let i = zipf.sample(&mut thread_rng()) as usize % TOTAL_TEST_BLOCKS;
 
         let buf = storage
-            .read(ino, fh, (i * IO_SIZE) as u64, IO_SIZE)
+            .read(ino, (i * IO_SIZE) as u64, IO_SIZE)
             .await
             .unwrap();
         assert_eq!(buf.len(), IO_SIZE);
@@ -270,7 +306,19 @@ async fn real_workload() {
     let backend = Arc::new(MemoryBackend::new(BACKEND_LATENCY));
     // A 4GB cache
     let manager = Arc::new(Mutex::new(MemoryCache::new(1024 + 10, BLOCK_SIZE)));
-    let storage = Arc::new(StorageManager::new(manager, backend, BLOCK_SIZE));
+    let kv_engine: Arc<memfs::kv_engine::etcd_impl::EtcdKVEngine> = Arc::new(
+        KVEngineType::new(vec![TEST_ETCD_ENDPOINT.to_owned()])
+            .await
+            .unwrap(),
+    );
+    let metadata_client = S3MetaData::new(kv_engine, TEST_NODE_ID).await.unwrap();
+
+    let storage = Arc::new(StorageManager::new(
+        manager,
+        backend,
+        BLOCK_SIZE,
+        metadata_client,
+    ));
     // 100 is for scan worker
     create_a_file(Arc::clone(&storage), 100).await;
     let mut create_tasks = vec![];
@@ -331,17 +379,25 @@ async fn test_truncate() {
     let cache = Arc::new(Mutex::new(MemoryCache::new(1024, BLOCK_SIZE)));
     let backend = Arc::new(MemoryBackend::new(BACKEND_LATENCY));
     let backend_clone = Arc::clone(&backend);
-    let storage = StorageManager::new(cache, backend_clone, BLOCK_SIZE);
+
+    let kv_engine: Arc<memfs::kv_engine::etcd_impl::EtcdKVEngine> = Arc::new(
+        KVEngineType::new(vec![TEST_ETCD_ENDPOINT.to_owned()])
+            .await
+            .unwrap(),
+    );
+    let metadata_client = S3MetaData::new(kv_engine, TEST_NODE_ID).await.unwrap();
+
+    let storage = StorageManager::new(cache, backend_clone, BLOCK_SIZE, metadata_client);
 
     let content = vec![6_u8; BLOCK_SIZE * 2];
     let ino = 0;
     let block_size: u64 = BLOCK_SIZE.cast();
     let mut buffer = vec![0; BLOCK_SIZE];
 
-    let fh = CURRENT_FD.fetch_add(1, Ordering::SeqCst);
-    storage.open(ino, fh, OpenFlag::ReadAndWrite);
-    storage.write(ino, fh, 0, &content).await.unwrap();
-    storage.close(fh).await.unwrap();
+    let _fh = CURRENT_FD.fetch_add(1, Ordering::SeqCst);
+    storage.open(ino, FileAttr::default()).await;
+    storage.write(ino, 0, &content, block_size).await.unwrap();
+    storage.close(ino).await.unwrap();
     let size = backend
         .read(&format_path(ino, 1), &mut buffer)
         .await
@@ -354,30 +410,39 @@ async fn test_truncate() {
     assert_eq!(size, 0);
 
     // Truncate to a greater size, noop
+    storage.open(ino, FileAttr::default()).await;
     storage
         .truncate(ino, block_size * 2, block_size * 3)
         .await
         .unwrap();
+    storage.close(ino).await.unwrap();
+
     let size = backend
         .read(&format_path(ino, 2), &mut buffer)
         .await
         .unwrap();
     assert_eq!(size, 0);
 
+    storage.open(ino, FileAttr::default()).await;
     storage
         .truncate(ino, block_size * 2, block_size)
         .await
         .unwrap();
+    storage.close(ino).await.unwrap();
+
     let size = backend
         .read(&format_path(ino, 1), &mut buffer)
         .await
         .unwrap();
     assert_eq!(size, 0);
 
+    storage.open(ino, FileAttr::default()).await;
     storage
         .truncate(ino, block_size, block_size / 2)
         .await
         .unwrap();
+    storage.close(ino).await.unwrap();
+
     let size = backend
         .read(&format_path(ino, 0), &mut buffer)
         .await
@@ -387,7 +452,9 @@ async fn test_truncate() {
     truncated_content.resize(BLOCK_SIZE, 0);
     assert_eq!(truncated_content, buffer);
 
+    storage.open(ino, FileAttr::default()).await;
     storage.truncate(ino, block_size / 2, 0).await.unwrap();
+    storage.close(ino).await.unwrap();
 }
 
 #[tokio::test]
@@ -395,16 +462,27 @@ async fn test_remove() {
     let cache = Arc::new(Mutex::new(MemoryCache::new(1024, BLOCK_SIZE)));
     let backend = Arc::new(MemoryBackend::new(BACKEND_LATENCY));
     let backend_clone = Arc::clone(&backend);
-    let storage = StorageManager::new(cache, backend_clone, BLOCK_SIZE);
+
+    let kv_engine: Arc<memfs::kv_engine::etcd_impl::EtcdKVEngine> = Arc::new(
+        KVEngineType::new(vec![TEST_ETCD_ENDPOINT.to_owned()])
+            .await
+            .unwrap(),
+    );
+    let metadata_client = S3MetaData::new(kv_engine, TEST_NODE_ID).await.unwrap();
+
+    let storage = StorageManager::new(cache, backend_clone, BLOCK_SIZE, metadata_client);
 
     let content = vec![6_u8; BLOCK_SIZE * 2];
     let ino = 0;
     let mut buffer = vec![0; BLOCK_SIZE];
 
-    let fh = CURRENT_FD.fetch_add(1, Ordering::SeqCst);
-    storage.open(ino, fh, OpenFlag::ReadAndWrite);
-    storage.write(ino, fh, 0, &content).await.unwrap();
-    storage.close(fh).await.unwrap();
+    let _fh = CURRENT_FD.fetch_add(1, Ordering::SeqCst);
+    storage.open(ino, FileAttr::default()).await;
+    storage
+        .write(ino, 0, &content, BLOCK_SIZE.cast())
+        .await
+        .unwrap();
+    storage.close(ino).await.unwrap();
 
     storage.remove(ino).await.unwrap();
 
