@@ -10,15 +10,8 @@ use super::StorageResult;
 /// Current mapping is single inode -> single filehandle.
 #[async_trait]
 pub trait Storage {
-    /// Opens a file with the given inode number and flags, returning a file
-    /// handle.
-    async fn open(&self, ino: u64);
-
-    /// Try to open a file with the given inode number and flags in opened file handles.
-    /// If the file is not opened, return false.
-    async fn try_open(&self, _ino: u64) -> bool {
-        false
-    }
+    /// Opens a file with the given inode number and attr.
+    async fn open(&self, ino: u64, attr: FileAttr);
 
     /// Get the file attr of the file specified by the inode number.
     /// Default implementation returns None.

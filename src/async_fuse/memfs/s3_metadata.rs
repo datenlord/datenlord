@@ -297,7 +297,7 @@ impl MetaData for S3MetaData {
         storage: &StorageType,
     ) -> DatenLordResult<(Duration, FuseAttr)> {
         let ttl = Duration::new(MY_TTL_SEC, 0);
-        let inode = self
+        let mut inode = self
             .get_node_from_kv_engine(ino)
             .await?
             .ok_or_else(|| build_inconsistent_fs!(ino))?;
@@ -319,8 +319,11 @@ impl MetaData for S3MetaData {
                     ino, dirty_attr, old_attr
                 );
                 // Update attributes without size immediately
-                let mut dirty_attr_without_size = dirty_attr.clone();
+                let mut dirty_attr_without_size = dirty_attr;
                 dirty_attr_without_size.size = old_attr.size;
+                inode.set_attr(dirty_attr_without_size);
+                // Update local attr with new attr without size
+                storage.setattr(ino, dirty_attr_without_size).await;
 
                 match self
                     .kv_engine
@@ -333,44 +336,31 @@ impl MetaData for S3MetaData {
                 {
                     Ok(_) => {
                         info!(
-                            "setattr_helper() ino={} new_attr={:?} isok={:?}",
-                            ino, dirty_attr, true
+                            "222222setattr_helper() ino={} new_attr={:?} isok=true",
+                            ino, dirty_attr
                         );
                     }
                     Err(e) => {
                         return build_error_result_from_errno(
                             Errno::EIO,
-                            format!("setattr_helper() failed to set kv, err={:?}", e),
+                            format!("setattr_helper() failed to set kv, err={e:?}"),
                         );
                     }
                 }
 
                 // Defer update size with filehandle
                 if old_attr.size != dirty_attr.size {
-                    // Put current work to filehandle
-                    if !storage.try_open(ino).await {
-                        // If current filehandle is not existed, we need to open it and init metadata with old attr
-                        storage.open(ino).await;
-                        info!(
-                                "not opened, try to get remote attr setattr_helper() ino={} remote_attr={:?} isok={:?}",
-                                ino, old_attr, true
-                            );
-                        storage.setattr(ino, old_attr).await;
-                    }
-
                     storage
                         .truncate(ino, old_attr.size.cast(), dirty_attr.size.cast())
                         .await?;
 
-                    // Update local attr
+                    // Update local attr with new size
                     storage.setattr(ino, dirty_attr).await;
+
                     info!(
                         "update attr to local setattr() ino={} new_attr={:?} old_attr={:?}",
                         ino, dirty_attr, old_attr
                     );
-
-                    // Close current filehandle
-                    storage.close(ino).await?;
                 }
 
                 // Update remote attr
@@ -378,6 +368,10 @@ impl MetaData for S3MetaData {
             }
             None => {
                 // setattr did not change any attribute.
+                info!(
+                    "no change setattr() ino={} new_attr={:?} old_attr={:?}",
+                    ino, old_attr, old_attr
+                );
                 return Ok((ttl, fs_util::convert_to_fuse_attr(old_attr)));
             }
         };
@@ -809,7 +803,7 @@ impl MetaData for S3MetaData {
             Err(e) => {
                 return build_error_result_from_errno(
                     Errno::EIO,
-                    format!("write_remote_size_helper() failed to set kv, err={:?}", e),
+                    format!("write_remote_size_helper() failed to set kv, err={e:?}"),
                 );
             }
         }

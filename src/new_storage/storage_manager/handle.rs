@@ -695,6 +695,39 @@ impl Handles {
         Some(fh.clone())
     }
 
+    /// Reopen or create a new filehandle, if current filehandle is new, return true
+    /// otherwise return false.
+    /// If true, we need to update the file handle attr later.
+    pub async fn reopen_or_create_handle<M: MetaData + Send + Sync + 'static>(
+        &self,
+        fh: u64,
+        block_size: usize,
+        cache: Arc<Mutex<MemoryCache<CacheKey, LruPolicy<CacheKey>>>>,
+        backend: Arc<dyn Backend>,
+        metadata_client: Arc<M>,
+        attr: FileAttr,
+    ) -> bool {
+        let shard = self.get_shard(fh);
+        let mut shard_lock = shard.write().await;
+        // If the file handle is already open, reopen it and return false
+        match shard_lock.get(&fh) {
+            Some(file_handle) => {
+                let open_cnt = file_handle.open_cnt().await;
+                info!("Reopen file handle for ino: {fh} with opencnt: {open_cnt}");
+                file_handle.open().await;
+                return false;
+            }
+            None => {
+                info!("Create a new file handle for ino: {}", fh);
+                // If the file handle is not open, create a new file handle and return true
+                let file_handle = FileHandle::new(fh, block_size, cache, backend, metadata_client);
+                file_handle.setattr(attr);
+                shard_lock.insert(fh, file_handle);
+                return true;
+            }
+        }
+    }
+
     /// Close and remove current filehandle.
     pub async fn close_handle(&self, fh: u64) -> StorageResult<Option<FileHandle>> {
         let shard = self.get_shard(fh);

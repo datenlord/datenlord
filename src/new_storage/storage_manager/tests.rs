@@ -24,7 +24,7 @@ use rand_distr::Zipf;
 use super::super::backend::memory_backend::MemoryBackend;
 use super::super::{Backend, MemoryCache, Storage, StorageManager};
 use crate::async_fuse::memfs::kv_engine::{KVEngine, KVEngineType};
-use crate::async_fuse::memfs::{self, MetaData, S3MetaData};
+use crate::async_fuse::memfs::{self, FileAttr, MetaData, S3MetaData};
 use crate::new_storage::block::BLOCK_SIZE;
 use crate::new_storage::format_path;
 
@@ -90,7 +90,7 @@ fn check_data(data: &[u8], user_index: u64) {
 // Open a read file handle ,read to end, but don't close the handle
 async fn warm_up(storage: Arc<StorageManager<S3MetaData>>, ino: u64) {
     let _fh = CURRENT_FD.fetch_add(1, Ordering::SeqCst);
-    storage.open(ino).await;
+    storage.open(ino, FileAttr::default()).await;
     for i in 0..TOTAL_TEST_BLOCKS {
         let buf = storage
             .read(ino, (i * IO_SIZE) as u64, IO_SIZE)
@@ -102,7 +102,7 @@ async fn warm_up(storage: Arc<StorageManager<S3MetaData>>, ino: u64) {
 
 async fn seq_read(storage: Arc<StorageManager<S3MetaData>>, ino: u64) {
     let _fh = CURRENT_FD.fetch_add(1, Ordering::SeqCst);
-    storage.open(ino).await;
+    storage.open(ino, FileAttr::default()).await;
     for i in 0..TOTAL_TEST_BLOCKS {
         let buf = storage
             .read(ino, (i * IO_SIZE) as u64, IO_SIZE)
@@ -116,7 +116,7 @@ async fn seq_read(storage: Arc<StorageManager<S3MetaData>>, ino: u64) {
 
 async fn create_a_file(storage: Arc<StorageManager<S3MetaData>>, ino: u64) {
     let _fh = CURRENT_FD.fetch_add(1, Ordering::SeqCst);
-    storage.open(ino).await;
+    storage.open(ino, FileAttr::default()).await;
     let start = std::time::Instant::now();
     for i in 0..TOTAL_TEST_BLOCKS {
         let mut content = Vec::new();
@@ -260,7 +260,7 @@ async fn concurrency_read_with_write() {
 
 async fn scan_worker(storage: Arc<StorageManager<S3MetaData>>, ino: u64, time: u64) -> usize {
     let _fh = CURRENT_FD.fetch_add(1, Ordering::SeqCst);
-    storage.open(ino).await;
+    storage.open(ino, FileAttr::default()).await;
     let start = tokio::time::Instant::now();
     let mut i = 0;
     let mut scan_cnt = 0;
@@ -279,7 +279,7 @@ async fn scan_worker(storage: Arc<StorageManager<S3MetaData>>, ino: u64, time: u
 
 async fn get_worker(storage: Arc<StorageManager<S3MetaData>>, ino: u64, time: u64) -> usize {
     let _fh = CURRENT_FD.fetch_add(1, Ordering::SeqCst);
-    storage.open(ino).await;
+    storage.open(ino, FileAttr::default()).await;
     let start = tokio::time::Instant::now();
 
     // 初始化 Zipfian 分布
@@ -395,7 +395,7 @@ async fn test_truncate() {
     let mut buffer = vec![0; BLOCK_SIZE];
 
     let _fh = CURRENT_FD.fetch_add(1, Ordering::SeqCst);
-    storage.open(ino).await;
+    storage.open(ino, FileAttr::default()).await;
     storage.write(ino, 0, &content, block_size).await.unwrap();
     storage.close(ino).await.unwrap();
     let size = backend
@@ -410,30 +410,39 @@ async fn test_truncate() {
     assert_eq!(size, 0);
 
     // Truncate to a greater size, noop
+    storage.open(ino, FileAttr::default()).await;
     storage
         .truncate(ino, block_size * 2, block_size * 3)
         .await
         .unwrap();
+    storage.close(ino).await.unwrap();
+
     let size = backend
         .read(&format_path(ino, 2), &mut buffer)
         .await
         .unwrap();
     assert_eq!(size, 0);
 
+    storage.open(ino, FileAttr::default()).await;
     storage
         .truncate(ino, block_size * 2, block_size)
         .await
         .unwrap();
+    storage.close(ino).await.unwrap();
+
     let size = backend
         .read(&format_path(ino, 1), &mut buffer)
         .await
         .unwrap();
     assert_eq!(size, 0);
 
+    storage.open(ino, FileAttr::default()).await;
     storage
         .truncate(ino, block_size, block_size / 2)
         .await
         .unwrap();
+    storage.close(ino).await.unwrap();
+
     let size = backend
         .read(&format_path(ino, 0), &mut buffer)
         .await
@@ -443,7 +452,9 @@ async fn test_truncate() {
     truncated_content.resize(BLOCK_SIZE, 0);
     assert_eq!(truncated_content, buffer);
 
+    storage.open(ino, FileAttr::default()).await;
     storage.truncate(ino, block_size / 2, 0).await.unwrap();
+    storage.close(ino).await.unwrap();
 }
 
 #[tokio::test]
@@ -466,7 +477,7 @@ async fn test_remove() {
     let mut buffer = vec![0; BLOCK_SIZE];
 
     let _fh = CURRENT_FD.fetch_add(1, Ordering::SeqCst);
-    storage.open(ino).await;
+    storage.open(ino, FileAttr::default()).await;
     storage
         .write(ino, 0, &content, BLOCK_SIZE.cast())
         .await

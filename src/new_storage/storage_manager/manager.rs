@@ -35,47 +35,20 @@ pub struct StorageManager<M: MetaData + Send + Sync + 'static> {
 
 #[async_trait]
 impl<M: MetaData + Send + Sync + 'static> Storage for StorageManager<M> {
-    /// Opens a file with the given inode number, returning a new file
-    /// handle, in client side will check the open flag, so we don't need to
+    /// Opens a file with the given inode number, in client side will check the open flag, so we don't need to
     /// check it here.
     #[inline]
     #[allow(clippy::unwrap_used)]
-    async fn open(&self, ino: u64) {
-        info!("try to open filehandle {ino:?}");
-        // Get existing file handle if it exists
-        if let Some(handle) = self.handles.get_handle(ino).await {
-            // Try to get lock, if it is locked, it means the file handle is being closed.
-            handle.open().await;
-        } else {
-            println!("try to create new open filehandle {ino:?}");
-            let handle = FileHandle::new(
-                ino,
-                self.block_size,
-                Arc::clone(&self.cache),
-                Arc::clone(&self.backend),
-                Arc::clone(&self.metadata_client),
-            );
-            self.handles.add_handle(handle).await;
-        }
-
-        info!(
-            "open filehandle {:?} count",
-            self.handles.get_handle(ino).await.unwrap().open_cnt().await
-        );
-    }
-
-    /// Try to open a file with the given inode number and flags in opened file handles.
-    /// If the file is not opened, return false.
-    #[inline]
-    async fn try_open(&self, ino: u64) -> bool {
-        info!("is_open: ino: {}", ino);
-        println!("try to check filehandle is_open {:?}", ino);
-        if let Some(handle) = self.handles.get_handle(ino).await {
-            println!("filehandle {:?} opencnt {:?}", ino, handle.open_cnt().await);
-            // Check opened file handle status.
-            return handle.get_and_open().await;
-        }
-        false
+    async fn open(&self, ino: u64, attr: FileAttr) {
+        let flag = self.handles.reopen_or_create_handle(
+            ino,
+            self.block_size,
+            Arc::clone(&self.cache),
+            Arc::clone(&self.backend),
+            Arc::clone(&self.metadata_client),
+            attr,
+        ).await;
+        info!("open filehandle {:?} with flag {:?}", ino, flag);
     }
 
     /// Get the file attr of the file specified by the inode number.
@@ -183,20 +156,6 @@ impl<M: MetaData + Send + Sync + 'static> Storage for StorageManager<M> {
             }
 
             let fill_content = vec![0; fill_size];
-            let opened = self.try_open(ino).await;
-            if !opened {
-                self.open(ino).await;
-                match self.metadata_client.get_remote_attr(ino).await {
-                    Ok((_, mut file_attr)) => {
-                        file_attr.size = new_size;
-                        self.setattr(ino, file_attr).await;
-                    }
-                    Err(e) => {
-                        panic!("Cannot get file attr: {:?}", e);
-                    }
-                }
-            }
-
             match self.get_handle(ino).await {
                 Some(fh) => {
                     fh.write(new_size, &fill_content, new_size).await?;
@@ -205,8 +164,6 @@ impl<M: MetaData + Send + Sync + 'static> Storage for StorageManager<M> {
                     panic!("Cannot write to a file that is not open.");
                 }
             }
-
-            self.close(ino).await?;
         }
 
         Ok(())

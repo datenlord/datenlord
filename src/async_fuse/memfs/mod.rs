@@ -291,34 +291,25 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
             gid: req.gid(),
         };
 
-        // Check if the file is already opened
-        if self.storage.try_open(ino).await {
-            info!("open() file is already opened, ino={}", ino);
-            match self.metadata.open_local(context, ino, flags).await {
-                Ok(fd) => {
-                    // Increase the open count
-                    // self.storage.open(ino).await;
-                    reply.opened(fd, flags).await
-                }
-                Err(e) => {
-                    debug!("open() failed, the error is: {:?}", e);
-                    reply.error(e).await
-                }
+        match self.metadata.get_remote_attr(ino).await {
+            Ok((_, file_attr)) => {
+                // Will create a new file handle or reopen current filehandle.
+                self.storage.open(ino, file_attr).await;
             }
-        } else {
-            info!("open() file is not opened, ino={}", ino);
-            match self.metadata.open_remote(context, ino, flags).await {
-                Ok((fd, attr)) => {
-                    // Igonre fs fd number now.
-                    self.storage.open(ino).await;
-                    // Update init file attr to opened handle.
-                    self.storage.setattr(ino, attr).await;
-                    reply.opened(fd, flags).await
-                }
-                Err(e) => {
-                    debug!("open() failed, the error is: {:?}", e);
-                    reply.error(e).await
-                }
+            Err(e) => {
+                return reply.error(e).await;
+            }
+        }
+
+        match self.metadata.open_remote(context, ino, flags).await {
+            Ok((fd, attr)) => {
+                // Igonre fs fd number now.
+                self.storage.open(ino, attr).await;
+                reply.opened(fd, flags).await
+            }
+            Err(e) => {
+                debug!("open() failed, the error is: {:?}", e);
+                reply.error(e).await
             }
         }
     }
