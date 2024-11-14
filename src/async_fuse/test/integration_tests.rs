@@ -725,6 +725,28 @@ fn test_open_file_permission(mount_dir: &Path) -> anyhow::Result<()> {
 }
 
 #[cfg(test)]
+// fn test_libc_truncate(mount_dir: &Path) -> anyhow::Result<()> {
+//     info!("test libc truncate");
+//     let file_path = Path::new(mount_dir).join("test_libc_truncate.txt");
+
+//     let mut file = File::create(&file_path)?;
+//     file.write_all(FILE_CONTENT.as_ref())?;
+
+//     let file_fd = fcntl::open(&file_path, OFlag::O_RDWR, Mode::from_bits_truncate(0o644))?;
+//     let truncate_size = 8;
+//     let truncate_res = unsafe { libc::ftruncate(file_fd, truncate_size) };
+//     if truncate_res != 0 {
+//         return Err(anyhow::anyhow!("ftruncate failed with errno={}", nix::errno::errno()));
+//     }
+
+//     let metadata = fs::metadata(&file_path)?;
+//     assert_eq!(metadata.len(), truncate_size as u64);
+
+//     unistd::close(file_fd)?;
+//     fs::remove_file(&file_path)?;
+//     Ok(())
+// }
+#[cfg(test)]
 #[allow(clippy::assertions_on_result_states)] // assert!(result.is_err()) is more readable for test
 fn test_write_read_only_file(mount_dir: &Path) -> anyhow::Result<()> {
     info!("test write read only file");
@@ -742,15 +764,18 @@ fn test_write_read_only_file(mount_dir: &Path) -> anyhow::Result<()> {
     // Try to open the file with read-only permission
     File::options().read(true).open(file_path.clone())?;
     // Try to open the file with write permission
-    info!("test write read only file: {:?}", File::options().write(true).open(file_path.clone()));
+    info!(
+        "test write read only file: {:?}",
+        File::options().write(true).open(file_path.clone())
+    );
 
     assert!(File::options().write(true).open(file_path.clone()).is_err());
     // Try to open the file with read-write permission
-    // assert!(File::options()
-    //     .read(true)
-    //     .write(true)
-    //     .open(file_path.clone())
-    //     .is_err());
+    assert!(File::options()
+        .read(true)
+        .write(true)
+        .open(file_path.clone())
+        .is_err());
     fs::remove_file(&file_path)?;
     Ok(())
 }

@@ -5,7 +5,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use clippy_utilities::{Cast, OverflowArithmetic};
 use parking_lot::Mutex;
-use tracing::info;
+use tracing::{error, info};
 
 use crate::async_fuse::memfs::{FileAttr, MetaData};
 use crate::new_storage::StorageError;
@@ -40,14 +40,17 @@ impl<M: MetaData + Send + Sync + 'static> Storage for StorageManager<M> {
     #[inline]
     #[allow(clippy::unwrap_used)]
     async fn open(&self, ino: u64, attr: FileAttr) {
-        let flag = self.handles.reopen_or_create_handle(
-            ino,
-            self.block_size,
-            Arc::clone(&self.cache),
-            Arc::clone(&self.backend),
-            Arc::clone(&self.metadata_client),
-            attr,
-        ).await;
+        let flag = self
+            .handles
+            .reopen_or_create_handle(
+                ino,
+                self.block_size,
+                Arc::clone(&self.cache),
+                Arc::clone(&self.backend),
+                Arc::clone(&self.metadata_client),
+                attr,
+            )
+            .await;
         info!("open filehandle {:?} with flag {:?}", ino, flag);
     }
 
@@ -70,7 +73,8 @@ impl<M: MetaData + Send + Sync + 'static> Storage for StorageManager<M> {
         match self.get_handle(ino).await {
             Some(fh) => fh.setattr(attr),
             None => {
-                panic!("Cannot set attr for a file that is not open.");
+                // Ignore the error here, because the file may be closed or not opened.
+                error!("Cannot set attr for a file that is not open.");
             }
         }
     }
@@ -81,9 +85,9 @@ impl<M: MetaData + Send + Sync + 'static> Storage for StorageManager<M> {
     async fn read(&self, ino: u64, offset: u64, len: usize) -> StorageResult<Vec<u8>> {
         match self.get_handle(ino).await {
             Some(fh) => fh.read(offset, len.cast()).await,
-            None => {
-                panic!("Cannot read from a file that is not open.");
-            }
+            None => Err(StorageError::Internal(anyhow::anyhow!(
+                "This file handle is not exists."
+            ))),
         }
     }
 

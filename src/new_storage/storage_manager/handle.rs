@@ -434,6 +434,7 @@ impl FileHandleInner {
                 Some(task) = write_back_receiver.recv() => {
                     match task {
                         Task::Pending(task) => {
+                            info!("Get pending Write back the block. ino: {:?}", self.ino);
                             tasks.push(task);
                             if tasks.len() >= 10 {
                                 let slf_clone = Arc::clone(&self);
@@ -445,6 +446,7 @@ impl FileHandleInner {
                             }
                         }
                         Task::Flush(tx) => {
+                            info!("Flush the cache. ino: {:?}", self.ino);
                             let slf_clone = Arc::clone(&self);
                             let res = slf_clone.write_blocks(&tasks, Arc::clone(&metadata_client)).await;
                             tasks.clear();
@@ -454,6 +456,7 @@ impl FileHandleInner {
                             }
                         }
                         Task::Finish(tx) => {
+                            info!("Finish the write back task. ino: {:?}", self.ino);
                             let slf_clone = Arc::clone(&self);
                             let res = slf_clone.write_blocks(&tasks, Arc::clone(&metadata_client)).await;
                             tasks.clear();
@@ -710,21 +713,20 @@ impl Handles {
         let shard = self.get_shard(fh);
         let mut shard_lock = shard.write().await;
         // If the file handle is already open, reopen it and return false
-        match shard_lock.get(&fh) {
-            Some(file_handle) => {
-                let open_cnt = file_handle.open_cnt().await;
-                info!("Reopen file handle for ino: {fh} with opencnt: {open_cnt}");
-                file_handle.open().await;
-                return false;
-            }
-            None => {
-                info!("Create a new file handle for ino: {}", fh);
-                // If the file handle is not open, create a new file handle and return true
-                let file_handle = FileHandle::new(fh, block_size, cache, backend, metadata_client);
-                file_handle.setattr(attr);
-                shard_lock.insert(fh, file_handle);
-                return true;
-            }
+        if let Some(file_handle) = shard_lock.get(&fh) {
+            let open_cnt = file_handle.open_cnt().await;
+            info!("Reopen file handle for ino: {fh} with opencnt: {open_cnt}");
+            file_handle.open().await;
+
+            false
+        } else {
+            info!("Create a new file handle for ino: {}", fh);
+            // If the file handle is not open, create a new file handle and return true
+            let file_handle = FileHandle::new(fh, block_size, cache, backend, metadata_client);
+            file_handle.setattr(attr);
+            shard_lock.insert(fh, file_handle);
+
+            true
         }
     }
 

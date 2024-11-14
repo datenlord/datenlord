@@ -291,16 +291,6 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
             gid: req.gid(),
         };
 
-        match self.metadata.get_remote_attr(ino).await {
-            Ok((_, file_attr)) => {
-                // Will create a new file handle or reopen current filehandle.
-                self.storage.open(ino, file_attr).await;
-            }
-            Err(e) => {
-                return reply.error(e).await;
-            }
-        }
-
         match self.metadata.open_remote(context, ino, flags).await {
             Ok((fd, attr)) => {
                 // Igonre fs fd number now.

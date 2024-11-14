@@ -308,12 +308,8 @@ impl MetaData for S3MetaData {
             old_attr = attr;
         }
 
-        let dirty_attr_for_reply = match old_attr.setattr_precheck(
-            param,
-            context.uid,
-            context.gid,
-        )? {
-            Some(dirty_attr) => {
+        let dirty_attr_for_reply =
+            if let Some(dirty_attr) = old_attr.setattr_precheck(param, context.uid, context.gid)? {
                 info!(
                     "setattr() ino={} new_attr={:?} old_attr={:?}",
                     ino, dirty_attr, old_attr
@@ -350,12 +346,17 @@ impl MetaData for S3MetaData {
 
                 // Defer update size with filehandle
                 if old_attr.size != dirty_attr.size {
+                    // Make sure the file is open
+                    storage.open(ino, dirty_attr_without_size).await;
+
                     storage
                         .truncate(ino, old_attr.size.cast(), dirty_attr.size.cast())
                         .await?;
 
                     // Update local attr with new size
                     storage.setattr(ino, dirty_attr).await;
+
+                    storage.close(ino).await?;
 
                     info!(
                         "update attr to local setattr() ino={} new_attr={:?} old_attr={:?}",
@@ -365,16 +366,14 @@ impl MetaData for S3MetaData {
 
                 // Update remote attr
                 dirty_attr
-            }
-            None => {
+            } else {
                 // setattr did not change any attribute.
                 info!(
                     "no change setattr() ino={} new_attr={:?} old_attr={:?}",
                     ino, old_attr, old_attr
                 );
                 return Ok((ttl, fs_util::convert_to_fuse_attr(old_attr)));
-            }
-        };
+            };
 
         info!(
             "1111111setattr() ino={} new_attr={:?} old_attr={:?}",
