@@ -701,8 +701,10 @@ impl<'a> ReplyDirectory<'a> {
 ///   a continuous, single allocated space (for example, a `Vec<u8>`).
 unsafe fn fuse_dir_ent_in_raw(from: &FuseDirEnt) -> &[u8] {
     let base: *const u8 = <*const FuseDirEnt>::cast(from);
-    let bytes = slice::from_raw_parts(base, mem::size_of::<FuseDirEnt>());
-    bytes
+    unsafe {
+        let bytes = slice::from_raw_parts(base, mem::size_of::<FuseDirEnt>());
+        bytes
+    }
 }
 
 /// FUSE extended attribute response
