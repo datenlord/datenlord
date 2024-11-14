@@ -3,7 +3,7 @@ use std::os::unix::ffi::OsStringExt;
 use std::os::unix::io::RawFd;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use clippy_utilities::{Cast, OverflowArithmetic};
@@ -13,16 +13,15 @@ use nix::errno::Errno;
 use nix::fcntl::OFlag;
 use nix::sys::stat::SFlag;
 use tokio::sync::Mutex;
-use tracing::{debug, info, instrument};
+use tracing::{debug, error, info, instrument};
 
 use super::fs_util::{self, NEED_CHECK_PERM};
 use super::id_alloc_used::INumAllocator;
 use super::kv_engine::{KVEngine, KVEngineType, MetaTxn, ValueType};
 use super::metadata::{error, MetaData, ReqContext};
 use super::node::Node;
-use super::open_file::OpenFiles;
 use super::s3_node::S3Node;
-use super::{check_type_supported, CreateParam, RenameParam, SetAttrParam, StorageType};
+use super::{check_type_supported, CreateParam, FileAttr, RenameParam, SetAttrParam, StorageType};
 use crate::async_fuse::fuse::fuse_reply::{ReplyDirectory, StatFsParam};
 use crate::async_fuse::fuse::protocol::{FuseAttr, INum, FUSE_ROOT_ID};
 use crate::async_fuse::memfs::check_name_length;
@@ -65,8 +64,6 @@ pub struct S3MetaData {
     pub(crate) kv_engine: Arc<KVEngineType>,
     /// Inum allocator
     inum_allocator: INumAllocator<KVEngineType>,
-    /// opend files
-    open_files: OpenFiles,
 }
 
 #[async_trait]
@@ -76,18 +73,12 @@ impl MetaData for S3MetaData {
     #[instrument(skip(self))]
     async fn release(
         &self,
-        ino: u64,
-        fh: u64,
+        _ino: u64,
+        _fh: u64,
         _flags: u32,
         _lock_owner: u64,
         _flush: bool,
     ) -> DatenLordResult<()> {
-        if self.open_files.close(ino).is_some() {
-            // open_count reaches 0, flush the metadata to kv
-            info!("release() ino={} fh={} file is closed", ino, fh);
-        } else {
-            info!("release() ino={} fh={} file is still open", ino, fh);
-        }
         Ok(())
     }
 
@@ -176,43 +167,22 @@ impl MetaData for S3MetaData {
     }
 
     #[instrument(skip(self), err, ret)]
-    async fn read_helper(&self, ino: INum) -> DatenLordResult<(u64, SystemTime)> {
-        let open_file = self.open_files.get(ino);
-
-        let (mtime, file_size) = {
-            let attr = open_file.read().attr;
-            (attr.mtime, attr.size)
-        };
-
-        // If now is after atime + 1s, update atime
-        let atime = open_file.read().attr.atime;
-        let now = std::time::SystemTime::now();
-        let result = now
-            .duration_since(atime)
-            .unwrap_or_else(|_| Duration::new(0, 0))
-            .as_secs();
-        if result > 1 {
-            open_file.write().attr.atime = now;
-            let (res, retry) = retry_txn!(TXN_RETRY_LIMIT, {
-                let mut txn = self.kv_engine.new_meta_txn().await;
-                let mut node = self.get_inode_from_txn(txn.as_mut(), ino).await?;
-                let mut attr = node.get_attr();
-                attr.atime = now;
-                node.set_attr(attr);
-                txn.set(
-                    &KeyType::INum2Node(ino),
-                    &ValueType::Node(node.to_serial_node()),
-                );
-                (txn.commit().await, ())
-            });
-            FILESYSTEM_METRICS.observe_storage_operation_throughput(retry, "read");
-            res?;
-        }
-        Ok((file_size, mtime))
+    async fn open_local(
+        &self,
+        _context: ReqContext,
+        _ino: u64,
+        _flags: u32,
+    ) -> DatenLordResult<u64> {
+        return Ok(self.allocate_fd());
     }
 
     #[instrument(skip(self), err, ret)]
-    async fn open(&self, context: ReqContext, ino: u64, flags: u32) -> DatenLordResult<u64> {
+    async fn open_remote(
+        &self,
+        context: ReqContext,
+        ino: u64,
+        flags: u32,
+    ) -> DatenLordResult<(u64, FileAttr)> {
         // TODO: handle open flags
         // <https://pubs.opengroup.org/onlinepubs/9699919799/functions/open.html>
 
@@ -224,18 +194,10 @@ impl MetaData for S3MetaData {
             _ => 6,
         };
 
-        // First find in `open_files`
-        if let Some(open_file) = self.open_files.try_open(ino) {
-            let open_file = open_file.read();
-            open_file
-                .attr
-                .check_perm(context.uid, context.gid, access_mode)?;
-            return Ok(self.allocate_fd());
-        }
-
         // The file doesn't open by any process, so we need to open it
         match self.get_node_from_kv_engine(ino).await? {
             None => {
+                error!("open() failed to find ino={ino}");
                 return build_error_result_from_errno(
                     Errno::ENOENT,
                     format!("open() failed to find ino={ino}"),
@@ -244,22 +206,14 @@ impl MetaData for S3MetaData {
             Some(node) => {
                 let attr = node.get_attr();
                 attr.check_perm(context.uid, context.gid, access_mode)?;
-                // Add the file to `open_files`
-                self.open_files.open(ino, attr);
-                return Ok(self.allocate_fd());
+                return Ok((self.allocate_fd(), attr));
             }
         }
     }
 
+    /// Get attribute of i-node by ino from remote
     #[instrument(skip(self), err, ret)]
-    async fn getattr(&self, ino: u64) -> DatenLordResult<(Duration, FuseAttr)> {
-        // If the file is open, return the attr in `open_files`
-        if let Some(open_file) = self.open_files.try_get(ino) {
-            let open_file = open_file.read();
-            let attr = FuseAttr::from(open_file.attr);
-            return Ok((Duration::new(MY_TTL_SEC, 0), attr));
-        }
-
+    async fn get_remote_attr(&self, ino: u64) -> DatenLordResult<(Duration, FileAttr)> {
         // If the file is not open, return the attr in kv engine
         let inode = self
             .get_node_from_kv_engine(ino)
@@ -267,17 +221,7 @@ impl MetaData for S3MetaData {
             .ok_or_else(|| build_inconsistent_fs!(ino))?;
         let attr = inode.get_attr();
         let ttl = Duration::new(MY_TTL_SEC, 0);
-        let fuse_attr = FuseAttr::from(attr);
-        Ok((ttl, fuse_attr))
-    }
-
-    fn mtime_and_size(&self, ino: u64) -> (u64, SystemTime) {
-        let open_file = self.open_files.get(ino);
-        let (mtime, file_size) = {
-            let attr = open_file.read().attr;
-            (attr.mtime, attr.size)
-        };
-        (file_size, mtime)
+        Ok((ttl, attr))
     }
 
     #[instrument(skip(self))]
@@ -309,7 +253,7 @@ impl MetaData for S3MetaData {
     }
 
     #[instrument(skip(self, storage), err, ret)]
-    async fn setattr_helper(
+    async fn setattr_helper<M: MetaData + Send + Sync + 'static>(
         &self,
         context: ReqContext,
         ino: u64,
@@ -317,48 +261,85 @@ impl MetaData for S3MetaData {
         storage: &StorageType,
     ) -> DatenLordResult<(Duration, FuseAttr)> {
         let ttl = Duration::new(MY_TTL_SEC, 0);
-        let (res, retry) = retry_txn!(TXN_RETRY_LIMIT, {
-            let mut txn = self.kv_engine.new_meta_txn().await;
-            let mut inode = self.get_inode_from_txn(txn.as_mut(), ino).await?;
-            let remote_attr = inode.get_attr();
-            let dirty_attr_for_reply =
-                match remote_attr.setattr_precheck(param, context.uid, context.gid)? {
-                    Some(dirty_attr) => {
-                        if remote_attr.size != dirty_attr.size {
-                            inode.update_mtime_ctime_to_now();
-                            storage
-                                .truncate(ino, remote_attr.size.cast(), dirty_attr.size.cast())
-                                .await?;
-                            if param.fh.is_some() {
-                                // The file is open, update the attr in `open_files`
-                                let raw_open_file = self.open_files.get(ino);
-                                let mut open_file = raw_open_file.write();
-                                open_file.attr.size = dirty_attr.size;
-                                open_file.attr.mtime = inode.get_attr().mtime;
-                                open_file.attr.ctime = inode.get_attr().ctime;
-                            }
-                        }
-                        inode.set_attr(dirty_attr);
-                        dirty_attr
-                    }
-                    None => {
-                        // setattr did not change any attribute.
-                        return Ok((ttl, FuseAttr::from(remote_attr)));
-                    }
-                };
+        let mut inode = self
+            .get_node_from_kv_engine(ino)
+            .await?
+            .ok_or_else(|| build_inconsistent_fs!(ino))?;
+        let mut old_attr = inode.get_attr();
 
-            txn.set(
-                &KeyType::INum2Node(ino),
-                &ValueType::Node(inode.to_serial_node()),
-            );
+        // If current file is open, try to update old_attr with local attr
+        if let Ok(attr) = storage.getattr(ino).await {
+            old_attr = attr;
+        }
 
-            (
-                txn.commit().await,
-                (ttl, FuseAttr::from(dirty_attr_for_reply)),
-            )
-        });
-        FILESYSTEM_METRICS.observe_storage_operation_throughput(retry, "setattr");
-        res
+        let dirty_attr_for_reply =
+            if let Some(dirty_attr) = old_attr.setattr_precheck(param, context.uid, context.gid)? {
+                info!(
+                    "setattr() ino={} new_attr={:?} old_attr={:?}",
+                    ino, dirty_attr, old_attr
+                );
+                // Update attributes without size immediately
+                let mut dirty_attr_without_size = dirty_attr;
+                dirty_attr_without_size.size = old_attr.size;
+                inode.set_attr(dirty_attr_without_size);
+                // Update local attr with new attr without size
+                storage.setattr(ino, dirty_attr_without_size).await;
+
+                match self
+                    .kv_engine
+                    .set(
+                        &KeyType::INum2Node(ino),
+                        &ValueType::Node(inode.to_serial_node()),
+                        None,
+                    )
+                    .await
+                {
+                    Ok(_) => {
+                        debug!(
+                            "setattr_helper() ino={} new_attr={:?} isok=true",
+                            ino, dirty_attr
+                        );
+                    }
+                    Err(e) => {
+                        return build_error_result_from_errno(
+                            Errno::EIO,
+                            format!("setattr_helper() failed to set kv, err={e:?}"),
+                        );
+                    }
+                }
+
+                // Defer update size with filehandle
+                if old_attr.size != dirty_attr.size {
+                    // Make sure the file is open
+                    storage.open(ino, dirty_attr_without_size).await;
+
+                    storage
+                        .truncate(ino, old_attr.size.cast(), dirty_attr.size.cast())
+                        .await?;
+
+                    // Update local attr with new size
+                    storage.setattr(ino, dirty_attr).await;
+
+                    storage.close(ino).await?;
+
+                    debug!(
+                        "update attr to local setattr() ino={} new_attr={:?} old_attr={:?}",
+                        ino, dirty_attr, old_attr
+                    );
+                }
+
+                // Update remote attr
+                dirty_attr
+            } else {
+                // setattr did not change any attribute.
+                debug!(
+                    "no change setattr() ino={} new_attr={:?} old_attr={:?}",
+                    ino, old_attr, old_attr
+                );
+                return Ok((ttl, FuseAttr::from(old_attr)));
+            };
+
+        Ok((ttl, FuseAttr::from(dirty_attr_for_reply)))
     }
 
     #[instrument(skip(self), err, ret)]
@@ -452,7 +433,6 @@ impl MetaData for S3MetaData {
             fuse_fd: Mutex::new(-1_i32),
             inum_allocator: INumAllocator::new(Arc::clone(&kv_engine)),
             kv_engine,
-            open_files: OpenFiles::new(),
         });
 
         let (res, _) = retry_txn!(TXN_RETRY_LIMIT, {
@@ -752,38 +732,39 @@ impl MetaData for S3MetaData {
         res
     }
 
-    /// Helper function to write data
-    async fn write_helper(
-        &self,
-        ino: u64,
-        new_mtime: SystemTime,
-        new_size: u64,
-    ) -> DatenLordResult<()> {
-        // Update the `mtime` and `size` of the file
-        {
-            let raw_open_file = self.open_files.get(ino);
-            let mut open_file = raw_open_file.write();
-            open_file.attr.mtime = new_mtime;
-            open_file.attr.size = new_size;
-        }
-
-        let (res, retry) = retry_txn!(TXN_RETRY_LIMIT, {
-            let mut txn = self.kv_engine.new_meta_txn().await;
-            let mut node = self.get_inode_from_txn(txn.as_mut(), ino).await?;
-            let mut attr = node.get_attr();
-            attr.mtime = new_mtime;
-            attr.size = new_size;
-            node.set_attr(attr);
-            txn.set(
+    /// Helper function to write remote meta data
+    async fn write_remote_size_helper(&self, ino: u64, size: u64) -> DatenLordResult<()> {
+        let mut node = self
+            .get_node_from_kv_engine(ino)
+            .await?
+            .ok_or_else(|| build_inconsistent_fs!(ino))?;
+        node.update_mtime_ctime_to_now();
+        let mut attr = node.get_attr();
+        attr.size = size;
+        node.set_attr(attr);
+        match self
+            .kv_engine
+            .set(
                 &KeyType::INum2Node(ino),
                 &ValueType::Node(node.to_serial_node()),
-            );
-            (txn.commit().await, ())
-        });
-
-        FILESYSTEM_METRICS.observe_storage_operation_throughput(retry, "write");
-        res?;
-        Ok(())
+                None,
+            )
+            .await
+        {
+            Ok(_) => {
+                debug!(
+                    "write_remote_size_helper() ino={} size={} isok={:?}",
+                    ino, size, true
+                );
+                Ok(())
+            }
+            Err(e) => {
+                return build_error_result_from_errno(
+                    Errno::EIO,
+                    format!("write_remote_size_helper() failed to set kv, err={e:?}"),
+                );
+            }
+        }
     }
 }
 
