@@ -725,27 +725,44 @@ fn test_open_file_permission(mount_dir: &Path) -> anyhow::Result<()> {
 }
 
 #[cfg(test)]
-// fn test_libc_truncate(mount_dir: &Path) -> anyhow::Result<()> {
-//     info!("test libc truncate");
-//     let file_path = Path::new(mount_dir).join("test_libc_truncate.txt");
+#[allow(clippy::cast_sign_loss)]
+#[allow(clippy::as_conversions)]
+fn test_libc_truncate(mount_dir: &Path) -> anyhow::Result<()> {
+    use std::os::unix::ffi::OsStrExt;
 
-//     let mut file = File::create(&file_path)?;
-//     file.write_all(FILE_CONTENT.as_ref())?;
+    info!("test libc truncate");
+    let file_path = Path::new(mount_dir).join("test_libc_truncate.txt");
 
-//     let file_fd = fcntl::open(&file_path, OFlag::O_RDWR, Mode::from_bits_truncate(0o644))?;
-//     let truncate_size = 8;
-//     let truncate_res = unsafe { libc::ftruncate(file_fd, truncate_size) };
-//     if truncate_res != 0 {
-//         return Err(anyhow::anyhow!("ftruncate failed with errno={}", nix::errno::errno()));
-//     }
+    let mut file = File::create(&file_path)?;
+    file.write_all(FILE_CONTENT.as_ref())?;
 
-//     let metadata = fs::metadata(&file_path)?;
-//     assert_eq!(metadata.len(), truncate_size as u64);
+    info!("test libc ftruncate: {:?}", file_path);
+    let file_fd = fcntl::open(&file_path, OFlag::O_RDWR, Mode::from_bits_truncate(0o644))?;
+    let truncate_size = 8;
+    let truncate_res = unsafe { libc::ftruncate(file_fd, truncate_size) };
+    assert_eq!(truncate_res, 0_i32, "ftruncate failed");
 
-//     unistd::close(file_fd)?;
-//     fs::remove_file(&file_path)?;
-//     Ok(())
-// }
+    let metadata = fs::metadata(&file_path)?;
+    assert_eq!(metadata.len(), truncate_size as u64);
+    unistd::close(file_fd)?;
+
+    info!("test libc truncate: {:?}", file_path);
+    let truncate_size = 16;
+    let truncate_res = unsafe {
+        libc::truncate(
+            file_path.as_os_str().as_bytes().as_ptr().cast::<i8>(),
+            truncate_size,
+        )
+    };
+    assert_eq!(truncate_res, 0_i32, "truncate failed");
+
+    let metadata = fs::metadata(&file_path)?;
+    assert_eq!(metadata.len(), truncate_size as u64);
+
+    fs::remove_file(&file_path)?;
+    Ok(())
+}
+
 #[cfg(test)]
 #[allow(clippy::assertions_on_result_states)] // assert!(result.is_err()) is more readable for test
 fn test_write_read_only_file(mount_dir: &Path) -> anyhow::Result<()> {
@@ -800,6 +817,7 @@ async fn _run_test(mount_dir_str: &str, is_s3: bool) -> anyhow::Result<()> {
     let mount_dir = Path::new(mount_dir_str);
     test_util::setup(mount_dir, is_s3).await?;
 
+    test_libc_truncate(mount_dir).context("test_libc_truncate() failed")?;
     test_delete_file(mount_dir).context("test_delete_file() failed")?;
     test_file_manipulation_rust_way(mount_dir)
         .context("test_file_manipulation_rust_way() failed")?;
