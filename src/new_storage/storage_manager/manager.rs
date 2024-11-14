@@ -5,18 +5,22 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use clippy_utilities::{Cast, OverflowArithmetic};
 use parking_lot::Mutex;
+use tracing::{error, info};
+
+use crate::async_fuse::memfs::{FileAttr, MetaData};
+use crate::new_storage::StorageError;
 
 use super::super::policy::LruPolicy;
 use super::super::{
-    format_file_path, format_path, Backend, CacheKey, FileHandle, Handles, MemoryCache, OpenFlag,
-    Storage, StorageResult,
+    format_file_path, format_path, Backend, CacheKey, FileHandle, Handles, MemoryCache, Storage,
+    StorageResult,
 };
 
 /// The `Storage` struct represents a storage system that implements the
 /// `MockIO` trait. It manages file handles, caching, and interacts with a
 /// backend storage.
 #[derive(Debug)]
-pub struct StorageManager {
+pub struct StorageManager<M: MetaData + Send + Sync + 'static> {
     /// The size of a block
     block_size: usize,
     /// The file handles.
@@ -25,70 +29,112 @@ pub struct StorageManager {
     cache: Arc<Mutex<MemoryCache<CacheKey, LruPolicy<CacheKey>>>>,
     /// The backend storage system.
     backend: Arc<dyn Backend>,
+    /// Fs metadata
+    metadata_client: Arc<M>,
 }
 
 #[async_trait]
-impl Storage for StorageManager {
-    /// Opens a file with the given inode number and flags, returning a new file
-    /// handle.
+impl<M: MetaData + Send + Sync + 'static> Storage for StorageManager<M> {
+    /// Opens a file with the given inode number, in client side will check the open flag, so we don't need to
+    /// check it here.
     #[inline]
-    fn open(&self, ino: u64, fh: u64, flag: OpenFlag) {
-        // Get existing file handle if it exists
-        if let Some(handle) = self.handles.get_handle(fh) {
-            handle.open();
-        } else {
-            let handle = FileHandle::new(
-                fh,
+    #[allow(clippy::unwrap_used)]
+    async fn open(&self, ino: u64, attr: FileAttr) {
+        let flag = self
+            .handles
+            .create_or_open_handle(
                 ino,
                 self.block_size,
                 Arc::clone(&self.cache),
                 Arc::clone(&self.backend),
-                flag,
-            );
-            self.handles.add_handle(handle);
+                Arc::clone(&self.metadata_client),
+                attr,
+            )
+            .await;
+        info!("open filehandle {:?} with flag {:?}", ino, flag);
+    }
+
+    /// Get the file attr of the file specified by the inode number.
+    /// Default implementation returns None.
+    async fn getattr(&self, ino: u64) -> StorageResult<FileAttr> {
+        match self.get_handle(ino).await {
+            Some(fh) => Ok(fh.getattr().await),
+            None => Err(StorageError::Internal(anyhow::anyhow!(
+                "This file handle is not exists."
+            ))),
+        }
+    }
+
+    /// Set the file attr of the file specified by the inode number.
+    /// Default implementation does nothing.
+    #[inline]
+    async fn setattr(&self, ino: u64, attr: FileAttr) {
+        info!("setattr: ino: {} with attr: {:?}", ino, attr);
+        match self.get_handle(ino).await {
+            Some(fh) => fh.setattr(attr).await,
+            None => {
+                // Ignore the error here, because the file may be closed or not opened.
+                error!("Cannot set attr for a file that is not open.");
+            }
         }
     }
 
     /// Reads data from a file specified by the file handle, starting at the
     /// given offset and reading up to `len` bytes.
     #[inline]
-    async fn read(&self, _ino: u64, fh: u64, offset: u64, len: usize) -> StorageResult<Vec<u8>> {
-        let handle = self.get_handle(fh);
-        handle.read(offset, len.cast()).await
+    async fn read(&self, ino: u64, offset: u64, len: usize) -> StorageResult<Vec<u8>> {
+        match self.get_handle(ino).await {
+            Some(fh) => fh.read(offset, len.cast()).await,
+            None => Err(StorageError::Internal(anyhow::anyhow!(
+                "This file handle is not exists."
+            ))),
+        }
     }
 
     /// Writes data to a file specified by the file handle, starting at the
     /// given offset.
     #[inline]
-    async fn write(&self, _ino: u64, fh: u64, offset: u64, buf: &[u8]) -> StorageResult<()> {
-        let handle = self.get_handle(fh);
-        handle.write(offset, buf).await?;
-        Ok(())
+    async fn write(&self, ino: u64, offset: u64, buf: &[u8], size: u64) -> StorageResult<()> {
+        match self.get_handle(ino).await {
+            Some(fh) => fh.write(offset, buf, size).await,
+            None => {
+                panic!("Cannot write to a file that is not open.");
+            }
+        }
     }
 
     /// Flushes any pending writes to a file specified by the file handle.
     #[inline]
-    async fn flush(&self, _ino: u64, fh: u64) -> StorageResult<()> {
-        let handle = self.get_handle(fh);
-        handle.flush().await?;
-        Ok(())
+    async fn flush(&self, ino: u64) -> StorageResult<()> {
+        match self.get_handle(ino).await {
+            Some(fh) => fh.flush().await,
+            None => {
+                panic!("Cannot flush a file that is not open.");
+            }
+        }
     }
 
     /// Closes a file specified by the file handle.
     #[inline]
-    async fn close(&self, fh: u64) -> StorageResult<()> {
-        let handle = self
-            .handles
-            .remove_handle(fh)
-            .unwrap_or_else(|| panic!("Cannot close a file that is not open."));
-        handle.close().await?;
-        Ok(())
+    async fn close(&self, ino: u64) -> StorageResult<()> {
+        info!("try to close filehandle {:?}", ino);
+        if let Some(_fh) = self.handles.close_handle(ino).await? {
+            info!("close filehandle {ino:?} ok");
+            Ok(())
+        } else {
+            info!("close filehandle {ino:?} ok");
+            Ok(())
+        }
     }
 
     /// Truncates a file specified by the inode number to a new size, given the
     /// old size.
     #[inline]
     async fn truncate(&self, ino: u64, old_size: u64, new_size: u64) -> StorageResult<()> {
+        info!(
+            "truncate: ino: {} old_size: {} new_size: {}",
+            ino, old_size, new_size
+        );
         // If new_size == old_size, do nothing
         if new_size >= old_size {
             return Ok(());
@@ -112,17 +158,16 @@ impl Storage for StorageManager {
             if fill_size == self.block_size {
                 return Ok(());
             }
-            let handle = FileHandle::new(
-                0,
-                ino,
-                self.block_size,
-                Arc::clone(&self.cache),
-                Arc::clone(&self.backend),
-                OpenFlag::Write,
-            );
+
             let fill_content = vec![0; fill_size];
-            handle.write(new_size, &fill_content).await?;
-            handle.close().await?;
+            match self.get_handle(ino).await {
+                Some(fh) => {
+                    fh.write(new_size, &fill_content, new_size).await?;
+                }
+                None => {
+                    panic!("Cannot write to a file that is not open.");
+                }
+            }
         }
 
         Ok(())
@@ -135,19 +180,21 @@ impl Storage for StorageManager {
     }
 }
 
-impl StorageManager {
+impl<M: MetaData + Send + Sync + 'static> StorageManager<M> {
     /// Creates a new `Storage` instance.
     #[inline]
     pub fn new(
         cache: Arc<Mutex<MemoryCache<CacheKey, LruPolicy<CacheKey>>>>,
         backend: Arc<dyn Backend>,
         block_size: usize,
+        metadata_client: Arc<M>,
     ) -> Self {
         StorageManager {
             block_size,
             handles: Arc::new(Handles::new()),
             cache,
             backend,
+            metadata_client,
         }
     }
 
@@ -163,9 +210,7 @@ impl StorageManager {
     ///
     /// # Panic
     /// Panics if the file of `fh` is not open.
-    fn get_handle(&self, fh: u64) -> FileHandle {
-        self.handles
-            .get_handle(fh)
-            .unwrap_or_else(|| panic!("Cannot get a file handle that is not open."))
+    async fn get_handle(&self, fh: u64) -> Option<FileHandle> {
+        self.handles.get_handle(fh).await
     }
 }
