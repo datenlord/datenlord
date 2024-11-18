@@ -31,6 +31,8 @@ pub struct FileHandleInner {
     /// of the number of times this file is currently opened.
     /// The number of times this file is currently opened.
     open_cnt: AtomicU32,
+    /// Block count of unflushed blocks, used to determine current file handle is clean.
+    diry_count: AtomicU32,
     /// Current file attributes.
     attr: Arc<RwLock<FileAttr>>,
     /// The block size
@@ -43,6 +45,8 @@ pub struct FileHandleInner {
     access_keys: Mutex<Vec<CacheKey>>,
     /// The sender to send tasks to the write back worker.
     write_back_sender: Sender<Task>,
+    /// The sender to send close signal to the write back worker.
+    close_sender: Sender<()>,
 }
 
 impl std::fmt::Debug for FileHandleInner {
@@ -65,8 +69,6 @@ enum MetaTask {
     Pending(Arc<MetaCommitTask>),
     /// A flush task, which means we need to flush the meta to the meta data server.
     Flush(oneshot::Sender<Option<StorageError>>),
-    /// A finish task.
-    Finish(oneshot::Sender<Option<StorageError>>),
 }
 
 /// The `MetaCommitTask` struct represents a meta commit task.
@@ -155,7 +157,8 @@ impl FileHandleInner {
         block_size: usize,
         cache: Arc<Mutex<MemoryCache<CacheKey, LruPolicy<CacheKey>>>>,
         backend: Arc<dyn Backend>,
-        write_back_tx: Sender<Task>,
+        write_back_sender: Sender<Task>,
+        close_sender: Sender<()>,
     ) -> Self {
         FileHandleInner {
             ino,
@@ -164,10 +167,12 @@ impl FileHandleInner {
             backend,
             // The open count is initialized to 0, open() method will increase this flag.
             open_cnt: AtomicU32::new(1),
+            diry_count: AtomicU32::new(0),
             // init the file attributes
             attr: Arc::new(RwLock::new(FileAttr::default())),
             access_keys: Mutex::new(Vec::new()),
-            write_back_sender: write_back_tx,
+            write_back_sender,
+            close_sender,
         }
     }
 
@@ -299,6 +304,8 @@ impl FileHandleInner {
                 .unwrap_or_else(|_| {
                     panic!("Should not send command to write back task when the task quits.");
                 });
+            self.diry_count
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         }
 
         Ok(())
@@ -362,17 +369,15 @@ impl FileHandleInner {
 
         debug!("The file handle is closed, remove the file handle.");
 
-        let (tx, rx) = oneshot::channel();
-        self.write_back_sender
-            .send(Task::Finish(tx))
-            .await
-            .unwrap_or_else(|_| {
-                panic!("Should not send command to write back task when the task quits.");
-            });
+        // Check dirty count to determine whether the file handle is clean.
+        self.flush().await?;
 
-        rx.await
-            .unwrap_or_else(|_| panic!("The sender should not be closed."))
-            .map_or(Ok(true), Err)
+        // Will be closed by the send method, or the sender is dropped.
+        self.close_sender.send(()).await.unwrap_or_else(|_| {
+            panic!("Should not send command to write back task when the task quits.");
+        });
+
+        Ok(true)
     }
 
     /// Write the blocks to the backend storage system concurrently.
@@ -396,7 +401,10 @@ impl FileHandleInner {
                 Ok(Err(e)) => {
                     result = Some(e);
                 }
-                _ => {}
+                _ => {
+                    self.diry_count
+                        .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+                }
             }
         }
 
@@ -422,6 +430,7 @@ impl FileHandleInner {
     async fn write_back_work<M: MetaData + Send + Sync + 'static>(
         self: Arc<Self>,
         mut write_back_receiver: Receiver<Task>,
+        mut close_receiver: Receiver<()>,
         metadata_client: Arc<M>,
     ) {
         //  Create a timer to flush the cache every 200ms.
@@ -430,6 +439,10 @@ impl FileHandleInner {
         let mut result = None;
         loop {
             tokio::select! {
+                Some(()) = close_receiver.recv() => {
+                    info!("The {:?} write back task is closed.", self.ino);
+                    return;
+                }
                 Some(task) = write_back_receiver.recv() => {
                     match task {
                         Task::Pending(task) => {
@@ -481,6 +494,7 @@ impl FileHandleInner {
 
 /// The `FileHandle` struct represents a handle to an open file.
 /// It contains an `Arc` of `RwLock<FileHandleInner>`.
+/// Outer `Handles` have a lock to protect the file handle.
 #[derive(Debug, Clone)]
 pub struct FileHandle {
     /// The file handle(inode).
@@ -489,10 +503,6 @@ pub struct FileHandle {
     block_size: usize,
     /// The inner file handle
     inner: Arc<FileHandleInner>,
-    /// The write back handle
-    write_back_handle: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
-    /// The lock to synchronize open and close calls.
-    open_close_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl FileHandle {
@@ -505,24 +515,24 @@ impl FileHandle {
         metadata_client: Arc<M>,
     ) -> Self {
         let (write_back_tx, write_back_rx) = tokio::sync::mpsc::channel(100);
+        // Maybe oneshot is better than mpsc, because we only need to send a signal, but it needs to be mutable.
+        let (close_tx, close_rx) = tokio::sync::mpsc::channel::<()>(1);
         let inner = Arc::new(FileHandleInner::new(
             ino,
             block_size,
             cache,
             backend,
             write_back_tx,
+            close_tx,
         ));
         let inner_clone = Arc::clone(&inner);
         // TODO: Move handle to task manager
-        let write_back_handle =
-            tokio::spawn(inner_clone.write_back_work(write_back_rx, metadata_client));
+        tokio::spawn(inner_clone.write_back_work(write_back_rx, close_rx, metadata_client));
 
         FileHandle {
             fh: ino,
             block_size,
             inner,
-            write_back_handle: Arc::new(Mutex::new(Some(write_back_handle))),
-            open_close_lock: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 
@@ -560,17 +570,26 @@ impl FileHandle {
         self.inner.flush().await
     }
 
+    /// Check current file handle is dirty or not.
+    ///
+    /// If the file handle is dirty, return true, otherwise return false.
+    pub fn is_dirty(&self) -> StorageResult<bool> {
+        Ok(self
+            .inner
+            .diry_count
+            .load(std::sync::atomic::Ordering::SeqCst)
+            > 0)
+    }
+
     /// Increase the open count of the file handle.
-    pub async fn open(&self) {
-        let _guard = self.open_close_lock.lock().await;
-        println!("try to get open filehandle lock ok {:?}", self.fh);
+    pub fn open(&self) {
+        debug!("try to get open filehandle lock ok {:?}", self.fh);
         self.inner.open();
     }
 
     /// Get and try to increase the open count of the file handle.
-    pub async fn get_and_open(&self) -> bool {
-        let _guard = self.open_close_lock.lock().await;
-        println!("try to get open filehandle lock ok {:?}", self.fh);
+    pub fn get_and_open(&self) -> bool {
+        debug!("try to get open filehandle lock ok {:?}", self.fh);
         if self.inner.open_cnt() > 0 {
             // Current file handle is opened by other process, increase the open count.
             self.inner.open();
@@ -583,30 +602,22 @@ impl FileHandle {
     /// Get the open count of the file handle.
     /// Be careful, do not split the `open_cnt` with open and close operation.
     #[must_use]
-    pub async fn open_cnt(&self) -> u32 {
-        let _guard = self.open_close_lock.lock().await;
-        println!("try to get open cnt filehandle lock ok {:?}", self.fh);
+    pub fn open_cnt(&self) -> u32 {
+        debug!("try to get open cnt filehandle lock ok {:?}", self.fh);
         self.inner.open_cnt()
     }
 
     /// Closes the file handle, closing both the reader and writer.
     pub async fn close(&self) -> StorageResult<bool> {
-        let _guard = self.open_close_lock.lock().await;
-        println!("try to close filehandle lock ok {:?}", self.fh);
+        debug!("try to close filehandle lock ok {:?}", self.fh);
         info!("Close the file handle, ino: {}", self.fh);
         match self.inner.close().await {
             Ok(true) => {
-                let write_back_handle = self.write_back_handle.lock().take().unwrap_or_else(|| {
-                    unreachable!("The write back handle should be initialized.")
-                });
-                write_back_handle.await.unwrap_or_else(|e| {
-                    error!("Failed to join the write back task: {e}");
-                });
-                println!("filehandle {:?} drop close filehandle ok", self.fh);
+                debug!("filehandle {:?} drop close filehandle ok", self.fh);
                 Ok(true)
             }
             Ok(false) => {
-                println!("filehandle {:?} drop filehandle lock ok", self.fh);
+                debug!("filehandle {:?} drop filehandle lock ok", self.fh);
                 Ok(false)
             }
             Err(e) => Err(e),
@@ -713,9 +724,9 @@ impl Handles {
         let mut shard_lock = shard.write().await;
         // If the file handle is already open, reopen it and return false
         if let Some(file_handle) = shard_lock.get(&fh) {
-            let open_cnt = file_handle.open_cnt().await;
+            let open_cnt = file_handle.open_cnt();
             info!("Reopen file handle for ino: {fh} with opencnt: {open_cnt}");
-            file_handle.open().await;
+            file_handle.open();
 
             false
         } else {
@@ -736,6 +747,7 @@ impl Handles {
         let filehandle = shard_lock.get(&fh).ok_or_else(|| {
             StorageError::Internal(anyhow::anyhow!("Cannot close a file that is not open."))
         })?;
+
         let need_remove_flag = filehandle.close().await?;
         if need_remove_flag {
             // Remove the file handle from the handles map
@@ -780,17 +792,20 @@ mod tests {
         let fh = 1;
 
         let (write_back_tx, write_back_rx) = tokio::sync::mpsc::channel::<Task>(100);
-        let file_handle = FileHandleInner::new(ino, BLOCK_SIZE, cache, backend, write_back_tx);
+        let (close_tx, close_rx) = tokio::sync::mpsc::channel::<()>(1);
+        let file_handle =
+            FileHandleInner::new(ino, BLOCK_SIZE, cache, backend, write_back_tx, close_tx);
         let file_handle = Arc::new(file_handle);
         let file_handle_inner_clone = Arc::clone(&file_handle);
-        let write_back_handle =
-            tokio::spawn(file_handle_inner_clone.write_back_work(write_back_rx, metadata_client));
+        tokio::spawn(file_handle_inner_clone.write_back_work(
+            write_back_rx,
+            close_rx,
+            metadata_client,
+        ));
         let file_handle = FileHandle {
             fh,
             block_size: BLOCK_SIZE,
             inner: file_handle,
-            write_back_handle: Arc::new(Mutex::new(Some(write_back_handle))),
-            open_close_lock: Arc::new(tokio::sync::Mutex::new(())),
         };
         handles.add_handle(file_handle.clone()).await;
         let buf = vec![b'1', b'2', b'3', b'4'];
