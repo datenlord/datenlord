@@ -44,7 +44,7 @@ macro_rules! build_inconsistent_fs {
 }
 
 /// The time-to-live seconds of FUSE attributes
-const MY_TTL_SEC: u64 = 3600; // TODO: should be a long value, say 1 hour
+pub const MY_TTL_SEC: u64 = 3600; // TODO: should be a long value, say 1 hour
 /// The generation ID of FUSE attributes
 const MY_GENERATION: u64 = 1; // TODO: find a proper way to set generation
 /// The limit of transaction commit retrying times.
@@ -167,17 +167,7 @@ impl MetaData for S3MetaData {
     }
 
     #[instrument(skip(self), err, ret)]
-    async fn open_local(
-        &self,
-        _context: ReqContext,
-        _ino: u64,
-        _flags: u32,
-    ) -> DatenLordResult<u64> {
-        return Ok(self.allocate_fd());
-    }
-
-    #[instrument(skip(self), err, ret)]
-    async fn open_remote(
+    async fn open(
         &self,
         context: ReqContext,
         ino: u64,

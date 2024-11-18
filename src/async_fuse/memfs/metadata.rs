@@ -95,12 +95,9 @@ pub trait MetaData {
     /// Get attribute of i-node by ino from remote
     async fn get_remote_attr(&self, ino: u64) -> DatenLordResult<(Duration, FileAttr)>;
 
-    /// Open a file or directory by ino and flags from local, and return a file handler
-    async fn open_local(&self, context: ReqContext, ino: u64, flags: u32) -> DatenLordResult<u64>;
-
     /// Open a file or directory by ino and flags from remote, and return a file handler
     /// This function will be called at the first time when open a file
-    async fn open_remote(
+    async fn open(
         &self,
         context: ReqContext,
         ino: u64,

@@ -240,7 +240,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
                 file_attr, ino,
             );
             // TODO: Mock response ttl.
-            let ttl = Duration::new(3600, 0);
+            let ttl = Duration::new(s3_metadata::MY_TTL_SEC, 0);
             let fuse_attr = fs_util::convert_to_fuse_attr(file_attr);
             debug!(
                 "getattr() successfully got the attr={:?} of ino={}",
@@ -291,7 +291,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
             gid: req.gid(),
         };
 
-        match self.metadata.open_remote(context, ino, flags).await {
+        match self.metadata.open(context, ino, flags).await {
             Ok((fd, attr)) => {
                 // Igonre fs fd number now.
                 self.storage.open(ino, attr).await;
