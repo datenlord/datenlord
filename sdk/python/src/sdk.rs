@@ -1,4 +1,4 @@
-/// `DatenLordSDK` is a Python class that provides an interface to interact with the DatenLord filesystem.
+/// `DatenLordSDK` is a Python class that provides an interface to interact with the `DatenLord` filesystem.
 /// It allows users to perform various file operations such as creating directories, copying files,
 /// renaming paths, and reading/writing files.
 ///
@@ -12,8 +12,8 @@
 /// - `py_exists<'a>(&'a self, py: Python<'a>, path: String) -> PyResult<Bound<PyAny>>`: Checks if a file or directory exists at the specified path.
 /// - `py_mkdir<'a>(&'a self, py: Python<'a>, path: &'a str) -> PyResult<Bound<PyAny>>`: Creates a new directory at the specified path.
 /// - `py_deldir<'a>(&'a self, py: Python<'a>, path: &'a str, recursive: bool) -> PyResult<Bound<PyAny>>`: Deletes a directory at the specified path, optionally recursively.
-/// - `py_copy_from_local_file<'a>(&'a self, py: Python<'a>, local_path: &'a str, dest_path: &'a str, overwrite: bool) -> PyResult<Bound<PyAny>>`: Copies a file from the local filesystem to the DatenLord filesystem.
-/// - `py_copy_to_local_file<'a>(&'a self, py: Python<'a>, src_path: &'a str, local_path: &'a str) -> PyResult<Bound<PyAny>>`: Copies a file from the DatenLord filesystem to the local filesystem.
+/// - `py_copy_from_local_file<'a>(&'a self, py: Python<'a>, local_path: &'a str, dest_path: &'a str, overwrite: bool) -> PyResult<Bound<PyAny>>`: Copies a file from the local filesystem to the `DatenLord` filesystem.
+/// - `py_copy_to_local_file<'a>(&'a self, py: Python<'a>, src_path: &'a str, local_path: &'a str) -> PyResult<Bound<PyAny>>`: Copies a file from the `DatenLord` filesystem to the local filesystem.
 /// - `py_create_file<'a>(&'a self, py: Python<'a>, file_path: &'a str) -> PyResult<Bound<PyAny>>`: Creates a new file at the specified path.
 /// - `py_rename_path<'a>(&'a self, py: Python<'a>, src_path: &'a str, dest_path: &'a str) -> PyResult<Bound<PyAny>>`: Renames a file or directory from `src_path` to `dest_path`.
 /// - `py_stat<'a>(&'a self, py: Python<'a>, file_path: &'a str) -> PyResult<Bound<PyAny>>`: Retrieves the metadata of a file or directory at the specified path.
@@ -22,7 +22,7 @@
 /// - `py_open<'a>(&'a self, py: Python<'a>, file_path: String) -> PyResult<File>`: Opens a file at the specified path and returns a `File` object.
 ///
 use bytes::BytesMut;
-use clippy_utilities::OverflowArithmetic;
+use clippy_utilities::{Cast, OverflowArithmetic};
 use datenlord::common::logger::init_logger;
 use datenlord::common::task_manager::{TaskName, TASK_MANAGER};
 use datenlord::config::{self, InnerConfig, NodeRole};
@@ -48,6 +48,7 @@ use crate::utils::{self, Buffer, Entry};
 
 /// `DatenLordSDK` is a Python class that provides an interface to interact with the DatenLord filesystem.
 #[pyclass]
+#[derive(Debug)]
 pub struct DatenLordSDK {
     /// The `DatenLordFs` instance that represents the filesystem.
     datenlordfs: Arc<DatenLordFs<S3MetaData>>,
@@ -57,17 +58,25 @@ pub struct DatenLordSDK {
 impl DatenLordSDK {
     /// Initializes a new instance of `DatenLordSDK` by loading the configuration from the specified path
     #[new]
+    #[inline]
+    #[allow(clippy::needless_pass_by_value)]
     pub fn new(_py: Python, config_path: String) -> PyResult<Self> {
         // let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
-        let config_str = config_path.to_string();
+        let config_str = config_path.clone();
 
         // Parse the config file and initialize the SDK
-        let mut arg_conf = config::Config::default();
-        arg_conf.config_file = Some(config_str.to_string());
-        let config =
-            InnerConfig::try_from(config::Config::load_from_args(arg_conf).unwrap()).unwrap();
+        let arg_conf = config::Config {
+            config_file: Some(config_str.clone()),
+            ..Default::default()
+        };
+
+        let config = InnerConfig::try_from(
+            config::Config::load_from_args(arg_conf)
+                .map_err(|e| PyException::new_err(format!("Failed to load config: {e:?}")))?,
+        )
+        .map_err(|e| PyException::new_err(format!("Failed to parse config: {e:?}")))?;
         init_logger(config.role.into(), config.log_level);
-        println!("Config: {:?}", config);
+        println!("Config: {config:?}");
 
         // Initialize the runtime
         // let datenlordfs = runtime.handle().block_on(async {
@@ -80,14 +89,27 @@ impl DatenLordSDK {
         let datenlordfs = pyo3_asyncio::tokio::get_runtime().handle().block_on(async {
             match config.role {
                 NodeRole::SDK => {
-                    let kv_engine: Arc<EtcdKVEngine> =
-                        Arc::new(KVEngineType::new(config.kv_addrs.clone()).await.unwrap());
+                    let kv_engine = match KVEngineType::new(config.kv_addrs.clone()).await {
+                        Ok(kv_engine) => kv_engine,
+                        Err(e) => {
+                            panic!("Failed to initialize KV engine: {e:?}");
+                        }
+                    };
+
+                    let kv_engine: Arc<EtcdKVEngine> = Arc::new(kv_engine);
                     let node_id = config.node_name.clone();
 
-                    TASK_MANAGER
+                    match TASK_MANAGER
                         .spawn(TaskName::Metrics, metrics::start_metrics_server)
                         .await
-                        .unwrap();
+                    {
+                        Ok(()) => {
+                            info!("Metrics server started successfully");
+                        }
+                        Err(e) => {
+                            panic!("Failed to start metrics server: {e:?}");
+                        }
+                    }
 
                     let storage = {
                         let storage_param = &config.storage.params;
@@ -101,28 +123,36 @@ impl DatenLordSDK {
                             capacity_in_blocks,
                             block_size,
                         )));
-                        let backend = Arc::new(
-                            BackendBuilder::new(storage_param.clone())
-                                .build()
-                                .await
-                                .unwrap(),
-                        );
+                        let backend = match BackendBuilder::new(storage_param.clone()).build().await
+                        {
+                            Ok(backend) => backend,
+                            Err(e) => {
+                                panic!("Failed to initialize backend: {e:?}");
+                            }
+                        };
+                        let backend = Arc::new(backend);
                         StorageManager::new(cache, backend, block_size)
                     };
 
                     // Initialize the SDK and convert to void ptr.
-                    let metadata = S3MetaData::new(kv_engine, node_id.as_str()).await.unwrap();
+                    let metadata = match S3MetaData::new(kv_engine, node_id.as_str()).await {
+                        Ok(meta) => meta,
+                        Err(e) => {
+                            panic!("Failed to initialize metadata: {e:?}");
+                        }
+                    };
                     Arc::new(DatenLordFs::new(metadata, storage))
                 }
-                _ => {
+                NodeRole::Controller
+                | NodeRole::Node
+                | NodeRole::SchedulerExtender
+                | NodeRole::AsyncFuse => {
                     panic!("Invalid role for SDK");
                 }
             }
         });
 
-        Ok(DatenLordSDK {
-            datenlordfs: datenlordfs,
-        })
+        Ok(DatenLordSDK { datenlordfs })
     }
 
     /// Close the SDK
@@ -162,15 +192,22 @@ impl DatenLordSDK {
         let fs = Arc::clone(&self.datenlordfs);
 
         future_into_py(py, async move {
-            let result = match utils::find_parent_attr(&path, fs.clone()).await {
+            let result = match utils::find_parent_attr(&path, Arc::clone(&fs)).await {
                 Ok((_, attr)) => {
                     // Get current dir or file name from path and find current inode
                     let path_components: Vec<&str> =
                         path.split('/').filter(|s| !s.is_empty()).collect();
-                    fs.lookup(0, 0, attr.ino, path_components.last().unwrap())
-                        .await
+                    fs.lookup(
+                        0,
+                        0,
+                        attr.ino,
+                        path_components
+                            .last()
+                            .ok_or(PyException::new_err(format!("Invalid file path: {path:?}")))?,
+                    )
+                    .await
                 }
-                Err(e) => Err(e.into()),
+                Err(e) => Err(e),
             };
             match result {
                 Ok(_) => Ok(true),
@@ -188,9 +225,9 @@ impl DatenLordSDK {
 
         future_into_py(py, async move {
             // Find parent inode
-            let (_, parent_attr) = match utils::find_parent_attr(&path_str, fs.clone()).await {
+            let (_, parent_attr) = match utils::find_parent_attr(&path_str, Arc::clone(&fs)).await {
                 Ok(attr) => attr,
-                Err(e) => return Err(PyException::new_err(format!("mkdir failed: {:?}", e))),
+                Err(e) => return Err(PyException::new_err(format!("mkdir failed: {e:?}"))),
             };
 
             // File name
@@ -199,7 +236,10 @@ impl DatenLordSDK {
 
             let param = CreateParam {
                 parent: parent_attr.ino,
-                name: path_components.last().unwrap().to_string(),
+                name: (*path_components.last().ok_or(PyException::new_err(format!(
+                    "Invalid file path: {path_str:?}"
+                )))?)
+                .to_owned(),
                 mode: 0o777,
                 rdev: 0,
                 uid: 0,
@@ -209,7 +249,7 @@ impl DatenLordSDK {
             };
             match fs.mkdir(param).await {
                 Ok(_) => Ok(()),
-                Err(e) => Err(PyException::new_err(format!("mkdir failed: {:?}", e))),
+                Err(e) => Err(PyException::new_err(format!("mkdir failed: {e:?}"))),
             }
         })
     }
@@ -228,9 +268,9 @@ impl DatenLordSDK {
         let path_str = path;
 
         future_into_py(py, async move {
-            match utils::recursive_delete_dir(fs.clone(), &path_str, recursive).await {
-                Ok(_) => Ok(()),
-                Err(e) => Err(PyException::new_err(format!("deldir failed: {:?}", e))),
+            match utils::recursive_delete_dir(Arc::clone(&fs), &path_str, recursive).await {
+                Ok(()) => Ok(()),
+                Err(e) => Err(PyException::new_err(format!("deldir failed: {e:?}"))),
             }
         })
     }
@@ -243,34 +283,33 @@ impl DatenLordSDK {
         let path_str = path;
 
         future_into_py(py, async move {
-            match utils::find_parent_attr(&path_str, fs.clone()).await {
+            match utils::find_parent_attr(&path_str, Arc::clone(&fs)).await {
                 Ok((_, parent_attr)) => {
                     let filename = Path::new(&path_str)
                         .file_name()
                         .ok_or(PyException::new_err(format!(
-                            "Invalid file path: {:?}",
-                            path_str
+                            "Invalid file path: {path_str:?}"
                         )))?
                         .to_str()
                         .ok_or(PyException::new_err(format!(
-                            "Invalid file path: {:?}",
-                            path_str
+                            "Invalid file path: {path_str:?}"
                         )))?;
 
                     match fs.lookup(0, 0, parent_attr.ino, filename).await {
                         Ok((_, _, _)) => {
                             // Check current file is exists
                             match fs.unlink(0, 0, parent_attr.ino, filename).await {
-                                Ok(_) => Ok(()),
-                                Err(e) => Err(PyException::new_err(format!("remove failed: {:?}", e))),
+                                Ok(()) => Ok(()),
+                                Err(e) => {
+                                    Err(PyException::new_err(format!("remove failed: {e:?}")))
+                                }
                             }
                         }
-                        Err(e) => Err(PyException::new_err(format!("lookup failed: {:?}", e))),
+                        Err(e) => Err(PyException::new_err(format!("lookup failed: {e:?}"))),
                     }
                 }
                 Err(e) => Err(PyException::new_err(format!(
-                    "utils::find_parent_attr failed: {:?}",
-                    e
+                    "utils::find_parent_attr failed: {e:?}"
                 ))),
             }
         })
@@ -282,31 +321,29 @@ impl DatenLordSDK {
     #[pyo3(name = "mknod", signature = (path, mode = 0o644))]
     fn py_mknod<'a>(&'a self, py: Python<'a>, path: &'a str, mode: u32) -> PyResult<Bound<PyAny>> {
         let fs = Arc::clone(&self.datenlordfs);
-        let file_path_str = path.to_string();
+        let file_path_str = path.to_owned();
 
         future_into_py(py, async move {
-            match utils::find_parent_attr(&file_path_str, fs.clone()).await {
+            match utils::find_parent_attr(&file_path_str, Arc::clone(&fs)).await {
                 Ok((_, attr)) => {
                     if attr.kind != SFlag::S_IFDIR {
                         return Err(PyException::new_err(format!(
-                            "parent dir is not a directory"
+                            "parent dir is not a directory: {file_path_str:?}",
                         )));
                     }
                     let name = Path::new(&file_path_str)
                         .file_name()
                         .ok_or(PyException::new_err(format!(
-                            "Invalid file path: {:?}",
-                            file_path_str
+                            "Invalid file path: {file_path_str:?}"
                         )))?
                         .to_str()
                         .ok_or(PyException::new_err(format!(
-                            "Invalid file path: {:?}",
-                            file_path_str
+                            "Invalid file path: {file_path_str:?}"
                         )))?;
                     let param = CreateParam {
                         parent: attr.ino,
                         name: name.to_owned(),
-                        mode: mode,
+                        mode,
                         rdev: 0,
                         uid: 0,
                         gid: 0,
@@ -315,12 +352,11 @@ impl DatenLordSDK {
                     };
                     match fs.mknod(param).await {
                         Ok(_) => Ok(()),
-                        Err(e) => Err(PyException::new_err(format!("mknod failed: {:?}", e))),
+                        Err(e) => Err(PyException::new_err(format!("mknod failed: {e:?}"))),
                     }
                 }
                 Err(e) => Err(PyException::new_err(format!(
-                    "utils::find_parent_attr failed: {:?}",
-                    e
+                    "utils::find_parent_attr failed: {e:?}"
                 ))),
             }
         })
@@ -337,12 +373,12 @@ impl DatenLordSDK {
         dst: &'a str,
     ) -> PyResult<Bound<PyAny>> {
         let fs = Arc::clone(&self.datenlordfs);
-        let src_path_str = src.to_string();
-        let dest_path_str = dst.to_string();
+        let src_path_str = src.to_owned();
+        let dest_path_str = dst.to_owned();
 
         future_into_py(py, async move {
             // Find parent inode
-            match utils::find_parent_attr(&src_path_str, fs.clone()).await {
+            match utils::find_parent_attr(&src_path_str, Arc::clone(&fs)).await {
                 Ok((_, attr)) => {
                     let src_path_components: Vec<&str> =
                         src_path_str.split('/').filter(|s| !s.is_empty()).collect();
@@ -350,17 +386,23 @@ impl DatenLordSDK {
                         dest_path_str.split('/').filter(|s| !s.is_empty()).collect();
                     let param = RenameParam {
                         old_parent: attr.ino,
-                        old_name: src_path_components.last().unwrap().to_string(),
+                        old_name: (*src_path_components.last().ok_or(PyException::new_err(
+                            format!("Invalid file path: {src_path_str:?}"),
+                        ))?)
+                        .to_owned(),
                         new_parent: attr.ino,
-                        new_name: dest_path_components.last().unwrap().to_string(),
+                        new_name: (*dest_path_components.last().ok_or(PyException::new_err(
+                            format!("Invalid file path: {dest_path_str:?}"),
+                        ))?)
+                        .to_owned(),
                         flags: 0,
                     };
                     match fs.rename(0, 0, param).await {
-                        Ok(_) => Ok(()),
-                        Err(e) => Err(PyException::new_err(format!("rename failed: {:?}", e))),
+                        Ok(()) => Ok(()),
+                        Err(e) => Err(PyException::new_err(format!("rename failed: {e:?}"))),
                     }
                 }
-                Err(e) => return Err(PyException::new_err(format!("rename failed: {:?}", e))),
+                Err(e) => Err(PyException::new_err(format!("rename failed: {e:?}"))),
             }
         })
     }
@@ -373,12 +415,19 @@ impl DatenLordSDK {
         let file_path_str = path;
 
         future_into_py(py, async move {
-            match utils::find_parent_attr(&file_path_str, fs.clone()).await {
+            match utils::find_parent_attr(&file_path_str, Arc::clone(&fs)).await {
                 Ok((_, parent_attr)) => {
                     let path_components: Vec<&str> =
                         file_path_str.split('/').filter(|s| !s.is_empty()).collect();
                     match fs
-                        .lookup(0, 0, parent_attr.ino, path_components.last().unwrap())
+                        .lookup(
+                            0,
+                            0,
+                            parent_attr.ino,
+                            path_components.last().ok_or(PyException::new_err(format!(
+                                "Invalid file path: {file_path_str:?}"
+                            )))?,
+                        )
                         .await
                     {
                         Ok((_, file_attr, _)) => {
@@ -394,12 +443,11 @@ impl DatenLordSDK {
                             );
                             Ok(file_stat)
                         }
-                        Err(e) => Err(PyException::new_err(format!("stat failed: {:?}", e))),
+                        Err(e) => Err(PyException::new_err(format!("stat failed: {e:?}"))),
                     }
                 }
                 Err(e) => Err(PyException::new_err(format!(
-                    "utils::find_parent_attr failed: {:?}",
-                    e
+                    "utils::find_parent_attr failed: {e:?}"
                 ))),
             }
         })
@@ -419,50 +467,47 @@ impl DatenLordSDK {
         let data = data.as_bytes().to_owned();
 
         future_into_py(py, async move {
-            match utils::find_parent_attr(&file_path_str, fs.clone()).await {
+            match utils::find_parent_attr(&file_path_str, Arc::clone(&fs)).await {
                 Ok((_, parent_attr)) => {
                     let path_components: Vec<&str> =
                         file_path_str.split('/').filter(|s| !s.is_empty()).collect();
-                    let file_name = path_components.last().unwrap();
+                    let file_name = path_components.last().ok_or(PyException::new_err(format!(
+                        "Invalid file path: {file_path_str:?}"
+                    )))?;
 
                     match fs.lookup(0, 0, parent_attr.ino, file_name).await {
                         Ok((_, file_attr, _)) => {
                             match fs
-                                .open(0, 0, file_attr.ino, OFlag::O_WRONLY.bits() as u32)
+                                .open(0, 0, file_attr.ino, OFlag::O_WRONLY.bits().cast())
                                 .await
                             {
                                 Ok(fh) => {
                                     match fs.write(file_attr.ino, fh, 0, &data, 0).await {
-                                        Ok(_) => {
+                                        Ok(()) => {
                                             match fs.release(file_attr.ino, fh, 0, 0, true).await {
-                                                Ok(_) => {
+                                                Ok(()) => {
                                                     // Sleep for a while to ensure the file is written to the storage backend
                                                     // tokio::time::sleep(Duration::from_secs(5)).await;
                                                     Ok(())
                                                 }
                                                 Err(e) => Err(PyException::new_err(format!(
-                                                    "Failed to release file handle: {:?}",
-                                                    e
+                                                    "Failed to release file handle: {e:?}"
                                                 ))),
                                             }
                                         }
                                         Err(e) => Err(PyException::new_err(format!(
-                                            "write failed: {:?}",
-                                            e
+                                            "write failed: {e:?}"
                                         ))),
                                     }
                                 }
-                                Err(e) => {
-                                    Err(PyException::new_err(format!("open failed: {:?}", e)))
-                                }
+                                Err(e) => Err(PyException::new_err(format!("open failed: {e:?}"))),
                             }
                         }
-                        Err(e) => Err(PyException::new_err(format!("lookup failed: {:?}", e))),
+                        Err(e) => Err(PyException::new_err(format!("lookup failed: {e:?}"))),
                     }
                 }
                 Err(e) => Err(PyException::new_err(format!(
-                    "utils::find_parent_attr failed: {:?}",
-                    e
+                    "utils::find_parent_attr failed: {e:?}"
                 ))),
             }
         })
@@ -476,48 +521,45 @@ impl DatenLordSDK {
         let file_path_str = path;
 
         future_into_py(py, async move {
-            match utils::find_parent_attr(&file_path_str, fs.clone()).await {
+            match utils::find_parent_attr(&file_path_str, Arc::clone(&fs)).await {
                 Ok((_, parent_attr)) => {
                     let path_components: Vec<&str> =
                         file_path_str.split('/').filter(|s| !s.is_empty()).collect();
-                    let file_name = path_components.last().unwrap();
+                    let file_name = path_components.last().ok_or(PyException::new_err(format!(
+                        "Invalid file path: {file_path_str:?}"
+                    )))?;
 
                     match fs.lookup(0, 0, parent_attr.ino, file_name).await {
                         Ok((_, file_attr, _)) => {
                             match fs
-                                .open(0, 0, file_attr.ino, OFlag::O_RDONLY.bits() as u32)
+                                .open(0, 0, file_attr.ino, OFlag::O_RDONLY.bits().cast())
                                 .await
                             {
                                 Ok(fh) => {
-                                    let mut buffer =
-                                        BytesMut::with_capacity(file_attr.size as usize);
-                                    let _ = fs
-                                        .read(
-                                            file_attr.ino,
-                                            fh,
-                                            0,
-                                            buffer.capacity() as u32,
-                                            &mut buffer,
-                                        )
-                                        .await
-                                        .map_err(|e| {
-                                            PyException::new_err(format!("read failed: {:?}", e))
-                                        })?;
+                                    let mut buffer = BytesMut::with_capacity(file_attr.size.cast());
+                                    fs.read(
+                                        file_attr.ino,
+                                        fh,
+                                        0,
+                                        buffer.capacity().cast(),
+                                        &mut buffer,
+                                    )
+                                    .await
+                                    .map_err(|e| {
+                                        PyException::new_err(format!("read failed: {e:?}"))
+                                    })?;
                                     Python::with_gil(|py| {
                                         Buffer::new(buffer.freeze().to_vec()).into_bytes(py)
                                     })
                                 }
-                                Err(e) => {
-                                    Err(PyException::new_err(format!("open failed: {:?}", e)))
-                                }
+                                Err(e) => Err(PyException::new_err(format!("open failed: {e:?}"))),
                             }
                         }
-                        Err(e) => Err(PyException::new_err(format!("lookup failed: {:?}", e))),
+                        Err(e) => Err(PyException::new_err(format!("lookup failed: {e:?}"))),
                     }
                 }
                 Err(e) => Err(PyException::new_err(format!(
-                    "utils::find_parent_attr failed: {:?}",
-                    e
+                    "utils::find_parent_attr failed: {e:?}"
                 ))),
             }
         })
@@ -531,6 +573,7 @@ impl DatenLordSDK {
     /// - "rw": Read/Write mode
     /// The `File` object can be used to read and write data to the file.
     #[pyo3(name = "open")]
+    #[allow(clippy::needless_pass_by_value)] // mode need to be `String`
     fn py_open<'a>(&'a self, _py: Python<'a>, path: String, mode: String) -> PyResult<File> {
         let fs = Arc::clone(&self.datenlordfs);
         let file_path = path;
@@ -539,8 +582,8 @@ impl DatenLordSDK {
             "r" => OFlag::O_RDONLY,
             "w" => OFlag::O_WRONLY,
             "a" => OFlag::O_APPEND,
-            "rw" => OFlag::O_RDWR,
             _ => OFlag::O_RDWR,
+            // "rw" => OFlag::O_RDWR,
         };
 
         pyo3_asyncio::tokio::get_runtime().handle().block_on(async {
@@ -550,38 +593,33 @@ impl DatenLordSDK {
                     let file_name = path
                         .file_name()
                         .ok_or(PyException::new_err(format!(
-                            "Invalid file path: {:?}",
-                            file_path
+                            "Invalid file path: {file_path:?}"
                         )))?
                         .to_str()
                         .ok_or(PyException::new_err(format!(
-                            "Invalid file path: {:?}",
-                            file_path
+                            "Invalid file path: {file_path:?}"
                         )))?;
 
                     match fs.lookup(0, 0, parent_attr.ino, file_name).await {
                         Ok((_, file_attr, _)) => {
-                            match fs.open(0, 0, file_attr.ino, mode.bits() as u32).await {
+                            match fs.open(0, 0, file_attr.ino, mode.bits().cast()).await {
                                 Ok(fh) => {
                                     let f = File::new(
                                         file_attr,
                                         fh,
-                                        mode.bits() as u32,
+                                        mode.bits().cast(),
                                         Arc::clone(&fs),
                                     );
                                     Ok(f)
                                 }
-                                Err(e) => {
-                                    Err(PyException::new_err(format!("open failed: {:?}", e)))
-                                }
+                                Err(e) => Err(PyException::new_err(format!("open failed: {e:?}"))),
                             }
                         }
-                        Err(e) => Err(PyException::new_err(format!("lookup failed: {:?}", e))),
+                        Err(e) => Err(PyException::new_err(format!("lookup failed: {e:?}"))),
                     }
                 }
                 Err(e) => Err(PyException::new_err(format!(
-                    "utils::find_parent_attr failed: {:?}",
-                    e
+                    "utils::find_parent_attr failed: {e:?}"
                 ))),
             }
         })
@@ -601,38 +639,35 @@ impl DatenLordSDK {
                     let dir_name = path
                         .file_name()
                         .ok_or(PyException::new_err(format!(
-                            "Invalid dir path: {:?}",
-                            dir_path
+                            "Invalid dir path: {dir_path:?}"
                         )))?
                         .to_str()
                         .ok_or(PyException::new_err(format!(
-                            "Invalid dir path: {:?}",
-                            dir_path
+                            "Invalid dir path: {dir_path:?}"
                         )))?;
 
                     // Get list of files
                     match fs.lookup(0, 0, parent_attr.ino, dir_name).await {
                         Ok((_, dir_attr, _)) => {
                             // Current readdir does not support fh and offset
-                            let dir_entries = fs.readdir(0, 0, dir_attr.ino, 0, 0).await.map_err(
-                                |e| {
-                                    PyException::new_err(format!("readdir failed: {:?}", e))
+                            let dir_entries =
+                                fs.readdir(0, 0, dir_attr.ino, 0, 0).await.map_err(|e| {
+                                    PyException::new_err(format!("readdir failed: {e:?}"))
                                 })?;
                             Ok(dir_entries
                                 .into_iter()
-                                .map(|e| Entry{
+                                .map(|e| Entry {
                                     name: e.name().to_owned(),
                                     ino: e.ino(),
                                     file_type: e.file_type(),
                                 })
                                 .collect::<Vec<_>>())
                         }
-                        Err(e) => Err(PyException::new_err(format!("lookup failed: {:?}", e))),
+                        Err(e) => Err(PyException::new_err(format!("lookup failed: {e:?}"))),
                     }
-                },
+                }
                 Err(e) => Err(PyException::new_err(format!(
-                    "utils::find_parent_attr failed: {:?}",
-                    e
+                    "utils::find_parent_attr failed: {e:?}",
                 ))),
             }
         })

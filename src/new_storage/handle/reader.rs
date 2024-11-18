@@ -117,9 +117,11 @@ impl Reader {
                     .unwrap_or_else(|| unreachable!("The block is checked to be big enough."));
                 // buf.clone_from_slice(slice);
                 // buf[offset..end].clone_from_slice(slice);
-                let buf_slice = buf.get_mut(offset..end).ok_or(
-                    StorageError::Internal(anyhow::Error::msg("The buffer is not big enough.")),
-                )?;
+                let buf_slice =
+                    buf.get_mut(offset..end)
+                        .ok_or(StorageError::Internal(anyhow::Error::msg(
+                            "The buffer is not big enough.",
+                        )))?;
                 buf_slice.clone_from_slice(slice);
             }
             self.cache.lock().unpin(&CacheKey {

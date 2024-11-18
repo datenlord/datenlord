@@ -1,4 +1,4 @@
-//! DatenLord Python SDK
+//! `DatenLord` Python SDK
 
 #![deny(
     // The following are allowed by default lints according to
@@ -69,7 +69,9 @@
     clippy::impl_trait_in_params, // Allow impl AsRef<Path>, it's common in Rust
     clippy::module_inception, // We consider mod.rs as a declaration file
     clippy::semicolon_outside_block, // We need to choose between this and `semicolon_inside_block`, we choose outside
-    clippy::similar_names // Allow similar names, due to the existence of uid and gid
+    clippy::similar_names, // Allow similar names, due to the existence of uid and gid
+    clippy::must_use_candidate, // 20241118, Allow must_use_candidate
+    clippy::unused_self, // 20241118, Allow unused self, it's common in PyO3
 )]
 
 use file::File;
@@ -77,14 +79,15 @@ use pyo3::{pymodule, types::PyModule, Bound, PyResult, Python};
 use sdk::DatenLordSDK;
 use utils::{Buffer, Entry};
 
-/// DatenLord Python SDK file
+/// `DatenLord` Python SDK file
 pub mod file;
-/// DatenLord Python SDK
+/// `DatenLord` Python SDK
 pub mod sdk;
-/// DatenLord Python SDK utils
+/// `DatenLord` Python SDK utils
 pub mod utils;
 
 #[pymodule]
+/// Python module for `DatenLord` SDK
 fn datenlordsdk(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<DatenLordSDK>()?;
     m.add_class::<File>()?;

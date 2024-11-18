@@ -8,7 +8,7 @@
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
     clippy::print_stdout,
-    clippy::arithmetic_side_effects,
+    clippy::arithmetic_side_effects
 )]
 
 use std::sync::atomic::{AtomicU64, Ordering};
