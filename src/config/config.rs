@@ -48,6 +48,9 @@ pub struct Config {
     #[clap(flatten)]
     /// CSI related config
     pub csi_config: CSIConfig,
+    /// Distribute cache config, enrich this struct to use distribute cache
+    #[clap(flatten)]
+    pub distribute_cache_config: Option<DistributeCacheConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Parser, Default)]
@@ -169,6 +172,24 @@ pub struct CSIConfig {
     #[clap(long = "csi-worker-port", value_name = "VALUE", default_value_t)]
     /// The worker port of csi server
     pub worker_port: u16,
+}
+
+/// Distribute cache config
+/// This config will contains storage config define in previous datenlord config and metadata server config
+#[derive(Debug, Clone, Serialize, Deserialize, Parser, Default)]
+#[serde(default)]
+pub struct DistributeCacheConfig {
+    /// The capacity of distribute cache in bytes, default is 8 GiB.
+    #[clap(long = "distribute-cache-bind-ip", value_name = "VALUE")]
+    pub bind_ip: String,
+    /// The limitation of the message queue of the write back task, default is
+    /// 1000
+    #[clap(
+        long = "distribute-cache-bind-port",
+        value_name = "VALUE",
+        default_value_t = 8801
+    )]
+    pub bind_port: u16,
 }
 
 impl Config {

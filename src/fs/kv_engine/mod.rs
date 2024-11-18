@@ -1,8 +1,10 @@
 use core::fmt::Debug;
 use std::fmt;
+use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use etcd_impl::Session;
 
 use crate::common::async_fuse_error::KVEngineError;
 use crate::common::error::{DatenLordError, DatenLordResult};
@@ -26,6 +28,9 @@ pub use value_type::ValueType;
 /// The Txn is used to provide support for metadata.
 #[async_trait]
 pub trait MetaTxn: Send {
+    /// The session type for keep alive
+    type Session: Send + Sync;
+
     /// Get the value by the key.
     /// Notice : do not get the same key twice in one transaction.
     async fn get(&mut self, key: &KeyType) -> DatenLordResult<Option<ValueType>>;
@@ -33,6 +38,14 @@ pub trait MetaTxn: Send {
     fn set(&mut self, key: &KeyType, value: &ValueType);
     /// Delete the value by the key.
     fn delete(&mut self, key: &KeyType);
+    /// Try to make campaign leader with the key.
+    /// Use String as val can be easily compared.
+    async fn campaign(
+        &self,
+        key: &KeyType,
+        val: String,
+        session: Arc<Self::Session>,
+    ) -> DatenLordResult<(bool, String)>;
     /// Commit the transaction.
     /// Only when commit is called, the write operations will be executed.
     /// If the commit is successful, return true, else return false.
@@ -44,10 +57,10 @@ pub trait MetaTxn: Send {
 /// `lease` is used to set the lease of the key
 /// `prev_kv` is used to return the previous key-value pair
 #[allow(dead_code)]
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug)]
 pub struct SetOption {
     /// The lease of the key
-    pub(crate) lease: Option<i64>,
+    pub(crate) session: Option<Arc<Session>>,
     /// Whether to return the previous key-value pair
     pub(crate) prev_kv: bool,
 }
@@ -59,7 +72,7 @@ impl SetOption {
     /// Default lease is None, `prev_kv` is false
     fn new() -> Self {
         Self {
-            lease: None,
+            session: None,
             prev_kv: false,
         }
     }
@@ -67,8 +80,8 @@ impl SetOption {
     #[allow(dead_code)]
     #[must_use]
     /// Set the lease of the key
-    fn with_lease(mut self, lease: i64) -> Self {
-        self.lease = Some(lease);
+    fn with_session(mut self, session: Arc<Session>) -> Self {
+        self.session = Some(session);
         self
     }
 
@@ -86,7 +99,7 @@ impl SetOption {
 /// `prev_kv` is used to return the previous key-value pair
 /// `range_end` is used to delete all keys in the range [key, `range_end`)
 #[allow(dead_code)]
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug)]
 pub struct DeleteOption {
     /// Whether to return the previous key-value pair
     pub(crate) prev_kv: bool,
@@ -198,10 +211,15 @@ impl KeyRange {
 /// K/V storage engine.
 #[async_trait]
 pub trait KVEngine: Send + Sync + Debug + Sized {
+    /// The session type for keep alive
+    type Session: Send + Sync;
+    /// The watch stream type
+    type KVEngineWatchStream;
+
     /// create a new KVEngine.
     async fn new(end_points: Vec<String>) -> DatenLordResult<Self>;
     /// Create a new transaction.
-    async fn new_meta_txn(&self) -> Box<dyn MetaTxn + Send>;
+    async fn new_meta_txn(&self) -> Box<dyn MetaTxn<Session = Self::Session> + Send>;
     /// Distribute lock - lock
     async fn lock(&self, key: &LockKeyType, timeout: Duration) -> DatenLordResult<Vec<u8>>;
     /// Distribute lock - unlock
@@ -222,11 +240,14 @@ pub trait KVEngine: Send + Sync + Debug + Sized {
         option: Option<DeleteOption>,
     ) -> DatenLordResult<Option<ValueType>>;
 
-    /// Lease grant
-    async fn lease_grant(&self, ttl: i64) -> DatenLordResult<i64>;
+    /// Create a lease with keepalive
+    async fn create_session(&self, ttl: u64) -> DatenLordResult<Arc<Self::Session>>;
 
     /// Range get, return all key-value pairs start with prefix
     async fn range(&self, prefix: &KeyType) -> DatenLordResult<Vec<ValueType>>;
+
+    /// Watch the key, return a receiver to receive the value
+    async fn watch(&self, key: &KeyType) -> DatenLordResult<Self::KVEngineWatchStream>;
 }
 
 /// The version of the key.

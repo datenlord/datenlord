@@ -31,6 +31,8 @@ pub struct AsyncFuseArgs {
     pub mount_dir: String,
     /// Storage config
     pub storage_config: StorageConfig,
+    /// Distribute cache config
+    pub enable_distribute_cache: bool,
 }
 
 /// Start async-fuse
@@ -41,16 +43,13 @@ pub async fn start_async_fuse(
     token: CancellationToken,
 ) -> anyhow::Result<()> {
     let storage_config = &args.storage_config;
-
     let mount_point = std::path::Path::new(&args.mount_dir);
     let global_cache_capacity = args.storage_config.memory_cache_config.capacity;
     let storage = {
         let storage_param = &storage_config.params;
         let memory_cache_config = &storage_config.memory_cache_config;
-
         let block_size = storage_config.block_size;
         let capacity_in_blocks = memory_cache_config.capacity.overflow_div(block_size);
-
         let cache = Arc::new(Mutex::new(MemoryCache::new(capacity_in_blocks, block_size)));
         let backend = Arc::new(BackendBuilder::new(storage_param.clone()).build().await?);
         StorageManager::new(cache, backend, block_size)

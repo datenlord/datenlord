@@ -9,6 +9,7 @@ use tracing::level_filters::LevelFilter as Level;
 use crate::common::error::DatenLordError;
 use crate::config::config::{
     CSIConfig as SupperCSIConfig, Config as SuperConfig,
+    DistributeCacheConfig as SuperDistributeCacheConfig,
     MemoryCacheConfig as SuperMemoryCacheConfig, S3StorageConfig as SuperS3StorageConfig,
     StorageConfig as SuperStorageConfig,
 };
@@ -24,6 +25,8 @@ pub enum Role {
     SchedulerExtender,
     /// Run async fuse
     AsyncFuse,
+    /// Run as distribute cache node
+    Cache,
     /// Run as sdk
     SDK,
 }
@@ -38,6 +41,7 @@ impl FromStr for Role {
             "node" => Ok(Role::Node),
             "scheduler" => Ok(Role::SchedulerExtender),
             "asyncFuse" => Ok(Role::AsyncFuse),
+            "cache" => Ok(Role::Cache),
             "sdk" => Ok(Role::SDK),
             _ => Err(DatenLordError::ArgumentInvalid {
                 context: vec![format!("role {} is not supported", s)],
@@ -71,6 +75,8 @@ pub struct InnerConfig {
     pub storage: StorageConfig,
     /// CSI related config
     pub csi_config: CSIConfig,
+    /// Distribute cache config
+    pub distribute_cache_config: Option<DistributeCacheConfig>,
 }
 
 impl TryFrom<SuperConfig> for InnerConfig {
@@ -123,6 +129,12 @@ impl TryFrom<SuperConfig> for InnerConfig {
             });
         }
         let csi_config = value.csi_config.try_into()?;
+
+        let distribute_cache_config = match value.distribute_cache_config {
+            Some(config) => Some(config.try_into()?),
+            None => None,
+        };
+
         Ok(InnerConfig {
             role,
             node_name,
@@ -134,6 +146,7 @@ impl TryFrom<SuperConfig> for InnerConfig {
             scheduler_extender_port,
             storage,
             csi_config,
+            distribute_cache_config,
         })
     }
 }
@@ -334,5 +347,25 @@ impl TryFrom<SupperCSIConfig> for CSIConfig {
             driver_name,
             worker_port,
         })
+    }
+}
+
+/// Distribute cache config struct
+#[derive(Clone, Debug)]
+pub struct DistributeCacheConfig {
+    /// RPC bind ip
+    pub bind_ip: String,
+    /// RPC bind port
+    pub bind_port: u16,
+}
+
+impl TryFrom<SuperDistributeCacheConfig> for DistributeCacheConfig {
+    type Error = DatenLordError;
+
+    #[inline]
+    fn try_from(value: SuperDistributeCacheConfig) -> Result<Self, Self::Error> {
+        let bind_ip = value.bind_ip;
+        let bind_port = value.bind_port;
+        Ok(DistributeCacheConfig { bind_ip, bind_port })
     }
 }

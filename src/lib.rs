@@ -77,6 +77,7 @@ pub mod async_fuse;
 pub mod common;
 /// Configurations
 pub mod config;
+pub mod distribute_kv_cache;
 pub mod fs;
 pub mod metrics;
 pub mod new_storage;

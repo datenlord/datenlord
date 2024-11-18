@@ -301,7 +301,7 @@ impl FileHandleInner {
 
     /// Reads data from the file starting at the given offset and up to the
     /// given length.
-    pub async fn read(&self, buf: &mut Vec<u8>, slices: &[BlockSlice]) -> StorageResult<usize> {
+    pub async fn read(&self, buf: &mut [u8], slices: &[BlockSlice]) -> StorageResult<usize> {
         for slice in slices {
             let block_id = slice.block_id;
             self.access(block_id);
@@ -322,7 +322,8 @@ impl FileHandleInner {
                 let slice = block
                     .get(offset..end)
                     .unwrap_or_else(|| unreachable!("The block is checked to be big enough."));
-                buf.extend_from_slice(slice);
+                // buf.extend_from_slice(slice);
+                buf[offset..end].copy_from_slice(slice);
             }
             self.cache.lock().unpin(&CacheKey {
                 ino: self.ino,
@@ -529,12 +530,11 @@ impl FileHandle {
 
     /// Reads data from the file starting at the given offset and up to the
     /// given length.
-    pub async fn read(&self, offset: u64, len: u64) -> StorageResult<Vec<u8>> {
+    pub async fn read(&self, offset: u64, len: u64, buf: &mut [u8]) -> StorageResult<()> {
         let reader = self.reader();
         let slices = offset_to_slice(self.block_size.cast(), offset, len);
-        let mut buf = Vec::with_capacity(len.cast());
-        reader.read(&mut buf, &slices).await?;
-        Ok(buf)
+        reader.read(buf, &slices).await?;
+        Ok(())
     }
 
     /// Writes data to the file starting at the given offset.
@@ -670,7 +670,8 @@ mod tests {
         handles.add_handle(file_handle.clone());
         let buf = vec![b'1', b'2', b'3', b'4'];
         file_handle.write(0, &buf).await.unwrap();
-        let read_buf = file_handle.read(0, 4).await.unwrap();
+        let mut read_buf = vec![0_u8; 4];
+        file_handle.read(0, 4, &mut read_buf).await.unwrap();
         assert_eq!(read_buf, buf);
         file_handle.flush().await.unwrap();
     }

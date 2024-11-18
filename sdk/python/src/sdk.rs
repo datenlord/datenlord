@@ -146,7 +146,8 @@ impl DatenLordSDK {
                 NodeRole::Controller
                 | NodeRole::Node
                 | NodeRole::SchedulerExtender
-                | NodeRole::AsyncFuse => {
+                | NodeRole::AsyncFuse
+                | NodeRole::Cache => {
                     panic!("Invalid role for SDK");
                 }
             }
