@@ -550,6 +550,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
     /// call will reflect the return value of self operation. fh will
     /// contain the value set by the open method, or will be undefined
     /// if the open method didn't set any value.
+    #[instrument(skip(self, reply), err, ret)]
     async fn read(
         &self,
         req: &Request<'_>,
@@ -565,10 +566,18 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         let fileattr = match self.storage.getattr(ino).await {
             Ok(fileattr) => fileattr,
             Err(e) => {
+                error!(
+                    "read() failed to get the attr of ino={}, the error is: {:?}",
+                    ino, e
+                );
                 return reply.error(e.into()).await;
             }
         };
         let file_size = fileattr.size;
+        debug!(
+            "read(ino={}, offset={}, size={}, file_size={})",
+            ino, offset, size, file_size
+        );
 
         if offset >= file_size {
             return reply.data(Vec::<u8>::new()).await;

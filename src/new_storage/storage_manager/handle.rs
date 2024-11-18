@@ -448,8 +448,10 @@ impl FileHandleInner {
             // Commit current metadata to the meta data server.
             let ino = self.ino;
             info!(
-                "Commit meta data for ino: {} with attr size: {:?}",
-                ino, file_size
+                "Commit meta data for ino: {} with attr size: {:?} current dirty_size: {:?}",
+                ino,
+                file_size,
+                self.attr.read().await.dirty_filesize
             );
             if let Err(e) = metadata_client
                 .write_remote_size_helper(ino, file_size)
@@ -460,9 +462,11 @@ impl FileHandleInner {
 
             let mut attr_write = self.attr.write().await;
             if let Some(dirty_filesize) = attr_write.dirty_filesize {
-                if dirty_filesize == file_size {
+                if dirty_filesize <= file_size {
                     // If the dirty file size is equal to the file size, set the dirty file size to None.
                     attr_write.dirty_filesize = None;
+                    // Update current file size.
+                    attr_write.attr.size = file_size;
                 }
             }
 
@@ -474,8 +478,8 @@ impl FileHandleInner {
             // Commit current metadata to the meta data server.
             let ino = self.ino;
             info!(
-                "Commit meta data for ino: {} with attr size: {:?}",
-                ino, dirty_filesize
+                "Commit meta data for ino: {} with dirty_size: {:?}",
+                ino, dirty_filesize,
             );
             if let Err(e) = metadata_client
                 .write_remote_size_helper(ino, dirty_filesize)
