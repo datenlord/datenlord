@@ -173,7 +173,7 @@ pub extern "C" fn dl_write(
     match result {
         Ok(()) => {
             debug!("Write succeeded for fd: {:?}", fd);
-            // Current write does not return successed bytes, so we return the count directly
+            // Current write does not return succeeded bytes, so we return the count directly
             count as i64
         }
         Err(e) => {

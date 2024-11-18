@@ -6,7 +6,9 @@
     clippy::indexing_slicing,
     clippy::float_arithmetic,
     clippy::cast_possible_truncation,
-    clippy::cast_sign_loss
+    clippy::cast_sign_loss,
+    clippy::print_stdout,
+    clippy::arithmetic_side_effects,
 )]
 
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -86,8 +88,9 @@ async fn warm_up(storage: Arc<StorageManager>, ino: u64) {
     let fh = CURRENT_FD.fetch_add(1, Ordering::SeqCst);
     storage.open(ino, fh, flag);
     for i in 0..TOTAL_TEST_BLOCKS {
-        let buf = storage
-            .read(ino, fh, (i * IO_SIZE) as u64, IO_SIZE)
+        let mut buf = vec![0_u8; IO_SIZE];
+        storage
+            .read(ino, fh, (i * IO_SIZE) as u64, IO_SIZE, &mut buf)
             .await
             .unwrap();
         assert_eq!(buf.len(), IO_SIZE);
@@ -99,8 +102,9 @@ async fn seq_read(storage: Arc<StorageManager>, ino: u64) {
     let fh = CURRENT_FD.fetch_add(1, Ordering::SeqCst);
     storage.open(ino, fh, flag);
     for i in 0..TOTAL_TEST_BLOCKS {
-        let buf = storage
-            .read(10, fh, (i * IO_SIZE) as u64, IO_SIZE)
+        let mut buf = vec![0_u8; IO_SIZE];
+        storage
+            .read(10, fh, (i * IO_SIZE) as u64, IO_SIZE, &mut buf)
             .await
             .unwrap();
         assert_eq!(buf.len(), IO_SIZE);
@@ -228,8 +232,9 @@ async fn scan_worker(storage: Arc<StorageManager>, ino: u64, time: u64) -> usize
     let mut i = 0;
     let mut scan_cnt = 0;
     while tokio::time::Instant::now() - start < tokio::time::Duration::from_secs(time) {
-        let buf = storage
-            .read(ino, fh, (i * IO_SIZE) as u64, IO_SIZE)
+        let mut buf = vec![0_u8; IO_SIZE];
+        storage
+            .read(ino, fh, (i * IO_SIZE) as u64, IO_SIZE, &mut buf)
             .await
             .unwrap();
         assert_eq!(buf.len(), IO_SIZE);
@@ -246,16 +251,17 @@ async fn get_worker(storage: Arc<StorageManager>, ino: u64, time: u64) -> usize 
     storage.open(ino, fh, flag);
     let start = tokio::time::Instant::now();
 
-    // 初始化 Zipfian 分布
+    // Initialize the Zipfian distribution
     let zipf = Zipf::new(TOTAL_TEST_BLOCKS as u64, 1.5_f64).unwrap();
 
     let mut get_cnt = 0;
     while tokio::time::Instant::now() - start < tokio::time::Duration::from_secs(time) {
-        // 使用 Zipfian 分布来选择数据块 ID
+        // Use the Zipfian distribution to select the block ID
         let i = zipf.sample(&mut thread_rng()) as usize % TOTAL_TEST_BLOCKS;
 
-        let buf = storage
-            .read(ino, fh, (i * IO_SIZE) as u64, IO_SIZE)
+        let mut buf = vec![0_u8; IO_SIZE];
+        storage
+            .read(ino, fh, (i * IO_SIZE) as u64, IO_SIZE, &mut buf)
             .await
             .unwrap();
         assert_eq!(buf.len(), IO_SIZE);

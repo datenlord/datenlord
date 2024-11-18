@@ -47,7 +47,14 @@ impl Storage for StorageManager {
     /// Reads data from a file specified by the file handle, starting at the
     /// given offset and reading up to `len` bytes.
     #[inline]
-    async fn read(&self, _ino: u64, fh: u64, offset: u64, len: usize, buf: &mut [u8]) -> StorageResult<()> {
+    async fn read(
+        &self,
+        _ino: u64,
+        fh: u64,
+        offset: u64,
+        len: usize,
+        buf: &mut [u8],
+    ) -> StorageResult<()> {
         let handle = self.get_handle(fh);
         handle.read(offset, len.cast(), buf).await
     }
