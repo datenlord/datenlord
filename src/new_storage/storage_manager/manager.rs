@@ -42,7 +42,7 @@ impl<M: MetaData + Send + Sync + 'static> Storage for StorageManager<M> {
     async fn open(&self, ino: u64, attr: FileAttr) {
         let flag = self
             .handles
-            .reopen_or_create_handle(
+            .create_or_open_handle(
                 ino,
                 self.block_size,
                 Arc::clone(&self.cache),

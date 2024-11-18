@@ -97,55 +97,12 @@ pub struct WriteTask {
     cache: Arc<Mutex<MemoryCache<CacheKey, LruPolicy<CacheKey>>>>,
     /// The backend storage system.
     backend: Arc<dyn Backend>,
-    /// The inode number associated with the file being written.
-    ino: u64,
     /// The block id.
     block_id: u64,
     /// The block to be written.
     block: Arc<RwLock<Block>>,
     /// The file size in this operation.
     file_size: u64,
-}
-
-/// Write a block back to the backend.
-async fn write_back_block(task: Arc<WriteTask>) -> StorageResult<()> {
-    let path = format_path(task.ino, task.block_id);
-    loop {
-        let (content, version) = {
-            let block = task.block.read();
-            if !block.dirty() {
-                // The block has been flushed previously, skip
-                return Ok(());
-            }
-            let content = Bytes::copy_from_slice(block.as_ref());
-            let version = block.version();
-            (content, version)
-        };
-
-        task.backend.write(&path, &content).await?;
-        {
-            let mut block = task.block.write();
-            // Check version
-            if block.version() != version {
-                warn!(
-                    "Version mismatch previous: {}, current: {}",
-                    version,
-                    block.version()
-                );
-                continue;
-            }
-            block.set_dirty(false);
-        }
-        {
-            task.cache.lock().unpin(&CacheKey {
-                ino: task.ino,
-                block_id: task.block_id,
-            });
-            break;
-        }
-    }
-
-    Ok(())
 }
 
 impl FileHandleInner {
@@ -293,7 +250,6 @@ impl FileHandleInner {
             let task = Arc::new(WriteTask {
                 cache: Arc::clone(&self.cache),
                 backend: Arc::clone(&self.backend),
-                ino: self.ino,
                 block_id,
                 block,
                 file_size: size,
@@ -349,7 +305,7 @@ impl FileHandleInner {
 
     /// Get the open count of the file handle.
     #[must_use]
-    pub fn open_cnt(&self) -> u32 {
+    pub fn get_open_count(&self) -> u32 {
         self.open_cnt.load(std::sync::atomic::Ordering::SeqCst)
     }
 
@@ -380,6 +336,47 @@ impl FileHandleInner {
         Ok(true)
     }
 
+    /// Write a block back to the backend.
+    async fn write_back_block(self: Arc<Self>, task: Arc<WriteTask>) -> StorageResult<()> {
+        let path = format_path(self.ino, task.block_id);
+        loop {
+            let (content, version) = {
+                let block = task.block.read();
+                if !block.dirty() {
+                    // The block has been flushed previously, skip
+                    return Ok(());
+                }
+                let content = Bytes::copy_from_slice(block.as_ref());
+                let version = block.version();
+                (content, version)
+            };
+
+            task.backend.write(&path, &content).await?;
+            {
+                let mut block = task.block.write();
+                // Check version
+                if block.version() != version {
+                    warn!(
+                        "Version mismatch previous: {}, current: {}",
+                        version,
+                        block.version()
+                    );
+                    continue;
+                }
+                block.set_dirty(false);
+            }
+            {
+                task.cache.lock().unpin(&CacheKey {
+                    ino: self.ino,
+                    block_id: task.block_id,
+                });
+                break;
+            }
+        }
+
+        Ok(())
+    }
+
     /// Write the blocks to the backend storage system concurrently.
     async fn write_blocks<M: MetaData + Send + Sync + 'static>(
         self: Arc<Self>,
@@ -389,7 +386,8 @@ impl FileHandleInner {
         let mut handles = Vec::new();
         let mut result = None;
         for task in tasks {
-            let handle = tokio::spawn(write_back_block(Arc::clone(task)));
+            let arc_self = Arc::clone(&self);
+            let handle = tokio::spawn(arc_self.write_back_block(Arc::clone(task)));
             handles.push(handle);
         }
         // Make sure current blocks is finished.
@@ -587,24 +585,12 @@ impl FileHandle {
         self.inner.open();
     }
 
-    /// Get and try to increase the open count of the file handle.
-    pub fn get_and_open(&self) -> bool {
-        debug!("try to get open filehandle lock ok {:?}", self.fh);
-        if self.inner.open_cnt() > 0 {
-            // Current file handle is opened by other process, increase the open count.
-            self.inner.open();
-            return true;
-        }
-
-        false
-    }
-
     /// Get the open count of the file handle.
     /// Be careful, do not split the `open_cnt` with open and close operation.
     #[must_use]
-    pub fn open_cnt(&self) -> u32 {
+    pub fn get_open_count(&self) -> u32 {
         debug!("try to get open cnt filehandle lock ok {:?}", self.fh);
-        self.inner.open_cnt()
+        self.inner.get_open_count()
     }
 
     /// Closes the file handle, closing both the reader and writer.
@@ -684,21 +670,6 @@ impl Handles {
             .unwrap_or_else(|| unreachable!("The array is ensured to be long enough."))
     }
 
-    /// Adds a file handle to the collection.
-    pub async fn add_handle(&self, fh: FileHandle) {
-        let shard = self.get_shard(fh.fh());
-        let mut shard_lock = shard.write().await;
-        shard_lock.insert(fh.fh(), fh);
-    }
-
-    /// Removes a file handle from the collection.'
-    #[must_use]
-    pub async fn remove_handle(&self, fh: u64) -> Option<FileHandle> {
-        let shard = self.get_shard(fh);
-        let mut shard_lock = shard.write().await;
-        shard_lock.remove(&fh)
-    }
-
     /// Returns a file handle from the collection.
     #[must_use]
     pub async fn get_handle(&self, fh: u64) -> Option<FileHandle> {
@@ -708,10 +679,10 @@ impl Handles {
         Some(fh.clone())
     }
 
-    /// Reopen or create a new filehandle, if current filehandle is new, return true
+    /// Create or open a new filehandle, if current filehandle is new, return true
     /// otherwise return false.
     /// If true, we need to update the file handle attr later.
-    pub async fn reopen_or_create_handle<M: MetaData + Send + Sync + 'static>(
+    pub async fn create_or_open_handle<M: MetaData + Send + Sync + 'static>(
         &self,
         fh: u64,
         block_size: usize,
@@ -724,7 +695,7 @@ impl Handles {
         let mut shard_lock = shard.write().await;
         // If the file handle is already open, reopen it and return false
         if let Some(file_handle) = shard_lock.get(&fh) {
-            let open_cnt = file_handle.open_cnt();
+            let open_cnt = file_handle.get_open_count();
             info!("Reopen file handle for ino: {fh} with opencnt: {open_cnt}");
             file_handle.open();
 
@@ -789,25 +760,21 @@ mod tests {
         let backend = Arc::new(tmp_fs_backend().unwrap());
         let handles = Arc::new(Handles::new());
         let ino = 1;
-        let fh = 1;
 
-        let (write_back_tx, write_back_rx) = tokio::sync::mpsc::channel::<Task>(100);
-        let (close_tx, close_rx) = tokio::sync::mpsc::channel::<()>(1);
-        let file_handle =
-            FileHandleInner::new(ino, BLOCK_SIZE, cache, backend, write_back_tx, close_tx);
-        let file_handle = Arc::new(file_handle);
-        let file_handle_inner_clone = Arc::clone(&file_handle);
-        tokio::spawn(file_handle_inner_clone.write_back_work(
-            write_back_rx,
-            close_rx,
-            metadata_client,
-        ));
-        let file_handle = FileHandle {
-            fh,
-            block_size: BLOCK_SIZE,
-            inner: file_handle,
-        };
-        handles.add_handle(file_handle.clone()).await;
+        let creat_res = handles
+            .create_or_open_handle(
+                ino,
+                BLOCK_SIZE,
+                cache,
+                backend,
+                metadata_client,
+                FileAttr::default(),
+            )
+            .await;
+        assert!(creat_res);
+
+        let file_handle = handles.get_handle(ino).await.unwrap();
+        // handles.add_handle(file_handle.clone()).await;
         let buf = vec![b'1', b'2', b'3', b'4'];
         file_handle.write(0, &buf, 4).await.unwrap();
         let read_buf = file_handle.read(0, 4).await.unwrap();
