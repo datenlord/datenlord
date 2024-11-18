@@ -545,7 +545,7 @@ impl<M: MetaData + Send + Sync + 'static> VirtualFs for DatenLordFs<M> {
         );
 
         let (old_size, _) = self.metadata.mtime_and_size(ino);
-        let result = self.storage.write(ino, fh, offset.cast(), &data).await;
+        let result = self.storage.write(ino, fh, offset.cast(), data).await;
 
         let new_mtime = match result {
             Ok(()) => SystemTime::now(),

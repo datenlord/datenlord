@@ -233,6 +233,7 @@ pub trait VirtualFs: Sync + Send {
     /// or under Linux kernel versions earlier than 2.6.15, the mknod()
     /// and open() methods will be called instead.
     #[allow(unused_variables)]
+    #[allow(clippy::too_many_arguments)]
     async fn create(
         &self,
         uid: u32,

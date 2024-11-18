@@ -6,6 +6,7 @@ use tracing_subscriber::prelude::*;
 
 /// Represents the role of the logger.
 #[derive(Debug)]
+#[allow(clippy::upper_case_acronyms)] // consider making the acronym lowercase, except the initial letter: `Sdk`
 pub enum LogRole {
     /// Same as `NodeRole::Node`.
     Node,
@@ -34,8 +35,7 @@ impl From<crate::config::NodeRole> for LogRole {
             crate::config::NodeRole::Node => LogRole::Node,
             crate::config::NodeRole::Controller => LogRole::Controller,
             crate::config::NodeRole::SchedulerExtender => LogRole::SchedulerExtender,
-            crate::config::NodeRole::AsyncFuse => LogRole::AsyncFuse,
-            crate::config::NodeRole::SDK => LogRole::AsyncFuse,
+            crate::config::NodeRole::AsyncFuse | crate::config::NodeRole::SDK => LogRole::AsyncFuse,
         }
     }
 }

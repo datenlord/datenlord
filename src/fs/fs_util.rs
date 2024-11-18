@@ -415,6 +415,7 @@ pub fn parse_mode(mode: u32) -> Mode {
 }
 
 /// Parse file mode bits
+#[must_use]
 pub fn parse_mode_bits(mode: u32) -> u16 {
     #[cfg(target_os = "linux")]
     let bits = parse_mode(mode).bits().cast();
@@ -423,6 +424,7 @@ pub fn parse_mode_bits(mode: u32) -> u16 {
 }
 
 /// Convert system time to timestamp in seconds and nano-seconds
+#[must_use]
 pub fn time_from_system_time(system_time: &SystemTime) -> (u64, u32) {
     let duration = system_time
         .duration_since(UNIX_EPOCH)
@@ -441,6 +443,7 @@ pub fn time_from_system_time(system_time: &SystemTime) -> (u64, u32) {
 }
 
 /// Convert `FileAttr` to `FuseAttr`
+#[must_use]
 pub fn convert_to_fuse_attr(attr: FileAttr) -> FuseAttr {
     let (a_time_secs, a_time_nanos) = time_from_system_time(&attr.atime);
     let (m_time_secs, m_time_nanos) = time_from_system_time(&attr.mtime);

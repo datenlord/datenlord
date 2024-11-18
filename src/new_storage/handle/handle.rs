@@ -38,6 +38,7 @@ pub enum OpenFlag {
 }
 
 impl From<u32> for OpenFlag {
+    #[inline]
     fn from(value: u32) -> Self {
         let write_flags = OFlag::O_APPEND | OFlag::O_WRONLY;
 
@@ -99,6 +100,7 @@ pub struct FileHandle {
 
 impl FileHandle {
     /// Creates a new `FileHandle` instance.
+    #[inline]
     pub fn new(
         fh: u64,
         ino: u64,
@@ -118,6 +120,7 @@ impl FileHandle {
 
     /// Returns the file handle.
     #[must_use]
+    #[inline]
     pub fn fh(&self) -> u64 {
         self.fh
     }
@@ -157,6 +160,7 @@ impl FileHandle {
     }
 
     /// Writes data to the file starting at the given offset.
+    #[inline]
     pub async fn write(&self, offset: u64, buf: &[u8]) -> StorageResult<()> {
         let writer = self.writer();
         let slices = offset_to_slice(self.block_size.cast(), offset, buf.len().cast());
@@ -164,12 +168,14 @@ impl FileHandle {
     }
 
     /// Extends the file from the old size to the new size.
+    #[inline]
     pub async fn extend(&self, old_size: u64, new_size: u64) -> StorageResult<()> {
         let writer = self.writer();
         writer.extend(old_size, new_size).await
     }
 
     /// Flushes any pending writes to the file.
+    #[inline]
     pub async fn flush(&self) -> StorageResult<()> {
         let writer = self.inner.read().writer.clone();
         if let Some(writer) = writer {
@@ -193,6 +199,7 @@ impl FileHandle {
     }
 
     /// Closes the file handle, closing both the reader and writer.
+    #[inline]
     pub async fn close(&self) -> StorageResult<()> {
         let res = self.close_writer().await;
         if let Some(reader) = self.inner.read().reader.as_ref() {
@@ -214,6 +221,7 @@ pub struct Handles {
 }
 
 impl Default for Handles {
+    #[inline]
     fn default() -> Self {
         Self::new()
     }
@@ -250,6 +258,7 @@ impl Handles {
     }
 
     /// Adds a file handle to the collection.
+    #[inline]
     pub fn add_handle(&self, fh: FileHandle) {
         let shard = self.get_shard(fh.fh());
         let mut shard_lock = shard.write();
@@ -258,6 +267,7 @@ impl Handles {
 
     /// Removes a file handle from the collection.'
     #[must_use]
+    #[inline]
     pub fn remove_handle(&self, fh: u64) -> Option<FileHandle> {
         let shard = self.get_shard(fh);
         let mut shard_lock = shard.write();
@@ -269,6 +279,7 @@ impl Handles {
 
     /// Returns a file handle from the collection.
     #[must_use]
+    #[inline]
     pub fn get_handle(&self, fh: u64) -> Option<FileHandle> {
         let shard = self.get_shard(fh);
         let shard_lock = shard.read();

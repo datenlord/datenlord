@@ -130,6 +130,7 @@ impl Storage for StorageManager {
         Ok(())
     }
 
+    #[inline]
     async fn remove(&self, ino: u64) -> StorageResult<()> {
         self.backend.remove_all(&format_file_path(ino)).await?;
 

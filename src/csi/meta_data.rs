@@ -134,8 +134,7 @@ impl MetaData {
             NodeRole::SchedulerExtender => {
                 md.register_to_etcd(SCHEDULER_EXTENDER_PREFIX).await?;
             }
-            NodeRole::AsyncFuse => (),
-            NodeRole::SDK => (),
+            NodeRole::AsyncFuse | NodeRole::SDK => (),
         }
 
         Ok(md)

@@ -302,6 +302,7 @@ pub trait FileSystem {
 pub struct FuseFileSystem<M: MetaData + Send + Sync + 'static> {
     /// The Datenlord filesystem implementation for the FUSE filesystem.
     virtual_fs: Arc<dyn VirtualFs>,
+    /// The metadata implementation for the FUSE filesystem.
     _metadata: PhantomData<M>,
 }
 
@@ -328,7 +329,7 @@ impl<M: MetaData + Send + Sync + 'static> FuseFileSystem<M> {
             mount_point, capacity, node_id, storage_config
         );
         let metadata = M::new(kv_engine, node_id).await?;
-        let datenlord_fs = Arc::new(DatenLordFs::new(metadata.clone(), storage));
+        let datenlord_fs = Arc::new(DatenLordFs::new(Arc::clone(&metadata), storage));
 
         Ok(FuseFileSystem {
             virtual_fs: datenlord_fs,
@@ -745,7 +746,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for FuseFileSystem<M> {
                     "fusefilesystem call read() failed to read the content of ino={}, the error is: {:?}",
                     ino, e,
                 );
-                reply.error(e.into()).await
+                reply.error(e).await
             }
         }
     }
@@ -840,7 +841,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for FuseFileSystem<M> {
                     "fusefilesystem call flush() failed to flush the content of ino={} with fh={}, the error is: {:?}",
                     ino, fh, e,
                 );
-                reply.error(e.into()).await
+                reply.error(e).await
             }
         }
     }
@@ -922,7 +923,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for FuseFileSystem<M> {
                     "fusefilesystem call fsync() failed to flush the content of ino={} with fh={}, the error is: {:?}",
                     ino, fh, e,
                 );
-                reply.error(e.into()).await
+                reply.error(e).await
             }
         }
     }

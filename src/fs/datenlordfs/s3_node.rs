@@ -39,6 +39,7 @@ pub enum S3NodeData {
 
 impl S3NodeData {
     /// Serializes the node data
+    #[must_use]
     pub fn serial(&self) -> SerialNodeData {
         match *self {
             Self::Directory => SerialNodeData::Directory,

@@ -116,7 +116,11 @@ impl Reader {
                     .get(offset..end)
                     .unwrap_or_else(|| unreachable!("The block is checked to be big enough."));
                 // buf.clone_from_slice(slice);
-                buf[offset..end].clone_from_slice(slice);
+                // buf[offset..end].clone_from_slice(slice);
+                let buf_slice = buf.get_mut(offset..end).ok_or(
+                    StorageError::Internal(anyhow::Error::msg("The buffer is not big enough.")),
+                )?;
+                buf_slice.clone_from_slice(slice);
             }
             self.cache.lock().unpin(&CacheKey {
                 ino: self.ino,
@@ -128,6 +132,7 @@ impl Reader {
 
     /// Close the reader and remove the accessed cache blocks.
     #[allow(clippy::unwrap_used)]
+    #[allow(clippy::unused_self)]
     pub fn close(&self) {
         // let access_keys = self.access_keys.lock();
         // for key in access_keys.iter() {
