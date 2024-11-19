@@ -58,7 +58,7 @@ impl<M: MetaData + Send + Sync + 'static> Storage for StorageManager<M> {
     /// Default implementation returns None.
     async fn getattr(&self, ino: u64) -> StorageResult<FileAttr> {
         match self.get_handle(ino).await {
-            Some(fh) => Ok(fh.getattr()),
+            Some(fh) => Ok(fh.getattr().await),
             None => Err(StorageError::Internal(anyhow::anyhow!(
                 "This file handle is not exists."
             ))),
@@ -71,7 +71,7 @@ impl<M: MetaData + Send + Sync + 'static> Storage for StorageManager<M> {
     async fn setattr(&self, ino: u64, attr: FileAttr) {
         info!("setattr: ino: {} with attr: {:?}", ino, attr);
         match self.get_handle(ino).await {
-            Some(fh) => fh.setattr(attr),
+            Some(fh) => fh.setattr(attr).await,
             None => {
                 // Ignore the error here, because the file may be closed or not opened.
                 error!("Cannot set attr for a file that is not open.");

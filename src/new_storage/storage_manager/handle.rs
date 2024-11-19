@@ -21,6 +21,15 @@ use super::super::policy::LruPolicy;
 use super::super::{CacheKey, MemoryCache};
 use crate::async_fuse::memfs::{FileAttr, MetaData};
 
+/// The `DirtyFileAttr` struct represents the dirty file attributes.
+#[derive(Copy, Clone, Debug)]
+struct DirtyFileAttr {
+    /// The file attributes, sync with the write back work operation file size in the memory.
+    pub attr: FileAttr,
+    /// The dirty file size, sync with the write operation file size in the memory.
+    pub dirty_filesize: Option<u64>,
+}
+
 /// The `FileHandleInner` struct represents the inner state of a file handle.
 /// It contains the file handle, reader, and writer.
 pub struct FileHandleInner {
@@ -32,9 +41,9 @@ pub struct FileHandleInner {
     /// The number of times this file is currently opened.
     open_cnt: AtomicU32,
     /// Block count of unflushed blocks, used to determine current file handle is clean.
-    diry_count: AtomicU32,
-    /// Current file attributes.
-    attr: Arc<RwLock<FileAttr>>,
+    dirty_count: AtomicU32,
+    /// Current file attributes with dirty file size.
+    attr: Arc<tokio::sync::RwLock<DirtyFileAttr>>,
     /// The block size
     block_size: usize,
     /// The `MemoryCache`
@@ -124,9 +133,12 @@ impl FileHandleInner {
             backend,
             // The open count is initialized to 0, open() method will increase this flag.
             open_cnt: AtomicU32::new(1),
-            diry_count: AtomicU32::new(0),
+            dirty_count: AtomicU32::new(0),
             // init the file attributes
-            attr: Arc::new(RwLock::new(FileAttr::default())),
+            attr: Arc::new(tokio::sync::RwLock::new(DirtyFileAttr {
+                attr: FileAttr::default(),
+                dirty_filesize: None,
+            })),
             access_keys: Mutex::new(Vec::new()),
             write_back_sender,
             close_sender,
@@ -135,18 +147,39 @@ impl FileHandleInner {
 
     /// Get the open file attributes.
     #[inline]
-    pub fn getattr(&self) -> FileAttr {
-        let attr = self.attr.read();
+    pub async fn getattr(&self) -> FileAttr {
+        let attr = self.attr.read().await;
         debug!("Get attr for ino: {} attr: {:?}", self.ino, *attr);
-        *attr
+        let mut dirty_attr = attr.attr;
+        if let Some(dirty_filesize) = attr.dirty_filesize {
+            dirty_attr.size = dirty_filesize;
+        }
+
+        dirty_attr
     }
 
     /// Set the open file attributes.
     #[inline]
-    pub fn setattr(&self, attr: FileAttr) {
+    pub async fn setattr(&self, attr: FileAttr) {
         debug!("Set attr for ino: {} attr: {:?}", self.ino, attr);
-        let mut old_attr = self.attr.write();
-        *old_attr = attr;
+        let mut old_attr = self.attr.write().await;
+
+        // If the size of the file is changed, set the dirty file size.
+        if old_attr.attr.size != attr.size {
+            old_attr.dirty_filesize = Some(attr.size);
+        }
+
+        // Do not change old attr size, it will be changed by the write operation.
+        let old_attr_size = old_attr.attr.size;
+        old_attr.attr = attr;
+        old_attr.attr.size = old_attr_size;
+    }
+
+    /// Set dirty file size.
+    #[inline]
+    pub async fn set_dirty_filesize(&self, size: u64) {
+        let mut attr = self.attr.write().await;
+        attr.dirty_filesize = Some(size);
     }
 
     /// Fetch the block from the cache manager.
@@ -260,8 +293,9 @@ impl FileHandleInner {
                 .unwrap_or_else(|_| {
                     panic!("Should not send command to write back task when the task quits.");
                 });
-            self.diry_count
+            self.dirty_count
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.set_dirty_filesize(size);
         }
 
         Ok(())
@@ -336,15 +370,15 @@ impl FileHandleInner {
         Ok(true)
     }
 
-    /// Write a block back to the backend.
-    async fn write_back_block(self: Arc<Self>, task: Arc<WriteTask>) -> StorageResult<()> {
+    /// Write a block back to the backend, return current file size by write handle
+    async fn write_back_block(self: Arc<Self>, task: Arc<WriteTask>) -> StorageResult<u64> {
         let path = format_path(self.ino, task.block_id);
         loop {
             let (content, version) = {
                 let block = task.block.read();
                 if !block.dirty() {
                     // The block has been flushed previously, skip
-                    return Ok(());
+                    return Ok(task.file_size);
                 }
                 let content = Bytes::copy_from_slice(block.as_ref());
                 let version = block.version();
@@ -374,7 +408,7 @@ impl FileHandleInner {
             }
         }
 
-        Ok(())
+        Ok(task.file_size)
     }
 
     /// Write the blocks to the backend storage system concurrently.
@@ -385,6 +419,7 @@ impl FileHandleInner {
     ) -> Option<StorageError> {
         let mut handles = Vec::new();
         let mut result = None;
+        let mut done_file_size = None;
         for task in tasks {
             let arc_self = Arc::clone(&self);
             let handle = tokio::spawn(arc_self.write_back_block(Arc::clone(task)));
@@ -399,25 +434,57 @@ impl FileHandleInner {
                 Ok(Err(e)) => {
                     result = Some(e);
                 }
-                _ => {
-                    self.diry_count
+                Ok(Ok(file_size)) => {
+                    self.dirty_count
                         .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+                    done_file_size = Some(file_size);
                 }
             }
         }
 
-        // Commit current metadata to the meta data server.
-        let ino = self.ino;
-        let current_attr = self.getattr();
-        info!(
-            "Commit meta data for ino: {} with attr size: {:?}",
-            ino, current_attr.size
-        );
-        if let Err(e) = metadata_client
-            .write_remote_size_helper(ino, current_attr.size)
-            .await
-        {
-            error!("Failed to commit meta data, the error is {e}.");
+        // Write back the file size to the meta data server.
+        if let Some(file_size) = done_file_size {
+            // Commit current metadata to the meta data server.
+            let ino = self.ino;
+            info!(
+                "Commit meta data for ino: {} with attr size: {:?}",
+                ino, file_size
+            );
+            if let Err(e) = metadata_client
+                .write_remote_size_helper(ino, file_size)
+                .await
+            {
+                error!("Failed to commit meta data, the error is {e}.");
+            }
+
+            let mut attr_write = self.attr.write().await;
+            if let Some(dirty_filesize) = attr_write.dirty_filesize {
+                if dirty_filesize == file_size {
+                    // If the dirty file size is equal to the file size, set the dirty file size to None.
+                    attr_write.dirty_filesize = None;
+                }
+            }
+
+            return result;
+        }
+
+        let mut attr_write = self.attr.write().await;
+        if let Some(dirty_filesize) = attr_write.dirty_filesize {
+            // Commit current metadata to the meta data server.
+            let ino = self.ino;
+            info!(
+                "Commit meta data for ino: {} with attr size: {:?}",
+                ino, dirty_filesize
+            );
+            if let Err(e) = metadata_client
+                .write_remote_size_helper(ino, dirty_filesize)
+                .await
+            {
+                error!("Failed to commit meta data, the error is {e}.");
+            }
+
+            // Clean up size
+            attr_write.dirty_filesize = None;
         }
 
         result
@@ -574,7 +641,7 @@ impl FileHandle {
     pub fn is_dirty(&self) -> StorageResult<bool> {
         Ok(self
             .inner
-            .diry_count
+            .dirty_count
             .load(std::sync::atomic::Ordering::SeqCst)
             > 0)
     }
@@ -612,13 +679,13 @@ impl FileHandle {
 
     /// Get the open file attributes.
     #[must_use]
-    pub fn getattr(&self) -> FileAttr {
-        self.inner.getattr()
+    pub async fn getattr(&self) -> FileAttr {
+        self.inner.getattr().await
     }
 
     /// Set the open file attributes.
-    pub fn setattr(&self, attr: FileAttr) {
-        self.inner.setattr(attr);
+    pub async fn setattr(&self, attr: FileAttr) {
+        self.inner.setattr(attr).await;
     }
 }
 
@@ -704,7 +771,7 @@ impl Handles {
             info!("Create a new file handle for ino: {}", fh);
             // If the file handle is not open, create a new file handle and return true
             let file_handle = FileHandle::new(fh, block_size, cache, backend, metadata_client);
-            file_handle.setattr(attr);
+            file_handle.setattr(attr).await;
             shard_lock.insert(fh, file_handle);
 
             true
