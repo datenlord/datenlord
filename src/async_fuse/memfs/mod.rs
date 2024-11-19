@@ -233,35 +233,43 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         debug!("getattr(ino={}, req={:?})", ino, req);
 
         // Get from local storage first
-        if let Ok(file_attr) = self.storage.getattr(ino).await {
-            debug!(
-                "getattr() successfully got the attr={:?} of ino={}",
-                file_attr, ino,
-            );
-            // TODO: Mock response ttl.
-            let ttl = Duration::new(s3_metadata::MY_TTL_SEC, 0);
-            let fuse_attr = fs_util::convert_to_fuse_attr(file_attr);
-            debug!(
-                "getattr() successfully got the attr={:?} of ino={}",
-                fuse_attr, ino
-            );
-            return reply.attr(ttl, fuse_attr).await;
-        }
-
-        // Get from remote metadata server
-        match self.metadata.get_remote_attr(ino).await {
-            Ok((ttl, file_attr)) => {
+        match self.storage.getattr(ino).await {
+            Ok(file_attr) => {
                 debug!(
                     "getattr() successfully got the attr={:?} of ino={}",
                     file_attr, ino,
                 );
+                // TODO: Mock response ttl.
+                let ttl = Duration::new(s3_metadata::MY_TTL_SEC, 0);
                 let fuse_attr = fs_util::convert_to_fuse_attr(file_attr);
-                reply.attr(ttl, fuse_attr).await
+                debug!(
+                    "getattr() successfully got the attr={:?} of ino={}",
+                    fuse_attr, ino
+                );
+                return reply.attr(ttl, fuse_attr).await;
             }
-            Err(err) => {
-                // In the previous version ,this panic will never happen.
-                // Later, we will
-                panic!("getattr() failed to get the attr of ino={ino}, the error is: {err}",);
+            Err(e) => {
+                debug!(
+                    "getattr() failed to get the attr of ino={}, the error is: {:?}, try to get from remote",
+                    ino, e
+                );
+                // Get from remote metadata server
+                match self.metadata.get_remote_attr(ino).await {
+                    Ok((ttl, file_attr)) => {
+                        debug!(
+                            "getattr() successfully got the attr={:?} of ino={}",
+                            file_attr, ino,
+                        );
+                        let fuse_attr = fs_util::convert_to_fuse_attr(file_attr);
+                        reply.attr(ttl, fuse_attr).await
+                    }
+                    Err(err) => {
+                        // If the remote metadata server is not available, return the error
+                        panic!(
+                            "getattr() failed to get the attr of ino={ino}, the error is: {err}",
+                        );
+                    }
+                }
             }
         }
     }
