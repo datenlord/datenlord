@@ -94,6 +94,10 @@ rstest = "0.22.0"
 path = "src/bin/bind_mounter.rs"
 name = "bind_mounter"
 
+[[bin]]
+path = "src/distribute_kv_cache/main.rs"
+name = "kvcache"
+
 [features]
 abi-7-9 = []
 abi-7-10 = ["abi-7-9"]

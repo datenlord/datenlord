@@ -1,7 +1,7 @@
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use tokio::sync::Mutex;
-use tracing::{debug, error, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::{
     async_fuse::util::usize_to_u64,
@@ -179,13 +179,15 @@ impl DistributeKVCacheClient {
         // 1. Match prefix to get the block id and target node
         let (kv_block_meta, node_address) = self.inner.match_prefix(prefix.clone()).await?;
 
+        println!("Matched kv block meta: {:?} node_address: {:?}", kv_block_meta, node_address);
+        info!("Matched kv block meta: {:?} node_address: {:?}", kv_block_meta, node_address);
         // 2. TODO: check current node has the local block cache
 
         // 3. Get the block from the distribute cache
         // TODO: update string key with u64
         let block_data = match self
             .inner
-            .get_block(node_address, kv_block_meta.block_id)
+            .get_block(node_address.clone(), kv_block_meta.block_id)
             .await
         {
             Ok(data) => data,
@@ -194,7 +196,7 @@ impl DistributeKVCacheClient {
                 self.inner.remove_index(prefix).await?;
 
                 return Err(DatenLordError::DistributeCacheManagerErr {
-                    context: vec![format!("Failed to get block: {:?}", err)],
+                    context: vec![format!("Failed to get block: {:?} node_address: {:?} kv_block_meta: {:?}", err, node_address, kv_block_meta)],
                 });
             }
         };
@@ -417,6 +419,7 @@ impl DistributeKVCacheClientInner {
         match rx.recv_async().await {
             Ok(Ok(response)) => match response {
                 KVCacheResponse::KVCacheIndexMatchResponse(response) => {
+                    info!("Matched kv cache meta address: {:?}", response.node_address);
                     let node_address = String::from_utf8(response.node_address).map_err(|err| {
                         DatenLordError::DistributeCacheManagerErr {
                             context: vec![format!("Failed to parse node address: {:?}", err)],

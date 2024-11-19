@@ -111,9 +111,11 @@ mod tests {
         let pool = Arc::new(WorkerPool::new(5, 5));
         let handler = KVCacheHandler::new(Arc::clone(&pool), cache_manager, index_manager);
         let mut server = RpcServer::new(&ServerTimeoutOptions::default(), 5, 5, handler);
-        tokio::spawn(async move {
-            server.listen(&addr).await.unwrap();
-        });
+        server.listen(&addr).await.unwrap();
+
+        tokio::time::sleep(tokio::time::Duration::from_secs(1000)).await;
+        // tokio::spawn(async move {
+        // });
 
         // Setup the kv cache client
         let block_size = 64;
