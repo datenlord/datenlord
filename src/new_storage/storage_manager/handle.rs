@@ -125,6 +125,7 @@ impl FileHandleInner {
         backend: Arc<dyn Backend>,
         write_back_sender: Sender<Task>,
         close_sender: Sender<()>,
+        attr: FileAttr,
     ) -> Self {
         FileHandleInner {
             ino,
@@ -136,7 +137,7 @@ impl FileHandleInner {
             dirty_count: AtomicU32::new(0),
             // init the file attributes
             attr: Arc::new(tokio::sync::RwLock::new(DirtyFileAttr {
-                attr: FileAttr::default(),
+                attr,
                 dirty_filesize: None,
             })),
             access_keys: Mutex::new(Vec::new()),
@@ -295,7 +296,7 @@ impl FileHandleInner {
                 });
             self.dirty_count
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            self.set_dirty_filesize(size);
+            self.set_dirty_filesize(size).await;
         }
 
         Ok(())
@@ -578,6 +579,7 @@ impl FileHandle {
         cache: Arc<Mutex<MemoryCache<CacheKey, LruPolicy<CacheKey>>>>,
         backend: Arc<dyn Backend>,
         metadata_client: Arc<M>,
+        attr: FileAttr,
     ) -> Self {
         let (write_back_tx, write_back_rx) = tokio::sync::mpsc::channel(100);
         // Maybe oneshot is better than mpsc, because we only need to send a signal, but it needs to be mutable.
@@ -589,6 +591,7 @@ impl FileHandle {
             backend,
             write_back_tx,
             close_tx,
+            attr,
         ));
         let inner_clone = Arc::clone(&inner);
         // TODO: Move handle to task manager
@@ -768,10 +771,10 @@ impl Handles {
 
             false
         } else {
-            info!("Create a new file handle for ino: {}", fh);
+            info!("Create a new file handle for ino: {} attr: {:?}", fh, attr);
             // If the file handle is not open, create a new file handle and return true
-            let file_handle = FileHandle::new(fh, block_size, cache, backend, metadata_client);
-            file_handle.setattr(attr).await;
+            let file_handle =
+                FileHandle::new(fh, block_size, cache, backend, metadata_client, attr);
             shard_lock.insert(fh, file_handle);
 
             true
