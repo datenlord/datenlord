@@ -256,7 +256,7 @@ impl MetaData for S3MetaData {
         // If the file is open, return the attr in `open_files`
         if let Some(open_file) = self.open_files.try_get(ino) {
             let open_file = open_file.read();
-            let attr = fs_util::convert_to_fuse_attr(open_file.attr);
+            let attr = FuseAttr::from(open_file.attr);
             return Ok((Duration::new(MY_TTL_SEC, 0), attr));
         }
 
@@ -267,7 +267,7 @@ impl MetaData for S3MetaData {
             .ok_or_else(|| build_inconsistent_fs!(ino))?;
         let attr = inode.get_attr();
         let ttl = Duration::new(MY_TTL_SEC, 0);
-        let fuse_attr = fs_util::convert_to_fuse_attr(attr);
+        let fuse_attr = FuseAttr::from(attr);
         Ok((ttl, fuse_attr))
     }
 
@@ -343,7 +343,7 @@ impl MetaData for S3MetaData {
                     }
                     None => {
                         // setattr did not change any attribute.
-                        return Ok((ttl, fs_util::convert_to_fuse_attr(remote_attr)));
+                        return Ok((ttl, FuseAttr::from(remote_attr)));
                     }
                 };
 
@@ -354,7 +354,7 @@ impl MetaData for S3MetaData {
 
             (
                 txn.commit().await,
-                (ttl, fs_util::convert_to_fuse_attr(dirty_attr_for_reply)),
+                (ttl, FuseAttr::from(dirty_attr_for_reply)),
             )
         });
         FILESYSTEM_METRICS.observe_storage_operation_throughput(retry, "setattr");
@@ -526,7 +526,7 @@ impl MetaData for S3MetaData {
             let new_node = parent_node
                 .create_child_node(&param, new_num, txn.as_mut())
                 .await?;
-            let fuse_attr = fs_util::convert_to_fuse_attr(new_node.get_attr());
+            let fuse_attr = FuseAttr::from(new_node.get_attr());
             let ttl = Duration::new(MY_TTL_SEC, 0);
             txn.set(
                 &KeyType::INum2Node(new_num),
@@ -577,7 +577,7 @@ impl MetaData for S3MetaData {
             let child_attr = child_node.get_attr();
 
             let ttl = Duration::new(MY_TTL_SEC, 0);
-            let fuse_attr = fs_util::convert_to_fuse_attr(child_attr);
+            let fuse_attr = FuseAttr::from(child_attr);
             txn.set(
                 &KeyType::INum2Node(child_ino),
                 &ValueType::Node(child_node.to_serial_node()),
