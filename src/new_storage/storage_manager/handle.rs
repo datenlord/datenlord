@@ -95,8 +95,6 @@ pub enum Task {
     Pending(Arc<WriteTask>),
     /// A flush task.
     Flush(oneshot::Sender<Option<StorageError>>),
-    /// A finish task.
-    Finish(oneshot::Sender<Option<StorageError>>),
 }
 
 /// The `WriteTask` struct represents a write task
@@ -462,34 +460,22 @@ impl FileHandleInner {
 
             let mut attr_write = self.attr.write().await;
             if let Some(dirty_filesize) = attr_write.dirty_filesize {
-                if dirty_filesize <= file_size {
+                if dirty_filesize == file_size {
                     // If the dirty file size is equal to the file size, set the dirty file size to None.
                     attr_write.dirty_filesize = None;
-                    // Update current file size.
-                    attr_write.attr.size = file_size;
                 }
             }
 
-            return result;
-        }
-
-        let mut attr_write = self.attr.write().await;
-        if let Some(dirty_filesize) = attr_write.dirty_filesize {
-            // Commit current metadata to the meta data server.
-            let ino = self.ino;
-            info!(
-                "Commit meta data for ino: {} with dirty_size: {:?}",
-                ino, dirty_filesize,
-            );
-            if let Err(e) = metadata_client
-                .write_remote_size_helper(ino, dirty_filesize)
-                .await
-            {
-                error!("Failed to commit meta data, the error is {e}.");
+            // Update current file size with remote filesize.
+            // Do not change the hole attr, because the other part will be changed by other permission.
+            match metadata_client.get_remote_attr(ino).await {
+                Ok((_, attr)) => {
+                    attr_write.attr.size = attr.size;
+                }
+                Err(e) => {
+                    error!("Failed to get remote file attr, the error is {e}.");
+                }
             }
-
-            // Clean up size
-            attr_write.dirty_filesize = None;
         }
 
         result
@@ -536,19 +522,6 @@ impl FileHandleInner {
                             if let Err(Some(e)) = tx.send(res) {
                                 error!("Failed to send storage error back to `Writer`, the error is {e}.");
                             }
-                        }
-                        Task::Finish(tx) => {
-                            info!("Finish the write back task. ino: {:?}", self.ino);
-                            let slf_clone = Arc::clone(&self);
-                            let res = slf_clone.write_blocks(&tasks, Arc::clone(&metadata_client)).await;
-                            tasks.clear();
-                            let res = result.take().or(res);
-                            if let Err(Some(e)) = tx.send(res) {
-                                error!("Failed to send storage error back to `Writer`, the error is {e}.");
-                            }
-
-                            // Check last write task size with mem attr
-                            return;
                         }
                     }
                 }
