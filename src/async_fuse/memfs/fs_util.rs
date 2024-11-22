@@ -273,6 +273,35 @@ impl Default for FileAttr {
     }
 }
 
+impl From<FileAttr> for FuseAttr {
+    fn from(attr: FileAttr) -> Self {
+        let (a_time_secs, a_time_nanos) = time_from_system_time(&attr.atime);
+        let (m_time_secs, m_time_nanos) = time_from_system_time(&attr.mtime);
+        let (c_time_secs, c_time_nanos) = time_from_system_time(&attr.ctime);
+
+        FuseAttr {
+            ino: attr.ino,
+            size: attr.size,
+            blocks: attr.blocks,
+            atime: a_time_secs,
+            mtime: m_time_secs,
+            ctime: c_time_secs,
+            atimensec: a_time_nanos,
+            mtimensec: m_time_nanos,
+            ctimensec: c_time_nanos,
+            mode: crate::async_fuse::util::mode_from_kind_and_perm(attr.kind, attr.perm),
+            nlink: attr.nlink,
+            uid: attr.uid,
+            gid: attr.gid,
+            rdev: attr.rdev,
+            #[cfg(feature = "abi-7-9")]
+            blksize: 0, // TODO: find a proper way to set block size
+            #[cfg(feature = "abi-7-9")]
+            padding: 0,
+        }
+    }
+}
+
 /// Parse `OFlag`
 pub fn parse_oflag(flags: u32) -> OFlag {
     debug_assert!(
@@ -321,34 +350,6 @@ pub fn time_from_system_time(system_time: &SystemTime) -> (u64, u32) {
             )
         });
     (duration.as_secs(), duration.subsec_nanos())
-}
-
-/// Convert `FileAttr` to `FuseAttr`
-pub fn convert_to_fuse_attr(attr: FileAttr) -> FuseAttr {
-    let (a_time_secs, a_time_nanos) = time_from_system_time(&attr.atime);
-    let (m_time_secs, m_time_nanos) = time_from_system_time(&attr.mtime);
-    let (c_time_secs, c_time_nanos) = time_from_system_time(&attr.ctime);
-
-    FuseAttr {
-        ino: attr.ino,
-        size: attr.size,
-        blocks: attr.blocks,
-        atime: a_time_secs,
-        mtime: m_time_secs,
-        ctime: c_time_secs,
-        atimensec: a_time_nanos,
-        mtimensec: m_time_nanos,
-        ctimensec: c_time_nanos,
-        mode: crate::async_fuse::util::mode_from_kind_and_perm(attr.kind, attr.perm),
-        nlink: attr.nlink,
-        uid: attr.uid,
-        gid: attr.gid,
-        rdev: attr.rdev,
-        #[cfg(feature = "abi-7-9")]
-        blksize: 0, // TODO: find a proper way to set block size
-        #[cfg(feature = "abi-7-9")]
-        padding: 0,
-    }
 }
 
 #[cfg(test)]
