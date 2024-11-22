@@ -1,18 +1,51 @@
-use std::sync::Arc;
+use std::{str::FromStr, sync::Arc};
 
-use datenlord::{common::task_manager::{TaskName, TASK_MANAGER}, distribute_kv_cache::{cluster::{cluster_manager::ClusterManager, node::{Node, NodeStatus}}, local_cache::manager::{IndexManager, KVBlockManager}, manager::KVCacheHandler, rpc::{common::ServerTimeoutOptions, server::RpcServer, workerpool::WorkerPool}}, fs::kv_engine::{etcd_impl::EtcdKVEngine, KVEngine}, metrics};
-use tracing::info;
+use clap::Parser;
+use datenlord::{common::{error::{DatenLordError, DatenLordResult}, logger::{init_logger, LogRole}, task_manager::{TaskName, TASK_MANAGER}}, distribute_kv_cache::{cluster::{cluster_manager::ClusterManager, node::{Node, NodeStatus}}, local_cache::manager::{IndexManager, KVBlockManager}, manager::KVCacheHandler, rpc::{common::ServerTimeoutOptions, server::RpcServer, workerpool::WorkerPool}}, fs::kv_engine::{etcd_impl::EtcdKVEngine, KVEngine}, metrics};
+use tracing::{info, level_filters::LevelFilter};
+
+#[derive(Debug, Parser)]
+#[clap(author,version,about,long_about=None)]
+pub struct KVCacheServerConfig {
+    /// Log level
+    #[clap(short = 'l', long = "log-level", value_name = "LEVEL", default_value = "info")]
+    log_level: String,
+    /// IP
+    #[clap(short = 'i', long = "ip", value_name = "IP", default_value = "127.0.0.1")]
+    ip: String,
+    /// Port
+    #[clap(short = 'p', long = "port", value_name = "PORT", default_value = "2789")]
+    port: u16,
+    /// ETCD endpoint
+    #[clap(short = 'e', long = "etcd-endpoint", value_name = "ENDPOINT", default_value = "localhost:2379")]
+    etcd_endpoint: String,
+}
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn main() -> DatenLordResult<()> {
     TASK_MANAGER
         .spawn(TaskName::Metrics, metrics::start_metrics_server)
-        .await?;
+        .await
+        .map_err(|e| {
+            DatenLordError::DistributeCacheManagerErr {
+                context: vec![format!("Failed to start metrics server: {:?}", e)],
+            }
+        })?;
 
-    let ip = "127.0.0.1";
-    let port = 2789;
+    let config = KVCacheServerConfig::parse();
+    init_logger(
+        LogRole::Cache,
+        LevelFilter::from_str(config.log_level.as_str()).map_err(|e| {
+            DatenLordError::ArgumentInvalid {
+                context: vec![format!("log level {} is invalid: {}", config.log_level, e)],
+            }
+        })?,
+    );
+
+    let ip = config.ip;
+    let port = config.port;
     let addr = format!("{}:{}", ip, port);
-    let etcd_endpoint = "localhost:2379";
+    let etcd_endpoint = config.etcd_endpoint;
     let client = EtcdKVEngine::new(vec![etcd_endpoint.to_owned()])
     .await
     .unwrap();

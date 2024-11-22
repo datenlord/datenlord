@@ -1,5 +1,7 @@
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
+use clippy_utilities::Cast;
+use radix_trie::Trie;
 use tokio::sync::Mutex;
 use tracing::{debug, error, info, warn};
 
@@ -71,6 +73,8 @@ struct LocalBlockCache {
     block_cache: KVBlock,
     /// The block metas
     block_metas: Vec<KVCacheMeta>,
+    /// The radix tree for block metas, support partial match
+    block_metas_tree: Trie<String, KVCacheMeta>,
 }
 
 impl LocalBlockCache {
@@ -83,6 +87,7 @@ impl LocalBlockCache {
                 data: Vec::with_capacity(block_size as usize),
             },
             block_metas: Vec::new(),
+            block_metas_tree: Trie::new(),
         }
     }
 
@@ -109,8 +114,12 @@ impl LocalBlockCache {
         // 1. Insert the kv cache data to the block cache
         self.block_cache.data.extend_from_slice(&data);
 
-        // 2. Insert the kv cache meta to the block metas
+        // 2. Insert the kv cache meta to the block metas tree
+        self.block_metas_tree.insert(kv_cache_meta.prefix.clone(), kv_cache_meta.clone());
+
+        // 3. Insert the kv cache meta to the block metas
         self.block_metas.push(kv_cache_meta);
+
 
         Ok(())
     }
@@ -125,11 +134,40 @@ impl LocalBlockCache {
         self.block_cache.data.len() as u64
     }
 
+    /// Try to get the block data from the local block cache
+    ///
+    /// TODO: Local cache may cover the remote block metas tree, consider to set a threshold to drop the query
+    pub fn try_load(&self, prefix: String) -> Option<(KVCacheMeta, Vec<u8>)> {
+        // TODO: support match partial prefix
+        // Find the kv cache meta with the prefix
+        match self.block_metas_tree.get_ancestor_key(&prefix) {
+            Some(ancestor_key) => {
+                let kv_cache_meta = self.block_metas_tree.get_ancestor_value(ancestor_key)?;
+                let offset = kv_cache_meta.offset.cast::<usize>();
+                let size = kv_cache_meta.size.cast::<usize>();
+
+                // Check the kv cache meta offset and size is valid
+                if offset + size > self.block_cache.data.len() {
+                    return None;
+                }
+
+                let mut data = Vec::new();
+                data.extend_from_slice(&self.block_cache.data[offset..offset + size]);
+
+                return Some((kv_cache_meta.clone(), data));
+            }
+            None => None,
+        }
+    }
+
     /// Clear the local block cache with new block id
     pub fn clear(&mut self, new_block_id: u64) {
         self.block_cache.block_id = new_block_id;
         self.block_cache.data.clear();
         self.block_metas.clear();
+
+        // Clear the block metas tree
+        self.block_metas_tree = Trie::new();
     }
 
     /// Get KVBlock
@@ -176,12 +214,26 @@ impl DistributeKVCacheClient {
 
     /// Try to load the block from the distribute cache, return sub string with the prefix
     pub async fn try_load(&self, prefix: String) -> DatenLordResult<(String, Vec<u8>)> {
-        // 1. Match prefix to get the block id and target node
-        let (kv_block_meta, node_address) = self.inner.match_prefix(prefix.clone()).await?;
 
+        // 1. check current node has the local block cache
+        // If ok, get the block from the local block cache
+        // If not, get the block from the distribute cache
+        // Optimize: Try to compare partial prefix with the local block cache and remote block cache
+        let local_cache_lock = self.block_cache.lock().await;
+        match local_cache_lock.try_load(prefix.clone()) {
+            Some((meta, data)) => {
+                debug!("Matched kv cache meta from local cache: {:?}", meta);
+                return Ok((meta.prefix, data));
+            }
+            None => {
+                debug!("Failed to match kv cache meta from local cache, try to get from the distribute cache");
+            }
+        }
+
+        // 2. Match prefix to get the block id and target node
+        let (kv_block_meta, node_address) = self.inner.match_prefix(prefix.clone()).await?;
         println!("Matched kv block meta: {:?} node_address: {:?}", kv_block_meta, node_address);
         info!("Matched kv block meta: {:?} node_address: {:?}", kv_block_meta, node_address);
-        // 2. TODO: check current node has the local block cache
 
         // 3. Get the block from the distribute cache
         // TODO: update string key with u64

@@ -8,7 +8,7 @@ async def main():
 
     # Create a bytes object
     kvcache = bytes(768)
-    # await sdk.insert("key1", kvcache)
+    await sdk.insert("key1", kvcache)
     # await sdk.insert("key2", kvcache)
     res = await sdk.try_load("key2")
     print(res)
