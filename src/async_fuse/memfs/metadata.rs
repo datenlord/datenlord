@@ -68,7 +68,7 @@ pub trait MetaData {
     async fn rename(&self, context: ReqContext, param: RenameParam) -> DatenLordResult<()>;
 
     /// Helper function to write remote data
-    async fn write_remote_size_helper(&self, ino: u64, size: u64) -> DatenLordResult<()>;
+    async fn write_remote_size_helper(&self, ino: u64, size: u64) -> DatenLordResult<FileAttr>;
 
     /// Set fuse fd into `MetaData`
     async fn set_fuse_fd(&self, fuse_fd: RawFd);

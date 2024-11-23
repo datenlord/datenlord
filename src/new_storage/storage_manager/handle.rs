@@ -345,7 +345,7 @@ impl FileHandleInner {
     /// Closes the writer associated with the file handle.
     /// If the open count is greater than 0, it will return false and do not remove this handle.
     /// Otherwise, it will return true and remove this handle.
-    pub async fn close(&self) -> StorageResult<bool> {
+    pub async fn try_close(&self) -> StorageResult<bool> {
         // Decrease the open count of the file handle, fetch sub will return the previous value.
         if self
             .open_cnt
@@ -356,15 +356,10 @@ impl FileHandleInner {
             return Ok(false);
         }
 
-        debug!("The file handle is closed, remove the file handle.");
-
         // Check dirty count to determine whether the file handle is clean.
         self.flush().await?;
 
-        // Will be closed by the send method, or the sender is dropped.
-        self.close_sender.send(()).await.unwrap_or_else(|_| {
-            panic!("Should not send command to write back task when the task quits.");
-        });
+        // close_recv will be closed because the the sender is dropped.
 
         Ok(true)
     }
@@ -451,11 +446,26 @@ impl FileHandleInner {
                 file_size,
                 self.attr.read().await.dirty_filesize
             );
-            if let Err(e) = metadata_client
+            match metadata_client
                 .write_remote_size_helper(ino, file_size)
                 .await
             {
-                error!("Failed to commit meta data, the error is {e}.");
+                Ok(attr) => {
+                    let mut attr_write = self.attr.write().await;
+                    if let Some(dirty_filesize) = attr_write.dirty_filesize {
+                        if dirty_filesize == file_size {
+                            // If the dirty file size is equal to the file size, set the dirty file size to None.
+                            attr_write.dirty_filesize = None;
+                        }
+                    }
+
+                    // Update current file size with remote filesize.
+                    // Do not change the hole attr, because the other part will be changed by other permission.
+                    attr_write.attr.size = attr.size;
+                }
+                Err(e) => {
+                    error!("Failed to commit meta data, the error is {e}.");
+                }
             }
 
             let mut attr_write = self.attr.write().await;
@@ -463,17 +473,6 @@ impl FileHandleInner {
                 if dirty_filesize == file_size {
                     // If the dirty file size is equal to the file size, set the dirty file size to None.
                     attr_write.dirty_filesize = None;
-                }
-            }
-
-            // Update current file size with remote filesize.
-            // Do not change the hole attr, because the other part will be changed by other permission.
-            match metadata_client.get_remote_attr(ino).await {
-                Ok((_, attr)) => {
-                    attr_write.attr.size = attr.size;
-                }
-                Err(e) => {
-                    error!("Failed to get remote file attr, the error is {e}.");
                 }
             }
         }
@@ -526,6 +525,10 @@ impl FileHandleInner {
                     }
                 }
                 _ = interval.tick() => {
+                    if tasks.is_empty() {
+                        continue;
+                    }
+
                     let slf_clone = Arc::clone(&self);
                     slf_clone.write_blocks(&tasks, Arc::clone(&metadata_client)).await;
                     tasks.clear();
@@ -641,10 +644,10 @@ impl FileHandle {
     }
 
     /// Closes the file handle, closing both the reader and writer.
-    pub async fn close(&self) -> StorageResult<bool> {
+    pub async fn try_close(&self) -> StorageResult<bool> {
         debug!("try to close filehandle lock ok {:?}", self.fh);
         info!("Close the file handle, ino: {}", self.fh);
-        match self.inner.close().await {
+        match self.inner.try_close().await {
             Ok(true) => {
                 debug!("filehandle {:?} drop close filehandle ok", self.fh);
                 Ok(true)
@@ -766,11 +769,14 @@ impl Handles {
             StorageError::Internal(anyhow::anyhow!("Cannot close a file that is not open."))
         })?;
 
-        let need_remove_flag = filehandle.close().await?;
+        let need_remove_flag = filehandle.try_close().await?;
         if need_remove_flag {
             // Remove the file handle from the handles map
             match shard_lock.remove(&fh) {
-                Some(filehandle) => return Ok(Some(filehandle)),
+                Some(filehandle) => {
+                    debug!("The file handle is closed, remove the file handle.");
+                    return Ok(Some(filehandle));
+                }
                 None => {
                     panic!("Cannot close a file that is not open.");
                 }

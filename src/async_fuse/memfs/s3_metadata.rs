@@ -723,7 +723,7 @@ impl MetaData for S3MetaData {
     }
 
     /// Helper function to write remote meta data
-    async fn write_remote_size_helper(&self, ino: u64, size: u64) -> DatenLordResult<()> {
+    async fn write_remote_size_helper(&self, ino: u64, size: u64) -> DatenLordResult<FileAttr> {
         let mut node = self
             .get_node_from_kv_engine(ino)
             .await?
@@ -746,7 +746,7 @@ impl MetaData for S3MetaData {
                     "write_remote_size_helper() ino={} size={} isok={:?}",
                     ino, size, true
                 );
-                Ok(())
+                Ok(attr)
             }
             Err(e) => {
                 return build_error_result_from_errno(
