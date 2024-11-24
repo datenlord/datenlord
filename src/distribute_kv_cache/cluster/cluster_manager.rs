@@ -60,6 +60,7 @@ impl ClusterManager {
     /// Get node by hashring index
     pub async fn get_node(&self, key: String) -> DatenLordResult<Node> {
         let ring = self.get_ring().await?;
+        debug!("Get node by key: {:?} ring: {:?}", key, ring);
         if let Some(node) = ring.get_node(&key) {
             return Ok(node.clone());
         }

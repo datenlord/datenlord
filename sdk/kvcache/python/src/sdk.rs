@@ -1,9 +1,7 @@
-use clippy_utilities::Cast;
-use datenlord::common::logger::init_logger;
+use datenlord::common::logger::{self, init_logger};
 use datenlord::common::task_manager::TASK_MANAGER;
-use datenlord::config::{self, InnerConfig};
 use datenlord::distribute_kv_cache::cluster::cluster_manager::ClusterManager;
-use datenlord::distribute_kv_cache::cluster::node::{Node, NodeStatus};
+use datenlord::distribute_kv_cache::cluster::node::Node;
 use datenlord::distribute_kv_cache::kvclient::DistributeKVCacheClient;
 use datenlord::fs::kv_engine::etcd_impl::EtcdKVEngine;
 use datenlord::fs::kv_engine::{KVEngine, KVEngineType};
@@ -25,17 +23,13 @@ pub struct DatenLordSDK {
 impl DatenLordSDK {
     /// Initializes a new instance of `DatenLordSDK` by loading the configuration from the specified path
     #[new]
-    pub fn new(_py: Python, config_path: String) -> PyResult<Self> {
+    pub fn new(_py: Python, block_size: u64, kv_engine_address: Vec<String>, log_level: String) -> PyResult<Self> {
         // let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
-        let config_str = config_path.to_string();
-
-        // Parse the config file and initialize the SDK
-        let mut arg_conf = config::Config::default();
-        arg_conf.config_file = Some(config_str.to_string());
-        let config =
-            InnerConfig::try_from(config::Config::load_from_args(arg_conf).unwrap()).unwrap();
-        init_logger(config.role.into(), config.log_level);
-        println!("Config: {:?}", config);
+        init_logger(logger::LogRole::SDK, log_level.parse().map_err(
+            |e| PyException::new_err(format!("Invalid log level: {:?}", e)),
+        )?);
+        println!("block_size: {} kv_engine_address: {:?} log_level: {}", block_size, kv_engine_address, log_level);
+        info!("block_size: {} kv_engine_address: {:?} log_level: {}", block_size, kv_engine_address, log_level);
 
         // Initialize the runtime
         // let datenlord_client = runtime.handle().block_on(async {
@@ -46,23 +40,27 @@ impl DatenLordSDK {
 
         // let datenlordfs = runtime.handle().block_on(async {
         let datenlord_client = pyo3_asyncio::tokio::get_runtime().handle().block_on(async {
-            let kv_engine: Arc<EtcdKVEngine> =
-                Arc::new(KVEngineType::new(config.kv_addrs.clone()).await.unwrap());
-            let node = Node::new(config.node_ip.to_string(), config.server_port, 1, NodeStatus::Initializing);
+            let kv_engine = match KVEngineType::new(kv_engine_address.clone()).await {
+                Ok(kv_engine) => kv_engine,
+                Err(e) => {
+                    panic!("Failed to create KVEngine: {:?}", e);
+                }
+            };
+
+            let kv_engine: Arc<EtcdKVEngine> = Arc::new(kv_engine);
+            let node = Node::default();
             let cluster_manager = Arc::new(ClusterManager::new(kv_engine, node));
 
-            let kvcacheclient = Arc::new(DistributeKVCacheClient::new(cluster_manager, config.storage.block_size.cast()));
+            let kvcacheclient = Arc::new(DistributeKVCacheClient::new(cluster_manager, block_size));
             let kvcacheclient_clone = Arc::clone(&kvcacheclient);
-            tokio::spawn(async move {
-                match kvcacheclient_clone.start_watch().await {
-                    Ok(()) => {
-                        info!("DistributeKVCacheClient start_watch finished");
-                    }
-                    Err(e) => {
-                        panic!("start_watch failed: {:?}", e);
-                    }
+            match kvcacheclient_clone.start_watch().await {
+                Ok(()) => {
+                    info!("DistributeKVCacheClient start_watch ok");
                 }
-            });
+                Err(e) => {
+                    panic!("start_watch failed: {:?}", e);
+                }
+            }
 
             kvcacheclient
         });

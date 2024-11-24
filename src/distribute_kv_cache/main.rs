@@ -1,8 +1,8 @@
 use std::{str::FromStr, sync::Arc};
 
 use clap::Parser;
-use datenlord::{common::{error::{DatenLordError, DatenLordResult}, logger::{init_logger, LogRole}, task_manager::{TaskName, TASK_MANAGER}}, distribute_kv_cache::{cluster::{cluster_manager::ClusterManager, node::{Node, NodeStatus}}, local_cache::manager::{IndexManager, KVBlockManager}, manager::KVCacheHandler, rpc::{common::ServerTimeoutOptions, server::RpcServer, workerpool::WorkerPool}}, fs::kv_engine::{etcd_impl::EtcdKVEngine, KVEngine}, metrics};
-use tracing::{info, level_filters::LevelFilter};
+use datenlord::{common::{error::{DatenLordError, DatenLordResult}, logger::{init_logger, LogRole}, task_manager::{self, TaskName, TASK_MANAGER}}, distribute_kv_cache::{cluster::{cluster_manager::ClusterManager, node::{Node, NodeStatus}}, local_cache::manager::{IndexManager, KVBlockManager}, manager::KVCacheHandler, rpc::{common::ServerTimeoutOptions, server::RpcServer, workerpool::WorkerPool}}, fs::kv_engine::{etcd_impl::EtcdKVEngine, KVEngine}, metrics};
+use tracing::{error, info, level_filters::LevelFilter};
 
 #[derive(Debug, Parser)]
 #[clap(author,version,about,long_about=None)]
@@ -45,21 +45,32 @@ async fn main() -> DatenLordResult<()> {
     let ip = config.ip;
     let port = config.port;
     let addr = format!("{}:{}", ip, port);
+    info!("KV cache server started at {}", addr);
+    println!("KV cache server started at {}", addr);
+
     let etcd_endpoint = config.etcd_endpoint;
     let client = EtcdKVEngine::new(vec![etcd_endpoint.to_owned()])
     .await
     .unwrap();
     let client = Arc::new(client);
+    info!("Connected to etcd server at {}", etcd_endpoint);
+    println!("Connected to etcd server at {}", etcd_endpoint);
 
     let node = Node::new(ip.to_owned(), port, 1, NodeStatus::Initializing);
     let cluster_manager = Arc::new(ClusterManager::new(client, node));
     let cluster_manager_clone = Arc::clone(&cluster_manager);
-    match cluster_manager_clone.run().await {
-        Ok(()) => {},
-        Err(err) => {
-            panic!("Failed to run cluster manager: {:?}", err);
-        }
-    }
+    TASK_MANAGER
+        .spawn(TaskName::Rpc, |_token| async move {
+            if let Err(e) = cluster_manager_clone.run().await {
+                error!("Failed to start cluster manager: {:?}", e);
+            }
+        })
+        .await
+        .map_err(|e| {
+            DatenLordError::DistributeCacheManagerErr {
+                context: vec![format!("Failed to start cluster manager: {:?}", e)],
+            }
+        })?;
 
     let cache_manager = Arc::new(KVBlockManager::default());
     let index_manager = Arc::new(IndexManager::new());
@@ -68,12 +79,16 @@ async fn main() -> DatenLordResult<()> {
     let handler = KVCacheHandler::new(Arc::clone(&pool), cache_manager, index_manager);
     let mut server = RpcServer::new(&ServerTimeoutOptions::default(), 5, 5, handler);
     match server.listen(&addr).await {
-        Ok(()) => {},
+        Ok(()) => {
+            info!("KV cache server started successfully");
+            println!("KV cache server started successfully");
+        },
         Err(err) => {
             panic!("Failed to start kv cache server: {:?}", err);
         },
     }
 
+    task_manager::wait_for_shutdown(&TASK_MANAGER)?.await;
     info!("KV cache server stopped");
     Ok(())
 }
