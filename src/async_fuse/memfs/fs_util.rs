@@ -10,7 +10,7 @@ use tracing::debug;
 
 use super::SetAttrParam;
 use crate::async_fuse::fuse::protocol::{FuseAttr, INum};
-use crate::async_fuse::util::build_error_result_from_errno;
+use crate::async_fuse::util::{build_error_result_from_errno, mode_from_kind_and_perm};
 use crate::common::error::DatenLordResult;
 use crate::common::util;
 
@@ -289,7 +289,7 @@ impl From<FileAttr> for FuseAttr {
             atimensec: a_time_nanos,
             mtimensec: m_time_nanos,
             ctimensec: c_time_nanos,
-            mode: crate::async_fuse::util::mode_from_kind_and_perm(attr.kind, attr.perm),
+            mode: mode_from_kind_and_perm(attr.kind, attr.perm),
             nlink: attr.nlink,
             uid: attr.uid,
             gid: attr.gid,
