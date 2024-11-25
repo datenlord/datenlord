@@ -39,7 +39,7 @@ use crate::async_fuse::fuse::fuse_reply::{
     ReplyLock, ReplyOpen, ReplyStatFs, ReplyWrite, ReplyXAttr,
 };
 use crate::async_fuse::fuse::fuse_request::Request;
-use crate::async_fuse::fuse::protocol::{INum, FUSE_ROOT_ID};
+use crate::async_fuse::fuse::protocol::{FuseAttr, INum, FUSE_ROOT_ID};
 use crate::async_fuse::memfs::metadata::ReqContext;
 use crate::async_fuse::util::build_error_result_from_errno;
 use crate::common::error::{Context, DatenLordResult};
@@ -241,7 +241,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
                 );
                 // TODO: Mock response ttl.
                 let ttl = Duration::new(s3_metadata::MY_TTL_SEC, 0);
-                let fuse_attr = fs_util::convert_to_fuse_attr(file_attr);
+                let fuse_attr = FuseAttr::from(file_attr);
                 debug!(
                     "getattr() successfully got the attr={:?} of ino={}",
                     fuse_attr, ino
@@ -260,7 +260,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
                             "getattr() successfully got the attr={:?} of ino={}",
                             file_attr, ino,
                         );
-                        let fuse_attr = fs_util::convert_to_fuse_attr(file_attr);
+                        let fuse_attr = FuseAttr::from(file_attr);
                         reply.attr(ttl, fuse_attr).await
                     }
                     Err(err) => {
