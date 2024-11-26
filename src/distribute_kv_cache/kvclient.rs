@@ -2,7 +2,7 @@ use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use clippy_utilities::Cast;
 use radix_trie::Trie;
-use tokio::sync::Mutex;
+use tokio::{sync::Mutex, time::error};
 use tracing::{debug, error, info, warn};
 
 use crate::{
@@ -65,6 +65,17 @@ pub struct KVCacheMeta {
     pub size: u64,
     /// The kv cache prefix
     pub prefix: String,
+}
+
+impl Default for KVCacheMeta {
+    fn default() -> Self {
+        Self {
+            block_id: UNUSED_KV_BLOCK_ID,
+            offset: 0,
+            size: 0,
+            prefix: String::new(),
+        }
+    }
 }
 
 /// Local block cache
@@ -235,18 +246,30 @@ impl DistributeKVCacheClient {
             None => {
                 debug!("Failed to match local kv cache meta from local cache, try to get from the distribute cache");
                 // Empty meta
-                KVCacheMeta {
-                    block_id: UNUSED_KV_BLOCK_ID,
-                    offset: 0,
-                    size: 0,
-                    prefix: String::new(),
-                }
+                KVCacheMeta::default()
             }
         };
         let local_prefix_len = local_kv_cache_meta.prefix.len().cast::<u64>();
 
         // 2. Match prefix to get the block id and target node
-        let (kv_block_meta, node_address) = self.inner.match_prefix(prefix.clone()).await?;
+        let (kv_block_meta, node_address) = match self.inner.match_prefix(prefix.clone()).await {
+            Ok((kv_block_meta, node_address)) => {
+                debug!(
+                    "Matched remote kv block meta: {:?} node_address: {:?}",
+                    kv_block_meta, node_address
+                );
+                (kv_block_meta, node_address)
+            }
+            Err(err) => {
+                error!(
+                    "Failed to match prefix: {:?} with error: {:?}",
+                    prefix, err
+                );
+                // Return a empty data
+                (KVCacheMeta::default(), String::new())
+            }
+        };
+
         let remote_prefix_len = kv_block_meta.prefix.len().cast::<u64>();
         println!(
             "Matched remote kv block meta: {:?} node_address: {:?}",
