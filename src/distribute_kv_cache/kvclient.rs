@@ -2,7 +2,7 @@ use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use clippy_utilities::Cast;
 use radix_trie::Trie;
-use tokio::{sync::Mutex, time::error};
+use tokio::sync::Mutex;
 use tracing::{debug, error, info, warn};
 
 use crate::{

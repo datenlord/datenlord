@@ -5,12 +5,12 @@ The `DatenLordSDK` is a Python class that provides an interface to interact with
 
 ## Classes and Methods
 
-### (一) `Buffer` Class
+### 1. `Buffer` Class
 - **Function**: A bytes-like object that implements the buffer protocol and is a reference to the `opendal` library.
 - **Methods**:
   - `get_len(self, /)`: Gets the length of the buffer.
 
-### (二) `DatenLordSDK` Class
+### 2. `DatenLordSDK` Class
 1. **Initialization Method**
    - `DatenLordSDK(block_size, kv_engine_address, log_level)`: Creates an instance of `DatenLordSDK`. The parameter `block_size` represents the block size, `kv_engine_address` represents the key-value engine address, and `log_level` represents the log level.
 2. **Instance Methods**
