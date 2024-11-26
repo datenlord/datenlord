@@ -9,7 +9,8 @@ use crate::{
         task_manager::{TaskName, TASK_MANAGER},
     },
     connect_timeout,
-    distribute_kv_cache::rpc::{error::RpcError, utils::u64_to_usize}, storage::Block,
+    distribute_kv_cache::rpc::{error::RpcError, utils::u64_to_usize},
+    storage::Block,
 };
 
 use crate::distribute_kv_cache::{

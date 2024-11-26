@@ -12,6 +12,7 @@ use crate::{
         task_manager::{TaskName, TASK_MANAGER},
     },
     connect_timeout,
+    distribute_kv_cache::rpc::message,
 };
 
 use super::{
@@ -115,11 +116,11 @@ impl LocalBlockCache {
         self.block_cache.data.extend_from_slice(&data);
 
         // 2. Insert the kv cache meta to the block metas tree
-        self.block_metas_tree.insert(kv_cache_meta.prefix.clone(), kv_cache_meta.clone());
+        self.block_metas_tree
+            .insert(kv_cache_meta.prefix.clone(), kv_cache_meta.clone());
 
         // 3. Insert the kv cache meta to the block metas
         self.block_metas.push(kv_cache_meta);
-
 
         Ok(())
     }
@@ -218,7 +219,6 @@ impl DistributeKVCacheClient {
 
     /// Try to load the block from the distribute cache, return sub string with the prefix
     pub async fn try_load(&self, prefix: String) -> DatenLordResult<(String, Vec<u8>)> {
-
         // 1. check current node has the local block cache
         // If ok, get the block from the local block cache
         // If not, get the block from the distribute cache
@@ -226,7 +226,10 @@ impl DistributeKVCacheClient {
         let local_cache_lock = self.block_cache.lock().await;
         let local_kv_cache_meta = match local_cache_lock.match_prefix(prefix.clone()) {
             Some(kv_cache_meta) => {
-                debug!("Matched local kv cache meta from local cache: {:?}", kv_cache_meta);
+                debug!(
+                    "Matched local kv cache meta from local cache: {:?}",
+                    kv_cache_meta
+                );
                 kv_cache_meta
             }
             None => {
@@ -245,17 +248,29 @@ impl DistributeKVCacheClient {
         // 2. Match prefix to get the block id and target node
         let (kv_block_meta, node_address) = self.inner.match_prefix(prefix.clone()).await?;
         let remote_prefix_len = kv_block_meta.prefix.len().cast::<u64>();
-        println!("Matched remote kv block meta: {:?} node_address: {:?}", kv_block_meta, node_address);
-        info!("Matched remote kv block meta: {:?} node_address: {:?}", kv_block_meta, node_address);
+        println!(
+            "Matched remote kv block meta: {:?} node_address: {:?}",
+            kv_block_meta, node_address
+        );
+        info!(
+            "Matched remote kv block meta: {:?} node_address: {:?}",
+            kv_block_meta, node_address
+        );
 
         // If local prefix length is less than remote prefix length, we will get the block from the local cache
         if local_prefix_len >= remote_prefix_len {
             // Get the block from local cache
             if let Some(data) = local_cache_lock.try_load(local_kv_cache_meta.clone()) {
-                debug!("Get block from local cache: {:?} data len {:?}", local_kv_cache_meta, data.len());
+                debug!(
+                    "Get block from local cache: {:?} data len {:?}",
+                    local_kv_cache_meta,
+                    data.len()
+                );
                 return Ok((local_kv_cache_meta.prefix, data));
             } else {
-                debug!("Failed to get block from local cache, try to get from the distribute cache");
+                debug!(
+                    "Failed to get block from local cache, try to get from the distribute cache"
+                );
             }
         }
 
@@ -279,7 +294,10 @@ impl DistributeKVCacheClient {
                 self.inner.remove_index(prefix).await?;
 
                 return Err(DatenLordError::DistributeCacheManagerErr {
-                    context: vec![format!("Failed to get block: {:?} node_address: {:?} kv_block_meta: {:?}", err, node_address, kv_block_meta)],
+                    context: vec![format!(
+                        "Failed to get block: {:?} node_address: {:?} kv_block_meta: {:?}",
+                        err, node_address, kv_block_meta
+                    )],
                 });
             }
         };
@@ -519,6 +537,16 @@ impl DistributeKVCacheClientInner {
         match rx.recv_async().await {
             Ok(Ok(response)) => match response {
                 KVCacheResponse::KVCacheIndexMatchResponse(response) => {
+                    // Check the kv cache index is existed, means the prefix is not found and partial key is not matched
+                    if message::StatusCode::NotFound == response.status {
+                        return Err(DatenLordError::DistributeCacheManagerErr {
+                            context: vec![format!(
+                                "Failed to match prefix: {:?}, this index is not found",
+                                raw_prefix
+                            )],
+                        });
+                    }
+
                     let node_address = String::from_utf8(response.node_address).map_err(|err| {
                         DatenLordError::DistributeCacheManagerErr {
                             context: vec![format!("Failed to parse node address: {:?}", err)],
@@ -817,6 +845,19 @@ impl DistributeKVCacheClientInner {
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
+    use std::sync::Arc;
+
+    use crate::{
+        distribute_kv_cache::{
+            cluster::{cluster_manager::ClusterManager, node::Node},
+            kvclient::DistributeKVCacheClientInner,
+            local_cache::manager::{IndexManager, KVBlockManager},
+            manager::KVCacheHandler,
+            rpc::{common::ServerTimeoutOptions, server::RpcServer, workerpool::WorkerPool},
+        },
+        fs::kv_engine::{etcd_impl::EtcdKVEngine, KVEngine},
+    };
+
     use super::{KVCacheMeta, LocalBlockCache};
 
     /// Test local block cache operations
@@ -892,5 +933,32 @@ mod tests {
         assert_eq!(local_block_cache.get_next_offset(), 0);
         assert_eq!(local_block_cache.get_kv_block().block_id, new_block_id);
         assert_eq!(local_block_cache.get_kv_cache_metas().len(), 0);
+    }
+
+    /// Test get client can return an available client.
+    #[tokio::test]
+    async fn test_get_client() {
+        // Start a mocked rpc server
+        let ip = "127.0.0.1";
+        let port = 2889;
+        let addr = format!("{}:{}", ip, port);
+        let cache_manager = Arc::new(KVBlockManager::default());
+        let index_manager = Arc::new(IndexManager::new());
+        let pool = Arc::new(WorkerPool::new(5, 5));
+        let handler = KVCacheHandler::new(Arc::clone(&pool), cache_manager, index_manager);
+        let mut server = RpcServer::new(&ServerTimeoutOptions::default(), 5, 5, handler);
+        server.listen(&addr).await.unwrap();
+
+        let etcd_endpoint = "localhost:2379";
+        let client = EtcdKVEngine::new(vec![etcd_endpoint.to_owned()])
+            .await
+            .unwrap();
+        let client = Arc::new(client);
+        let node = Node::default();
+        let distribute_kvcache_client_inner =
+            DistributeKVCacheClientInner::new(Arc::new(ClusterManager::new(client, node)), 64);
+
+        let res = distribute_kvcache_client_inner.get_client(addr).await;
+        assert!(res.is_ok());
     }
 }

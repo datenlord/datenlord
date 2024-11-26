@@ -114,8 +114,6 @@ mod tests {
         server.listen(&addr).await.unwrap();
 
         tokio::time::sleep(tokio::time::Duration::from_secs(1000)).await;
-        // tokio::spawn(async move {
-        // });
 
         // Setup the kv cache client
         let block_size = 64;

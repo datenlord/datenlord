@@ -1082,6 +1082,8 @@ mod tests {
         )
     }
 
+    /// Try to request for a kv cache id from master node
+    /// The first request should be 0, and the second request should be 1
     #[tokio::test]
     async fn test_kv_cache_id_alloc_handler() {
         let (cache_manager, index_manager) = setup();
@@ -1137,6 +1139,10 @@ mod tests {
         println!("resp_body: {:?}", resp_body);
     }
 
+    /// Try to test current kv cache index data
+    /// First, insert a kv cache index data, then match it with actual key and partial key,
+    /// check if the match is success or not.
+    /// Second, remove the kv cache index data, and try to match it again, the match should be failed.
     #[tokio::test]
     async fn test_kv_cache_index_handler() {
         let (cache_manager, index_manager) = setup();
@@ -1204,7 +1210,35 @@ mod tests {
 
         println!("resp_body: {:?}", resp_body);
 
-        // Test match index request failed
+        // Test partial match index request success, original key is "test_key111",
+        // and we will return the longest key match with "test_key".
+        let (done_tx, mut done_rx) = tokio::sync::mpsc::channel(1);
+        let req_header = packet::ReqHeader {
+            seq: 1,
+            op: message::ReqType::KVCacheIndexMatchRequest.to_u8(),
+            len: 0,
+        };
+        let mut req_buffer = BytesMut::new();
+        let request = message::KVCacheIndexMatchRequest {
+            block_size: BLOCK_SIZE as u64,
+            kv_cache_key: "test_key111".as_bytes().to_vec(),
+        };
+        request.encode(&mut req_buffer);
+        handler.dispatch(req_header, &req_buffer, done_tx).await;
+        let resp_buffer = done_rx.recv().await.unwrap();
+        let resp_header = packet::RespHeader::decode(&resp_buffer).unwrap();
+        assert_eq!(
+            resp_header.op,
+            message::RespType::KVCacheIndexMatchResponse.to_u8()
+        );
+        let resp_body_buffer = resp_buffer.split_at(packet::RESP_HEADER_SIZE as usize).1;
+        let resp_body = message::KVCacheIndexMatchResponse::decode(&resp_body_buffer).unwrap();
+        assert_eq!(resp_body.status, message::StatusCode::Success);
+        assert_eq!(resp_body.kv_cache_id, 0);
+
+        println!("resp_body: {:?}", resp_body);
+
+        // Test match index request failed, the key is not exist
         let (done_tx, mut done_rx) = tokio::sync::mpsc::channel(1);
         let req_header = packet::ReqHeader {
             seq: 1,
@@ -1281,8 +1315,36 @@ mod tests {
         assert_eq!(resp_body.kv_cache_id, 0);
 
         println!("resp_body: {:?}", resp_body);
+
+        // Test partial match index request failed, because original key "test_key" is removed
+        let (done_tx, mut done_rx) = tokio::sync::mpsc::channel(1);
+        let req_header = packet::ReqHeader {
+            seq: 1,
+            op: message::ReqType::KVCacheIndexMatchRequest.to_u8(),
+            len: 0,
+        };
+        let mut req_buffer = BytesMut::new();
+        let request = message::KVCacheIndexMatchRequest {
+            block_size: BLOCK_SIZE as u64,
+            kv_cache_key: "test_key".as_bytes().to_vec(),
+        };
+        request.encode(&mut req_buffer);
+        handler.dispatch(req_header, &req_buffer, done_tx).await;
+        let resp_buffer = done_rx.recv().await.unwrap();
+        let resp_header = packet::RespHeader::decode(&resp_buffer).unwrap();
+        assert_eq!(
+            resp_header.op,
+            message::RespType::KVCacheIndexMatchResponse.to_u8()
+        );
+        let resp_body_buffer = resp_buffer.split_at(packet::RESP_HEADER_SIZE as usize).1;
+        let resp_body = message::KVCacheIndexMatchResponse::decode(&resp_body_buffer).unwrap();
+        assert_eq!(resp_body.status, message::StatusCode::NotFound);
+        assert_eq!(resp_body.kv_cache_id, 0);
+
+        println!("resp_body: {:?}", resp_body);
     }
 
+    /// Try to put and get block data
     #[tokio::test]
     async fn test_kv_block_handler() {
         let (cache_manager, index_manager) = setup();

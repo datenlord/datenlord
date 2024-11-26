@@ -1,23 +1,60 @@
 use std::{str::FromStr, sync::Arc};
 
 use clap::Parser;
-use datenlord::{common::{error::{DatenLordError, DatenLordResult}, logger::{init_logger, LogRole}, task_manager::{self, TaskName, TASK_MANAGER}}, distribute_kv_cache::{cluster::{cluster_manager::ClusterManager, node::{Node, NodeStatus}}, local_cache::manager::{IndexManager, KVBlockManager}, manager::KVCacheHandler, rpc::{common::ServerTimeoutOptions, server::RpcServer, workerpool::WorkerPool}}, fs::kv_engine::{etcd_impl::EtcdKVEngine, KVEngine}, metrics};
+use datenlord::{
+    common::{
+        error::{DatenLordError, DatenLordResult},
+        logger::{init_logger, LogRole},
+        task_manager::{self, TaskName, TASK_MANAGER},
+    },
+    distribute_kv_cache::{
+        cluster::{
+            cluster_manager::ClusterManager,
+            node::{Node, NodeStatus},
+        },
+        local_cache::manager::{IndexManager, KVBlockManager},
+        manager::KVCacheHandler,
+        rpc::{common::ServerTimeoutOptions, server::RpcServer, workerpool::WorkerPool},
+    },
+    fs::kv_engine::{etcd_impl::EtcdKVEngine, KVEngine},
+    metrics,
+};
 use tracing::{error, info, level_filters::LevelFilter};
 
 #[derive(Debug, Parser)]
 #[clap(author,version,about,long_about=None)]
 pub struct KVCacheServerConfig {
     /// Log level
-    #[clap(short = 'l', long = "log-level", value_name = "LEVEL", default_value = "info")]
+    #[clap(
+        short = 'l',
+        long = "log-level",
+        value_name = "LEVEL",
+        default_value = "info"
+    )]
     log_level: String,
     /// IP
-    #[clap(short = 'i', long = "ip", value_name = "IP", default_value = "127.0.0.1")]
+    #[clap(
+        short = 'i',
+        long = "ip",
+        value_name = "IP",
+        default_value = "127.0.0.1"
+    )]
     ip: String,
     /// Port
-    #[clap(short = 'p', long = "port", value_name = "PORT", default_value = "2789")]
+    #[clap(
+        short = 'p',
+        long = "port",
+        value_name = "PORT",
+        default_value = "2789"
+    )]
     port: u16,
     /// ETCD endpoint
-    #[clap(short = 'e', long = "etcd-endpoint", value_name = "ENDPOINT", default_value = "localhost:2379")]
+    #[clap(
+        short = 'e',
+        long = "etcd-endpoint",
+        value_name = "ENDPOINT",
+        default_value = "localhost:2379"
+    )]
     etcd_endpoint: String,
 }
 
@@ -26,10 +63,8 @@ async fn main() -> DatenLordResult<()> {
     TASK_MANAGER
         .spawn(TaskName::Metrics, metrics::start_metrics_server)
         .await
-        .map_err(|e| {
-            DatenLordError::DistributeCacheManagerErr {
-                context: vec![format!("Failed to start metrics server: {:?}", e)],
-            }
+        .map_err(|e| DatenLordError::DistributeCacheManagerErr {
+            context: vec![format!("Failed to start metrics server: {:?}", e)],
         })?;
 
     let config = KVCacheServerConfig::parse();
@@ -50,8 +85,8 @@ async fn main() -> DatenLordResult<()> {
 
     let etcd_endpoint = config.etcd_endpoint;
     let client = EtcdKVEngine::new(vec![etcd_endpoint.to_owned()])
-    .await
-    .unwrap();
+        .await
+        .unwrap();
     let client = Arc::new(client);
     info!("Connected to etcd server at {}", etcd_endpoint);
     println!("Connected to etcd server at {}", etcd_endpoint);
@@ -66,10 +101,8 @@ async fn main() -> DatenLordResult<()> {
             }
         })
         .await
-        .map_err(|e| {
-            DatenLordError::DistributeCacheManagerErr {
-                context: vec![format!("Failed to start cluster manager: {:?}", e)],
-            }
+        .map_err(|e| DatenLordError::DistributeCacheManagerErr {
+            context: vec![format!("Failed to start cluster manager: {:?}", e)],
         })?;
 
     let cache_manager = Arc::new(KVBlockManager::default());
@@ -82,10 +115,10 @@ async fn main() -> DatenLordResult<()> {
         Ok(()) => {
             info!("KV cache server started successfully");
             println!("KV cache server started successfully");
-        },
+        }
         Err(err) => {
             panic!("Failed to start kv cache server: {:?}", err);
-        },
+        }
     }
 
     task_manager::wait_for_shutdown(&TASK_MANAGER)?.await;
