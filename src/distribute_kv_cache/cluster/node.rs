@@ -42,6 +42,12 @@ impl MasterNodeInfo {
         self.port
     }
 
+    /// Get the endpoint of the master node
+    #[must_use]
+    pub fn endpoint(&self) -> String {
+        format!("{}:{}", self.ip, self.port)
+    }
+
     /// Get the version of the hash ring
     #[must_use]
     pub fn version(&self) -> u64 {
@@ -117,6 +123,12 @@ impl Node {
     #[must_use]
     pub fn port(&self) -> u16 {
         self.port
+    }
+
+    /// Get the endpoint of the node
+    #[must_use]
+    pub fn endpoint(&self) -> String {
+        format!("{}:{}", self.ip, self.port)
     }
 
     /// Get the weight of the node

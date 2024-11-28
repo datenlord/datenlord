@@ -98,7 +98,7 @@ impl ClusterManager {
             // 1. Init cluster manager
             debug!(
                 "Cluster manager start to run in node: {:?}",
-                self.inner.get_current_node().ip()
+                self.inner.get_current_node().endpoint()
             );
             let mut current_node_info = self.inner.get_current_node();
             // Next step is to register the node
@@ -110,7 +110,7 @@ impl ClusterManager {
             // 2. Register node to etcd
             debug!(
                 "Current node {:?} status: {:?}",
-                current_node_info.ip(),
+                current_node_info.endpoint(),
                 current_node_info.status()
             );
             while self.inner.register().await.is_err() {
@@ -127,14 +127,14 @@ impl ClusterManager {
             let mut current_node_info = self.inner.get_current_node();
             debug!(
                 "Current node {:?} status: {:?}",
-                current_node_info.ip(),
+                current_node_info.endpoint(),
                 current_node_info.status()
             );
             // 3. Do campaign
             let (campaign_status, campaign_val) = self.inner.do_campaign().await?;
             debug!(
                 "Node: {:?} Campaign status: {:?} val: {:?}",
-                current_node_info.ip(),
+                current_node_info.endpoint(),
                 campaign_status,
                 campaign_val
             );
@@ -153,7 +153,7 @@ impl ClusterManager {
                     Ok(()) => {
                         debug!(
                             "Current node {:?} status: {:?} will change to campaign",
-                            current_node_info.ip(),
+                            current_node_info.endpoint(),
                             current_node_info.status()
                         );
                     }
@@ -166,7 +166,7 @@ impl ClusterManager {
                     Ok(()) => {
                         debug!(
                             "Current node {:?} status: {:?} will change to campaign",
-                            current_node_info.ip(),
+                            current_node_info.endpoint(),
                             current_node_info.status()
                         );
                     }
@@ -191,7 +191,7 @@ impl ClusterManager {
         let current_node_info = self.inner.get_current_node();
         debug!(
             "do_master_tasks: {:?} will watch the node list update, and update the ring",
-            current_node_info.ip()
+            current_node_info.endpoint()
         );
 
         // Keep alive master key
@@ -200,7 +200,7 @@ impl ClusterManager {
             // If the node status is not master, clean up master tasks and return
             warn!(
                 "Current node {:?} status is not master, return to endpoint",
-                current_node_info.ip()
+                current_node_info.endpoint()
             );
 
             return Ok(());
@@ -224,7 +224,7 @@ impl ClusterManager {
         self.inner.watch_nodes().await.with_context(|| {
             format!(
                 "Current node {:?} Failed to watch the node list update, and update the ring",
-                current_node_info.ip()
+                current_node_info.endpoint()
             )
         })?;
 
@@ -241,7 +241,7 @@ impl ClusterManager {
         let current_node_info = self.inner.get_current_node();
         debug!(
             "do_slave_tasks: Node {:?} will watch the ring update and campaign master",
-            current_node_info.ip()
+            current_node_info.endpoint()
         );
         // Check the node status
         if current_node_info.status() != NodeStatus::Slave {
@@ -299,7 +299,7 @@ impl ClusterManagerInner {
             .kv_engine
             .create_session(SESSION_TIMEOUT_SEC)
             .await
-            .with_context(|| format!("{} failed to create session", self.node.load().ip()))?;
+            .with_context(|| format!("{} failed to create session", self.node.load().endpoint()))?;
         self.node_session.store(Some(session));
         Ok(())
     }
@@ -307,16 +307,16 @@ impl ClusterManagerInner {
     /// Update node info
     pub async fn update_node_in_cluster(&self) -> DatenLordResult<()> {
         let node = self.node.load();
-        let key = &KeyType::CacheNode(node.ip().to_owned());
+        let key = &KeyType::CacheNode(node.endpoint().to_owned());
         let node_session = self.node_session.load();
         let Some(current_session) = node_session.as_ref().cloned() else {
             let current_node = self.node.load();
             warn!(
                 "Current {} session is invalid, return to endpoint",
-                current_node.ip()
+                current_node.endpoint()
             );
             return Err(DatenLordError::CacheClusterErr {
-                context: vec![format!("Current {} session is invalid", current_node.ip())],
+                context: vec![format!("Current {} session is invalid", current_node.endpoint())],
             });
         };
 
@@ -339,23 +339,23 @@ impl ClusterManagerInner {
     pub async fn register(&self) -> DatenLordResult<()> {
         // Get current node info
         let current_node_info = self.node.load();
-        debug!("register: {} to etcd", current_node_info.ip());
+        debug!("register: {} to etcd", current_node_info.endpoint());
         let node_session = self.node_session.load();
         let Some(current_session) = node_session.as_ref().cloned() else {
             let current_node = self.node.load();
             warn!(
                 "Current {} session is invalid, return to endpoint",
-                current_node.ip()
+                current_node.endpoint()
             );
             return Err(DatenLordError::CacheClusterErr {
-                context: vec![format!("Current {} session is invalid", current_node.ip())],
+                context: vec![format!("Current {} session is invalid", current_node.endpoint())],
             });
         };
 
         // Try to register current node to etcd
         self.kv_engine
             .set(
-                &KeyType::CacheNode(current_node_info.ip().to_owned()),
+                &KeyType::CacheNode(current_node_info.endpoint().to_owned()),
                 &ValueType::Json(serde_json::to_value(current_node_info.as_ref().clone())?),
                 Some(SetOption {
                     // Set lease
@@ -366,7 +366,7 @@ impl ClusterManagerInner {
             .await
             .with_context(|| "Failed to register node to etcd".to_owned())?;
 
-        debug!("register: {} to etcd success", current_node_info.ip());
+        debug!("register: {} to etcd success", current_node_info.endpoint());
 
         Ok(())
     }
@@ -384,10 +384,10 @@ impl ClusterManagerInner {
                 let current_node = self.node.load();
                 warn!(
                     "Current {} session is invalid, return to endpoint",
-                    current_node.ip()
+                    current_node.endpoint()
                 );
                 return Err(DatenLordError::CacheClusterErr {
-                    context: vec![format!("Current {} session is invalid", current_node.ip())],
+                    context: vec![format!("Current {} session is invalid", current_node.endpoint())],
                 });
             }
             session
@@ -395,10 +395,10 @@ impl ClusterManagerInner {
             let current_node = self.node.load();
             warn!(
                 "Current {} session is invalid, return to endpoint",
-                current_node.ip()
+                current_node.endpoint()
             );
             return Err(DatenLordError::CacheClusterErr {
-                context: vec![format!("Current {} session is invalid", current_node.ip())],
+                context: vec![format!("Current {} session is invalid", current_node.endpoint())],
             });
         };
 
@@ -444,7 +444,7 @@ impl ClusterManagerInner {
     pub async fn watch_nodes(&self) -> DatenLordResult<()> {
         debug!(
             "Node: {:?} watch_nodes: will watch the node list update",
-            self.get_current_node().ip()
+            self.get_current_node().endpoint()
         );
         // Write ticker task
         let mut interval = tokio::time::interval(Duration::from_secs(SESSION_TIMEOUT_SEC));
@@ -463,10 +463,10 @@ impl ClusterManagerInner {
                 let current_node = self.node.load();
                 warn!(
                     "Current {} session is invalid, return to endpoint",
-                    current_node.ip()
+                    current_node.endpoint()
                 );
                 return Err(DatenLordError::CacheClusterErr {
-                    context: vec![format!("Current {} session is invalid", current_node.ip())],
+                    context: vec![format!("Current {} session is invalid", current_node.endpoint())],
                 });
             };
 
@@ -540,10 +540,10 @@ impl ClusterManagerInner {
                 let current_node = self.node.load();
                 warn!(
                     "Current {} session is invalid, return to endpoint",
-                    current_node.ip()
+                    current_node.endpoint()
                 );
                 return Err(DatenLordError::CacheClusterErr {
-                    context: vec![format!("Current {} session is invalid", current_node.ip())],
+                    context: vec![format!("Current {} session is invalid", current_node.endpoint())],
                 });
             }
 
@@ -568,10 +568,10 @@ impl ClusterManagerInner {
             let current_node = self.node.load();
             warn!(
                 "Current {} session is invalid, return to endpoint",
-                current_node.ip()
+                current_node.endpoint()
             );
             return Err(DatenLordError::CacheClusterErr {
-                context: vec![format!("Current {} session is invalid", current_node.ip())],
+                context: vec![format!("Current {} session is invalid", current_node.endpoint())],
             });
         }
 
@@ -672,7 +672,7 @@ impl ClusterManagerInner {
     pub async fn watch_master(&self) -> DatenLordResult<()> {
         debug!(
             "Node: {:?} watch_master: will watch the master node and try to update master hashring",
-            self.get_current_node().ip()
+            self.get_current_node().endpoint()
         );
 
         // Watch with prefix
@@ -800,9 +800,7 @@ impl ClusterManagerInner {
         };
         // Create master instance
         let current_node_info = self.node.load();
-        if latest_master_node.ip() != current_node_info.ip()
-            || latest_master_node.port() != current_node_info.port()
-        {
+        if latest_master_node.endpoint() != current_node_info.endpoint() {
             warn!("Current node is not the master node, return to endpoint");
             return Err(DatenLordError::CacheClusterErr {
                 context: vec![format!("Current node is not the master node")],
