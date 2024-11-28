@@ -21,7 +21,7 @@ async def test_read():
     # Test Case: Read Operation
     # Read a key "k" that doesn't exist
     matched_key, data = await sdk.try_load("k")
-    assert matched_key is None, f"Expected no match for key 'k', but got {matched_key}"
+    assert matched_key is "", f"Expected no match for key 'k', but got {matched_key}"
 
     # Read exact match for "k1"
     matched_key, data = await sdk.try_load("k1")
@@ -45,7 +45,7 @@ async def test_read():
 
     # Read a key "k4" that doesn't exist
     matched_key, data = await sdk.try_load("k4")
-    assert matched_key is None, f"Expected no match for key 'k4', but got {matched_key}"
+    assert matched_key is "", f"Expected no match for key 'k4', but got {matched_key}"
 
     print("Read operation test passed")
 
