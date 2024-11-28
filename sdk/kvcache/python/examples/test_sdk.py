@@ -12,14 +12,14 @@ async def main():
 
     # Create a bytes object
     kvcache = bytes(768)
-    # await sdk.insert("key2", kvcache)
-    await sdk.insert("key111", kvcache)
-    # await sdk.insert("key4", kvcache)
-    # await sdk.insert("key2", kvcache)
-    res = await sdk.try_load("key111")
-    print(res)
-    # res = await sdk.try_load("key2")
-    print(res)
+    for i in range(99999999):
+        key = f"key{i}"
+        await sdk.insert(key, kvcache)
+        matched_key, data = await sdk.try_load(key)
+
+        # Make sure the key is matched, not partial matched
+        assert matched_key == key
+        print(f"res: {matched_key}, datasize: {len(data)}")
 
 if __name__  == "__main__":
     asyncio.run(main())

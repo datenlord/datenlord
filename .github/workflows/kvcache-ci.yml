@@ -1,0 +1,70 @@
+name: KVCache CI
+on:
+  pull_request: [kvcache]
+
+env:
+  KVCACHE_SERVER: target/release/kvcache
+  RUST_LOG: debug
+  CI_RUST_TOOLCHAIN: 1.74.0
+  ETCD_CONTAINER_NAME: etcd
+
+jobs:
+  kvcache-e2e:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Prepare Rust environment
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: ${{ env.CI_RUST_TOOLCHAIN }}
+          override: true
+
+      - name: Install maturin
+        run: |
+          pip install maturin>=1.0,<2.0
+
+      - name: Build Python package
+        working-directory: sdk/kvcache/python
+        run: |
+          maturin develop --release
+
+      - name: Build KVCache
+        run: |
+          cargo run --bin kvcache --release
+
+      - name: Run etcd service
+        run: |
+          ./scripts/setup/setup_etcd.sh
+
+      - name: Run KVCache Master
+        run: |
+          nohup $KVCACHE_SERVER -p 2789 &
+
+      - name: Run KVCache Worker 1
+        run: |
+          nohup $KVCACHE_SERVER -p 2790 &
+
+      - name: Run KVCache Worker 2
+        run: |
+          nohup $KVCACHE_SERVER -p 2791 &
+
+      - name: Check Ports are listening
+        run: |
+        # Check 2379 & 2789 & 2790 & 2791 are listening
+        netstat -tuln | grep 2379
+        netstat -tuln | grep 2789
+        netstat -tuln | grep 2790
+        netstat -tuln | grep 2791
+
+      - name: Run example
+        run: |
+          python sdk/kvcache/python/examples/test_sdk.py

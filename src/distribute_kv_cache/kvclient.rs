@@ -104,7 +104,7 @@ impl LocalBlockCache {
     }
 
     /// Insert a kv cache to the local block cache
-    pub fn insert(&mut self, kv_cache_meta: KVCacheMeta, data: Vec<u8>) -> DatenLordResult<()> {
+    pub fn insert(&mut self, kv_cache_meta: KVCacheMeta, data: &[u8]) -> DatenLordResult<()> {
         // Check current block id is equal to the kv cache block id
         if self.block_cache.block_id == UNUSED_KV_BLOCK_ID {
             return Err(DatenLordError::DistributeCacheManagerErr {
@@ -124,7 +124,7 @@ impl LocalBlockCache {
         }
 
         // 1. Insert the kv cache data to the block cache
-        self.block_cache.data.extend_from_slice(&data);
+        self.block_cache.data.extend_from_slice(data);
 
         // 2. Insert the kv cache meta to the block metas tree
         self.block_metas_tree
@@ -206,7 +206,7 @@ impl LocalBlockCache {
 /// The distribute cache client
 #[derive(Debug, Clone)]
 pub struct DistributeKVCacheClient {
-    /// The distirbute cache inner
+    /// The distribute cache inner
     inner: DistributeKVCacheClientInner,
     /// Single block cache, used to collect the block data from the infer side.
     block_cache: Arc<Mutex<LocalBlockCache>>,
@@ -299,9 +299,8 @@ impl DistributeKVCacheClient {
 
         // Empty address from the distribute cache
         if node_address.len() == 0 {
-            return Err(DatenLordError::DistributeCacheManagerErr {
-                context: vec![format!("Failed to get block, node address is empty")],
-            });
+            error!("Failed to get block, node address is empty");
+            return Ok((String::new(), Vec::new()));
         }
 
         // 3. Get the block from the distribute cache
@@ -316,27 +315,39 @@ impl DistributeKVCacheClient {
                 // Inform master to delete this key
                 self.inner.remove_index(prefix).await?;
 
-                return Err(DatenLordError::DistributeCacheManagerErr {
-                    context: vec![format!(
-                        "Failed to get block: {:?} node_address: {:?} kv_block_meta: {:?}",
-                        err, node_address, kv_block_meta
-                    )],
-                });
+                error!(
+                    "Failed to get block: {:?} node_address: {:?} kv_block_meta: {:?}",
+                    err, node_address, kv_block_meta
+                );
+                return Ok((String::new(), Vec::new()));
             }
         };
 
         // 4. Copy the block data to the data with kv cache meta offset and size
         let offset = kv_block_meta.offset as usize;
         let size = kv_block_meta.size as usize;
+        debug!(
+            "Get block from remote cache: {:?} offset: {:?} size: {:?}",
+            kv_block_meta, offset, size
+        );
         // TODO: Check range or update with bytesmut
-        let mut data = Vec::with_capacity(size);
-        data.extend_from_slice(&block_data[offset..offset + size]);
+        // let mut data = Vec::with_capacity(size);
+        // data.extend_from_slice(&block_data[offset..offset + size]);
 
-        Ok((kv_block_meta.prefix, data))
+        Ok((kv_block_meta.prefix, block_data[offset..offset + size].to_vec()))
     }
 
     /// Insert a block to the distribute cache
     pub async fn insert(&self, prefix: String, data: Vec<u8>) -> DatenLordResult<()> {
+        // Check current size is valid
+        if data.len().cast::<u64>() > self.inner.block_size {
+            return Err(DatenLordError::DistributeCacheManagerErr {
+                context: vec![format!(
+                    "Failed to insert kv cache to the block cache, data size is too large"
+                )],
+            });
+        }
+
         // 1. fill current block cache
         let mut block_cache = self.block_cache.lock().await;
         let mut current_block_id = block_cache.get_block_id();
@@ -356,11 +367,11 @@ impl DistributeKVCacheClient {
         let kv_cache_meta = KVCacheMeta {
             block_id: current_block_id,
             offset: next_offset,
-            size: data.len() as u64,
-            prefix: prefix,
+            size: data.len().cast(),
+            prefix: prefix.clone(),
         };
 
-        match block_cache.insert(kv_cache_meta, data) {
+        match block_cache.insert(kv_cache_meta, &data) {
             Ok(()) => {
                 debug!(
                     "Insert kv cache to the block cache with block id: {:?} successfully",
@@ -389,6 +400,16 @@ impl DistributeKVCacheClient {
                 // If ok, clear the block cache
                 let current_block_id = self.inner.alloc_block_id().await?;
                 block_cache.clear(current_block_id);
+
+                // Try to insert the kv cache meta again
+                let next_offset = block_cache.get_next_offset();
+                let kv_cache_meta = KVCacheMeta {
+                    block_id: current_block_id,
+                    offset: next_offset,
+                    size: data.len().cast(),
+                    prefix: prefix.clone(),
+                };
+                block_cache.insert(kv_cache_meta, &data)?;
             }
         }
 
@@ -906,7 +927,7 @@ mod tests {
             size: data.len() as u64,
             prefix: "test1".to_string(),
         };
-        let insert_result = local_block_cache.insert(kv_cache_meta, data).is_ok();
+        let insert_result = local_block_cache.insert(kv_cache_meta, &data).is_ok();
         assert!(insert_result);
 
         let data = vec![2u8; 30];
@@ -917,7 +938,7 @@ mod tests {
             size: data.len() as u64,
             prefix: "test2".to_string(),
         };
-        let insert_result = local_block_cache.insert(kv_cache_meta, data).is_ok();
+        let insert_result = local_block_cache.insert(kv_cache_meta, &data).is_ok();
         assert!(insert_result);
 
         // Current local block cache is full
@@ -929,7 +950,7 @@ mod tests {
             size: data.len() as u64,
             prefix: "test3".to_string(),
         };
-        let insert_result = local_block_cache.insert(kv_cache_meta, data).is_ok();
+        let insert_result = local_block_cache.insert(kv_cache_meta, &data).is_ok();
         assert!(!insert_result);
 
         let current_kv_block = local_block_cache.get_kv_block();

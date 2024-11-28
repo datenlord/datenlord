@@ -60,12 +60,12 @@ pub struct KVCacheServerConfig {
 
 #[tokio::main]
 async fn main() -> DatenLordResult<()> {
-    TASK_MANAGER
-        .spawn(TaskName::Metrics, metrics::start_metrics_server)
-        .await
-        .map_err(|e| DatenLordError::DistributeCacheManagerErr {
-            context: vec![format!("Failed to start metrics server: {:?}", e)],
-        })?;
+    // TASK_MANAGER
+    //     .spawn(TaskName::Metrics, metrics::start_metrics_server)
+    //     .await
+    //     .map_err(|e| DatenLordError::DistributeCacheManagerErr {
+    //         context: vec![format!("Failed to start metrics server: {:?}", e)],
+    //     })?;
 
     let config = KVCacheServerConfig::parse();
     init_logger(

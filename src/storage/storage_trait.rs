@@ -109,7 +109,7 @@ pub trait Storage {
                     Ok(None) => Ok(None),
                     Err(e) => {
                         match e {
-                            // This funtion is not implemented, we will use the default load function.
+                            // This function is not implemented, we will use the default load function.
                             StorageError::Unimplemented => {
                                 let res = self.load_from_backend(ino, block_id).await?;
                                 if let Some(block) = res {
@@ -128,7 +128,7 @@ pub trait Storage {
             Err(e) => {
                 error!("Error in load_with_version: {:?}", e);
                 match e {
-                    // This funtion is not implemented, we will use the default load function.
+                    // This function is not implemented, we will use the default load function.
                     StorageError::Unimplemented => {
                         if let Some(block_in_cache) = self.load_from_self(ino, block_id).await? {
                             Ok(Some(block_in_cache))
@@ -145,7 +145,7 @@ pub trait Storage {
                                 Ok(None) => Ok(None),
                                 Err(e) => {
                                     match e {
-                                        // This funtion is not implemented, we will use the default load function.
+                                        // This function is not implemented, we will use the default load function.
                                         StorageError::Unimplemented => {
                                             let res = self.load_from_backend(ino, block_id).await?;
                                             if let Some(block) = res {
