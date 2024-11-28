@@ -12,8 +12,8 @@ async def main():
 
     # Create a bytes object
     kvcache = bytes(768)
-    for i in range(99999999):
-        key = f"key{i}"
+    for i in range(100):
+        key = f"sdk{i}"
         await sdk.insert(key, kvcache)
         matched_key, data = await sdk.try_load(key)
 
