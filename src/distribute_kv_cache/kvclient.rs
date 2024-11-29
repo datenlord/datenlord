@@ -271,10 +271,10 @@ impl DistributeKVCacheClient {
         };
 
         let remote_prefix_len = kv_block_meta.prefix.len().cast::<u64>();
-        println!(
-            "Matched remote kv block meta: {:?} node_address: {:?}",
-            kv_block_meta, node_address
-        );
+        // println!(
+        //     "Matched remote kv block meta: {:?} node_address: {:?}",
+        //     kv_block_meta, node_address
+        // );
         info!(
             "Matched remote kv block meta: {:?} node_address: {:?}",
             kv_block_meta, node_address

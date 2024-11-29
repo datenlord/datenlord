@@ -17,7 +17,7 @@ use datenlord::{
         rpc::{common::ServerTimeoutOptions, server::RpcServer, workerpool::WorkerPool},
     },
     fs::kv_engine::{etcd_impl::EtcdKVEngine, KVEngine},
-    metrics,
+    // metrics,
 };
 use tracing::{error, info, level_filters::LevelFilter};
 
@@ -29,7 +29,7 @@ pub struct KVCacheServerConfig {
         short = 'l',
         long = "log-level",
         value_name = "LEVEL",
-        default_value = "info"
+        default_value = "error"
     )]
     log_level: String,
     /// IP

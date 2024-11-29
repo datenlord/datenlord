@@ -114,7 +114,7 @@ impl DatenLordSDK {
 
         future_into_py(py, async move {
             match datenlord_client.try_load(prefix).await {
-                Ok(value) => Ok(value),
+                Ok(value) => Ok(()),
                 Err(e) => Err(PyException::new_err(format!("try_load failed: {:?}", e))),
             }
         })

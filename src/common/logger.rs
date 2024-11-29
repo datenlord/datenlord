@@ -74,7 +74,7 @@ pub fn init_logger(role: LogRole, level: Level) {
         .with_target("datenlord::async_fuse::fuse", Level::ERROR)
         .with_target("datenlord::metrics", Level::INFO)
         .with_target("datenlordsdk", Level::DEBUG)
-        .with_target("datenlord::distribute_kv_cache", Level::DEBUG)
+        .with_target("datenlord::distribute_kv_cache", level)
         .with_target("datenlord::distribute_kv_cache::rpc", Level::ERROR)
         .with_target("", level);
 
