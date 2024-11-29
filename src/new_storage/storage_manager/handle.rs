@@ -51,8 +51,6 @@ pub struct FileHandleInner {
     cache: Arc<Mutex<MemoryCache<CacheKey, LruPolicy<CacheKey>>>>,
     /// The backend storage system.
     backend: Arc<dyn Backend>,
-    /// The access keys.
-    access_keys: Mutex<Vec<CacheKey>>,
     /// The sender to send tasks to the write back worker.
     write_back_sender: Sender<Task>,
     /// The sender to send close signal to the write back worker.
@@ -112,10 +110,6 @@ pub enum Task {
 /// The `WriteTask` struct represents a write task
 #[derive(Debug)]
 pub struct WriteTask {
-    /// The cache manager.
-    cache: Arc<Mutex<MemoryCache<CacheKey, LruPolicy<CacheKey>>>>,
-    /// The backend storage system.
-    backend: Arc<dyn Backend>,
     /// The block id.
     block_id: u64,
     /// The block to be written.
@@ -152,7 +146,6 @@ impl FileHandleInner {
                 attr,
                 dirty_filesize_and_version: None,
             })),
-            access_keys: Mutex::new(Vec::new()),
             write_back_sender,
             close_sender,
             deferred_deleted: AtomicBool::new(false),
@@ -311,8 +304,6 @@ impl FileHandleInner {
                 block.inc_version();
             }
             let task = Arc::new(WriteTask {
-                cache: Arc::clone(&self.cache),
-                backend: Arc::clone(&self.backend),
                 block_id,
                 block,
                 file_size: size,
@@ -421,7 +412,7 @@ impl FileHandleInner {
                 (content, version)
             };
 
-            task.backend.write(&path, &content, task.version).await?;
+            self.backend.write(&path, &content, task.version).await?;
             {
                 let mut block = task.block.write();
                 // Check version
@@ -436,7 +427,7 @@ impl FileHandleInner {
                 block.set_dirty(false);
             }
             {
-                task.cache.lock().unpin(&CacheKey {
+                self.cache.lock().unpin(&CacheKey {
                     ino: self.ino,
                     block_id: task.block_id,
                 });
