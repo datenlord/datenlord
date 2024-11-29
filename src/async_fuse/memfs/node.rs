@@ -39,12 +39,6 @@ pub trait Node: Sized {
     fn get_attr(&self) -> FileAttr;
     /// Set node attr
     fn set_attr(&mut self, new_attr: FileAttr) -> FileAttr;
-    /// Get node attr and increase lookup count
-    fn lookup_attr(&self) -> FileAttr;
-    /// Get node lookup count
-    fn get_lookup_count(&self) -> i64;
-    /// Decrease node lookup count
-    fn dec_lookup_count_by(&self, nlookup: u64) -> i64;
     /// Create symlink in a directory
     async fn create_child_symlink<T: MetaTxn + ?Sized>(
         &mut self,
@@ -86,10 +80,6 @@ pub trait Node: Sized {
     fn get_symlink_target(&self) -> &Path;
     /// Get fs stat
     async fn statefs(&self) -> DatenLordResult<StatFsParam>;
-    /// Mark as deferred deletion
-    fn mark_deferred_deletion(&self);
-    /// If node is marked as deferred deletion
-    fn is_deferred_deletion(&self) -> bool;
 
     /// Create child node
     async fn create_child_node<T: MetaTxn + ?Sized>(

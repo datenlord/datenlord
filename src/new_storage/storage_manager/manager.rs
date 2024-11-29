@@ -128,11 +128,7 @@ impl<M: MetaData + Send + Sync + 'static> Storage for StorageManager<M> {
     /// Closes a file specified by the file handle.
     #[inline]
     async fn close(&self, ino: u64) -> StorageResult<()> {
-        if let Some(_fh) = self.handles.close_handle(ino).await? {
-            Ok(())
-        } else {
-            Ok(())
-        }
+        self.handles.close_handle(ino).await
     }
 
     /// Truncates a file specified by the inode number to a new size, given the
@@ -188,8 +184,12 @@ impl<M: MetaData + Send + Sync + 'static> Storage for StorageManager<M> {
     }
 
     async fn remove(&self, ino: u64) -> StorageResult<()> {
-        self.backend.remove_all(&format_file_path(ino)).await?;
-
+        if let Some(filehandle) = self.get_handle(ino).await {
+            // Deferred delete for opening file
+            filehandle.mark_deleted();
+        } else {
+            self.backend.remove_all(&format_file_path(ino)).await?;
+        }
         Ok(())
     }
 }

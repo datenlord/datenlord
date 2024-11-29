@@ -145,6 +145,11 @@ fn test_deferred_deletion(mount_dir: &Path) -> anyhow::Result<()> {
     // SAFETY: The fd is just opened
     let fd = unsafe { OwnedFd::from_raw_fd(fd) };
     unistd::unlink(&file_path)?; // deferred deletion
+                                 // only visible to opening process, not visible by others
+    assert!(
+        !file_path.exists(),
+        "the file {file_path:?} should have been removed",
+    );
 
     let repeat_times = 3;
     for _ in 0..repeat_times {

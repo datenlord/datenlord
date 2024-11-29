@@ -320,21 +320,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
     /// a limited lifetime. On unmount it is not guaranteed, that all referenced
     /// inodes will receive a forget message.
     #[instrument(skip(self))]
-    async fn forget(&self, req: &Request<'_>, nlookup: u64) {
-        let _timer = FILESYSTEM_METRICS.start_storage_operation_timer("forget");
-        let ino = req.nodeid();
-        let deleted = self
-            .metadata
-            .forget(ino, nlookup)
-            .await
-            .unwrap_or_else(|e| panic!("{e}"));
-        if deleted {
-            self.storage
-                .remove(ino)
-                .await
-                .unwrap_or_else(|e| panic!("{e}"));
-        }
-    }
+    async fn forget(&self, req: &Request<'_>, _nlookup: u64) {}
 
     /// Set file attributes.
     async fn setattr(
@@ -457,18 +443,12 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
             gid: req.gid(),
         };
 
-        match self.metadata.unlink(context, parent, name).await {
-            Ok(result) => {
-                if let Some(ino) = result {
-                    match self.storage.remove(ino).await {
-                        Ok(()) => {}
-                        Err(e) => {
-                            return reply.error(e.into()).await;
-                        }
-                    }
-                }
-                reply.ok().await
-            }
+        match self
+            .metadata
+            .unlink(context, parent, name, &self.storage)
+            .await
+        {
+            Ok(()) => reply.ok().await,
             Err(e) => reply.error(e).await,
         }
     }
@@ -495,7 +475,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
 
         let rmdir_res = self
             .metadata
-            .unlink(context, parent, dir_name)
+            .unlink(context, parent, dir_name, &self.storage)
             .await
             .add_context(format!(
             "rmdir() failed to remove sub-directory name={dir_name:?} under parent ino={parent}",
@@ -503,7 +483,7 @@ impl<M: MetaData + Send + Sync + 'static> FileSystem for MemFs<M> {
         match rmdir_res {
             // We don't store dir information in the persistent storage, so we don't need to remove
             // it
-            Ok(_) => reply.ok().await,
+            Ok(()) => reply.ok().await,
             Err(e) => reply.error(e).await,
         }
     }

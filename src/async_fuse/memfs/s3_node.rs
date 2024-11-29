@@ -2,7 +2,6 @@
 
 use std::os::unix::io::RawFd;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::Arc;
 use std::time::SystemTime;
 
@@ -61,10 +60,6 @@ pub struct S3Node {
     attr: Arc<RwLock<FileAttr>>,
     /// S3Node data
     data: S3NodeData,
-    /// S3Node lookup counter
-    lookup_count: AtomicI64,
-    /// If S3Node has been marked as deferred deletion
-    deferred_deletion: AtomicBool,
     /// KVEngine
     kv_engine: Arc<KVEngineType>,
     /// K8s node id
@@ -87,9 +82,6 @@ impl S3Node {
             name: name.to_owned(),
             attr,
             data,
-            // lookup count set to 1 by creation
-            lookup_count: AtomicI64::new(1),
-            deferred_deletion: AtomicBool::new(false),
             kv_engine: Arc::clone(kv_engine),
             k8s_node_id: Arc::clone(k8s_node_id),
         }
@@ -99,9 +91,8 @@ impl S3Node {
     pub fn from_serial_node(serial_node: SerialNode, meta: &S3MetaData) -> S3Node {
         let dir_data = serial_node.data.into_s3_nodedata();
         debug!(
-            "ino={},lookup_count={},attr={:?}",
+            "ino={},attr={:?}",
             serial_node.attr.get_ino(),
-            serial_node.lookup_count,
             serial_node.attr
         );
         Self {
@@ -109,8 +100,6 @@ impl S3Node {
             name: serial_node.name,
             attr: Arc::new(RwLock::new(serial_to_file_attr(&serial_node.attr))),
             data: dir_data,
-            lookup_count: AtomicI64::new(serial_node.lookup_count),
-            deferred_deletion: AtomicBool::new(serial_node.deferred_deletion),
             kv_engine: Arc::clone(&meta.kv_engine),
             k8s_node_id: Arc::clone(&meta.node_id),
         }
@@ -123,8 +112,6 @@ impl S3Node {
             name: self.name.clone(),
             attr: file_attr_to_serial(&self.attr.read().clone()),
             data: self.data.serial(),
-            lookup_count: self.lookup_count.load(Ordering::SeqCst),
-            deferred_deletion: self.deferred_deletion.load(Ordering::SeqCst),
         }
     }
 
@@ -152,9 +139,6 @@ impl S3Node {
             name: child_name.to_owned(),
             attr: child_attr,
             data,
-            // lookup count set to 0 for sync
-            lookup_count: AtomicI64::new(0),
-            deferred_deletion: AtomicBool::new(false),
             kv_engine: Arc::clone(&parent.kv_engine),
             k8s_node_id: Arc::clone(&parent.k8s_node_id),
         }
@@ -167,11 +151,6 @@ impl S3Node {
         attr.mtime = st_now;
         attr.ctime = st_now;
         self.set_attr(attr);
-    }
-
-    /// Increase node lookup count
-    fn inc_lookup_count(&self) -> i64 {
-        self.lookup_count.fetch_add(1, Ordering::AcqRel)
     }
 
     /// Open root node
@@ -307,44 +286,6 @@ impl Node for S3Node {
 
         self.attr.write().clone_from(&new_attr);
         old_attr
-    }
-
-    /// Get node attribute and increase lookup count
-    fn lookup_attr(&self) -> FileAttr {
-        let attr = self.get_attr();
-        self.inc_lookup_count();
-        attr
-    }
-
-    /// Get node lookup count
-    fn get_lookup_count(&self) -> i64 {
-        self.lookup_count.load(Ordering::Acquire)
-    }
-
-    /// Decrease node lookup count
-    fn dec_lookup_count_by(&self, nlookup: u64) -> i64 {
-        #[cfg(debug)]
-        {
-            let current_cnt = self.lookup_count.load(Ordering::Acquire);
-            debug_assert!(
-                current_cnt >= nlookup.cast(),
-                "current_cnt={} is less than nlookup={}",
-                current_cnt,
-                nlookup
-            );
-        }
-        self.lookup_count
-            .fetch_sub(nlookup.cast(), Ordering::AcqRel)
-    }
-
-    /// Mark node as deferred deletion
-    fn mark_deferred_deletion(&self) {
-        self.deferred_deletion.store(true, Ordering::SeqCst);
-    }
-
-    /// If node is marked as deferred deletion
-    fn is_deferred_deletion(&self) -> bool {
-        self.deferred_deletion.load(Ordering::SeqCst)
     }
 
     /// Create symlink in a directory
