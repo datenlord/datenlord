@@ -95,10 +95,6 @@ pub struct SerialNode {
     pub(crate) attr: SerialFileAttr,
     /// Node data
     pub(crate) data: SerialNodeData,
-    /// S3Node lookup counter
-    pub(crate) lookup_count: i64,
-    /// If S3Node has been marked as deferred deletion
-    pub(crate) deferred_deletion: bool,
 }
 
 /// Convert `SFlag` to `SerialSFlag`

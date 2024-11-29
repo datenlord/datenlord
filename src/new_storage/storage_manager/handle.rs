@@ -3,7 +3,7 @@
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
-use std::sync::atomic::AtomicU32;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 
 use crate::new_storage::{format_path, Block, BlockSlice, StorageError};
@@ -17,6 +17,7 @@ use tracing::{debug, error, warn};
 use super::super::backend::Backend;
 use super::super::block_slice::offset_to_slice;
 use super::super::error::StorageResult;
+use super::super::format_file_path;
 use super::super::policy::LruPolicy;
 use super::super::{CacheKey, MemoryCache};
 use crate::async_fuse::memfs::{FileAttr, MetaData};
@@ -56,6 +57,8 @@ pub struct FileHandleInner {
     write_back_sender: Sender<Task>,
     /// The sender to send close signal to the write back worker.
     close_sender: Sender<()>,
+    /// Whether the file is deferred deleted
+    deferred_deleted: AtomicBool,
 }
 
 impl std::fmt::Debug for FileHandleInner {
@@ -152,6 +155,7 @@ impl FileHandleInner {
             access_keys: Mutex::new(Vec::new()),
             write_back_sender,
             close_sender,
+            deferred_deleted: AtomicBool::new(false),
         }
     }
 
@@ -320,8 +324,7 @@ impl FileHandleInner {
                 .unwrap_or_else(|_| {
                     panic!("Should not send command to write back task when the task quits.");
                 });
-            self.dirty_count
-                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.dirty_count.fetch_add(1, Ordering::SeqCst);
             self.set_dirty_filesize_and_version(size, version).await;
         }
 
@@ -360,14 +363,31 @@ impl FileHandleInner {
 
     /// Increase the open count of the file handle.
     pub fn open(&self) {
-        self.open_cnt
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.open_cnt.fetch_add(1, Ordering::SeqCst);
     }
 
     /// Get the open count of the file handle.
     #[must_use]
     pub fn get_open_count(&self) -> u32 {
-        self.open_cnt.load(std::sync::atomic::Ordering::SeqCst)
+        self.open_cnt.load(Ordering::Acquire)
+    }
+
+    /// Check current file handle is dirty or not.
+    ///
+    /// If the file handle is dirty, return true, otherwise return false.
+    pub fn is_dirty(&self) -> bool {
+        self.dirty_count.load(Ordering::Acquire) > 0
+    }
+
+    /// Mark deferred delete flag to postpone backend file removal on close
+    pub fn mark_deleted(&self) {
+        debug!("{self} mark_deleted");
+        self.deferred_deleted.store(true, Ordering::Release);
+    }
+
+    /// Whether the file is marked for deferred deletion
+    pub fn is_deferred_deleted(&self) -> bool {
+        self.deferred_deleted.load(Ordering::Acquire)
     }
 
     /// Closes the writer associated with the file handle.
@@ -375,20 +395,14 @@ impl FileHandleInner {
     /// Otherwise, it will return true and remove this handle.
     pub async fn try_close(&self) -> StorageResult<bool> {
         // Decrease the open count of the file handle, fetch sub will return the previous value.
-        if self
-            .open_cnt
-            .fetch_sub(1, std::sync::atomic::Ordering::SeqCst)
-            > 1
-        {
+        if self.open_cnt.fetch_sub(1, Ordering::SeqCst) > 1 {
             debug!("{self} still open by other processes.");
             return Ok(false);
         }
-
-        // Check dirty count to determine whether the file handle is clean.
-        self.flush().await?;
-        debug!("{self} is closed");
-        // close_recv will be closed because the the sender is dropped.
-
+        if self.is_dirty() {
+            // Check dirty count to determine whether the file handle is clean.
+            self.flush().await?;
+        }
         Ok(true)
     }
 
@@ -457,11 +471,14 @@ impl FileHandleInner {
                     result = Some(e);
                 }
                 Ok(Ok(file_size_and_version)) => {
-                    self.dirty_count
-                        .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+                    self.dirty_count.fetch_sub(1, Ordering::SeqCst);
                     done_file_size_and_version = Some(file_size_and_version);
                 }
             }
+        }
+        if self.is_deferred_deleted() {
+            // File is deleted from meta, do not write again
+            return result;
         }
 
         // Write back the file size to the meta data server.
@@ -633,17 +650,6 @@ impl FileHandle {
             offset_to_slice(self.block_size.cast(), offset, buf.len().cast());
         self.inner.write(buf, &slices, size, version).await
     }
-
-    /// Check current file handle is dirty or not.
-    ///
-    /// If the file handle is dirty, return true, otherwise return false.
-    pub fn is_dirty(&self) -> StorageResult<bool> {
-        Ok(self
-            .inner
-            .dirty_count
-            .load(std::sync::atomic::Ordering::SeqCst)
-            > 0)
-    }
 }
 
 /// Number of handle shards.
@@ -738,27 +744,34 @@ impl Handles {
     }
 
     /// Close and remove current filehandle.
-    pub async fn close_handle(&self, ino: u64) -> StorageResult<Option<FileHandle>> {
+    pub async fn close_handle(&self, ino: u64) -> StorageResult<()> {
         let shard = self.get_shard(ino);
         let mut shard_lock = shard.write().await;
         let filehandle = shard_lock.get(&ino).ok_or_else(|| {
             StorageError::Internal(anyhow::anyhow!("Cannot close a file that is not open."))
         })?;
 
-        let need_remove_flag = filehandle.try_close().await?;
-        if need_remove_flag {
+        let has_closed = filehandle.try_close().await?;
+        if has_closed {
             // Remove the file handle from the handles map
             match shard_lock.remove(&ino) {
                 Some(filehandle) => {
-                    return Ok(Some(filehandle));
+                    if filehandle.is_deferred_deleted() {
+                        debug!("{:?} is deferred deleted, remove backend file", filehandle);
+                        filehandle
+                            .backend
+                            .remove_all(&format_file_path(ino))
+                            .await?;
+                    }
+                    debug!("{:?} is closed, remove the file handle.", filehandle);
+                    // close_recv will be closed because the the sender is dropped.
                 }
                 None => {
                     panic!("Cannot close a file that is not open.");
                 }
             }
         }
-
-        Ok(None)
+        Ok(())
     }
 }
 

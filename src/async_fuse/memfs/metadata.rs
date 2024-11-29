@@ -95,7 +95,8 @@ pub trait MetaData {
         context: ReqContext,
         parent: INum,
         name: &str,
-    ) -> DatenLordResult<Option<INum>>;
+        storage: &StorageType,
+    ) -> DatenLordResult<()>;
 
     /// Get attribute of i-node by ino from remote
     async fn get_remote_attr(&self, ino: u64) -> DatenLordResult<(Duration, FileAttr)>;
@@ -108,12 +109,6 @@ pub trait MetaData {
         ino: u64,
         flags: u32,
     ) -> DatenLordResult<(u64, FileAttr)>;
-
-    /// Forget a i-node by ino
-    /// # Return
-    /// Return true if the file is removed
-    /// Return false if the file is not removed
-    async fn forget(&self, ino: u64, nlookup: u64) -> DatenLordResult<bool>;
 
     /// Helper function to release dir
     async fn releasedir(&self, ino: u64, fh: u64) -> DatenLordResult<()>;
