@@ -13,7 +13,7 @@ use nix::fcntl::OFlag;
 use nix::sys::stat::{Mode, SFlag};
 use nix::unistd;
 use parking_lot::RwLock;
-use tracing::info;
+use tracing::debug;
 
 use super::direntry::{DirEntry, FileType};
 use super::fs_util::{self, FileAttr};
@@ -98,7 +98,7 @@ impl S3Node {
     /// Deserialize `S3Node` from `SerialNode`
     pub fn from_serial_node(serial_node: SerialNode, meta: &S3MetaData) -> S3Node {
         let dir_data = serial_node.data.into_s3_nodedata();
-        info!(
+        debug!(
             "ino={},lookup_count={},attr={:?}",
             serial_node.attr.get_ino(),
             serial_node.lookup_count,

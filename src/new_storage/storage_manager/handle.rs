@@ -12,7 +12,7 @@ use clippy_utilities::Cast;
 use parking_lot::{Mutex, RwLock};
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::oneshot;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, warn};
 
 use super::super::backend::Backend;
 use super::super::block_slice::offset_to_slice;
@@ -62,11 +62,20 @@ impl std::fmt::Debug for FileHandleInner {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("FileHandleInner")
             .field("ino", &self.ino)
-            .field("block_size", &self.block_size)
-            .field("cache", &self.cache)
-            .field("backend", &self.backend)
-            .field("access_keys", &self.access_keys)
             .finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Display for FileHandleInner {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(self, f)
+    }
+}
+
+impl std::ops::Deref for FileHandle {
+    type Target = FileHandleInner;
+    fn deref(&self) -> &Self::Target {
+        &self.inner
     }
 }
 
@@ -150,7 +159,7 @@ impl FileHandleInner {
     #[inline]
     pub async fn getattr(&self) -> FileAttr {
         let attr = self.attr.read().await;
-        debug!("Get attr for ino: {} attr: {:?}", self.ino, *attr);
+        debug!("{self} Get attr: {:?}", *attr);
         let mut dirty_attr = attr.attr;
         if let Some((dirty_filesize, dirty_version)) = attr.dirty_filesize_and_version {
             dirty_attr.size = dirty_filesize;
@@ -163,7 +172,7 @@ impl FileHandleInner {
     /// Set the open file attributes.
     #[inline]
     pub async fn setattr(&self, attr: FileAttr) {
-        debug!("Set attr for ino: {} attr: {:?}", self.ino, attr);
+        debug!("{self} Set attr: {:?}", attr);
         let mut old_attr = self.attr.write().await;
 
         // If the size of the file is changed, set the dirty file size.
@@ -371,13 +380,13 @@ impl FileHandleInner {
             .fetch_sub(1, std::sync::atomic::Ordering::SeqCst)
             > 1
         {
-            debug!("The file handle is still open by other processes.");
+            debug!("{self} still open by other processes.");
             return Ok(false);
         }
 
         // Check dirty count to determine whether the file handle is clean.
         self.flush().await?;
-
+        debug!("{self} is closed");
         // close_recv will be closed because the the sender is dropped.
 
         Ok(true)
@@ -459,9 +468,8 @@ impl FileHandleInner {
         if let Some((file_size, file_version)) = done_file_size_and_version {
             // Commit current metadata to the meta data server.
             let ino = self.ino;
-            info!(
-                "Commit meta data for ino: {} with attr size: {:?} and version: {:?} current dirty_size_and_version: {:?}",
-                ino,
+            debug!(
+                "{self} Commit meta data  with attr size: {:?} and version: {:?} current dirty_size_and_version: {:?}",
                 file_size,
                 file_version,
                 self.attr.read().await.dirty_filesize_and_version
@@ -517,13 +525,12 @@ impl FileHandleInner {
         loop {
             tokio::select! {
                 Some(()) = close_receiver.recv() => {
-                    info!("The {:?} write back task is closed.", self.ino);
+                    debug!("{self} write back task is closed.");
                     return;
                 }
                 Some(task) = write_back_receiver.recv() => {
                     match task {
                         Task::Pending(task) => {
-                            info!("Get pending Write back the block. ino: {:?}", self.ino);
                             tasks.push(task);
                             if tasks.len() >= 10 {
                                 let slf_clone = Arc::clone(&self);
@@ -535,13 +542,12 @@ impl FileHandleInner {
                             }
                         }
                         Task::Flush(tx) => {
-                            info!("Flush the cache. ino: {:?}", self.ino);
                             let slf_clone = Arc::clone(&self);
                             let res = slf_clone.write_blocks(&tasks, Arc::clone(&metadata_client)).await;
                             tasks.clear();
                             let res = result.take().or(res);
                             if let Err(Some(e)) = tx.send(res) {
-                                error!("Failed to send storage error back to `Writer`, the error is {e}.");
+                                warn!("{self} failed to send storage error back to `Writer`, the error is {e}.");
                             }
                         }
                     }
@@ -566,7 +572,7 @@ impl FileHandleInner {
 #[derive(Debug, Clone)]
 pub struct FileHandle {
     /// The file handle(inode).
-    fh: u64,
+    ino: u64,
     /// The block size in bytes
     block_size: usize,
     /// The inner file handle
@@ -600,16 +606,10 @@ impl FileHandle {
         tokio::spawn(inner_clone.write_back_work(write_back_rx, close_rx, metadata_client));
 
         FileHandle {
-            fh: ino,
+            ino,
             block_size,
             inner,
         }
-    }
-
-    /// Returns the file handle.
-    #[must_use]
-    pub fn fh(&self) -> u64 {
-        self.fh
     }
 
     /// Reads data from the file starting at the given offset and up to the
@@ -634,18 +634,6 @@ impl FileHandle {
         self.inner.write(buf, &slices, size, version).await
     }
 
-    /// Extends the file from the old size to the new size.
-    pub async fn extend(&self, old_size: u64, new_size: u64, version: u64) -> StorageResult<()> {
-        self.inner.extend(old_size, new_size, version).await
-    }
-
-    /// Flushes any pending writes to the file.
-    ///
-    /// Flush and fsync do not need to check how many times a file handle has been opened.
-    pub async fn flush(&self) -> StorageResult<()> {
-        self.inner.flush().await
-    }
-
     /// Check current file handle is dirty or not.
     ///
     /// If the file handle is dirty, return true, otherwise return false.
@@ -655,48 +643,6 @@ impl FileHandle {
             .dirty_count
             .load(std::sync::atomic::Ordering::SeqCst)
             > 0)
-    }
-
-    /// Increase the open count of the file handle.
-    pub fn open(&self) {
-        debug!("try to get open filehandle lock ok {:?}", self.fh);
-        self.inner.open();
-    }
-
-    /// Get the open count of the file handle.
-    /// Be careful, do not split the `open_cnt` with open and close operation.
-    #[must_use]
-    pub fn get_open_count(&self) -> u32 {
-        debug!("try to get open cnt filehandle lock ok {:?}", self.fh);
-        self.inner.get_open_count()
-    }
-
-    /// Closes the file handle, closing both the reader and writer.
-    pub async fn try_close(&self) -> StorageResult<bool> {
-        debug!("try to close filehandle lock ok {:?}", self.fh);
-        info!("Close the file handle, ino: {}", self.fh);
-        match self.inner.try_close().await {
-            Ok(true) => {
-                debug!("filehandle {:?} drop close filehandle ok", self.fh);
-                Ok(true)
-            }
-            Ok(false) => {
-                debug!("filehandle {:?} drop filehandle lock ok", self.fh);
-                Ok(false)
-            }
-            Err(e) => Err(e),
-        }
-    }
-
-    /// Get the open file attributes.
-    #[must_use]
-    pub async fn getattr(&self) -> FileAttr {
-        self.inner.getattr().await
-    }
-
-    /// Set the open file attributes.
-    pub async fn setattr(&self, attr: FileAttr) {
-        self.inner.setattr(attr).await;
     }
 }
 
@@ -734,15 +680,15 @@ impl Handles {
     }
 
     /// Returns the shard index for the given file handle.
-    fn hash(fh: u64) -> usize {
+    fn hash(ino: u64) -> usize {
         let mut hasher = DefaultHasher::new();
-        fh.hash(&mut hasher);
+        ino.hash(&mut hasher);
         (hasher.finish().cast::<usize>()) % HANDLE_SHARD_NUM
     }
 
-    /// Gets a shard of the fh.
-    fn get_shard(&self, fh: u64) -> &Arc<tokio::sync::RwLock<HashMap<u64, FileHandle>>> {
-        let idx = Self::hash(fh);
+    /// Gets a shard of the ino.
+    fn get_shard(&self, ino: u64) -> &Arc<tokio::sync::RwLock<HashMap<u64, FileHandle>>> {
+        let idx = Self::hash(ino);
         self.handles
             .get(idx)
             .unwrap_or_else(|| unreachable!("The array is ensured to be long enough."))
@@ -750,10 +696,10 @@ impl Handles {
 
     /// Returns a file handle from the collection.
     #[must_use]
-    pub async fn get_handle(&self, fh: u64) -> Option<FileHandle> {
-        let shard = self.get_shard(fh);
+    pub async fn get_handle(&self, ino: u64) -> Option<FileHandle> {
+        let shard = self.get_shard(ino);
         let shard_lock = shard.read().await;
-        let fh = shard_lock.get(&fh)?;
+        let fh = shard_lock.get(&ino)?;
         Some(fh.clone())
     }
 
@@ -762,47 +708,48 @@ impl Handles {
     /// If true, we need to update the file handle attr later.
     pub async fn create_or_open_handle<M: MetaData + Send + Sync + 'static>(
         &self,
-        fh: u64,
+        ino: u64,
         block_size: usize,
         cache: Arc<Mutex<MemoryCache<CacheKey, LruPolicy<CacheKey>>>>,
         backend: Arc<dyn Backend>,
         metadata_client: Arc<M>,
         attr: FileAttr,
     ) -> bool {
-        let shard = self.get_shard(fh);
+        let shard = self.get_shard(ino);
         let mut shard_lock = shard.write().await;
         // If the file handle is already open, reopen it and return false
-        if let Some(file_handle) = shard_lock.get(&fh) {
+        if let Some(file_handle) = shard_lock.get(&ino) {
             let open_cnt = file_handle.get_open_count();
-            info!("Reopen file handle for ino: {fh} with opencnt: {open_cnt}");
+            debug!(
+                "{:?} Reopen file handle with opencnt: {open_cnt}",
+                file_handle
+            );
             file_handle.open();
 
             false
         } else {
-            info!("Create a new file handle for ino: {} attr: {:?}", fh, attr);
             // If the file handle is not open, create a new file handle and return true
             let file_handle =
-                FileHandle::new(fh, block_size, cache, backend, metadata_client, attr);
-            shard_lock.insert(fh, file_handle);
+                FileHandle::new(ino, block_size, cache, backend, metadata_client, attr);
+            shard_lock.insert(ino, file_handle);
 
             true
         }
     }
 
     /// Close and remove current filehandle.
-    pub async fn close_handle(&self, fh: u64) -> StorageResult<Option<FileHandle>> {
-        let shard = self.get_shard(fh);
+    pub async fn close_handle(&self, ino: u64) -> StorageResult<Option<FileHandle>> {
+        let shard = self.get_shard(ino);
         let mut shard_lock = shard.write().await;
-        let filehandle = shard_lock.get(&fh).ok_or_else(|| {
+        let filehandle = shard_lock.get(&ino).ok_or_else(|| {
             StorageError::Internal(anyhow::anyhow!("Cannot close a file that is not open."))
         })?;
 
         let need_remove_flag = filehandle.try_close().await?;
         if need_remove_flag {
             // Remove the file handle from the handles map
-            match shard_lock.remove(&fh) {
+            match shard_lock.remove(&ino) {
                 Some(filehandle) => {
-                    debug!("The file handle is closed, remove the file handle.");
                     return Ok(Some(filehandle));
                 }
                 None => {
