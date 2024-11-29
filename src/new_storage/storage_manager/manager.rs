@@ -5,7 +5,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use clippy_utilities::{Cast, OverflowArithmetic};
 use parking_lot::Mutex;
-use tracing::{error, info};
+use tracing::{debug, error};
 
 use crate::async_fuse::memfs::{FileAttr, MetaData};
 use crate::new_storage::StorageError;
@@ -40,8 +40,7 @@ impl<M: MetaData + Send + Sync + 'static> Storage for StorageManager<M> {
     #[inline]
     #[allow(clippy::unwrap_used)]
     async fn open(&self, ino: u64, attr: FileAttr) {
-        let flag = self
-            .handles
+        self.handles
             .create_or_open_handle(
                 ino,
                 self.block_size,
@@ -51,7 +50,6 @@ impl<M: MetaData + Send + Sync + 'static> Storage for StorageManager<M> {
                 attr,
             )
             .await;
-        info!("open filehandle {:?} with flag {:?}", ino, flag);
     }
 
     /// Get the file attr of the file specified by the inode number.
@@ -69,7 +67,7 @@ impl<M: MetaData + Send + Sync + 'static> Storage for StorageManager<M> {
     /// Default implementation does nothing.
     #[inline]
     async fn setattr(&self, ino: u64, attr: FileAttr) {
-        info!("setattr: ino: {} with attr: {:?}", ino, attr);
+        debug!("setattr: ino: {} with attr: {:?}", ino, attr);
         match self.get_handle(ino).await {
             Some(fh) => fh.setattr(attr).await,
             None => {
@@ -130,12 +128,9 @@ impl<M: MetaData + Send + Sync + 'static> Storage for StorageManager<M> {
     /// Closes a file specified by the file handle.
     #[inline]
     async fn close(&self, ino: u64) -> StorageResult<()> {
-        info!("try to close filehandle {:?}", ino);
         if let Some(_fh) = self.handles.close_handle(ino).await? {
-            info!("close filehandle {ino:?} ok");
             Ok(())
         } else {
-            info!("close filehandle {ino:?} ok");
             Ok(())
         }
     }
@@ -150,7 +145,7 @@ impl<M: MetaData + Send + Sync + 'static> Storage for StorageManager<M> {
         new_size: u64,
         version: u64,
     ) -> StorageResult<()> {
-        info!(
+        debug!(
             "truncate: ino: {} old_size: {} new_size: {} version: {}",
             ino, old_size, new_size, version
         );
@@ -225,11 +220,11 @@ impl<M: MetaData + Send + Sync + 'static> StorageManager<M> {
         self.cache.lock().len()
     }
 
-    /// Get a file handle with `fh`.
+    /// Get a file handle with `ino`.
     ///
     /// # Panic
-    /// Panics if the file of `fh` is not open.
-    async fn get_handle(&self, fh: u64) -> Option<FileHandle> {
-        self.handles.get_handle(fh).await
+    /// Panics if the file of `ino` is not open.
+    async fn get_handle(&self, ino: u64) -> Option<FileHandle> {
+        self.handles.get_handle(ino).await
     }
 }
