@@ -72,6 +72,9 @@
     clippy::similar_names // Allow similar names, due to the existence of uid and gid
 )]
 
+/// The file module contains the file operations for the DatenLord C SDK.
 pub mod file;
+/// The fs module contains the file system operations for the DatenLord C SDK.
 pub mod sdk;
+/// The utils module contains the utility functions for the DatenLord C SDK.
 pub mod utils;

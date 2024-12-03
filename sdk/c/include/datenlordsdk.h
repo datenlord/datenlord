@@ -8,6 +8,7 @@
 /// This structure is used to store the SDK instance, which is used to interact with the DatenLord SDK.
 /// We need to use init_sdk to initialize the SDK and free_sdk to release the SDK manually.
 struct datenlord_sdk {
+  /// DatenLordFs instance
   void *datenlordfs;
 };
 
@@ -34,7 +35,7 @@ struct datenlord_file_stat {
 
 extern "C" {
 
-/// Open a file return current fd
+/// Open a file return current fd, now this fd is unused
 ///
 /// sdk: datenlord_sdk
 /// pathname: file path
@@ -48,17 +49,15 @@ long long dl_open(datenlord_sdk *sdk, const char *pathname, mode_t mode);
 ///
 /// sdk: datenlord_sdk
 /// ino: file inode, which is returned by stat
-/// fd: file descriptor, which is returned by dl_open
 ///
 /// If the file is closed successfully, return 0
 /// Otherwise, return -1.
-long long dl_close(datenlord_sdk *sdk, unsigned long long ino, unsigned long long fd);
+long long dl_close(datenlord_sdk *sdk, unsigned long long ino);
 
 /// Write to a opened file
 ///
 /// sdk: datenlord_sdk
 /// ino: file inode, which is returned by stat
-/// fd: file descriptor, which is returned by dl_open
 /// buf: data to write
 /// count: data size
 ///
@@ -66,7 +65,6 @@ long long dl_close(datenlord_sdk *sdk, unsigned long long ino, unsigned long lon
 /// Otherwise, return -1.
 long long dl_write(datenlord_sdk *sdk,
                    unsigned long long ino,
-                   unsigned long long fd,
                    const uint8_t *buf,
                    unsigned long long count);
 
@@ -74,7 +72,6 @@ long long dl_write(datenlord_sdk *sdk,
 ///
 /// sdk: datenlord_sdk
 /// ino: file inode, which is returned by stat
-/// fd: file descriptor, which is returned by dl_open
 /// buf: buffer to store read data
 /// count: buffer size
 ///
@@ -82,7 +79,6 @@ long long dl_write(datenlord_sdk *sdk,
 /// Otherwise, return -1.
 long long dl_read(datenlord_sdk *sdk,
                   unsigned long long ino,
-                  unsigned long long fd,
                   uint8_t *buf,
                   unsigned long long count);
 
@@ -116,10 +112,9 @@ long long dl_mkdir(datenlord_sdk *sdk, const char *dir_path);
 ///
 /// sdk: datenlord_sdk instance
 /// dir_path: path to the directory
-/// recursive: whether to remove the directory recursively, current not used
 ///
 /// If the directory is removed successfully, return 0, otherwise -1
-long long dl_rmdir(datenlord_sdk *sdk, const char *dir_path, bool recursive);
+long long dl_rmdir(datenlord_sdk *sdk, const char *dir_path);
 
 /// Remove a file
 ///

@@ -50,7 +50,7 @@ int main() {
     long long res = dl_stat(sdk, file_path, &file_stat);
     if (res < 0) {
         printf("Failed to get file stat information\n");
-        dl_close(sdk, 0, fd);
+        dl_close(sdk, 0);
         free(data);
         dl_free_sdk(sdk);
         return 1;
@@ -64,7 +64,7 @@ int main() {
     data = (uint8_t *)malloc(FILE_SIZE);
     if (!data) {
         printf("Failed to allocate memory for read content\n");
-        dl_close(sdk, file_stat.ino, fd);
+        dl_close(sdk, file_stat.ino);
         free(data);
         dl_free_sdk(sdk);
         return 1;
@@ -73,12 +73,12 @@ int main() {
     for (int i = 0; i < 5; i++) {
         clock_gettime(CLOCK_MONOTONIC, &start_time);
 
-        res = dl_read(sdk, file_stat.ino, fd, data, FILE_SIZE);
+        res = dl_read(sdk, file_stat.ino, data, FILE_SIZE);
 
         clock_gettime(CLOCK_MONOTONIC, &end_time);
         if (res < 0) {
             printf("Failed to read from file\n");
-            dl_close(sdk, file_stat.ino, fd);
+            dl_close(sdk, file_stat.ino);
             free(data);
             dl_free_sdk(sdk);
             return 1;
@@ -96,7 +96,7 @@ int main() {
     printf("Read 5 times, average time: %.6f seconds\n", avg_read_latency);
 
     clock_gettime(CLOCK_MONOTONIC, &start_time);
-    res = dl_close(sdk, file_stat.ino, fd);
+    res = dl_close(sdk, file_stat.ino);
     clock_gettime(CLOCK_MONOTONIC, &end_time);
 
     if (res < 0) {

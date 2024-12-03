@@ -1,4 +1,3 @@
-use bytes::BytesMut;
 use clippy_utilities::OverflowArithmetic;
 use core::panic;
 use datenlord::common::error::{DatenLordError, DatenLordResult};
@@ -38,6 +37,7 @@ pub static RUNTIME: Lazy<tokio::runtime::Runtime> = Lazy::new(|| {
 /// This structure is used to store the file attributes, which are used to store the file metadata.
 #[repr(C)]
 #[allow(non_camel_case_types)]
+#[derive(Debug)]
 pub struct datenlord_file_stat {
     /// Inode number
     pub ino: u64,
@@ -57,13 +57,15 @@ pub struct datenlord_file_stat {
     pub rdev: u32,
 }
 
-#[repr(C)]
-#[allow(non_camel_case_types)]
 /// DatenLord SDK core data structure
 /// This structure is used to store the SDK instance, which is used to interact with the DatenLord SDK.
 /// We need to use init_sdk to initialize the SDK and free_sdk to release the SDK manually.
+#[repr(C)]
+#[allow(non_camel_case_types)]
+#[derive(Debug)]
 pub struct datenlord_sdk {
     // Do not expose the internal structure, use c_void instead
+    /// DatenLordFs instance
     pub datenlordfs: *mut c_void,
 }
 
@@ -139,6 +141,9 @@ pub extern "C" fn dl_init_sdk(config: *const c_char) -> *mut datenlord_sdk {
                     .await
                     .unwrap();
 
+                // Initialize the SDK and convert to void ptr.
+                let metadata = S3MetaData::new(kv_engine, node_id.as_str()).await.unwrap();
+
                 let storage = {
                     let storage_param = &config.storage.params;
                     let memory_cache_config = &config.storage.memory_cache_config;
@@ -156,11 +161,9 @@ pub extern "C" fn dl_init_sdk(config: *const c_char) -> *mut datenlord_sdk {
                             .await
                             .unwrap(),
                     );
-                    StorageManager::new(cache, backend, block_size)
+                    StorageManager::new(cache, backend, block_size, Arc::clone(&metadata))
                 };
 
-                // Initialize the SDK and convert to void ptr.
-                let metadata = S3MetaData::new(kv_engine, node_id.as_str()).await.unwrap();
                 Arc::new(DatenLordFs::new(metadata, storage))
             }
             _ => {
@@ -283,14 +286,12 @@ pub extern "C" fn dl_mkdir(sdk: *mut datenlord_sdk, dir_path: *const c_char) -> 
 ///
 /// sdk: datenlord_sdk instance
 /// dir_path: path to the directory
-/// recursive: whether to remove the directory recursively, current not used
 ///
 /// If the directory is removed successfully, return 0, otherwise -1
 #[no_mangle]
 pub extern "C" fn dl_rmdir(
     sdk: *mut datenlord_sdk,
     dir_path: *const c_char,
-    recursive: bool,
 ) -> c_longlong {
     if sdk.is_null() || dir_path.is_null() {
         error!("Invalid SDK or directory path");
@@ -304,7 +305,7 @@ pub extern "C" fn dl_rmdir(
     let dir_path_str = unsafe { CStr::from_ptr(dir_path).to_string_lossy().into_owned() };
 
     let result = RUNTIME.handle().block_on(async {
-        utils::recursive_delete_dir(Arc::clone(&fs), &dir_path_str, recursive).await
+        utils::rmtree(Arc::clone(&fs), &dir_path_str).await
     });
 
     let _ = Arc::into_raw(fs);
@@ -588,10 +589,10 @@ pub extern "C" fn dl_write_file(
                             .open(0, 0, file_attr.ino, OFlag::O_WRONLY.bits() as u32)
                             .await
                         {
-                            Ok(fh) => match fs.write(file_attr.ino, fh, 0, data, 0).await {
+                            Ok(_fh) => match fs.write(file_attr.ino, 0, data, 0).await {
                                 Ok(_) => {
                                     debug!("Writing the file ok: {:?}", file_path_str);
-                                    match fs.release(file_attr.ino, fh, 0, 0, true).await {
+                                    match fs.release(file_attr.ino, 0, 0, true).await {
                                         Ok(_) => Ok(()),
                                         Err(e) => {
                                             error!("Failed to release file handle: {:?}", e);
@@ -667,13 +668,12 @@ pub extern "C" fn dl_read_file(
                     .open(0, 0, current_attr.ino, OFlag::O_RDONLY.bits() as u32)
                     .await
                 {
-                    Ok(fh) => {
+                    Ok(_fh) => {
                         // TODO: convert raw ptr to buffer
-                        let mut buffer = BytesMut::with_capacity(current_attr.size as usize);
+                        let mut buffer = Vec::new();
                         match fs
                             .read(
                                 current_attr.ino,
-                                fh,
                                 0,
                                 buffer.capacity() as u32,
                                 &mut buffer,
@@ -684,7 +684,7 @@ pub extern "C" fn dl_read_file(
                                 buf = buffer.as_ptr();
                                 debug!("Read file: {:?} with size: {:?}", file_path_str, read_size);
                                 // Close this file handle
-                                fs.release(current_attr.ino, 0, 0, 0, true).await
+                                fs.release(current_attr.ino, 0, 0, true).await
                             }
                             Err(e) => Err(e),
                         }

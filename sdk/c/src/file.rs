@@ -1,5 +1,5 @@
 use std::{
-    ffi::CStr, os::raw::{c_char, c_longlong, c_ulonglong}, slice, sync::Arc
+    ffi::CStr, os::raw::{c_char, c_longlong, c_ulonglong}, sync::Arc
 };
 
 use datenlord::fs::{
@@ -14,7 +14,7 @@ use crate::{
     utils::find_parent_attr,
 };
 
-/// Open a file return current fd
+/// Open a file return current fd, now this fd is unused
 ///
 /// sdk: datenlord_sdk
 /// pathname: file path
@@ -84,7 +84,6 @@ pub extern "C" fn dl_open(
 ///
 /// sdk: datenlord_sdk
 /// ino: file inode, which is returned by stat
-/// fd: file descriptor, which is returned by dl_open
 ///
 /// If the file is closed successfully, return 0
 /// Otherwise, return -1.
@@ -93,7 +92,6 @@ pub extern "C" fn dl_open(
 pub extern "C" fn dl_close(
     sdk: *mut datenlord_sdk,
     ino: c_ulonglong,
-    fd: c_ulonglong,
 ) -> c_longlong {
     if sdk.is_null() {
         error!("Invalid arguments");
@@ -104,7 +102,7 @@ pub extern "C" fn dl_close(
     let fs = unsafe { Arc::from_raw(sdk_ref.datenlordfs as *const DatenLordFs<S3MetaData>) };
 
     let result = RUNTIME.handle().block_on(async {
-        match fs.release(ino, fd, 0, 0, true).await {
+        match fs.release(ino, 0, 0, true).await {
             Ok(_) => Ok(()),
             Err(e) => {
                 error!("Failed to close file: {:?}", e);
@@ -116,11 +114,11 @@ pub extern "C" fn dl_close(
     let _ = Arc::into_raw(fs);
     match result {
         Ok(()) => {
-            debug!("Closed file: {:?}", fd);
+            debug!("Closed file: {:?}", ino);
             return 0;
         }
         Err(_) => {
-            error!("Failed to close file: {:?}", fd);
+            error!("Failed to close file: {:?}", ino);
             return -1;
         }
     }
@@ -130,7 +128,6 @@ pub extern "C" fn dl_close(
 ///
 /// sdk: datenlord_sdk
 /// ino: file inode, which is returned by stat
-/// fd: file descriptor, which is returned by dl_open
 /// buf: data to write
 /// count: data size
 ///
@@ -140,7 +137,6 @@ pub extern "C" fn dl_close(
 pub extern "C" fn dl_write(
     sdk: *mut datenlord_sdk,
     ino: c_ulonglong,
-    fd: c_ulonglong,
     buf: *const u8,
     count: c_ulonglong,
 ) -> c_longlong {
@@ -155,14 +151,14 @@ pub extern "C" fn dl_write(
     let fs = unsafe { Arc::from_raw(sdk_ref.datenlordfs as *const DatenLordFs<S3MetaData>) };
 
     let result = RUNTIME.handle().block_on(async {
-        debug!("Writing to fd: {:?}", fd);
-        match fs.write(ino, fd, 0, data, 0).await {
+        debug!("Writing to ino: {:?}", ino);
+        match fs.write(ino, 0, data, 0).await {
             Ok(()) => {
-                debug!("Writing succeeded for fd: {:?}", fd);
+                debug!("Writing succeeded for ino: {:?}", ino);
                 Ok(())
             }
             Err(e) => {
-                error!("Failed to write to fd: {:?}", e);
+                error!("Failed to write to ino: {:?}", e);
                 Err(e)
             }
         }
@@ -172,12 +168,12 @@ pub extern "C" fn dl_write(
 
     match result {
         Ok(()) => {
-            debug!("Write succeeded for fd: {:?}", fd);
+            debug!("Write succeeded for ino: {:?}", ino);
             // Current write does not return succeeded bytes, so we return the count directly
             count as i64
         }
         Err(e) => {
-            error!("Failed to write to fd: {:?}", e);
+            error!("Failed to write to ino: {:?}", e);
             -1
         }
     }
@@ -187,7 +183,6 @@ pub extern "C" fn dl_write(
 ///
 /// sdk: datenlord_sdk
 /// ino: file inode, which is returned by stat
-/// fd: file descriptor, which is returned by dl_open
 /// buf: buffer to store read data
 /// count: buffer size
 ///
@@ -197,7 +192,6 @@ pub extern "C" fn dl_write(
 pub extern "C" fn dl_read(
     sdk: *mut datenlord_sdk,
     ino: c_ulonglong,
-    fd: c_ulonglong,
     buf: *mut u8,
     count: c_ulonglong,
 ) -> c_longlong {
@@ -211,14 +205,14 @@ pub extern "C" fn dl_read(
 
     let result = RUNTIME.handle().block_on(async {
         unsafe {
-            let buffer = slice::from_raw_parts_mut(buf, count as usize);
-            match fs.read(ino, fd, 0, count as u32, buffer).await {
+            let mut buffer = Vec::from_raw_parts(buf, count as usize, count as usize);
+            match fs.read(ino, 0, count as u32, &mut buffer).await {
                 Ok(read_size) => {
-                    debug!("Read from fd: {:?}", fd);
+                    debug!("Read from ino: {:?}", ino);
                     Ok(read_size)
                 }
                 Err(e) => {
-                    error!("Failed to read from fd: {:?}", e);
+                    error!("Failed to read from ino: {:?}", e);
                     Err(e)
                 }
             }
@@ -229,11 +223,11 @@ pub extern "C" fn dl_read(
 
     match result {
         Ok(read_size) => {
-            debug!("Read succeeded for fd: {:?}", fd);
+            debug!("Read succeeded for ino: {:?}", ino);
             read_size as i64
         }
         Err(e) => {
-            error!("Failed to read from fd: {:?}", e);
+            error!("Failed to read from ino: {:?}", e);
             -1
         }
     }

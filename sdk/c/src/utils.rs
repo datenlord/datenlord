@@ -12,21 +12,28 @@ use datenlord::{
 use nix::fcntl::OFlag;
 
 /// A directory entry type.
+#[derive(Debug)]
 pub struct Entry {
+    /// The name of the entry.
     pub name: String,
+    /// The inode number of the entry.
     pub ino: INum,
+    /// The type of the entry.
     pub file_type: FileType,
 }
 
 impl Entry {
+    /// Create a new directory entry.
     pub fn name(&self) -> String {
         self.name.clone()
     }
 
+    /// Get the inode number of the entry.
     pub fn ino(&self) -> INum {
         self.ino
     }
 
+    /// Get the file type of the entry.
     pub fn file_type(&self) -> String {
         match self.file_type {
             FileType::File => "file".to_string(),
@@ -75,14 +82,13 @@ pub async fn find_parent_attr(
     fs.getattr(current_inode).await
 }
 
-// The current implementation searches for items and places them into a queue.
-// It continues doing so until the subdirectory is found to be empty, at which point it deletes it.
-// This method introduces some overhead due to repeated searches.
-// An optimization could be applied to reduce the query overhead.
-pub async fn recursive_delete_dir(
+/// The current implementation searches for items and places them into a queue.
+/// It continues doing so until the subdirectory is found to be empty, at which point it deletes it.
+/// This method introduces some overhead due to repeated searches.
+/// An optimization could be applied to reduce the query overhead.
+pub async fn rmtree(
     fs: Arc<DatenLordFs<S3MetaData>>,
     dir_path: &str,
-    recursive: bool,
 ) -> DatenLordResult<()> {
     let mut dir_stack = VecDeque::new();
     dir_stack.push_back(dir_path.to_string());
@@ -123,9 +129,7 @@ pub async fn recursive_delete_dir(
             let entry_path = Path::new(&current_dir_path).join(entry.name());
 
             if entry.file_type() == FileType::Dir {
-                if recursive {
-                    dir_stack.push_front(entry_path.to_string_lossy().to_string());
-                }
+                dir_stack.push_front(entry_path.to_string_lossy().to_string());
             } else {
                 fs.unlink(0, 0, current_dir_ino, &entry.name()).await?;
             }
@@ -134,12 +138,8 @@ pub async fn recursive_delete_dir(
         // Always release the directory handle
         fs.releasedir(current_dir_ino, dir_handle, 0).await?;
 
-        if recursive || entries.is_empty() {
+        if entries.is_empty() {
             fs.rmdir(0, 0, parent_attr.ino, current_name).await?;
-        }
-
-        if !recursive {
-            return Ok(());
         }
     }
 

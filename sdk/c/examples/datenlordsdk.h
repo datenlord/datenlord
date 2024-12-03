@@ -82,7 +82,6 @@ long long dl_write(datenlord_sdk *sdk,
 /// Otherwise, return -1.
 long long dl_read(datenlord_sdk *sdk,
                   unsigned long long ino,
-                  unsigned long long fd,
                   uint8_t *buf,
                   unsigned long long count);
 

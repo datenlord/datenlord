@@ -64,7 +64,7 @@ int main() {
     res = dl_stat(sdk, file_path, &file_stat);
     if (res < 0) {
         printf("Failed to get file stat information\n");
-        dl_close(sdk, 0, fd);
+        dl_close(sdk, 0);
         free(data);
         dl_free_sdk(sdk);
         return 1;
@@ -77,12 +77,12 @@ int main() {
     for (int i = 0; i < 5; i++) {
         clock_gettime(CLOCK_MONOTONIC, &start_time);
 
-        res = dl_write(sdk, file_stat.ino, fd, data, FILE_SIZE);
+        res = dl_write(sdk, file_stat.ino, data, FILE_SIZE);
 
         clock_gettime(CLOCK_MONOTONIC, &end_time);
         if (res < 0) {
             printf("Failed to write to file\n");
-            dl_close(sdk, file_stat.ino, fd);
+            dl_close(sdk, file_stat.ino);
             free(data);
             dl_free_sdk(sdk);
             return 1;
@@ -92,7 +92,7 @@ int main() {
     }
 
     clock_gettime(CLOCK_MONOTONIC, &start_time);
-    res = dl_close(sdk, file_stat.ino, fd);
+    res = dl_close(sdk, file_stat.ino);
     clock_gettime(CLOCK_MONOTONIC, &end_time);
 
     if (res < 0) {
