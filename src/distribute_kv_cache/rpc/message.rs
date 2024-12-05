@@ -892,7 +892,11 @@ impl Encode for KVBlockGetResponse {
             // Not used here.
             StatusCode::VersionMismatch => buf.put_u8(3),
         }
-        buf.put_slice(&self.data);
+        let start = std::time::Instant::now();
+        println!("buf len: {:?} capacity: {:?}", buf.len(), buf.capacity());
+        // buf.put_slice(&self.data);
+        buf.extend_from_slice(&self.data);
+        println!("encode KVBlockGetResponse data cost: {:?}", start.elapsed());
     }
 }
 
@@ -944,8 +948,21 @@ impl Encode for KVBlockPutRequest {
     fn encode(&self, buf: &mut BytesMut) {
         buf.put_u64(self.block_size.to_le());
         buf.put_u64(self.kv_cache_id.to_le());
-        buf.put_slice(&self.data);
+        // let start = std::time::Instant::now();
+        // buf.put_slice(&self.data);
+        // println!("encode KVBlockPutRequest bytes mut data cost: {:?}", start.elapsed());
+
+        // let tempdata = self.data.clone();
+        // // Test to copy to Bytes
+        // let start = std::time::Instant::now();
+        // // let _data = bytes::Bytes::from(tempdata);
+        // let _data = bytes::Bytes::copy_from_slice(&tempdata);
+        // println!("encode KVBlockPutRequest bytes data cost: {:?}", start.elapsed());
     }
+
+    // fn encode_large_data(self) -> Option<Bytes> {
+    //     Some(bytes::Bytes::from(self.data))
+    // }
 }
 
 impl Decode for KVBlockPutRequest {
@@ -956,7 +973,18 @@ impl Decode for KVBlockPutRequest {
         }
         let block_size = get_u64_from_buf(buf, 0)?;
         let kv_cache_id = get_u64_from_buf(buf, 8)?;
-        let data = buf[16..].to_vec();
+        let start = std::time::Instant::now();
+        let buf = &buf[16..block_size as usize + 16];
+        // 10ns
+        let data = unsafe {
+            let ptr = buf.as_ptr();
+            let len = buf.len();
+            Vec::from_raw_parts(ptr as *mut u8, len, len)
+        };
+        // 10ms
+        // let mut data = Vec::with_capacity(block_size as usize);
+        // data.extend_from_slice(buf);
+        println!("decode KVBlockPutRequest data cost: {:?}", start.elapsed());
         let data_len = usize_to_u64(data.len());
         if data_len != block_size {
             return Err(RpcError::InternalError(format!(

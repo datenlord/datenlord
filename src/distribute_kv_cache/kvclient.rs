@@ -228,12 +228,15 @@ impl DistributeKVCacheClient {
         self.inner.start_watch().await
     }
 
+    #[allow(unreachable_code)]
+    #[allow(unused_variables)]
     /// Try to load the block from the distribute cache, return sub string with the prefix
     pub async fn try_load(&self, prefix: String) -> DatenLordResult<(String, Vec<u8>)> {
         // 1. check current node has the local block cache
         // If ok, get the block from the local block cache
         // If not, get the block from the distribute cache
         // Optimize: Try to compare partial prefix with the local block cache and remote block cache
+        let start = tokio::time::Instant::now();
         let local_cache_lock = self.block_cache.lock().await;
         let local_kv_cache_meta = match local_cache_lock.match_prefix(prefix.clone()) {
             Some(kv_cache_meta) => {
@@ -250,6 +253,8 @@ impl DistributeKVCacheClient {
             }
         };
         let local_prefix_len = local_kv_cache_meta.prefix.len().cast::<u64>();
+        let start_1 = start.elapsed();
+        debug!("local_cache_lock.match_prefix(prefix.clone()) check Time cost: {:?}", start_1);
 
         // 2. Match prefix to get the block id and target node
         let (kv_block_meta, node_address) = match self.inner.match_prefix(prefix.clone()).await {
@@ -269,6 +274,8 @@ impl DistributeKVCacheClient {
                 (KVCacheMeta::default(), String::new())
             }
         };
+        let start_2 = start.elapsed();
+        debug!("self.inner.match_prefix(prefix.clone()).await check Time cost: {:?}", start_2 - start_1);
 
         let remote_prefix_len = kv_block_meta.prefix.len().cast::<u64>();
         // println!(
@@ -279,6 +286,7 @@ impl DistributeKVCacheClient {
             "Matched remote kv block meta: {:?} node_address: {:?}",
             kv_block_meta, node_address
         );
+
 
         // If local prefix length is less than remote prefix length, we will get the block from the local cache
         if local_prefix_len >= remote_prefix_len {
@@ -297,18 +305,22 @@ impl DistributeKVCacheClient {
             }
         }
 
+
         // Empty address from the distribute cache
         if node_address.len() == 0 {
             error!("Failed to get block, node address is empty");
             return Ok((String::new(), Vec::new()));
         }
+        let start_3 = start.elapsed();
+        debug!("local_cache_lock.try_load(local_kv_cache_meta.clone()) check Time cost: {:?}", start_3 - start_2);
+
 
         // 3. Get the block from the distribute cache
         // TODO: update string key with u64
         let block_data = match self
-            .inner
-            .get_block(node_address.clone(), kv_block_meta.block_id)
-            .await
+        .inner
+        .get_block(node_address.clone(), kv_block_meta.block_id)
+        .await
         {
             Ok(data) => data,
             Err(err) => {
@@ -322,6 +334,11 @@ impl DistributeKVCacheClient {
                 return Ok((String::new(), Vec::new()));
             }
         };
+        let start_4 = start.elapsed();
+        debug!("self.inner.get_block(node_address.clone(), kv_block_meta.block_id) check Time cost: {:?}", start_4 - start_3);
+
+        return Ok((String::new(), Vec::new()));
+        // return Ok((String::new(), block_data));
 
         // 4. Copy the block data to the data with kv cache meta offset and size
         let offset = kv_block_meta.offset as usize;
@@ -339,6 +356,7 @@ impl DistributeKVCacheClient {
 
     /// Insert a block to the distribute cache
     pub async fn insert(&self, prefix: String, data: Vec<u8>) -> DatenLordResult<()> {
+        let start = tokio::time::Instant::now();
         // Check current size is valid
         if data.len().cast::<u64>() > self.inner.block_size {
             return Err(DatenLordError::DistributeCacheManagerErr {
@@ -348,6 +366,9 @@ impl DistributeKVCacheClient {
             });
         }
 
+        let start_1 = start.elapsed();
+        debug!("self.inner.block_size check Time cost: {:?}", start_1);
+
         // 1. fill current block cache
         let mut block_cache = self.block_cache.lock().await;
         let mut current_block_id = block_cache.get_block_id();
@@ -355,6 +376,8 @@ impl DistributeKVCacheClient {
             "Insert kv cache to the block cache with block id: {:?}",
             current_block_id
         );
+        let start_2 = start.elapsed();
+        debug!("block_cache.get_block_id() check Time cost: {:?}", start_2 - start_1);
 
         while current_block_id == UNUSED_KV_BLOCK_ID {
             let new_block_id = self.inner.alloc_block_id().await?;
@@ -362,6 +385,8 @@ impl DistributeKVCacheClient {
             block_cache.clear(new_block_id);
             current_block_id = new_block_id;
         }
+        let start_3 = start.elapsed();
+        debug!("block_cache.clear(new_block_id) check Time cost: {:?}", start_3 - start_2);
 
         let next_offset = block_cache.get_next_offset();
         let kv_cache_meta = KVCacheMeta {
@@ -370,6 +395,8 @@ impl DistributeKVCacheClient {
             size: data.len().cast(),
             prefix: prefix.clone(),
         };
+        let start_4 = start.elapsed();
+        debug!("block_cache.get_next_offset() check Time cost: {:?}", start_4 - start_3);
 
         match block_cache.insert(kv_cache_meta, &data) {
             Ok(()) => {
@@ -377,6 +404,8 @@ impl DistributeKVCacheClient {
                     "Insert kv cache to the block cache with block id: {:?} successfully",
                     current_block_id
                 );
+                let start_5 = start.elapsed();
+                debug!("block_cache.insert(kv_cache_meta, &data) check Time cost: {:?}", start_5 - start_4);
             }
             Err(err) => {
                 debug!("Failed to insert kv cache to the block cache: {:?}, try to allocate new block cache", err);
@@ -385,21 +414,37 @@ impl DistributeKVCacheClient {
                 let kv_block = block_cache.get_kv_block();
                 let kv_cache_metas = block_cache.get_kv_cache_metas();
 
+                let start_6 = start.elapsed();
+                debug!("block_cache.get_kv_block() check Time cost: {:?}", start_6 - start_4);
+
                 // Insert the block to the distribute cache
                 let node = self
                     .inner
                     .cluster_manager
                     .get_node(kv_block.block_id.to_string())
                     .await?;
+
+                let start_6_2 = start.elapsed();
+                debug!("self.inner.cluster_manager.get_node(kv_block.block_id.to_string()) check Time cost: {:?}", start_6_2 - start_6);
+
                 let addr = format!("{}:{}", node.ip(), node.port());
                 self.inner.put_blocks(addr.clone(), vec![kv_block]).await?;
+
+                let start_7 = start.elapsed();
+                debug!("self.inner.put_blocks(addr.clone(), vec![kv_block]) check Time cost: {:?}", start_7 - start_6_2);
 
                 // If ok, insert the indexes to the distribute cache
                 self.inner.insert_indexes(kv_cache_metas, addr).await?;
 
+                let start_8 = start.elapsed();
+                debug!("self.inner.insert_indexes(kv_cache_metas, addr).await? check Time cost: {:?}", start_8 - start_7);
+
                 // If ok, clear the block cache
                 let current_block_id = self.inner.alloc_block_id().await?;
                 block_cache.clear(current_block_id);
+
+                let start_9 = start.elapsed();
+                debug!("block_cache.clear(current_block_id) check Time cost: {:?}", start_9 - start_8);
 
                 // Try to insert the kv cache meta again
                 let next_offset = block_cache.get_next_offset();
@@ -410,6 +455,9 @@ impl DistributeKVCacheClient {
                     prefix: prefix.clone(),
                 };
                 block_cache.insert(kv_cache_meta, &data)?;
+
+                let start_10 = start.elapsed();
+                debug!("block_cache.insert(kv_cache_meta, &data) check Time cost: {:?}", start_10 - start_9);
             }
         }
 
@@ -790,6 +838,7 @@ impl DistributeKVCacheClientInner {
 
     /// Batch put the kv block to the distribute cache node with same addr
     async fn put_blocks(&self, addr: String, kv_blocks: Vec<KVBlock>) -> DatenLordResult<()> {
+        let start = tokio::time::Instant::now();
         // Create a Vec<KVBlockPutRequest> for batch put
         let mut kv_block_put_requests = Vec::new();
         for item in kv_blocks.into_iter() {
@@ -799,6 +848,8 @@ impl DistributeKVCacheClientInner {
                 data: item.data,
             });
         }
+        let start_1 = start.elapsed();
+        debug!("kv_blocks.into_iter() check Time cost: {:?}", start_1);
 
         let (tx, rx) = flume::unbounded::<Result<KVCacheResponse, KVCacheRequest>>();
         let kv_cache_batch_put_request =
@@ -811,6 +862,9 @@ impl DistributeKVCacheClientInner {
             kv_cache_batch_put_request,
             tx.clone(),
         );
+        let start_2 = start.elapsed();
+        debug!("KVCachePacket::new check Time cost: {:?}", start_2 - start_1);
+
         let rpc_client = self.get_client(addr.clone()).await?;
         rpc_client.send_request(&mut packet).await.map_err(|err| {
             DatenLordError::DistributeCacheManagerErr {
@@ -818,10 +872,15 @@ impl DistributeKVCacheClientInner {
             }
         })?;
 
+        let start_3 = start.elapsed();
+        debug!("rpc_client.send_request(&mut packet) check Time cost: {:?}", start_3 - start_2);
+
         match rx.recv_async().await {
             Ok(Ok(response)) => {
                 match response {
                     KVCacheResponse::KVBlockBatchPutResponse(response) => {
+                        let start_4 = start.elapsed();
+                        debug!("KVCacheResponse::KVBlockBatchPutResponse(response) check Time cost: {:?}", start_4 - start_3);
                         // TODO: show block result here.
                         debug!("Batch put blocks: {:?}", response);
                         return Ok(());

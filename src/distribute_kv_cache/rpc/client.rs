@@ -80,8 +80,9 @@ where
             clock_instant: Instant::now(),
             received_keepalive_timestamp: AtomicU64::new(0),
             packets_keeper: PacketsKeeper::new(timeout_options.clone().task_timeout.as_secs()),
-            resp_buf: UnsafeCell::new(BytesMut::with_capacity(8 * 1024 * 1024)),
-            req_buf: UnsafeCell::new(BytesMut::with_capacity(8 * 1024 * 1024)),
+            // Init buffer with 16MB
+            resp_buf: UnsafeCell::new(BytesMut::with_capacity(16 * 1024 * 1024)),
+            req_buf: UnsafeCell::new(BytesMut::with_capacity(16 * 1024 * 1024)),
             client_id,
         }
     }
@@ -106,8 +107,20 @@ where
 
     /// Receive request body from the server.
     pub async fn recv_len(&self, len: u64) -> Result<(), RpcError> {
+        let start = tokio::time::Instant::now();
         let mut req_buffer: &mut BytesMut = unsafe { &mut *self.resp_buf.get() };
-        req_buffer.resize(u64_to_usize(len), 0);
+        if req_buffer.capacity() < u64_to_usize(len) {
+            req_buffer.reserve(u64_to_usize(len) - req_buffer.capacity());
+        }
+        // req_buffer.resize(u64_to_usize(len), 0);
+
+        // req_buffer.resize(u64_to_usize(len), 0);
+        unsafe {
+            req_buffer.set_len(u64_to_usize(len));
+        }
+        let start_1 = start.elapsed();
+        debug!("Client resize buffer to size {:?} cost: {:?}", len, start_1);
+
         let reader = self.get_stream_mut();
         match read_exact_timeout!(reader, &mut req_buffer, self.timeout_options.read_timeout).await
         {
@@ -132,7 +145,10 @@ where
         req_body: Option<&dyn Encode>,
     ) -> Result<(), RpcError> {
         let buf = unsafe { &mut *self.req_buf.get() };
-        buf.clear();
+        unsafe {
+            buf.set_len(0);
+        }
+        // buf.clear();
         // encode just need to append to buffer, do not clear buffer
         req_header.encode(buf);
         // Append the body to the buffer
@@ -140,6 +156,10 @@ where
             // encode just need to append to buffer, do not clear buffer
             body.encode(buf);
         }
+
+        // TODO: If data is very large, we need to send it in multiple times
+        // and do not copy the data
+
         debug!("{:?} Sent data with length: {:?}", self, buf.len());
         let writer = self.get_stream_mut();
         match write_all_timeout!(writer, buf, self.timeout_options.write_timeout).await {

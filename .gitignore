@@ -24,3 +24,10 @@ tests/fstest_dir/fstest
 
 # Current cargo config
 .cargo/config
+
+# Perf data
+*.svg
+*.data
+*.old
+massif.*
+*.folded

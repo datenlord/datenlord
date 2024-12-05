@@ -99,7 +99,8 @@ where
             worker_pool,
             timeout_options,
             dispatch_handler,
-            req_buf: UnsafeCell::new(BytesMut::with_capacity(8 * 1024 * 1024)),
+            // Init buffer size is 64MB
+            req_buf: UnsafeCell::new(BytesMut::with_capacity(64 * 1024 * 1024)),
         }
     }
 
@@ -123,8 +124,18 @@ where
 
     /// Recv request body from the stream
     pub async fn recv_len(&self, len: u64) -> Result<(), RpcError> {
+        let start = tokio::time::Instant::now();
         let mut req_buffer: &mut BytesMut = unsafe { &mut *self.req_buf.get() };
-        req_buffer.resize(u64_to_usize(len), 0);
+        if req_buffer.capacity() < u64_to_usize(len) {
+            req_buffer.reserve(u64_to_usize(len) - req_buffer.capacity());
+        }
+        // req_buffer.resize(u64_to_usize(len), 0);
+        unsafe {
+            req_buffer.set_len(u64_to_usize(len));
+        }
+        let start_1 = start.elapsed();
+        debug!("Server resize buffer to size {:?} cost: {:?}", len, start_1);
+
         let reader = self.get_stream_mut();
         match read_exact_timeout!(reader, &mut req_buffer, self.timeout_options.read_timeout).await
         {

@@ -121,7 +121,8 @@ async fn main() -> DatenLordResult<()> {
         }
     }
 
-    task_manager::wait_for_shutdown(&TASK_MANAGER)?.await;
+    // task_manager::wait_for_shutdown(&TASK_MANAGER)?.await;
+    tokio::signal::ctrl_c().await?;
     info!("KV cache server stopped");
     Ok(())
 }

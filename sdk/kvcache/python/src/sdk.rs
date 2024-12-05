@@ -12,6 +12,8 @@ use pyo3_asyncio::tokio::future_into_py;
 use std::sync::Arc;
 use tracing::info;
 
+use crate::utils::Buffer;
+
 /// `DatenLordSDK` is a Python class that provides an interface to interact with the DatenLord filesystem.
 #[pyclass]
 pub struct DatenLordSDK {
@@ -114,7 +116,9 @@ impl DatenLordSDK {
 
         future_into_py(py, async move {
             match datenlord_client.try_load(prefix).await {
-                Ok(value) => Ok(()),
+                Ok((prefix, data)) => {
+                    Ok((prefix, Buffer::new(data)))
+                }
                 Err(e) => Err(PyException::new_err(format!("try_load failed: {:?}", e))),
             }
         })

@@ -10,14 +10,15 @@ async def benchmark_write():
 
     # data_sizes = [256, 512, 1024]
     # data_sizes = [1024, 2*1024, 4*1024, 8*1024, 16*1024, 32*1024, 64*1024, 128*1024, 256*1024, 512*1024, 1024*1024]
-    data_sizes = [512*1024, 1024*1024, 2*1024*1024, 4*1024*1024, 8*1024*1024, 16*1024*1024]
-    num_operations = 200
+    # data_sizes = [512*1024, 1024*1024, 2*1024*1024, 4*1024*1024, 8*1024*1024, 16*1024*1024]
+    data_sizes = [16*1024*1024]
+    num_operations = 10
 
     # Initialize the SDK
     sdk = DatenLordSDK(
         block_size=block_size,
         kv_engine_address=["127.0.0.1:2379"],
-        log_level="error"
+        log_level="debug"
     )
 
     for data_size in data_sizes:

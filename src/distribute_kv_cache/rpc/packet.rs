@@ -20,6 +20,11 @@ pub trait Encode: Sync {
     /// Encode the message into a byte buffer, this operation will append to buffer
     /// If you need to encode from start, you should clear the buffer first
     fn encode(&self, buf: &mut BytesMut);
+
+    /// Get large data with Bytes
+    fn encode_large_data(&self) -> Option<()> {
+        None
+    }
 }
 
 /// The Decode trait is used to message a byte buffer into a data structure.

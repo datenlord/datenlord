@@ -20,6 +20,9 @@ name = "datenlordsdk"
 crate-type = ["cdylib", "staticlib"]
 doc = false
 
+[profile.release]
+debug = true
+
 [dependencies]
 datenlord = { path = "../../../" }
 clap = { version = "4", features = ["derive"] }

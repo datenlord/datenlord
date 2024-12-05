@@ -232,75 +232,80 @@ impl KVBlockManager {
     /// If the version is old, we need to read the block from the storage
     /// If the version is the latest, client need to fetch the latest version
     #[allow(dead_code)]
-    pub async fn read(&self, meta_data: MetaData) -> StorageResult<Option<Block>> {
+    pub async fn read(&self, meta_data: MetaData) -> StorageResult<Option<Arc<RwLock<Block>>>> {
         // Try to read the block from the cache
         {
             if let Some(block_ref) = self.cache.read().unwrap().get(&meta_data) {
-                let block = block_ref.read().unwrap();
-                return Ok(Some(block.clone()));
+                // let block = block_ref.read().unwrap();
+                return Ok(Some(block_ref));
             }
         }
+
+        return Ok(None);
 
         // Try to fetch data and update local cache
-        {
-            // Try to read file from fs backend
-            let relative_path = meta_data.to_id();
-            debug!("Read block from backend: {}", relative_path);
-            let mut buf = [0; BLOCK_SIZE];
-            let size = self
-                .backend
-                .read(&relative_path, &mut buf)
-                .await
-                .unwrap_or_default();
+        // {
+        //     // Try to read file from fs backend
+        //     let relative_path = meta_data.to_id();
+        //     debug!("Read block from backend: {}", relative_path);
+        //     let mut buf = [0; BLOCK_SIZE];
+        //     let size = self
+        //         .backend
+        //         .read(&relative_path, &mut buf)
+        //         .await
+        //         .unwrap_or_default();
 
-            debug!("Read block size: {}", size);
+        //     debug!("Read block size: {}", size);
 
-            // If the size is not equal to BLOCK_SIZE, the block is invalid
-            if size != BLOCK_SIZE {
-                // Remove the invalid block from fs backend
-                self.backend
-                    .remove(&relative_path)
-                    .await
-                    .unwrap_or_default();
-                debug!("Invalid block: {}", relative_path);
-                return Ok(None);
-            }
+        //     // If the size is not equal to BLOCK_SIZE, the block is invalid
+        //     if size != BLOCK_SIZE {
+        //         // Remove the invalid block from fs backend
+        //         self.backend
+        //             .remove(&relative_path)
+        //             .await
+        //             .unwrap_or_default();
+        //         debug!("Invalid block: {}", relative_path);
+        //         return Ok(None);
+        //     }
 
-            // error!("Read block len: {:?}", buf.len());
-            // error!("Read block inner content: {:?}", buf);
+        //     // error!("Read block len: {:?}", buf.len());
+        //     // error!("Read block inner content: {:?}", buf);
 
-            let block = Block::new(meta_data.clone(), buf.to_vec());
+        //     let block = Block::new(meta_data.clone(), buf.to_vec());
 
-            // error!("Read block: {:?}", block);
+        //     // error!("Read block: {:?}", block);
 
-            // Write the block to the cache
-            let block_ref = Arc::new(RwLock::new(block.clone()));
-            self.cache
-                .write()
-                .unwrap()
-                .put(meta_data.clone(), block_ref);
+        //     // Write the block to the cache
+        //     let block_ref = Arc::new(RwLock::new(block.clone()));
+        //     self.cache
+        //         .write()
+        //         .unwrap()
+        //         .put(meta_data.clone(), block_ref);
 
-            // error!("Read block: {:?}", block);
+        //     // error!("Read block: {:?}", block);
 
-            return Ok(Some(block));
-        }
+        //     return Ok(Some(block));
+        // }
     }
 
     /// Write the block to the cache
     /// TODO: Now this operation only support store block to cache and fs storage
     #[allow(dead_code)]
-    pub async fn write(&self, block: &Block) -> StorageResult<()> {
+    pub async fn write(&self, block: Block) -> StorageResult<()> {
         let meta = block.get_meta_data();
-        let relative_path = meta.to_id();
+        // let relative_path = meta.to_id();
 
         // Write the block to the cache
-        let block_ref = Arc::new(RwLock::new(block.clone()));
+        let block_ref = Arc::new(RwLock::new(block));
         self.cache.write().unwrap().put(meta.clone(), block_ref);
 
+        Ok(())
+
         // Write the block to the storage
-        self.backend
-            .store(&relative_path, block.get_data().as_slice())
-            .await
+        // self.backend
+        //     .store(&relative_path, block.get_data().as_slice())
+        //     .await
+
     }
 
     /// Invalidate the block
