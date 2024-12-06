@@ -1,0 +1,14 @@
+ARG RUST_IMAGE_VERSION=1.74.0
+FROM rust:${RUST_IMAGE_VERSION} AS builder
+RUN apt-get update && apt-get install -y cmake g++ libprotobuf-dev protobuf-compiler
+WORKDIR /tmp/build
+COPY . .
+RUN cargo build --package datenlord --bin kvcache --release
+
+FROM ubuntu:22.04 AS datenlord
+LABEL maintainers="DatenLord Authors"
+LABEL description="DatenLord Distributed KVCache"
+
+COPY --from=builder /tmp/build/target/release/kvcache /usr/local/bin/kvcache
+# COPY kvcache-config.toml /etc/datenlord/config.toml
+CMD ["/usr/local/bin/kvcache"]

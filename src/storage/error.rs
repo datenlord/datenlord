@@ -25,4 +25,7 @@ pub enum StorageError {
     /// A internal storage error.
     #[error("{0}")]
     Internal(#[from] anyhow::Error),
+    /// Unimplemented error
+    #[error("Unimplemented")]
+    Unimplemented,
 }
