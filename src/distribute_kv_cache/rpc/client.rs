@@ -110,16 +110,16 @@ where
         let start = tokio::time::Instant::now();
         let mut req_buffer: &mut BytesMut = unsafe { &mut *self.resp_buf.get() };
         if req_buffer.capacity() < u64_to_usize(len) {
-            req_buffer.reserve(u64_to_usize(len) - req_buffer.capacity());
+            req_buffer.reserve(u64_to_usize(len) + 1);
+            debug!("Client reserve buffer {:?} to size {:?} cost: {:?}", u64_to_usize(len), len, start.elapsed());
         }
         // req_buffer.resize(u64_to_usize(len), 0);
-
         // req_buffer.resize(u64_to_usize(len), 0);
         unsafe {
             req_buffer.set_len(u64_to_usize(len));
         }
         let start_1 = start.elapsed();
-        debug!("Client resize buffer to size {:?} cost: {:?}", len, start_1);
+        debug!("Client resize buffer {:?} to size {:?} cost: {:?}", u64_to_usize(len), len, start_1);
 
         let reader = self.get_stream_mut();
         match read_exact_timeout!(reader, &mut req_buffer, self.timeout_options.read_timeout).await
@@ -145,10 +145,10 @@ where
         req_body: Option<&dyn Encode>,
     ) -> Result<(), RpcError> {
         let buf = unsafe { &mut *self.req_buf.get() };
-        unsafe {
-            buf.set_len(0);
-        }
-        // buf.clear();
+        // unsafe {
+        //     buf.set_len(0);
+        // }
+        buf.clear();
         // encode just need to append to buffer, do not clear buffer
         req_header.encode(buf);
         // Append the body to the buffer
@@ -228,10 +228,10 @@ where
 
         // concate req_header and req_buffer
         if let Ok(()) = self.send_data(&req_header, Some(req_packet)).await {
-            debug!("{:?} Sent request success: {:?}", self, req_packet.seq());
             // We have set a copy to keeper and manage the status for the packets keeper
             // Set to packet task with clone
             self.packets_keeper.add_task(req_packet)?;
+            debug!("{:?} Sent request success: {:?}", self, req_packet.seq());
 
             Ok(())
         } else {
@@ -282,12 +282,16 @@ where
 
                             // Take the packet task and recv the response
                             let resp_buffer: &mut BytesMut = unsafe { &mut *self.resp_buf.get() };
-                            match self.packets_keeper.take_task(header_seq, resp_buffer).await {
-                                Ok(()) => {
-                                    debug!("{:?} Received response: {:?}", self, header_seq);
-                                }
-                                Err(err) => {
-                                    debug!("{:?} Failed to update task: {:?}", self, err);
+                            // Fix: add a retry here in case of the task is not ready or failed
+                            loop {
+                                match self.packets_keeper.take_task(header_seq, resp_buffer).await {
+                                    Ok(()) => {
+                                        debug!("{:?} Received response: {:?}", self, header_seq);
+                                        break;
+                                    }
+                                    Err(err) => {
+                                        debug!("{:?} Failed to update task: {:?}", self, err);
+                                    }
                                 }
                             }
                         }

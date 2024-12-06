@@ -949,7 +949,7 @@ impl Encode for KVBlockPutRequest {
         buf.put_u64(self.block_size.to_le());
         buf.put_u64(self.kv_cache_id.to_le());
         // let start = std::time::Instant::now();
-        // buf.put_slice(&self.data);
+        buf.put_slice(&self.data);
         // println!("encode KVBlockPutRequest bytes mut data cost: {:?}", start.elapsed());
 
         // let tempdata = self.data.clone();

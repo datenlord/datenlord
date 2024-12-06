@@ -24,6 +24,9 @@ pub trait EvictPolicy<K> {
 
     /// Get the current size of the policy.
     fn size(&self) -> usize;
+
+    /// Get the capacity of the policy.
+    fn capacity(&self) -> usize;
 }
 
 /// The evict policy based on LRU.
@@ -114,6 +117,11 @@ impl<K: Clone + Hash + Eq> EvictPolicy<K> for LRUPolicy<K> {
     #[inline]
     fn size(&self) -> usize {
         self.inner.lock().len()
+    }
+
+    #[inline]
+    fn capacity(&self) -> usize {
+        self.capacity
     }
 }
 

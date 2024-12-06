@@ -1,6 +1,5 @@
 use std::{
-    collections::HashMap,
-    sync::{atomic::AtomicU64, Arc, RwLock},
+    collections::HashMap, fmt::Debug, sync::{atomic::AtomicU64, Arc, RwLock}
 };
 
 use radix_trie::Trie;
@@ -17,7 +16,7 @@ use super::{
 #[derive(Debug)]
 pub struct CacheManager<K, P>
 where
-    K: Eq + std::hash::Hash + Clone,
+    K: Eq + std::hash::Hash + Clone + Debug,
     P: EvictPolicy<K>,
 {
     policy: P,
@@ -26,7 +25,7 @@ where
 
 impl<K, P> CacheManager<K, P>
 where
-    K: Eq + std::hash::Hash + Clone,
+    K: Eq + std::hash::Hash + Clone + Debug,
     P: EvictPolicy<K>,
 {
     /// Create a new CacheManager
@@ -40,15 +39,25 @@ where
     /// Insert a block into the cache
     pub fn put(&mut self, key: K, block: Arc<RwLock<Block>>) {
         // If the cache is full, evict the least recently used block
-        if self.cache.len() >= self.policy.size() {
+        if self.cache.len() >= self.policy.capacity() {
+            println!("Cache {:?} is full policy is {:?}, evict the least recently used block", self.cache.len(), self.policy.size());
             if let Some(evicted_block) = self.policy.evict() {
-                self.cache.remove(&evicted_block);
+                println!("Evict block: {:?}", evicted_block);
+                // self.cache.remove(&evicted_block.clone());
+                // Safe drop
+                if self.cache.contains_key(&evicted_block) {
+                    println!("Evict block: {:?}", evicted_block);
+                    self.cache.remove(&evicted_block);
+                } else {
+                    println!("Evicted block {:?} not found in cache!", evicted_block);
+                }
             }
         }
 
         // Insert the block into the cache and update the metadata
         self.cache.insert(key.clone(), block.clone());
         self.policy.access(&key);
+        self.policy.set_evictable(&key, true);
     }
 
     /// Get a block from the cache
@@ -216,7 +225,7 @@ impl KVBlockManager {
         // Create a new LRUPolicy with a capacity of 2000
         // It will evict the least recently used block when the cache is full
         // TODO: Support mem limit and block size limit， current is block count limit
-        let policy = LRUPolicy::new(2000);
+        let policy = LRUPolicy::new(5000);
         let cache = Arc::new(RwLock::new(CacheManager::new(policy)));
         KVBlockManager { cache, backend }
     }

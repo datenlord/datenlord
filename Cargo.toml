@@ -98,6 +98,13 @@ name = "bind_mounter"
 path = "src/distribute_kv_cache/main.rs"
 name = "kvcache"
 
+[[bin]]
+path = "src/distribute_kv_cache/pyclient.rs"
+name = "kvcache_pyclient"
+
+[profile.release]
+debug = true
+
 [features]
 abi-7-9 = []
 abi-7-10 = ["abi-7-9"]
