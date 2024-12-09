@@ -561,13 +561,13 @@ impl DistributeKVCacheClientInner {
             KVCacheRequest::KVCacheIdAllocateRequest(KVCacheIdAllocateRequest {
                 block_size: self.block_size,
             });
-        let mut packet = KVCachePacket::new(
+        let packet = KVCachePacket::new(
             ReqType::KVCacheIdAllocateRequest.to_u8(),
             kv_cache_id_allocate_request,
             tx.clone(),
         );
         let rpc_client = self.get_client(addr.clone()).await?;
-        rpc_client.send_request(&mut packet).await.map_err(|err| {
+        rpc_client.send_request(packet).await.map_err(|err| {
             DatenLordError::DistributeCacheManagerErr {
                 context: vec![format!("Failed to send request: {:?}", err)],
             }
@@ -614,13 +614,13 @@ impl DistributeKVCacheClientInner {
                 block_size: self.block_size,
                 kv_cache_key: prefix,
             });
-        let mut packet = KVCachePacket::new(
+        let packet = KVCachePacket::new(
             ReqType::KVCacheIndexMatchRequest.to_u8(),
             kv_cache_index_match_request,
             tx.clone(),
         );
         let rpc_client = self.get_client(addr.clone()).await?;
-        rpc_client.send_request(&mut packet).await.map_err(|err| {
+        rpc_client.send_request(packet).await.map_err(|err| {
             DatenLordError::DistributeCacheManagerErr {
                 context: vec![format!("Failed to send request: {:?}", err)],
             }
@@ -707,13 +707,13 @@ impl DistributeKVCacheClientInner {
                 indexes: kv_cache_index_insert_requests,
                 node_address: node_address.into_bytes(),
             });
-        let mut packet = KVCachePacket::new(
+        let packet = KVCachePacket::new(
             ReqType::KVCacheIndexBatchInsertRequest.to_u8(),
             kv_cache_index_batch_insert_request,
             tx.clone(),
         );
         let rpc_client = self.get_client(addr.clone()).await?;
-        rpc_client.send_request(&mut packet).await.map_err(|err| {
+        rpc_client.send_request(packet).await.map_err(|err| {
             DatenLordError::DistributeCacheManagerErr {
                 context: vec![format!("Failed to send request: {:?}", err)],
             }
@@ -757,13 +757,13 @@ impl DistributeKVCacheClientInner {
                 block_size: self.block_size,
                 kv_cache_key: prefix,
             });
-        let mut packet = KVCachePacket::new(
+        let packet = KVCachePacket::new(
             ReqType::KVCacheIndexRemoveRequest.to_u8(),
             kv_cache_index_remove_request,
             tx.clone(),
         );
         let rpc_client = self.get_client(addr.clone()).await?;
-        rpc_client.send_request(&mut packet).await.map_err(|err| {
+        rpc_client.send_request(packet).await.map_err(|err| {
             DatenLordError::DistributeCacheManagerErr {
                 context: vec![format!("Failed to send request: {:?}", err)],
             }
@@ -800,13 +800,13 @@ impl DistributeKVCacheClientInner {
             block_size: self.block_size,
             kv_cache_id,
         });
-        let mut packet = KVCachePacket::new(
+        let packet = KVCachePacket::new(
             ReqType::KVBlockGetRequest.to_u8(),
             kv_cache_request,
             tx.clone(),
         );
         let rpc_client = self.get_client(addr.clone()).await?;
-        rpc_client.send_request(&mut packet).await.map_err(|err| {
+        rpc_client.send_request(packet).await.map_err(|err| {
             DatenLordError::DistributeCacheManagerErr {
                 context: vec![format!("Failed to send request: {:?}", err)],
             }
@@ -857,7 +857,7 @@ impl DistributeKVCacheClientInner {
                 batch_size: kv_block_put_requests.len() as u64,
                 blocks: kv_block_put_requests,
             });
-        let mut packet = KVCachePacket::new(
+        let packet = KVCachePacket::new(
             ReqType::KVBlockBatchPutRequest.to_u8(),
             kv_cache_batch_put_request,
             tx.clone(),
@@ -866,14 +866,14 @@ impl DistributeKVCacheClientInner {
         debug!("KVCachePacket::new check Time cost: {:?}", start_2 - start_1);
 
         let rpc_client = self.get_client(addr.clone()).await?;
-        rpc_client.send_request(&mut packet).await.map_err(|err| {
+        rpc_client.send_request(packet).await.map_err(|err| {
             DatenLordError::DistributeCacheManagerErr {
                 context: vec![format!("Failed to send request: {:?}", err)],
             }
         })?;
 
         let start_3 = start.elapsed();
-        debug!("rpc_client.send_request(&mut packet) check Time cost: {:?}", start_3 - start_2);
+        debug!("rpc_client.send_request(packet) check Time cost: {:?}", start_3 - start_2);
 
         match rx.recv_async().await {
             Ok(Ok(response)) => {

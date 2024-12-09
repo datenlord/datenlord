@@ -105,6 +105,9 @@ name = "kvcache_pyclient"
 [profile.release]
 debug = true
 
+[profile.dev]
+debug = true
+
 [features]
 abi-7-9 = []
 abi-7-10 = ["abi-7-9"]

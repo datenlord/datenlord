@@ -265,12 +265,12 @@ impl<P: Packet + Send + Sync> PacketsKeeper<P> {
     }
 
     /// Add a task to the packets
-    pub fn add_task(&self, packet: &mut P) -> Result<(), RpcError> {
+    pub fn add_task(&self, mut packet: P) -> Result<(), RpcError> {
         // TODO: use a global atomic ticker(updated by check_loop) or read current time?
         let timestamp = self.current_time.elapsed().as_secs();
         packet.set_timestamp(timestamp);
         self.buffer_packets_sender
-            .send(packet.to_owned())
+            .send(packet)
             .map_err(|e| {
                 RpcError::InternalError(format!("Failed to send packet to buffer: {e:?}"))
             })?;
@@ -471,7 +471,7 @@ mod tests {
             sender: tx.clone(),
             request: TestRequest { mock: 0 },
         };
-        packets_keeper.add_task(&mut packet.clone()).unwrap();
+        packets_keeper.add_task(packet.clone()).unwrap();
         packets_keeper
             .take_task(packet.seq(), &mut BytesMut::new())
             .await
@@ -492,7 +492,7 @@ mod tests {
             sender: tx.clone(),
             request: TestRequest { mock: 0 },
         };
-        packets_keeper.add_task(&mut packet_2.clone()).unwrap();
+        packets_keeper.add_task(packet_2.clone()).unwrap();
         sleep(time::Duration::from_secs(2));
         packets_keeper.clean_timeout_tasks().await;
         match rx.recv() {
@@ -512,7 +512,7 @@ mod tests {
             sender: tx.clone(),
             request: TestRequest { mock: 0 },
         };
-        packets_keeper.add_task(&mut packet_3.clone()).unwrap();
+        packets_keeper.add_task(packet_3.clone()).unwrap();
         packets_keeper.purge_outdated_tasks().await;
         match rx.recv() {
             Ok(res) => {

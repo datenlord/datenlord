@@ -211,7 +211,7 @@ where
     }
 
     /// Send packet by the client.
-    pub async fn send_packet(&self, req_packet: &mut P) -> Result<(), RpcError> {
+    pub async fn send_packet(&self, mut req_packet: P) -> Result<(), RpcError> {
         let current_seq = self.next_seq();
         req_packet.set_seq(current_seq);
         debug!("{:?} Try to send request: {:?}", self, current_seq);
@@ -227,15 +227,15 @@ where
         debug!("{:?} Try to send request: {:?}", self, req_header);
 
         // concate req_header and req_buffer
-        if let Ok(()) = self.send_data(&req_header, Some(req_packet)).await {
+        if let Ok(()) = self.send_data(&req_header, Some(&req_packet)).await {
             // We have set a copy to keeper and manage the status for the packets keeper
             // Set to packet task with clone
             self.packets_keeper.add_task(req_packet)?;
-            debug!("{:?} Sent request success: {:?}", self, req_packet.seq());
+            debug!("{:?} Sent request success: {:?}", self, current_seq);
 
             Ok(())
         } else {
-            debug!("{:?} Failed to send request: {:?}", self, req_packet.seq());
+            debug!("{:?} Failed to send request: {:?}", self, current_seq);
             Err(RpcError::InternalError("Failed to send request".to_owned()))
         }
     }
@@ -375,7 +375,7 @@ where
     /// Try to send data to channel, if the channel is full, return an error.
     /// Contains the rezquest header and body.
     /// WARN: this function does not support concurrent call
-    pub async fn send_request(&self, req: &mut P) -> Result<(), RpcError> {
+    pub async fn send_request(&self, req: P) -> Result<(), RpcError> {
         self.inner_connection
             .send_packet(req)
             .await

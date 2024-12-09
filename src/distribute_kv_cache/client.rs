@@ -131,7 +131,7 @@ impl DistributeCacheClient {
             block_version: mtime,
             hash_ring_version: current_ring.version(),
         };
-        let mut packet = FileBlockPacket::new(&block_request, tx.clone());
+        let packet = FileBlockPacket::new(&block_request, tx.clone());
 
         let start_time = tokio::time::Instant::now();
 
@@ -144,7 +144,7 @@ impl DistributeCacheClient {
                 // TODO: Test connection first, if current connection is not available, we will try to return quickly and delete this rpc client
                 // But, it might cause a lot of latency, so we just check the connection and remove it when the connection is not available
 
-                rpc_client.send_request(&mut packet).await.map_err(|err| {
+                rpc_client.send_request(packet).await.map_err(|err| {
                     match err {
                         RpcError::Timeout(_) => {
                             // If the rpc client is timeout, we will remove it from the cache
@@ -188,7 +188,7 @@ impl DistributeCacheClient {
 
                 // TODO: Change to other node?
 
-                rpc_client.send_request(&mut packet).await.map_err(|err| {
+                rpc_client.send_request(packet).await.map_err(|err| {
                     DatenLordError::DistributeCacheManagerErr {
                         context: vec![format!("Failed to send request: {:?}", err)],
                     }

@@ -89,8 +89,8 @@ async fn main() -> DatenLordResult<()> {
         }
     }
 
-
-    loop {
+    let start = tokio::time::Instant::now();
+    for _ in 0..100 {
         match config.op_type.as_str() {
             "read" => {
                 let key = "key".to_string();
@@ -107,6 +107,11 @@ async fn main() -> DatenLordResult<()> {
             }
         }
     }
+
+
+    let end = start.elapsed();
+    info!("Total time: {:?}", end);
+    info!("Throughput: {:?} MB/s", ((config.block_size * 100) as f64) / 1024.0 / 1024.0 / (end.as_secs() as f64));
 
     // task_manager::wait_for_shutdown(&TASK_MANAGER)?.await;
     info!("KV cache server stopped");

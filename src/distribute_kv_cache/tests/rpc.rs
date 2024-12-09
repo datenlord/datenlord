@@ -241,8 +241,8 @@ mod tests {
                 block_version: 0,
                 hash_ring_version: 1,
             };
-            let mut packet = FileBlockPacket::new(&block_request, tx.clone());
-            rpc_client.send_request(&mut packet).await.unwrap();
+            let packet = FileBlockPacket::new(&block_request, tx.clone());
+            rpc_client.send_request(packet).await.unwrap();
 
             loop {
                 match rx.recv_async().await {
