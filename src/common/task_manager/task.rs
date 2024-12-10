@@ -32,6 +32,10 @@ pub enum TaskName {
     WriteBack,
     /// The scheduler extender.
     SchedulerExtender,
+    /// The task for etcd keep alive.
+    EtcdKeepAlive,
+    /// The task for distribute cluster manager, distribute rpc server and so on.
+    DistributeCacheManager,
 }
 
 /// The task handle(s) of the current task node.
@@ -65,11 +69,14 @@ pub(super) struct Task {
     depends_on: Vec<TaskName>,
     /// The count of predecessors.
     predecessor_count: usize,
+    /// The handle of this task manager runtime.
+    handle: tokio::runtime::Handle,
 }
 
 impl Task {
     /// Create a task node with `name`.
-    pub fn new(name: TaskName, status: Arc<AtomicBool>) -> Self {
+    pub fn new(name: TaskName, status: Arc<AtomicBool>, handle: tokio::runtime::Handle) -> Self {
+        #[allow(clippy::unwrap_used)]
         Self {
             name,
             token: CancellationToken::new(),
@@ -77,6 +84,7 @@ impl Task {
             handles: TaskHandle::default(),
             depends_on: vec![],
             predecessor_count: 0,
+            handle,
         }
     }
 
@@ -103,7 +111,7 @@ impl Task {
         let (tx, rx) = mpsc::channel(DEFAULT_HANDLE_QUEUE_LIMIT);
         let gc_task = GcTask::new(self.name, rx, DEFAULT_TIMEOUT);
 
-        let task_handle = tokio::spawn(gc_task.run(token.clone()));
+        let task_handle = self.handle.spawn(gc_task.run(token.clone()));
         let gc_handle = GcHandle::new(self.name, Arc::clone(&self.status), token, tx);
 
         self.handles = TaskHandle::Gc(gc_handle, task_handle);
@@ -181,10 +189,12 @@ impl Task {
 }
 
 /// Edges of the dependency graph of the tasks.
-pub(super) const EDGES: [(TaskName, TaskName); 9] = [
+pub(super) const EDGES: [(TaskName, TaskName); 11] = [
     (TaskName::Root, TaskName::Metrics),
     (TaskName::Root, TaskName::BlockFlush),
     (TaskName::Root, TaskName::SchedulerExtender),
+    (TaskName::Root, TaskName::EtcdKeepAlive),
+    (TaskName::Root, TaskName::DistributeCacheManager),
     (TaskName::BlockFlush, TaskName::AsyncFuse),
     (TaskName::BlockFlush, TaskName::FuseRequest),
     (TaskName::FuseRequest, TaskName::AsyncFuse),
