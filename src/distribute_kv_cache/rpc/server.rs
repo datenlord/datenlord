@@ -1,7 +1,5 @@
 use std::{
-    cell::UnsafeCell,
-    fmt::{self, Debug},
-    sync::Arc,
+    cell::UnsafeCell, fmt::{self, Debug}, io::IoSlice, sync::Arc
 };
 
 use async_trait::async_trait;
@@ -13,7 +11,7 @@ use tokio::{
     task,
 };
 
-use crate::{read_exact_timeout, write_all_timeout};
+use crate::{read_exact_timeout, write_all_timeout, write_vectored_timeout};
 
 use super::{
     common::ServerTimeoutOptions,
@@ -26,6 +24,10 @@ use super::{
 
 use tracing::{debug, warn};
 
+/// The huge body length for the response,
+/// when the response is too large, we need to consider to take user buffer.
+const HUGE_BODY_LEN: u64 = 1 * 1024 * 1024;
+
 /// Define trait for implementing the RPC server connection handler.
 #[async_trait]
 pub trait RpcServerConnectionHandler {
@@ -33,8 +35,8 @@ pub trait RpcServerConnectionHandler {
     async fn dispatch(
         &self,
         req_header: ReqHeader,
-        req_buffer: &[u8],
-        done_tx: mpsc::Sender<Vec<u8>>,
+        req_buffer: BytesMut,
+        done_tx: mpsc::Sender<Vec<bytes::Bytes>>,
     );
 }
 
@@ -150,6 +152,33 @@ where
         }
     }
 
+    /// Recv huge request body from the stream
+    pub async fn recv_huge_len(&self, len: u64, req_buffer: &mut BytesMut) -> Result<(), RpcError> {
+        let start = tokio::time::Instant::now();
+        if req_buffer.capacity() < u64_to_usize(len) {
+            req_buffer.reserve(u64_to_usize(len) - req_buffer.capacity());
+        }
+        // req_buffer.resize(u64_to_usize(len), 0);
+        unsafe {
+            req_buffer.set_len(u64_to_usize(len));
+        }
+        let start_1 = start.elapsed();
+        debug!("Server resize buffer to size {:?} cost: {:?}", len, start_1);
+
+        let reader = self.get_stream_mut();
+        match read_exact_timeout!(reader, req_buffer, self.timeout_options.read_timeout).await
+        {
+            Ok(size) => {
+                debug!("Received request body: {:?}", size);
+                Ok(())
+            }
+            Err(err) => {
+                debug!("Failed to receive request: {:?}", err);
+                Err(RpcError::InternalError(err.to_string()))
+            }
+        }
+    }
+
     /// Send response to the stream
     /// The response is a byte array, contains the response header and body.
     pub async fn send_response(&self, resp: &[u8]) -> Result<(), RpcError> {
@@ -157,6 +186,24 @@ where
         match write_all_timeout!(writer, resp, self.timeout_options.write_timeout).await {
             Ok(()) => {
                 debug!("Sent response successfully: {:?}", resp.len());
+                Ok(())
+            }
+            Err(err) => {
+                debug!("Failed to send response: {:?}", err);
+                Err(RpcError::InternalError(err.to_string()))
+            }
+        }
+    }
+
+    /// Send vectored response to the stream
+    /// The response is a byte array, contains the response header and body.
+    pub async fn send_vectored_response(&self, resp: &[IoSlice<'_>]) -> Result<(), RpcError> {
+        let writer = self.get_stream_mut();
+        // writer.write_vectored(bufs)
+        // Ensure the input is a vector of IoSlice
+        match write_vectored_timeout!(writer, resp, self.timeout_options.write_timeout).await {
+            Ok(done_size) => {
+                debug!("Sent response successfully: {:?} with size: {:?}", resp.len(), done_size);
                 Ok(())
             }
             Err(err) => {
@@ -195,7 +242,7 @@ where
     }
 
     /// Dispatch the handler for the connection.
-    async fn dispatch(&self, req_header: ReqHeader, done_tx: mpsc::Sender<Vec<u8>>) {
+    async fn dispatch(&self, req_header: ReqHeader, done_tx: mpsc::Sender<Vec<bytes::Bytes>>) {
         // Dispatch the handler for the connection
         let seq = req_header.seq;
         let body_len = req_header.len;
@@ -222,23 +269,45 @@ where
                     warn!("Failed to send keepalive response");
                 }
             } else {
-                // Try to read the request body
-                match self.inner.recv_len(body_len).await {
-                    Ok(()) => {}
-                    Err(err) => {
-                        warn!("Failed to receive request body: {:?}", err);
-                        return;
-                    }
-                };
-                debug!(
-                    "Dispatched handler for the connection, seq: {:?}",
-                    req_header.seq
-                );
-                let req_buffer: &mut BytesMut = unsafe { &mut *self.inner.req_buf.get() };
-                self.inner
-                    .dispatch_handler
-                    .dispatch(req_header, req_buffer, done_tx)
-                    .await;
+                if body_len <= HUGE_BODY_LEN {
+                    debug!("Request body length is less than 1MB, try to read the request body");
+                    // Try to read the request body
+                    match self.inner.recv_len(body_len).await {
+                        Ok(()) => {}
+                        Err(err) => {
+                            warn!("Failed to receive request body: {:?}", err);
+                            return;
+                        }
+                    };
+                    debug!(
+                        "Dispatched handler for the connection, seq: {:?}",
+                        req_header.seq
+                    );
+                    let req_buffer: &mut BytesMut = unsafe { &mut *self.inner.req_buf.get() };
+                    self.inner
+                        .dispatch_handler
+                        .dispatch(req_header, req_buffer.clone(), done_tx)
+                        .await;
+                } else {
+                    debug!("Request body length is huge, try to read the request body");
+                    // Huge body length, need to consider to take user buffer
+                    let mut req_buffer = BytesMut::with_capacity(u64_to_usize(body_len));
+                    match self.inner.recv_huge_len(body_len, &mut req_buffer).await {
+                        Ok(()) => {}
+                        Err(err) => {
+                            warn!("Failed to receive huge request body: {:?}", err);
+                            return;
+                        }
+                    };
+                    debug!(
+                        "Dispatched handler for the connection, seq: {:?}",
+                        req_header.seq
+                    );
+                    self.inner
+                        .dispatch_handler
+                        .dispatch(req_header, req_buffer, done_tx)
+                        .await;
+                }
             }
         } else {
             debug!("Inner request type is not matched: {:?}", req_header.op);
@@ -251,7 +320,7 @@ where
         debug!("RpcServerConnection::Received a new TcpStream.");
 
         // TODO: copy done_tx to the worker pool
-        let (done_tx, mut done_rx) = mpsc::channel::<Vec<u8>>(10000);
+        let (done_tx, mut done_rx) = mpsc::channel::<Vec<bytes::Bytes>>(10000);
 
         // Send response to the stream from the worker pool
         // Worker pool will handle the response sending
@@ -262,7 +331,19 @@ where
                 if let Some(resp_buffer) = done_rx.recv().await {
                     debug!("Recv buffer from done_tx channel, try to send response to the stream");
                     // Send response to the stream
-                    if let Ok(res) = inner_conn.send_response(&resp_buffer).await {
+                    // if let Ok(res) = inner_conn.send_response(&resp_buffer).await {
+
+                    // Convert the buffer to IoSlice
+                    let start = tokio::time::Instant::now();
+                    let mut resp_buffer_slices = Vec::with_capacity(resp_buffer.len());
+                    for buf in resp_buffer.iter() {
+                        resp_buffer_slices.push(IoSlice::new(buf));
+                    }
+                    let start_1 = start.elapsed();
+                    debug!("Convert buffer to IoSlice cost: {:?}", start_1);
+
+                    // Send vectored data to the stream
+                    if let Ok(res) = inner_conn.send_vectored_response(&resp_buffer_slices).await {
                         debug!("Sent file block response successfully: {:?}", res);
                     } else {
                         warn!("Failed to send file block response");
@@ -467,8 +548,8 @@ mod tests {
         async fn dispatch(
             &self,
             _req_header: ReqHeader,
-            _req_buffer: &[u8],
-            _done_tx: mpsc::Sender<Vec<u8>>,
+            _req_buffer: BytesMut,
+            _done_tx: mpsc::Sender<Vec<bytes::Bytes>>,
         ) {
             // Dispatch the handler for the connection
             debug!("Dispatched handler for the connection");

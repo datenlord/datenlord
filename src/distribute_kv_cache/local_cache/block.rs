@@ -100,12 +100,12 @@ impl MetaData {
 #[derive(Clone, Debug)]
 pub struct Block {
     meta_data: MetaData,
-    data: Vec<u8>,
+    data: bytes::Bytes,
 }
 
 impl Block {
     /// Create a new Block instance
-    pub fn new(meta_data: MetaData, data: Vec<u8>) -> Self {
+    pub fn new(meta_data: MetaData, data: bytes::Bytes) -> Self {
         // Make sure data length is BLOCK_SIZE
         // debug_assert!(data.len() == BLOCK_SIZE);
 
@@ -113,7 +113,7 @@ impl Block {
     }
 
     /// Get the block inner data of the Block
-    pub fn get_data(&self) -> Vec<u8> {
+    pub fn get_data(&self) -> bytes::Bytes {
         self.data.clone()
     }
 

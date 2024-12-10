@@ -53,6 +53,14 @@ pub struct KVCacheClientConfig {
         default_value = "read"
     )]
     op_type: String,
+    /// Operation times
+    #[clap(
+        short = 't',
+        long = "op-times",
+        value_name = "OP_TIMES",
+        default_value = "100"
+    )]
+    op_times: u64,
 }
 
 #[tokio::main]
@@ -90,7 +98,7 @@ async fn main() -> DatenLordResult<()> {
     }
 
     let start = tokio::time::Instant::now();
-    for _ in 0..100 {
+    for _ in 0..config.op_times {
         match config.op_type.as_str() {
             "read" => {
                 let key = "key".to_string();
@@ -111,7 +119,7 @@ async fn main() -> DatenLordResult<()> {
 
     let end = start.elapsed();
     info!("Total time: {:?}", end);
-    info!("Throughput: {:?} MB/s", ((config.block_size * 100) as f64) / 1024.0 / 1024.0 / (end.as_secs() as f64));
+    info!("Throughput: {:?} MB/s", ((config.block_size * config.op_times) as f64) / 1024.0 / 1024.0 / end.as_secs_f64());
 
     // task_manager::wait_for_shutdown(&TASK_MANAGER)?.await;
     info!("KV cache server stopped");

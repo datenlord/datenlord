@@ -152,7 +152,7 @@ impl BlockManager {
             // error!("Read block len: {:?}", buf.len());
             // error!("Read block inner content: {:?}", buf);
 
-            let block = Block::new(meta_data.clone(), buf.to_vec());
+            let block = Block::new(meta_data.clone(), bytes::Bytes::from(buf.to_vec()));
 
             // error!("Read block: {:?}", block);
 
@@ -174,18 +174,19 @@ impl BlockManager {
     #[allow(dead_code)]
     pub async fn write(&mut self, block: &Block) -> StorageResult<()> {
         let meta = block.get_meta_data();
-        let relative_path = meta.to_id();
+        // let relative_path = meta.to_id();
 
         // Write the block to the cache
         let block_ref = Arc::new(RwLock::new(block.clone()));
         self.cache.write().unwrap().put(meta.clone(), block_ref);
 
         // Write the block to the storage
-        let _ = self
-            .backend
-            .store(&relative_path, block.get_data().as_slice())
-            .await
-            .map_err(|e| format!("Failed to write block: {}", e));
+        // 20241210 ignore this op
+        // let _ = self
+        //     .backend
+        //     .store(&relative_path, block.get_data().as_slice())
+        //     .await
+        //     .map_err(|e| format!("Failed to write block: {}", e));
 
         Ok(())
     }
@@ -225,7 +226,7 @@ impl KVBlockManager {
         // Create a new LRUPolicy with a capacity of 2000
         // It will evict the least recently used block when the cache is full
         // TODO: Support mem limit and block size limit， current is block count limit
-        let policy = LRUPolicy::new(5000);
+        let policy = LRUPolicy::new(6000);
         let cache = Arc::new(RwLock::new(CacheManager::new(policy)));
         KVBlockManager { cache, backend }
     }

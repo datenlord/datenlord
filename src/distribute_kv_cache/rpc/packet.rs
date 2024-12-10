@@ -21,18 +21,28 @@ pub trait Encode: Sync {
     /// If you need to encode from start, you should clear the buffer first
     fn encode(&self, buf: &mut BytesMut);
 
-    /// Get large data with Bytes
-    fn encode_large_data(&self) -> Option<()> {
-        None
+    /// Get large data with Bytes, disable memory copy
+    fn encode_large_data(&self) -> Vec<bytes::Bytes> {
+        // Default is empty
+        vec![]
     }
 }
 
 /// The Decode trait is used to message a byte buffer into a data structure.
 pub trait Decode {
     /// Decode the byte buffer into a data structure
-    fn decode(buf: &[u8]) -> Result<Self, RpcError>
+    fn decode(_buf: &mut BytesMut) -> Result<Self, RpcError>
     where
-        Self: Sized;
+        Self: Sized {
+        unimplemented!("Not implemented for this type")
+    }
+
+    /// Decode the large data into a data structure
+    fn decode_large_data(_buf: bytes::Bytes) -> Result<Self, RpcError>
+    where
+        Self: Sized {
+        unimplemented!("Not implemented for this type")
+    }
 }
 
 /// The ActualSize trait is used to get the actual size of the data structure.
@@ -64,7 +74,7 @@ impl Encode for ReqHeader {
 }
 
 impl Decode for ReqHeader {
-    fn decode(buf: &[u8]) -> Result<Self, RpcError> {
+    fn decode(buf: &mut BytesMut) -> Result<Self, RpcError> {
         if buf.len() < u64_to_usize(REQ_HEADER_SIZE) {
             return Err(RpcError::InvalidRequest(
                 "Invalid request header".to_owned(),
@@ -102,7 +112,7 @@ impl Encode for RespHeader {
 }
 
 impl Decode for RespHeader {
-    fn decode(buf: &[u8]) -> Result<Self, RpcError> {
+    fn decode(buf: &mut BytesMut) -> Result<Self, RpcError> {
         if buf.len() < u64_to_usize(RESP_HEADER_SIZE) {
             return Err(RpcError::InvalidResponse(
                 "Invalid response header".to_owned(),
@@ -150,7 +160,7 @@ pub trait Packet: Sync + Send + Clone + Debug + Encode {
 
     /// Serialize response data to bytes
     /// We will get the serialized response data by accessing the property of the Packet
-    fn set_resp_data(&mut self, data: &[u8]) -> Result<(), RpcError>;
+    fn set_resp_data(&mut self, data: BytesMut) -> Result<(), RpcError>;
 
     /// Set the packet result, and we will send the response buffer to caller, caller and directly decode this buffer
     /// The buffer is different in req and resp, so we can not hold one buffer in packet
@@ -306,19 +316,26 @@ impl<P: Packet + Send + Sync> PacketsKeeper<P> {
     }
 
     /// Get a task from the packets, and update data in the task
-    pub async fn take_task(&self, seq: u64, resp_buffer: &mut BytesMut) -> Result<(), RpcError> {
+    pub async fn take_task(&self, seq: u64, resp_buffer: BytesMut) -> Result<(), RpcError> {
         // Try to sync from buffer
         {
+            println!("take_task111");
             let mut packets_inner = self.inner.lock().await;
+            println!("take_task: {:?}", packets_inner);
             while let Ok(packet) = self.buffer_packets_receiver.try_recv() {
+                println!("take_task self.buffer_packets_receiver.try_recv(): {:?}", packet);
                 let seq = packet.seq();
                 packets_inner.add_task(seq, packet);
             }
+
+            println!("take_task222");
 
             if let Some(mut packet) = packets_inner.remove_task(seq) {
                 let seq = packet.seq();
                 // Update status data
                 // Try to set result code in `set_resp_data`
+
+                // forget this buffer for raw decode!!! 20241210
                 let set_result = packet.set_resp_data(resp_buffer);
                 match set_result {
                     Ok(()) => {
@@ -412,7 +429,7 @@ mod tests {
             usize_to_u64(mem::size_of_val(&self.request))
         }
 
-        fn set_resp_data(&mut self, _data: &[u8]) -> Result<(), RpcError> {
+        fn set_resp_data(&mut self, _data: BytesMut) -> Result<(), RpcError> {
             Ok(())
         }
 
@@ -432,7 +449,7 @@ mod tests {
         header.encode(&mut buf);
         assert_eq!(buf.len(), u64_to_usize(REQ_HEADER_SIZE));
 
-        let header_decoded = ReqHeader::decode(&buf).unwrap();
+        let header_decoded = ReqHeader::decode(&mut buf).unwrap();
         assert_eq!(header_decoded.seq, 1);
         assert_eq!(header_decoded.op, 2);
         assert_eq!(header_decoded.len, 3);
@@ -449,7 +466,7 @@ mod tests {
         header.encode(&mut buf);
         assert_eq!(buf.len(), u64_to_usize(RESP_HEADER_SIZE));
 
-        let header_decoded = RespHeader::decode(&buf).unwrap();
+        let header_decoded = RespHeader::decode(&mut buf).unwrap();
         assert_eq!(header_decoded.seq, 1);
         assert_eq!(header_decoded.op, 2);
         assert_eq!(header_decoded.len, 3);
@@ -473,7 +490,7 @@ mod tests {
         };
         packets_keeper.add_task(packet.clone()).unwrap();
         packets_keeper
-            .take_task(packet.seq(), &mut BytesMut::new())
+            .take_task(packet.seq(), BytesMut::new())
             .await
             .unwrap();
         match rx.recv() {

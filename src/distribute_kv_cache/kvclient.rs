@@ -305,7 +305,6 @@ impl DistributeKVCacheClient {
             }
         }
 
-
         // Empty address from the distribute cache
         if node_address.len() == 0 {
             error!("Failed to get block, node address is empty");
@@ -814,8 +813,11 @@ impl DistributeKVCacheClientInner {
 
         match rx.recv_async().await {
             Ok(Ok(response)) => match response {
-                KVCacheResponse::KVBlockGetResponse(response) => {
-                    return Ok(response.data);
+                // TODO: fix this get operation.
+                KVCacheResponse::KVBlockGetResponse(_response) => {
+                    debug!("Get block from remote cache");
+                    // return Ok(response.data);
+                    return Ok(vec![]);
                 }
                 _ => {
                     return Err(DatenLordError::DistributeCacheManagerErr {
@@ -845,7 +847,7 @@ impl DistributeKVCacheClientInner {
             kv_block_put_requests.push(KVBlockPutRequest {
                 block_size: self.block_size,
                 kv_cache_id: item.block_id,
-                data: item.data,
+                data: bytes::Bytes::from(item.data),
             });
         }
         let start_1 = start.elapsed();

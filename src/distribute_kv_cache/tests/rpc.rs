@@ -56,7 +56,7 @@ mod tests {
         /// The file block request.
         request: FileBlockRequest,
         /// The channel for sending the response.
-        done_tx: mpsc::Sender<Vec<u8>>,
+        done_tx: mpsc::Sender<Vec<bytes::Bytes>>,
     }
 
     impl FileBlockHandler {
@@ -65,7 +65,7 @@ mod tests {
         pub fn new(
             header: ReqHeader,
             request: FileBlockRequest,
-            done_tx: mpsc::Sender<Vec<u8>>,
+            done_tx: mpsc::Sender<Vec<bytes::Bytes>>,
         ) -> Self {
             Self {
                 header,
@@ -106,7 +106,7 @@ mod tests {
             resp_header_buffer.extend_from_slice(&resp_body_buffer);
 
             // Send response to the done channel
-            match self.done_tx.send(resp_header_buffer.to_vec()).await {
+            match self.done_tx.send(vec![resp_header_buffer.freeze()]).await {
                 Ok(()) => {
                     debug!("Sent response to done channel");
                 }
@@ -137,15 +137,15 @@ mod tests {
         async fn dispatch(
             &self,
             req_header: ReqHeader,
-            req_buffer: &[u8],
-            done_tx: mpsc::Sender<Vec<u8>>,
+            mut req_buffer: BytesMut,
+            done_tx: mpsc::Sender<Vec<bytes::Bytes>>,
         ) {
             // Dispatch the handler for the connection
             if let Ok(req_type) = ReqType::from_u8(req_header.op) {
                 if let ReqType::FileBlockRequest = req_type {
                     // Try to read the request body
                     // Decode the request body
-                    let req_body = match FileBlockRequest::decode(req_buffer) {
+                    let req_body = match FileBlockRequest::decode(&mut req_buffer) {
                         Ok(req) => req,
                         Err(err) => {
                             debug!("Failed to decode file block request: {:?}", err);

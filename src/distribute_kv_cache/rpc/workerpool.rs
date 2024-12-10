@@ -111,7 +111,7 @@ impl Worker {
     /// Start the worker.
     fn start(&self) {
         let shutdown_rx = self.shutdown_rx.clone();
-        let receiver = Arc::clone(&self.job_rx);
+        let receiver: Arc<flume::Receiver<Box<dyn Job + Send + Sync>>> = Arc::clone(&self.job_rx);
         tokio::task::spawn(async move {
             // Core worker loop
             loop {

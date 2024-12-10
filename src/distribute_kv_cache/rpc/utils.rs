@@ -38,6 +38,25 @@ macro_rules! write_all_timeout {
     };
 }
 
+/// Write vectored with timeout options from the environment variables
+#[macro_export]
+macro_rules! write_vectored_timeout {
+    ($self:expr, $src:expr, $write_timeout:expr) => {
+        async move {
+            use tokio::time::timeout;
+
+            // TODO: check all the write_vectored is done
+            match timeout($write_timeout, $self.write_vectored($src)).await {
+                Ok(res) => match res {
+                    Ok(size) => Ok(size),
+                    Err(write_err) => Err(write_err),
+                },
+                Err(timeout_err) => Err(timeout_err.into()),
+            }
+        }
+    };
+}
+
 /// Connect a stream with timeout options from the environment variables
 #[macro_export]
 macro_rules! connect_timeout {

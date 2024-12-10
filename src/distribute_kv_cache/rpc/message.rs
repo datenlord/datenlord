@@ -3,7 +3,7 @@ use std::{fmt, mem};
 use async_trait::async_trait;
 use bytes::{BufMut, BytesMut};
 use clippy_utilities::OverflowArithmetic;
-use tracing::warn;
+use tracing::{debug, warn};
 
 use crate::async_fuse::util::usize_to_u64;
 
@@ -154,7 +154,7 @@ impl Encode for FileBlockRequest {
 
 impl Decode for FileBlockRequest {
     /// Decode the byte buffer into a file block request.
-    fn decode(buf: &[u8]) -> Result<Self, RpcError> {
+    fn decode(buf: &mut BytesMut) -> Result<Self, RpcError> {
         if buf.len() < 32 {
             return Err(RpcError::InternalError("Insufficient bytes".to_owned()));
         }
@@ -215,15 +215,15 @@ impl Encode for FileBlockResponse {
 
 impl Decode for FileBlockResponse {
     //// Decode the byte buffer into a file block response.
-    fn decode(buf: &[u8]) -> Result<Self, RpcError> {
+    fn decode_large_data(buf: bytes::Bytes) -> Result<Self, RpcError> {
         if buf.len() < 41 {
             return Err(RpcError::InternalError("Insufficient bytes".to_owned()));
         }
-        let file_id = get_u64_from_buf(buf, 0)?;
-        let block_id = get_u64_from_buf(buf, 8)?;
-        let block_size = get_u64_from_buf(buf, 16)?;
-        let block_version = get_u64_from_buf(buf, 24)?;
-        let hash_ring_version = get_u64_from_buf(buf, 32)?;
+        let file_id = get_u64_from_buf(&buf, 0)?;
+        let block_id = get_u64_from_buf(&buf, 8)?;
+        let block_size = get_u64_from_buf(&buf, 16)?;
+        let block_version = get_u64_from_buf(&buf, 24)?;
+        let hash_ring_version = get_u64_from_buf(&buf, 32)?;
         let status = match buf.get(40) {
             Some(&0) => StatusCode::Success,
             Some(&1) => StatusCode::NotFound,
@@ -349,8 +349,8 @@ impl Packet for FileBlockPacket {
     }
 
     /// Set response data to current packet
-    fn set_resp_data(&mut self, data: &[u8]) -> Result<(), RpcError> {
-        self.response = Some(FileBlockResponse::decode(data)?);
+    fn set_resp_data(&mut self, data: BytesMut) -> Result<(), RpcError> {
+        self.response = Some(FileBlockResponse::decode_large_data(data.freeze())?);
         Ok(())
     }
 
@@ -409,11 +409,20 @@ impl Encode for KVCacheIdAllocateRequest {
 
 impl Decode for KVCacheIdAllocateRequest {
     /// Decode the byte buffer into a kv cache id allocate request.
-    fn decode(buf: &[u8]) -> Result<Self, RpcError> {
+    fn decode(buf: &mut BytesMut) -> Result<Self, RpcError> {
         if buf.len() < 8 {
             return Err(RpcError::InternalError("Insufficient bytes".to_owned()));
         }
         let block_size = get_u64_from_buf(buf, 0)?;
+        Ok(KVCacheIdAllocateRequest { block_size })
+    }
+
+    /// Decode the byte buffer into a kv cache id allocate request.
+    fn decode_large_data(buf: bytes::Bytes) -> Result<Self, RpcError> {
+        if buf.len() < 8 {
+            return Err(RpcError::InternalError("Insufficient bytes".to_owned()));
+        }
+        let block_size = get_u64_from_buf(&buf, 0)?;
         Ok(KVCacheIdAllocateRequest { block_size })
     }
 }
@@ -444,7 +453,7 @@ impl Encode for KVCacheIdAllocateResponse {
 
 impl Decode for KVCacheIdAllocateResponse {
     /// Decode the byte buffer into a kv cache id allocate response.
-    fn decode(buf: &[u8]) -> Result<Self, RpcError> {
+    fn decode(buf: &mut BytesMut) -> Result<Self, RpcError> {
         if buf.len() < 16 {
             return Err(RpcError::InternalError("Insufficient bytes".to_owned()));
         }
@@ -476,11 +485,25 @@ impl Encode for KVCacheIndexMatchRequest {
 
 impl Decode for KVCacheIndexMatchRequest {
     /// Decode the byte buffer into a kv cache index match request.
-    fn decode(buf: &[u8]) -> Result<Self, RpcError> {
+    fn decode(buf: &mut BytesMut) -> Result<Self, RpcError> {
         if buf.len() < 8 {
             return Err(RpcError::InternalError("Insufficient bytes".to_owned()));
         }
         let block_size = get_u64_from_buf(buf, 0)?;
+        let kv_cache_key = buf[8..].to_vec();
+        Ok(KVCacheIndexMatchRequest {
+            block_size,
+            kv_cache_key,
+        })
+    }
+
+    /// Decode the byte buffer into a kv cache index match request.
+    fn decode_large_data(buf: bytes::Bytes) -> Result<Self, RpcError> {
+        if buf.len() < 8 {
+            return Err(RpcError::InternalError("Insufficient bytes".to_owned()));
+        }
+        let block_size = get_u64_from_buf(&buf, 0)?;
+        // TODO: change to bytes
         let kv_cache_key = buf[8..].to_vec();
         Ok(KVCacheIndexMatchRequest {
             block_size,
@@ -538,7 +561,7 @@ impl Encode for KVCacheIndexMatchResponse {
 
 impl Decode for KVCacheIndexMatchResponse {
     /// Decode the byte buffer into a kv cache index match response.
-    fn decode(buf: &[u8]) -> Result<Self, RpcError> {
+    fn decode(buf: &mut BytesMut) -> Result<Self, RpcError> {
         if buf.len() < 16 {
             return Err(RpcError::InternalError("Insufficient bytes".to_owned()));
         }
@@ -598,7 +621,7 @@ impl Encode for KVCacheIndexInsertRequest {
 
 impl Decode for KVCacheIndexInsertRequest {
     /// Decode the byte buffer into a kv cache index insert request.
-    fn decode(buf: &[u8]) -> Result<Self, RpcError> {
+    fn decode(buf: &mut BytesMut) -> Result<Self, RpcError> {
         if buf.len() < 16 {
             return Err(RpcError::InternalError("Insufficient bytes".to_owned()));
         }
@@ -607,6 +630,28 @@ impl Decode for KVCacheIndexInsertRequest {
         let offset = get_u64_from_buf(buf, 16)?;
         let size = get_u64_from_buf(buf, 24)?;
         let kv_cache_key_len = get_u64_from_buf(buf, 32)?;
+        let kv_cache_key = buf[40..40 + u64_to_usize(kv_cache_key_len)].to_vec();
+        Ok(KVCacheIndexInsertRequest {
+            block_size,
+            kv_cache_key,
+            offset,
+            size,
+            kv_cache_key_len,
+            kv_cache_id,
+        })
+    }
+
+    /// Decode the byte buffer into a kv cache index insert request.
+    fn decode_large_data(buf: bytes::Bytes) -> Result<Self, RpcError> {
+        if buf.len() < 16 {
+            return Err(RpcError::InternalError("Insufficient bytes".to_owned()));
+        }
+        let block_size = get_u64_from_buf(&buf, 0)?;
+        let kv_cache_id = get_u64_from_buf(&buf, 8)?;
+        let offset = get_u64_from_buf(&buf, 16)?;
+        let size = get_u64_from_buf(&buf, 24)?;
+        let kv_cache_key_len = get_u64_from_buf(&buf, 32)?;
+        // TODO: change to bytes
         let kv_cache_key = buf[40..40 + u64_to_usize(kv_cache_key_len)].to_vec();
         Ok(KVCacheIndexInsertRequest {
             block_size,
@@ -665,7 +710,7 @@ impl Encode for KVCacheIndexInsertResponse {
 
 impl Decode for KVCacheIndexInsertResponse {
     /// Decode the byte buffer into a kv cache index insert response.
-    fn decode(buf: &[u8]) -> Result<Self, RpcError> {
+    fn decode(buf: &mut BytesMut) -> Result<Self, RpcError> {
         if buf.len() < 17 {
             return Err(RpcError::InternalError("Insufficient bytes".to_owned()));
         }
@@ -710,7 +755,7 @@ impl Encode for KVCacheIndexBatchInsertRequest {
 
 impl Decode for KVCacheIndexBatchInsertRequest {
     /// Decode the byte buffer into a kv cache index batch insert request.
-    fn decode(buf: &[u8]) -> Result<Self, RpcError> {
+    fn decode(buf: &mut BytesMut) -> Result<Self, RpcError> {
         if buf.len() < 8 {
             return Err(RpcError::InternalError("Insufficient bytes".to_owned()));
         }
@@ -718,7 +763,9 @@ impl Decode for KVCacheIndexBatchInsertRequest {
         let mut indexes = Vec::new();
         let mut offset = 8;
         for _ in 0..batch_size {
-            let index = KVCacheIndexInsertRequest::decode(&buf[offset..])?;
+            // TODO: memory copy?
+            let mut sub_buf = buf.split_off(offset);
+            let index = KVCacheIndexInsertRequest::decode(&mut sub_buf)?;
             offset += u64_to_usize(index.actual_size());
             indexes.push(index);
         }
@@ -729,6 +776,29 @@ impl Decode for KVCacheIndexBatchInsertRequest {
             node_address,
         })
     }
+
+        /// Decode the byte buffer into a kv cache index batch insert request.
+        fn decode_large_data(buf: bytes::Bytes) -> Result<Self, RpcError> {
+            if buf.len() < 8 {
+                return Err(RpcError::InternalError("Insufficient bytes".to_owned()));
+            }
+            let batch_size = get_u64_from_buf(&buf, 0)?;
+            let mut indexes = Vec::new();
+            let mut offset = 8;
+            for _ in 0..batch_size {
+                // TODO: memory copy?
+                let sub_buf = buf.slice(offset..);
+                let index = KVCacheIndexInsertRequest::decode_large_data(sub_buf)?;
+                offset += u64_to_usize(index.actual_size());
+                indexes.push(index);
+            }
+            let node_address = buf[offset..].to_vec();
+            Ok(KVCacheIndexBatchInsertRequest {
+                batch_size,
+                indexes,
+                node_address,
+            })
+        }
 }
 
 impl ActualSize for KVCacheIndexBatchInsertRequest {
@@ -763,11 +833,25 @@ impl Encode for KVCacheIndexRemoveRequest {
 
 impl Decode for KVCacheIndexRemoveRequest {
     /// Decode the byte buffer into a kv cache index remove request.
-    fn decode(buf: &[u8]) -> Result<Self, RpcError> {
+    fn decode(buf: &mut BytesMut) -> Result<Self, RpcError> {
         if buf.len() < 8 {
             return Err(RpcError::InternalError("Insufficient bytes".to_owned()));
         }
         let block_size = get_u64_from_buf(buf, 0)?;
+        let kv_cache_key = buf[8..].to_vec();
+        Ok(KVCacheIndexRemoveRequest {
+            block_size,
+            kv_cache_key,
+        })
+    }
+
+    /// Decode the byte buffer into a kv cache index remove request.
+    fn decode_large_data(buf: bytes::Bytes) -> Result<Self, RpcError> {
+        if buf.len() < 8 {
+            return Err(RpcError::InternalError("Insufficient bytes".to_owned()));
+        }
+        let block_size = get_u64_from_buf(&buf, 0)?;
+        // TODO: change to bytes
         let kv_cache_key = buf[8..].to_vec();
         Ok(KVCacheIndexRemoveRequest {
             block_size,
@@ -810,7 +894,7 @@ impl Encode for KVCacheIndexRemoveResponse {
 
 impl Decode for KVCacheIndexRemoveResponse {
     /// Decode the byte buffer into a kv cache index remove response.
-    fn decode(buf: &[u8]) -> Result<Self, RpcError> {
+    fn decode(buf: &mut BytesMut) -> Result<Self, RpcError> {
         if buf.len() < 9 {
             return Err(RpcError::InternalError("Insufficient bytes".to_owned()));
         }
@@ -845,12 +929,25 @@ impl Encode for KVBlockGetRequest {
 
 impl Decode for KVBlockGetRequest {
     /// Decode the byte buffer into a kv block get request.
-    fn decode(buf: &[u8]) -> Result<Self, RpcError> {
+    fn decode(buf: &mut BytesMut) -> Result<Self, RpcError> {
         if buf.len() < 16 {
             return Err(RpcError::InternalError("Insufficient bytes".to_owned()));
         }
         let block_size = get_u64_from_buf(buf, 0)?;
         let kv_cache_id = get_u64_from_buf(buf, 8)?;
+        Ok(KVBlockGetRequest {
+            block_size,
+            kv_cache_id,
+        })
+    }
+
+    /// Decode the byte buffer into a kv block get request.
+    fn decode_large_data(buf: bytes::Bytes) -> Result<Self, RpcError> {
+        if buf.len() < 16 {
+            return Err(RpcError::InternalError("Insufficient bytes".to_owned()));
+        }
+        let block_size = get_u64_from_buf(&buf, 0)?;
+        let kv_cache_id = get_u64_from_buf(&buf, 8)?;
         Ok(KVBlockGetRequest {
             block_size,
             kv_cache_id,
@@ -877,12 +974,15 @@ pub struct KVBlockGetResponse {
     /// The status of the response.
     pub status: StatusCode,
     /// The data of the block.
-    pub data: Vec<u8>,
+    pub data: bytes::Bytes,
 }
 
 impl Encode for KVBlockGetResponse {
     /// Encode the kv block get response into a byte buffer.
     fn encode(&self, buf: &mut BytesMut) {
+        if buf.capacity() < 17 + self.data.len() {
+            buf.reserve(17 + self.data.len());
+        }
         buf.put_u64(self.block_size.to_le());
         buf.put_u64(self.kv_cache_id.to_le());
         match self.status {
@@ -894,15 +994,20 @@ impl Encode for KVBlockGetResponse {
         }
         let start = std::time::Instant::now();
         println!("buf len: {:?} capacity: {:?}", buf.len(), buf.capacity());
+        // buf = BytesMut::from(&self.data);
+        // buf.copy_from_slice(&self.data);
+        // buf.extend_from_slice(&self.data);
         // buf.put_slice(&self.data);
-        buf.extend_from_slice(&self.data);
+        unsafe {
+            buf.set_len(17+self.data.len());
+        }
         println!("encode KVBlockGetResponse data cost: {:?}", start.elapsed());
     }
 }
 
 impl Decode for KVBlockGetResponse {
     /// Decode the byte buffer into a kv block get response.
-    fn decode(buf: &[u8]) -> Result<Self, RpcError> {
+    fn decode(buf: &mut BytesMut) -> Result<Self, RpcError> {
         if buf.len() < 17 {
             return Err(RpcError::InternalError("Insufficient bytes".to_owned()));
         }
@@ -915,7 +1020,46 @@ impl Decode for KVBlockGetResponse {
             Some(&3) => StatusCode::VersionMismatch,
             _ => return Err(RpcError::InternalError("Invalid status code".to_owned())),
         };
+        let start = std::time::Instant::now();
         let data = buf.get(17..).unwrap_or(&[]).to_vec();
+        // let data = vec![];
+        // Use unsafe to avoid copy
+        println!("decode KVBlockGetResponse data cost: {:?}", start.elapsed());
+        let data_len = usize_to_u64(data.len());
+        if data_len != block_size {
+            return Err(RpcError::InternalError(format!(
+                "Insufficient block size {data_len}"
+            )));
+        }
+
+        Ok(KVBlockGetResponse {
+            block_size,
+            kv_cache_id,
+            status,
+            data: bytes::Bytes::from(data),
+        })
+    }
+
+    /// Decode the byte buffer into a kv block get response.
+    fn decode_large_data(buf: bytes::Bytes) -> Result<Self, RpcError> {
+        if buf.len() < 17 {
+            return Err(RpcError::InternalError("Insufficient bytes".to_owned()));
+        }
+        let block_size = get_u64_from_buf(&buf, 0)?;
+        let kv_cache_id = get_u64_from_buf(&buf, 8)?;
+        let status = match buf.get(16) {
+            Some(&0) => StatusCode::Success,
+            Some(&1) => StatusCode::NotFound,
+            Some(&2) => StatusCode::InternalError,
+            Some(&3) => StatusCode::VersionMismatch,
+            _ => return Err(RpcError::InternalError("Invalid status code".to_owned())),
+        };
+        let start = std::time::Instant::now();
+        let data = buf.slice(17..);
+
+        // let data = vec![];
+        // Use unsafe to avoid copy
+        println!("decode decode_large_data KVBlockGetResponse data cost: {:?}", start.elapsed());
         let data_len = usize_to_u64(data.len());
         if data_len != block_size {
             return Err(RpcError::InternalError(format!(
@@ -940,7 +1084,7 @@ pub struct KVBlockPutRequest {
     /// The kv cache id.
     pub kv_cache_id: u64,
     /// The data of the block.
-    pub data: Vec<u8>,
+    pub data: bytes::Bytes,
 }
 
 impl Encode for KVBlockPutRequest {
@@ -948,9 +1092,10 @@ impl Encode for KVBlockPutRequest {
     fn encode(&self, buf: &mut BytesMut) {
         buf.put_u64(self.block_size.to_le());
         buf.put_u64(self.kv_cache_id.to_le());
-        // let start = std::time::Instant::now();
+        let start = std::time::Instant::now();
+        // TODO: change this encode type
         buf.put_slice(&self.data);
-        // println!("encode KVBlockPutRequest bytes mut data cost: {:?}", start.elapsed());
+        println!("encode KVBlockPutRequest bytes mut data cost: {:?}", start.elapsed());
 
         // let tempdata = self.data.clone();
         // // Test to copy to Bytes
@@ -967,20 +1112,24 @@ impl Encode for KVBlockPutRequest {
 
 impl Decode for KVBlockPutRequest {
     /// Decode the byte buffer into a kv block put request.
-    fn decode(buf: &[u8]) -> Result<Self, RpcError> {
+    fn decode_large_data(buf: bytes::Bytes) -> Result<Self, RpcError> {
         if buf.len() < 16 {
             return Err(RpcError::InternalError("Insufficient bytes".to_owned()));
         }
-        let block_size = get_u64_from_buf(buf, 0)?;
-        let kv_cache_id = get_u64_from_buf(buf, 8)?;
+        let block_size = get_u64_from_buf(&buf, 0)?;
+        let kv_cache_id = get_u64_from_buf(&buf, 8)?;
         let start = std::time::Instant::now();
-        let buf = &buf[16..block_size as usize + 16];
+        // let buf = &buf[16..block_size as usize + 16];
+        // Get data from bytes slice.
+        let data = buf.slice(16..block_size as usize + 16);
         // 10ns
-        let data = unsafe {
-            let ptr = buf.as_ptr();
-            let len = buf.len();
-            Vec::from_raw_parts(ptr as *mut u8, len, len)
-        };
+        // let data = bytes::Bytes::from(buf);
+        // let data = unsafe {
+        //     let ptr = buf.as_ptr();
+        //     let len = buf.len();
+        //     Vec::from_raw_parts(ptr as *mut u8, len, len)
+        // };
+        // std::mem::forget(buf);
         // 10ms
         // let mut data = Vec::with_capacity(block_size as usize);
         // data.extend_from_slice(buf);
@@ -1029,19 +1178,31 @@ impl Encode for KVBlockBatchPutRequest {
             block.encode(buf);
         }
     }
+
+    /// Get large data with Bytes, disable memory copy
+    fn encode_large_data(&self) -> Vec<bytes::Bytes> {
+        let mut data = Vec::new();
+        // (self.batch_size.to_le_bytes());
+        for block in &self.blocks {
+            data.extend(block.encode_large_data());
+        }
+        data
+    }
 }
 
 impl Decode for KVBlockBatchPutRequest {
     /// Decode the byte buffer into a kv block batch put request.
-    fn decode(buf: &[u8]) -> Result<Self, RpcError> {
+    fn decode_large_data(buf: bytes::Bytes) -> Result<Self, RpcError> {
         if buf.len() < 8 {
             return Err(RpcError::InternalError("Insufficient bytes".to_owned()));
         }
-        let batch_size = get_u64_from_buf(buf, 0)?;
+        let batch_size = get_u64_from_buf(&buf, 0)?;
         let mut blocks = Vec::new();
         let mut offset = 8;
         for _ in 0..batch_size {
-            let block = KVBlockPutRequest::decode(&buf[offset..])?;
+            // TODO: give an end pointer.
+            let sub_buf = buf.slice(offset..);
+            let block = KVBlockPutRequest::decode_large_data(sub_buf)?;
             offset += 16 + block.data.len();
             blocks.push(block);
         }
@@ -1092,7 +1253,7 @@ impl Encode for KVBlockBatchPutResponse {
 
 impl Decode for KVBlockBatchPutResponse {
     /// Decode the byte buffer into a kv block batch put response.
-    fn decode(buf: &[u8]) -> Result<Self, RpcError> {
+    fn decode(buf: &mut BytesMut) -> Result<Self, RpcError> {
         if buf.len() < 16 {
             return Err(RpcError::InternalError("Insufficient bytes".to_owned()));
         }
@@ -1171,7 +1332,7 @@ impl ActualSize for KVCacheRequest {
 impl KVCacheRequest {
     #[allow(unused)]
     /// Decode the byte buffer into a kv cache request.
-    fn decode(request_type: ReqType, buf: &[u8]) -> Result<Self, RpcError> {
+    fn decode(request_type: ReqType, buf: &mut BytesMut) -> Result<Self, RpcError> {
         if buf.len() < 8 {
             return Err(RpcError::InternalError("Insufficient bytes".to_owned()));
         }
@@ -1193,10 +1354,12 @@ impl KVCacheRequest {
                 Ok(Self::KVCacheIndexRemoveRequest(request))
             }
             ReqType::KVBlockGetRequest => {
+                // unused
                 let request = KVBlockGetRequest::decode(buf)?;
                 Ok(Self::KVBlockGetRequest(request))
             }
             ReqType::KVBlockBatchPutRequest => {
+                // unused
                 let request = KVBlockBatchPutRequest::decode(buf)?;
                 Ok(Self::KVBlockBatchPutRequest(request))
             }
@@ -1238,33 +1401,33 @@ impl Encode for KVCacheResponse {
 
 impl KVCacheResponse {
     /// Decode the byte buffer into a kv cache response.
-    fn decode(response_type: RespType, buf: &[u8]) -> Result<Self, RpcError> {
+    fn decode(response_type: RespType, mut buf: BytesMut) -> Result<Self, RpcError> {
         if buf.len() < 8 {
             return Err(RpcError::InternalError("Insufficient bytes".to_owned()));
         }
         match response_type {
             RespType::KVCacheIdAllocateResponse => {
-                let response = KVCacheIdAllocateResponse::decode(buf)?;
+                let response = KVCacheIdAllocateResponse::decode(&mut buf)?;
                 Ok(Self::KVCacheIdAllocateResponse(response))
             }
             RespType::KVCacheIndexMatchResponse => {
-                let response = KVCacheIndexMatchResponse::decode(buf)?;
+                let response = KVCacheIndexMatchResponse::decode(&mut buf)?;
                 Ok(Self::KVCacheIndexMatchResponse(response))
             }
             RespType::KVCacheIndexInsertResponse => {
-                let response = KVCacheIndexInsertResponse::decode(buf)?;
+                let response = KVCacheIndexInsertResponse::decode(&mut buf)?;
                 Ok(Self::KVCacheIndexInsertResponse(response))
             }
             RespType::KVCacheIndexRemoveResponse => {
-                let response = KVCacheIndexRemoveResponse::decode(buf)?;
+                let response = KVCacheIndexRemoveResponse::decode(&mut buf)?;
                 Ok(Self::KVCacheIndexRemoveResponse(response))
             }
             RespType::KVBlockGetResponse => {
-                let response = KVBlockGetResponse::decode(buf)?;
+                let response = KVBlockGetResponse::decode_large_data(buf.freeze())?;
                 Ok(Self::KVBlockGetResponse(response))
             }
             RespType::KVBlockBatchPutResponse => {
-                let response = KVBlockBatchPutResponse::decode(buf)?;
+                let response = KVBlockBatchPutResponse::decode(&mut buf)?;
                 Ok(Self::KVBlockBatchPutResponse(response))
             }
             _ => Err(RpcError::InternalError("Invalid response type".to_owned())),
@@ -1361,7 +1524,7 @@ impl Packet for KVCachePacket {
     }
 
     /// Set response data to current packet
-    fn set_resp_data(&mut self, data: &[u8]) -> Result<(), RpcError> {
+    fn set_resp_data(&mut self, data: BytesMut) -> Result<(), RpcError> {
         let response_type = RespType::from_u8(self.op)?;
         match response_type {
             RespType::KVCacheIdAllocateResponse => {
@@ -1411,7 +1574,9 @@ impl Packet for KVCachePacket {
             Ok(()) => {
                 if let Some(resp) = self.response {
                     match self.done_tx.send_async(Ok(resp)).await {
-                        Ok(()) => {}
+                        Ok(()) => {
+                            debug!("Set result in set_result() successfully");
+                        }
                         Err(err) => {
                             warn!("Failed to set result: {:?}", err);
                         }
@@ -1469,7 +1634,7 @@ mod test {
         let mut buffer = BytesMut::new();
         request.encode(&mut buffer);
 
-        let decoded_request = FileBlockRequest::decode(&buffer).unwrap();
+        let decoded_request = FileBlockRequest::decode(&mut buffer).unwrap();
 
         assert_eq!(decoded_request.file_id, file_id);
         assert_eq!(decoded_request.block_id, block_id);
@@ -1501,7 +1666,7 @@ mod test {
         let mut buffer = BytesMut::new();
         response.encode(&mut buffer);
 
-        let decoded_response = FileBlockResponse::decode(&buffer).unwrap();
+        let decoded_response = FileBlockResponse::decode(&mut buffer).unwrap();
 
         assert_eq!(decoded_response.file_id, file_id);
         assert_eq!(decoded_response.block_id, block_id);

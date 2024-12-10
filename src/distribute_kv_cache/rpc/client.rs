@@ -25,6 +25,10 @@ use super::{
     utils::u64_to_usize,
 };
 
+/// The huge body length for the response,
+/// when the response is too large, we need to consider to take user buffer.
+const HUGE_BODY_LEN: u64 = 1 * 1024 * 1024;
+
 /// TODO: combine `RpcClientConnectionInner` and `RpcClientConnection`
 struct RpcClientConnectionInner<P>
 where
@@ -135,6 +139,35 @@ where
         }
     }
 
+    /// Receive request body from the server, try to read huge len data with given buffer.
+    pub async fn recv_huge_len(&self, len: u64, req_buffer: &mut BytesMut) -> Result<(), RpcError> {
+        let start = tokio::time::Instant::now();
+        if req_buffer.capacity() < u64_to_usize(len) {
+            req_buffer.reserve(u64_to_usize(len) + 1);
+            debug!("Client reserve buffer {:?} to size {:?} cost: {:?}", u64_to_usize(len), len, start.elapsed());
+        }
+        // req_buffer.resize(u64_to_usize(len), 0);
+        // req_buffer.resize(u64_to_usize(len), 0);
+        unsafe {
+            req_buffer.set_len(u64_to_usize(len));
+        }
+        let start_1 = start.elapsed();
+        debug!("Client resize buffer {:?} to size {:?} cost: {:?}", u64_to_usize(len), len, start_1);
+
+        let reader = self.get_stream_mut();
+        match read_exact_timeout!(reader, req_buffer, self.timeout_options.read_timeout).await
+        {
+            Ok(size) => {
+                debug!("{:?} Received response body len: {:?}", self, size);
+                Ok(())
+            }
+            Err(err) => {
+                debug!("{:?} Failed to receive response header: {:?}", self, err);
+                Err(RpcError::InternalError(err.to_string()))
+            }
+        }
+    }
+
     /// Send a request to the server.
     /// We need to make sure
     /// Current send packet need to be in one task, so if we need to send ping and packet
@@ -144,11 +177,13 @@ where
         req_header: &dyn Encode,
         req_body: Option<&dyn Encode>,
     ) -> Result<(), RpcError> {
+        let start = tokio::time::Instant::now();
         let buf = unsafe { &mut *self.req_buf.get() };
         // unsafe {
         //     buf.set_len(0);
         // }
         buf.clear();
+
         // encode just need to append to buffer, do not clear buffer
         req_header.encode(buf);
         // Append the body to the buffer
@@ -156,12 +191,16 @@ where
             // encode just need to append to buffer, do not clear buffer
             body.encode(buf);
         }
+        let start_1 = start.elapsed();
+        debug!("{:?} Encode request cost: {:?}", self, start_1);
+
 
         // TODO: If data is very large, we need to send it in multiple times
         // and do not copy the data
 
         debug!("{:?} Sent data with length: {:?}", self, buf.len());
         let writer = self.get_stream_mut();
+        // Copy from user space to tcp stream
         match write_all_timeout!(writer, buf, self.timeout_options.write_timeout).await {
             Ok(()) => Ok(()),
             Err(err) => {
@@ -249,6 +288,7 @@ where
             self.timeout_options.task_timeout.div_f32(2.0),
         ));
         loop {
+            debug!("{:?} recv_loop Start to receive response", self);
             // Clean timeout tasks, will block here
             let recv_header_f = self.recv_header();
             pin_mut!(recv_header_f);
@@ -269,25 +309,49 @@ where
                         } else {
                             debug!("{:?} Received response header: {:?}", self, header);
                             // Try to read to buffer
-                            match self.recv_len(header.len).await {
-                                Ok(()) => {}
-                                Err(err) => {
-                                    debug!(
-                                        "{:?} Failed to receive request header: {:?}",
-                                        self, err
-                                    );
-                                    break;
+                            if header.len <= HUGE_BODY_LEN {
+                                debug!("{:?} Try to receive response body with size {:?} in client buffer", self, header.len);
+                                match self.recv_len(header.len).await {
+                                    Ok(()) => {}
+                                    Err(err) => {
+                                        debug!(
+                                            "{:?} Failed to receive request header: {:?}",
+                                            self, err
+                                        );
+                                        break;
+                                    }
                                 }
-                            }
 
-                            // Take the packet task and recv the response
-                            let resp_buffer: &mut BytesMut = unsafe { &mut *self.resp_buf.get() };
-                            // Fix: add a retry here in case of the task is not ready or failed
-                            loop {
+                                // Take the packet task and recv the response
+                                let resp_buffer: &mut BytesMut = unsafe { &mut *self.resp_buf.get() };
+                                // Fix: add a retry here in case of the task is not ready or failed
+                                match self.packets_keeper.take_task(header_seq, resp_buffer.clone()).await {
+                                    Ok(()) => {
+                                        debug!("{:?} Received response: {:?}", self, header_seq);
+                                    }
+                                    Err(err) => {
+                                        debug!("{:?} Failed to update task: {:?}", self, err);
+                                    }
+                                }
+                            } else {
+                                debug!("{:?} Try to receive huge response body with size {:?} in user buffer", self, header.len);
+                                let mut resp_buffer = BytesMut::with_capacity(u64_to_usize(header.len));
+                                match self.recv_huge_len(header.len, &mut resp_buffer).await {
+                                    Ok(()) => {}
+                                    Err(err) => {
+                                        debug!(
+                                            "{:?} Failed to receive request header: {:?}",
+                                            self, err
+                                        );
+                                        break;
+                                    }
+                                }
+
+                                // Fix: add a retry here in case of the task is not ready or failed
+                                // TODO: take a look about take_task is slow
                                 match self.packets_keeper.take_task(header_seq, resp_buffer).await {
                                     Ok(()) => {
                                         debug!("{:?} Received response: {:?}", self, header_seq);
-                                        break;
                                     }
                                     Err(err) => {
                                         debug!("{:?} Failed to update task: {:?}", self, err);
@@ -485,7 +549,7 @@ mod tests {
     }
 
     impl Decode for TestRequest {
-        fn decode(buf: &[u8]) -> Result<Self, RpcError> {
+        fn decode(buf: &mut BytesMut) -> Result<Self, RpcError> {
             if buf.len() < 8 {
                 return Err(RpcError::InternalError("Insufficient bytes".to_owned()));
             }
@@ -534,7 +598,7 @@ mod tests {
             self.timestamp
         }
 
-        fn set_resp_data(&mut self, _data: &[u8]) -> Result<(), RpcError> {
+        fn set_resp_data(&mut self, _data: BytesMut) -> Result<(), RpcError> {
             Ok(())
         }
 
