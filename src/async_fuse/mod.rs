@@ -1,20 +1,39 @@
 //! FUSE async implementation
 
+use std::net::IpAddr;
 use std::sync::Arc;
 
 use clippy_utilities::OverflowArithmetic;
+use fuse::file_system::FuseFileSystem;
+use parking_lot::Mutex;
 use tokio_util::sync::CancellationToken;
 
-use self::memfs::kv_engine::KVEngineType;
 use crate::async_fuse::fuse::session;
-use crate::storage::policy::LruPolicy;
-use crate::storage::{BackendBuilder, BlockCoordinate, MemoryCacheBuilder, StorageManager};
-use crate::AsyncFuseArgs;
+use crate::config::StorageConfig;
+use crate::fs::datenlordfs;
+use crate::fs::kv_engine::KVEngineType;
+use crate::new_storage::{BackendBuilder, MemoryCache, StorageManager};
 
 pub mod fuse;
-pub mod memfs;
 pub mod proactor;
 pub mod util;
+
+/// Async fuse args type
+#[derive(Debug)]
+pub struct AsyncFuseArgs {
+    /// Node id
+    pub node_id: String,
+    /// Node ip
+    pub ip_address: IpAddr,
+    /// Server port
+    pub server_port: u16,
+    /// Mount dir
+    pub mount_dir: String,
+    /// Storage config
+    pub storage_config: StorageConfig,
+    /// Distribute cache config
+    pub enable_distribute_cache: bool,
+}
 
 /// Start async-fuse
 #[allow(clippy::pattern_type_mismatch)] // Raised by `tokio::select`
@@ -24,32 +43,19 @@ pub async fn start_async_fuse(
     token: CancellationToken,
 ) -> anyhow::Result<()> {
     let storage_config = &args.storage_config;
-
     let mount_point = std::path::Path::new(&args.mount_dir);
     let global_cache_capacity = args.storage_config.memory_cache_config.capacity;
     let storage = {
         let storage_param = &storage_config.params;
         let memory_cache_config = &storage_config.memory_cache_config;
-
         let block_size = storage_config.block_size;
         let capacity_in_blocks = memory_cache_config.capacity.overflow_div(block_size);
-
-        let backend = BackendBuilder::new(storage_param.clone(), block_size)
-            .build()
-            .await?;
-        let lru_policy = LruPolicy::<BlockCoordinate>::new(capacity_in_blocks);
-        let memory_cache = MemoryCacheBuilder::new(lru_policy, backend, block_size)
-            .command_queue_limit(memory_cache_config.command_queue_limit)
-            .limit(memory_cache_config.soft_limit)
-            .write_through(!memory_cache_config.write_back)
-            .build()
-            .await;
-        StorageManager::new(memory_cache, block_size)
+        let cache = Arc::new(Mutex::new(MemoryCache::new(capacity_in_blocks, block_size)));
+        let backend = Arc::new(BackendBuilder::new(storage_param.clone()).build().await?);
+        StorageManager::new(cache, backend, block_size)
     };
 
-    let storage = Arc::new(storage);
-
-    let fs: memfs::MemFs<memfs::S3MetaData> = memfs::MemFs::new(
+    let fs: FuseFileSystem<datenlordfs::S3MetaData> = FuseFileSystem::new_datenlord_fs(
         &args.mount_dir,
         global_cache_capacity,
         kv_engine,
@@ -59,7 +65,7 @@ pub async fn start_async_fuse(
     )
     .await?;
 
-    let ss = session::new_session_of_memfs(mount_point, fs).await?;
+    let ss = session::new_fuse_session(mount_point, fs).await?;
     ss.run(token).await?;
 
     Ok(())

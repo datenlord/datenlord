@@ -7,10 +7,10 @@ use anyhow::Context;
 use clippy_utilities::OverflowArithmetic;
 use lockfree_cuckoohash::{pin, LockFreeCuckooHash as HashMap};
 use tokio::task;
+use tracing::error;
 
 use super::super::{Block, Storage};
-use crate::async_fuse::fuse::protocol::INum;
-use crate::common::error::DatenLordResult;
+use crate::{common::error::DatenLordResult, fs::fs_util::INum};
 
 /// The storage manager, which exposes the interfaces to `FileSystem` for
 /// interacting with the storage layers.
@@ -48,14 +48,27 @@ where
     async fn load_blocks(
         &self,
         ino: INum,
+        mtime: SystemTime,
         start_block: usize,
         end_block: usize,
     ) -> DatenLordResult<Vec<Block>> {
         let mut handles = vec![];
 
+        // Convert time to u64
+        let mtime = mtime
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .context("Failed to convert time to u64")?
+            .as_secs();
+
         for block_id in start_block..end_block {
             let storage = Arc::clone(&self.storage);
-            let handle = task::spawn(async move { storage.load(ino, block_id).await });
+            let handle = task::spawn(async move {
+                error!(
+                    "load_with_version: ino: {}, block_id: {}, mtime: {}",
+                    ino, block_id, mtime
+                );
+                storage.load_with_version(ino, block_id, mtime).await
+            });
             handles.push(handle);
         }
 
@@ -187,7 +200,7 @@ where
             .offset_to_block_id(offset.overflow_add(len).overflow_sub(1))
             .overflow_add(1);
 
-        let mut blocks = self.load_blocks(ino, start_block, end_block).await?;
+        let mut blocks = self.load_blocks(ino, mtime, start_block, end_block).await?;
 
         // If the cache is invalidated, it must be re-fetched from backend.
         // So the mtime of the cache should be updated to the passed-in one.

@@ -11,7 +11,6 @@ use std::fmt::Debug;
 use std::fs::File;
 use std::io::{IoSlice, Write};
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::io::RawFd;
 use std::time::Duration;
 use std::{mem, slice};
 
@@ -286,6 +285,7 @@ impl_fuse_reply_new_for! {
 }
 
 use crate::common::error::DatenLordError;
+use crate::fs::fs_util::StatFsParam;
 
 /// Impl fuse reply error
 macro_rules! impl_fuse_reply_error_for{
@@ -467,10 +467,10 @@ pub struct ReplyOpen<'a> {
 
 impl ReplyOpen<'_> {
     /// Reply to a request with the given open result
-    pub async fn opened(self, fh: RawFd, flags: u32) -> nix::Result<usize> {
+    pub async fn opened(self, fh: u64, flags: u32) -> nix::Result<usize> {
         self.reply
             .send(FuseOpenOut {
-                fh: fh.cast(),
+                fh,
                 open_flags: flags,
                 padding: 0,
             })
@@ -497,27 +497,6 @@ impl ReplyWrite<'_> {
 pub struct ReplyStatFs<'a> {
     /// The inner raw reply
     reply: ReplyRaw<'a>,
-}
-
-/// POSIX statvfs parameters
-#[derive(Debug)]
-pub struct StatFsParam {
-    /// The number of blocks in the filesystem
-    pub blocks: u64,
-    /// The number of free blocks
-    pub bfree: u64,
-    /// The number of free blocks for non-privilege users
-    pub bavail: u64,
-    /// The number of inodes
-    pub files: u64,
-    /// The number of free inodes
-    pub f_free: u64,
-    /// Block size
-    pub bsize: u32,
-    /// Maximum file name length
-    pub namelen: u32,
-    /// Fragment size
-    pub frsize: u32,
 }
 
 impl ReplyStatFs<'_> {

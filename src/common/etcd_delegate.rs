@@ -652,6 +652,102 @@ impl EtcdDelegate {
         self.etcd_rs_client.clone()
     }
 
+    /// Wait until a key is updated
+    /// This function will return when watch closed or there's etcd error.
+    /// Timeout
+    #[inline]
+    #[allow(clippy::arithmetic_side_effects)] // for the auto generate code from tokio select!
+    #[allow(clippy::pattern_type_mismatch)] // for tokio::select!
+    pub async fn wait_key_update<T: DeserializeOwned>(&self, name: &str) -> DatenLordResult<T> {
+        let mut etcd_rs_client = self.etcd_rs_client.clone();
+        let res = etcd_rs_client.watch(name, None).await;
+        let (mut watcher, mut stream) =
+            res.with_context(|| format!("failed to `watch` at `wait_key_update` for key={name}"))?;
+
+        let (stop_wait_log_task_chan_tx, mut stop_wait_log_task_chan_rx) =
+            tokio::sync::oneshot::channel::<()>();
+        let wait_log_task = {
+            let name_clone = name.to_owned();
+            tokio::spawn(async move {
+                let mut sec_cnt: i32 = 0;
+                loop {
+                    tokio::select! {
+                        () = tokio::time::sleep(Duration::from_secs(1)) => {
+                            sec_cnt=sec_cnt.overflow_add(1_i32);
+                            tracing::debug!("wait for dist lock {name_clone} for {sec_cnt} seconds, if this goes too long, there might be dead lock");
+                        }
+                        _ = &mut stop_wait_log_task_chan_rx => {
+                            break;
+                        }
+                    }
+                }
+            })
+        };
+
+        // // When we call this function,
+        // //  there might be no key in it or someone just insert one into it.
+        // // We might first receive a insert event.
+        // // We need a loop to read until there's update event.
+        loop {
+            match stream.message().await {
+                Ok(ok) => {
+                    if let Some(response) = ok {
+                        if response.events().is_empty() {
+                            debug!("receive empty response, watch closed?");
+                            continue;
+                        }
+                        for event in response.events() {
+                            if let Some(kv) = event.kv() {
+                                let watched_key = kv.key_str().unwrap_or_else(|err| {
+                                    panic!("Key here supposed to be str, err:{err}");
+                                });
+                                if watched_key == name {
+                                    if let EventType::Put = event.event_type() {
+                                        let decoded_value: T = util::decode_from_bytes(kv.value())?;
+                                        stop_wait_log_task_chan_tx.send(()).unwrap_or_else(|()| {
+                                            panic!("send failed, stop_wait_log_task_chan_rx was dropped?")
+                                        });
+                                        wait_log_task.await.unwrap_or_else(|_| {
+                                            panic!("join wait log task failed");
+                                        });
+
+                                        watcher.cancel().await.with_context(|| {
+                                            format!("failed to `cancel watch` at `wait_key_update` for key={name}")
+                                        })?;
+                                        return Ok(decoded_value);
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        panic!("receive empty response, watch closed?");
+                    }
+                }
+                Err(err) => {
+                    let mut context = vec![];
+                    let errinfo = "etcd watch failed when wait for a key to be updated";
+                    debug!("{}", errinfo.to_owned());
+                    context.push(errinfo.to_owned());
+
+                    stop_wait_log_task_chan_tx.send(()).unwrap_or_else(|()| {
+                        panic!("send failed, stop_wait_log_task_chan_rx was dropped?")
+                    });
+                    wait_log_task.await.unwrap_or_else(|_| {
+                        panic!("join wait log task failed");
+                    });
+                    watcher.cancel().await.with_context(|| {
+                        format!("failed to `cancel watch` at `wait_key_update` for key={name}")
+                    })?;
+
+                    return Err(DatenLordError::EtcdClientErr {
+                        source: err,
+                        context,
+                    });
+                }
+            }
+        }
+    }
+
     /// Wait until a key is deleted.
     /// This function will return when watch closed or there's etcd error.
     /// Timeout

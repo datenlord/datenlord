@@ -1,0 +1,100 @@
+name: KVCache CI
+on: [push, pull_request]
+
+env:
+  KVCACHE_SERVER: target/release/kvcache
+  RUST_LOG: debug
+  CI_RUST_TOOLCHAIN: 1.74.0
+  ETCD_CONTAINER_NAME: etcd
+
+jobs:
+  kvcache-e2e:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y cmake g++ libprotobuf-dev protobuf-compiler
+
+      - name: Set up Docker
+        id: buildx
+        uses: docker/setup-buildx-action@v1
+        with:
+          version: latest
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Create and Activate venv
+        run: |
+          python -m venv $HOME/.venv
+          ls -la $HOME/.venv
+          source $HOME/.venv/bin/activate
+          pip install --upgrade pip
+
+      - name: Install maturin
+        run: |
+          source $HOME/.venv/bin/activate
+          pip install maturin==1.7.1
+
+      - name: Prepare Rust environment
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: ${{ env.CI_RUST_TOOLCHAIN }}
+          override: true
+
+      - name: Build Python package
+        working-directory: sdk/kvcache/python
+        run: |
+          source $HOME/.venv/bin/activate
+          maturin develop --release
+
+      - name: Build KVCache
+        run: |
+          cargo build --bin kvcache --release
+
+      - name: Run etcd service
+        run: |
+          ./scripts/setup/setup_etcd.sh
+
+      - name: Run KVCache Master
+        run: |
+          $KVCACHE_SERVER -p 2789 &
+
+      - name: Run KVCache Worker 1
+        run: |
+          $KVCACHE_SERVER -p 2790 &
+
+      - name: Run KVCache Worker 2
+        run: |
+          $KVCACHE_SERVER -p 2791 &
+
+      # - name: Check Ports are listening
+      #   run: |
+      #   # Check 2379 & 2789 & 2790 & 2791 are listening
+      #   netstat -tuln | grep 2379
+      #   netstat -tuln | grep 2789
+      #   netstat -tuln | grep 2790
+      #   netstat -tuln | grep 2791
+
+      - name: Run example
+        run: |
+          source $HOME/.venv/bin/activate
+          python sdk/kvcache/python/examples/test_sdk.py
+
+      - name: Test read
+        run: |
+          source $HOME/.venv/bin/activate
+          python sdk/kvcache/python/tests/read.py
+
+      - name: Test write
+        run: |
+          source $HOME/.venv/bin/activate
+          python sdk/kvcache/python/tests/write.py

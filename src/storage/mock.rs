@@ -7,9 +7,10 @@ use async_trait::async_trait;
 use clippy_utilities::OverflowArithmetic;
 use parking_lot::Mutex;
 
+use crate::fs::fs_util::INum;
+
 use super::error::StorageResult;
 use super::{Block, Storage};
-use crate::async_fuse::fuse::protocol::INum;
 
 /// A "persistent" storage layer in memory.
 #[derive(Debug, Default)]
