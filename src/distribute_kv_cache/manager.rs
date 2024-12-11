@@ -344,6 +344,7 @@ impl Job for KVBlockHandler {
         if let Ok(req_type) = ReqType::from_u8(self.header.op) {
             let buffer_start = tokio::time::Instant::now();
             let mut resp_header_buffer = BytesMut::with_capacity(40*1024*1024);
+            let mut resp_bytes_vec: Vec<bytes::Bytes> = vec![];
             let buffer_start_0 = buffer_start.elapsed();
             debug!("KVBlockHandler buffer_start BytesMut new: Time elapsed: {:?}", buffer_start_0);
             let req_buffer = self.request.clone();
@@ -407,7 +408,8 @@ impl Job for KVBlockHandler {
                     // Get from header offset
                     let mut resp_body_buffer = resp_header_buffer.split_off(packet::RESP_HEADER_SIZE.cast());
                     // let mut resp_body_buffer = BytesMut::with_capacity(20*1024*1024);
-                    kv_block_get_resp.encode(&mut resp_body_buffer);
+                    // kv_block_get_resp.encode(&mut resp_body_buffer);
+                    let (body_len, extra_data) = kv_block_get_resp.encode_large_data(&mut resp_body_buffer);
                     debug!("KVBlockGetRequest resp_body_buffer size: {:?}, capacity: {:?}", resp_body_buffer.len(), resp_body_buffer.capacity());
 
                     let start_2 = start.elapsed();
@@ -417,7 +419,7 @@ impl Job for KVBlockHandler {
                     let resp_header = RespHeader {
                         seq: req_header.seq,
                         op: RespType::KVBlockGetResponse.to_u8(),
-                        len: usize_to_u64(resp_body_buffer.len()),
+                        len: body_len,
                     };
                     resp_header.encode(&mut resp_header_buffer);
 
@@ -427,6 +429,8 @@ impl Job for KVBlockHandler {
                     // Combine response header and body
                     // resp_header_buffer.extend_from_slice(&resp_body_buffer);
                     resp_header_buffer.unsplit(resp_body_buffer);
+                    resp_bytes_vec.push(resp_header_buffer.freeze());
+                    resp_bytes_vec.extend_from_slice(&extra_data);
 
                     let start_4 = start.elapsed();
                     debug!("KVBlockGetRequest extend_from_slice: Time elapsed: {:?}", start_4 - start_3);
@@ -483,7 +487,8 @@ impl Job for KVBlockHandler {
                     };
 
                     // Prepare response body
-                    let mut resp_body_buffer = BytesMut::with_capacity(20*1024*1024);
+                    // let mut resp_body_buffer = BytesMut::with_capacity(20*1024*1024);
+                    let mut resp_body_buffer = resp_header_buffer.split_off(packet::RESP_HEADER_SIZE.cast());
                     kv_block_batch_put_resp.encode(&mut resp_body_buffer);
                     // Prepare response header
                     let resp_header = RespHeader {
@@ -496,10 +501,11 @@ impl Job for KVBlockHandler {
                     debug!("KVBlockBatchPutRequest BytesMut new: Time elapsed: {:?} size {:?}", start_2, resp_header_buffer.len());
 
                     // Combine response header and body
-                    resp_header_buffer.extend_from_slice(&resp_body_buffer);
+                    // resp_header_buffer.extend_from_slice(&resp_body_buffer);
+                    resp_header_buffer.unsplit(resp_body_buffer);
+                    resp_bytes_vec.push(resp_header_buffer.freeze());
                     let start_3 = start.elapsed();
                     debug!("KVBlockBatchPutRequest extend_from_slice: Time elapsed: {:?}", start_3 - start_2);
-
                 }
                 _ => {
                     debug!(
@@ -520,10 +526,10 @@ impl Job for KVBlockHandler {
             // std::mem::forget(resp_header_buffer);
             let start_to_vec_0 = start_to_vec.elapsed();
             debug!("KVBlockHandler to_vec: Time elapsed: {:?}", start_to_vec_0);
-            debug!("resp_header_buffer len: {:?}", resp_header_buffer.len());
 
             // TODO: change to vectored data
-            match self.done_tx.send(vec![resp_header_buffer.freeze()]).await {
+            match self.done_tx.send(resp_bytes_vec).await {
+            // match self.done_tx.send(vec![resp_header_buffer.freeze()]).await {
                 Ok(()) => {
                     debug!("Sent response to done channel");
                 }

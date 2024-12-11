@@ -22,9 +22,9 @@ pub trait Encode: Sync {
     fn encode(&self, buf: &mut BytesMut);
 
     /// Get large data with Bytes, disable memory copy
-    fn encode_large_data(&self) -> Vec<bytes::Bytes> {
+    fn encode_large_data(&self, _buf: &mut BytesMut) -> (u64, Vec<bytes::Bytes>) {
         // Default is empty
-        vec![]
+        (0, vec![])
     }
 }
 

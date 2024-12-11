@@ -334,52 +334,10 @@ where
                     // Send response to the stream
                     // if let Ok(res) = inner_conn.send_response(&resp_buffer).await {
 
-                    let mut total_size = 0;
                     for buf in resp_buffer.iter() {
-                        let len = buf.len();
-                        total_size += len;
-                    }
-                    let mut total_written = 0;
-                    loop {
-                        // Convert the buffer to IoSlice
-                        let start = tokio::time::Instant::now();
-                        let mut resp_buffer_slices = Vec::with_capacity(resp_buffer.len());
-                        // for buf in resp_buffer.iter() {
-                        //     resp_buffer_slices.push(IoSlice::new(buf));
-                        // }
-
-                        // Get slice from total buffer
-                        let mut start_offset = 0;
-                        for buf in resp_buffer.iter() {
-                            let len = buf.len();
-                            // ----|---|---|
-                            //       -
-                            if start_offset + len <= total_written {
-                                // Skip the buffer
-                                start_offset += len;
-                                continue;
-                            }
-
-                            // Get partial buffer between start_offset and total_written
-                            if start_offset < total_written && start_offset + len > total_written {
-                                let slice = IoSlice::new(&buf[start_offset..]);
-                                resp_buffer_slices.push(slice);
-                                break;
-                            }
-
-                            // Append the remaining buffer
-                            resp_buffer_slices.push(IoSlice::new(buf));
-                        }
-                        let start_1 = start.elapsed();
-                        debug!("Convert buffer to IoSlice cost: {:?}", start_1);
-
                         // Send vectored data to the stream
-                        if let Ok(res) = inner_conn.send_vectored_response(&resp_buffer_slices).await {
+                        if let Ok(res) = inner_conn.send_response(&buf).await {
                             debug!("Sent file block response successfully: {:?}", res);
-                            total_written += res;
-                            if total_written == total_size {
-                                break;
-                            }
                         } else {
                             warn!("Failed to send file block response");
                         }

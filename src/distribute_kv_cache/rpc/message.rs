@@ -2,7 +2,7 @@ use std::{fmt, mem};
 
 use async_trait::async_trait;
 use bytes::{BufMut, BytesMut};
-use clippy_utilities::OverflowArithmetic;
+use clippy_utilities::{Cast, OverflowArithmetic};
 use tracing::{debug, warn};
 
 use crate::async_fuse::util::usize_to_u64;
@@ -1003,6 +1003,26 @@ impl Encode for KVBlockGetResponse {
         }
         println!("encode KVBlockGetResponse data cost: {:?}", start.elapsed());
     }
+
+    /// Encode large data
+    fn encode_large_data(&self, buf: &mut BytesMut) -> (u64, Vec<bytes::Bytes>) {
+        let len = self.data.len() + 17;
+        if buf.capacity() < 17 {
+            buf.reserve(17);
+        }
+        buf.put_u64(self.block_size.to_le());
+        buf.put_u64(self.kv_cache_id.to_le());
+        match self.status {
+            StatusCode::Success => buf.put_u8(0),
+            StatusCode::NotFound => buf.put_u8(1),
+            StatusCode::InternalError => buf.put_u8(2),
+            // Not used here.
+            StatusCode::VersionMismatch => buf.put_u8(3),
+        }
+
+        // Return extra large data
+        (len.cast(), vec![self.data.clone()])
+    }
 }
 
 impl Decode for KVBlockGetResponse {
@@ -1180,13 +1200,14 @@ impl Encode for KVBlockBatchPutRequest {
     }
 
     /// Get large data with Bytes, disable memory copy
-    fn encode_large_data(&self) -> Vec<bytes::Bytes> {
+    fn encode_large_data(&self, _buf: &mut BytesMut) -> (u64, Vec<bytes::Bytes>) {
+        let len = self.actual_size();
         let mut data = Vec::new();
         // (self.batch_size.to_le_bytes());
         for block in &self.blocks {
-            data.extend(block.encode_large_data());
+            data.extend(block.encode_large_data(_buf).1);
         }
-        data
+        (len, data)
     }
 }
 
