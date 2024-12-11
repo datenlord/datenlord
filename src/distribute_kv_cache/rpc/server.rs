@@ -197,14 +197,15 @@ where
 
     /// Send vectored response to the stream
     /// The response is a byte array, contains the response header and body.
-    pub async fn send_vectored_response(&self, resp: &[IoSlice<'_>]) -> Result<(), RpcError> {
+    pub async fn send_vectored_response(&self, resp: &[IoSlice<'_>]) -> Result<usize, RpcError> {
         let writer = self.get_stream_mut();
-        // writer.write_vectored(bufs)
+        // writer.write_all_buf(resp).await?;
+        // IoSlice::advance_slices
         // Ensure the input is a vector of IoSlice
         match write_vectored_timeout!(writer, resp, self.timeout_options.write_timeout).await {
             Ok(done_size) => {
-                debug!("Sent response successfully: {:?} with size: {:?}", resp.len(), done_size);
-                Ok(())
+                debug!("Sent response successfully with size: {:?}", done_size);
+                Ok(done_size)
             }
             Err(err) => {
                 debug!("Failed to send response: {:?}", err);
@@ -333,20 +334,55 @@ where
                     // Send response to the stream
                     // if let Ok(res) = inner_conn.send_response(&resp_buffer).await {
 
-                    // Convert the buffer to IoSlice
-                    let start = tokio::time::Instant::now();
-                    let mut resp_buffer_slices = Vec::with_capacity(resp_buffer.len());
+                    let mut total_size = 0;
                     for buf in resp_buffer.iter() {
-                        resp_buffer_slices.push(IoSlice::new(buf));
+                        let len = buf.len();
+                        total_size += len;
                     }
-                    let start_1 = start.elapsed();
-                    debug!("Convert buffer to IoSlice cost: {:?}", start_1);
+                    let mut total_written = 0;
+                    loop {
+                        // Convert the buffer to IoSlice
+                        let start = tokio::time::Instant::now();
+                        let mut resp_buffer_slices = Vec::with_capacity(resp_buffer.len());
+                        // for buf in resp_buffer.iter() {
+                        //     resp_buffer_slices.push(IoSlice::new(buf));
+                        // }
 
-                    // Send vectored data to the stream
-                    if let Ok(res) = inner_conn.send_vectored_response(&resp_buffer_slices).await {
-                        debug!("Sent file block response successfully: {:?}", res);
-                    } else {
-                        warn!("Failed to send file block response");
+                        // Get slice from total buffer
+                        let mut start_offset = 0;
+                        for buf in resp_buffer.iter() {
+                            let len = buf.len();
+                            // ----|---|---|
+                            //       -
+                            if start_offset + len <= total_written {
+                                // Skip the buffer
+                                start_offset += len;
+                                continue;
+                            }
+
+                            // Get partial buffer between start_offset and total_written
+                            if start_offset < total_written && start_offset + len > total_written {
+                                let slice = IoSlice::new(&buf[start_offset..]);
+                                resp_buffer_slices.push(slice);
+                                break;
+                            }
+
+                            // Append the remaining buffer
+                            resp_buffer_slices.push(IoSlice::new(buf));
+                        }
+                        let start_1 = start.elapsed();
+                        debug!("Convert buffer to IoSlice cost: {:?}", start_1);
+
+                        // Send vectored data to the stream
+                        if let Ok(res) = inner_conn.send_vectored_response(&resp_buffer_slices).await {
+                            debug!("Sent file block response successfully: {:?}", res);
+                            total_written += res;
+                            if total_written == total_size {
+                                break;
+                            }
+                        } else {
+                            warn!("Failed to send file block response");
+                        }
                     }
                 } else {
                     debug!("done_rx channel is closed, stop sending response to the stream");

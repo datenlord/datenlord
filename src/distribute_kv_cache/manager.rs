@@ -520,6 +520,7 @@ impl Job for KVBlockHandler {
             // std::mem::forget(resp_header_buffer);
             let start_to_vec_0 = start_to_vec.elapsed();
             debug!("KVBlockHandler to_vec: Time elapsed: {:?}", start_to_vec_0);
+            debug!("resp_header_buffer len: {:?}", resp_header_buffer.len());
 
             // TODO: change to vectored data
             match self.done_tx.send(vec![resp_header_buffer.freeze()]).await {
