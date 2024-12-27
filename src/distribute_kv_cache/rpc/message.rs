@@ -501,6 +501,7 @@ pub struct KVCacheIndexMatchRequest {
 impl Encode for KVCacheIndexMatchRequest {
     /// Encode the kv cache index match request into a byte buffer.
     fn encode(&self, buf: &mut BytesMut) {
+        debug!("KVCacheIndexMatchRequest self: {:?}", self);
         buf.put_u64(self.block_size.to_le());
         // Zero copy convert u32 to u8 buffer.
         let buffer = u32_to_u8_buffer(self.kv_cache_key.clone());
@@ -558,7 +559,7 @@ impl Decode for KVCacheIndexMatchRequest {
 impl ActualSize for KVCacheIndexMatchRequest {
     /// Get the actual size of the request.
     fn actual_size(&self) -> u64 {
-        let kv_cache_key_len = usize_to_u64(self.kv_cache_key.len());
+        let kv_cache_key_len = usize_to_u64(self.kv_cache_key.len()) * 4;
         let block_size_len = usize_to_u64(mem::size_of_val(&self.block_size));
         kv_cache_key_len.overflow_add(block_size_len)
     }
@@ -734,7 +735,7 @@ impl ActualSize for KVCacheIndexInsertRequest {
     /// Get the actual size of the request.
     fn actual_size(&self) -> u64 {
         // Update to u32 ac
-        let kv_cache_key_len = usize_to_u64(self.kv_cache_key.len() * 4);
+        let kv_cache_key_len = usize_to_u64(self.kv_cache_key.len()) * 4;
         let block_size_len = usize_to_u64(mem::size_of_val(&self.block_size));
         let kv_cache_id_len = usize_to_u64(mem::size_of_val(&self.kv_cache_id));
         let offset_len = usize_to_u64(mem::size_of_val(&self.offset));
@@ -817,6 +818,7 @@ pub struct KVCacheIndexBatchInsertRequest {
 impl Encode for KVCacheIndexBatchInsertRequest {
     /// Encode the kv cache index batch insert request into a byte buffer.
     fn encode(&self, buf: &mut BytesMut) {
+        debug!("KVCacheIndexBatchInsertRequest self: {:?}", self);
         buf.put_u64(self.batch_size.to_le());
         for index in &self.indexes {
             index.encode(buf);
@@ -960,7 +962,7 @@ impl Decode for KVCacheIndexRemoveRequest {
 impl ActualSize for KVCacheIndexRemoveRequest {
     /// Get the actual size of the request.
     fn actual_size(&self) -> u64 {
-        let kv_cache_key_len = usize_to_u64(self.kv_cache_key.len());
+        let kv_cache_key_len = usize_to_u64(self.kv_cache_key.len()) * 4;
         let block_size_len = usize_to_u64(mem::size_of_val(&self.block_size));
         kv_cache_key_len.overflow_add(block_size_len)
     }
@@ -1929,7 +1931,10 @@ mod test {
         request.encode(&mut buffer);
 
         let decoded_request = KVCacheIndexMatchRequest::decode(&mut buffer).unwrap();
+        assert_eq!(decoded_request.block_size, block_size);
+        assert_eq!(decoded_request.kv_cache_key, kv_cache_key);
 
+        let decoded_request = KVCacheIndexMatchRequest::decode_large_data(buffer.freeze()).unwrap();
         assert_eq!(decoded_request.block_size, block_size);
         assert_eq!(decoded_request.kv_cache_key, kv_cache_key);
     }

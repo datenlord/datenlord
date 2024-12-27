@@ -102,6 +102,55 @@ impl DatenLordSDK {
         self.py_close(py)
     }
 
+    /// Try to match a kv cache block
+    /// Return matched_prefix if the block is found, otherwise return None.
+    /// matched_prefix is the longest prefix of the key that matches the block.
+    /// buffer is the value of the block.
+    #[pyo3(name = "match_prefix")]
+    fn py_match_prefix<'a>(
+        &'a self,
+        py: Python<'a>,
+        prefix: Vec<u32>,
+    ) -> PyResult<Bound<PyAny>> {
+        let datenlord_client = Arc::clone(&self.datenlord_client);
+
+        future_into_py(py, async move {
+            match datenlord_client.match_prefix(prefix).await {
+                Ok(prefix) => {
+                    Ok(prefix)
+                }
+                Err(e) => Err(PyException::new_err(format!("try_load failed: {:?}", e))),
+            }
+        })
+    }
+
+    /// Try to match a kv cache block, sync version
+    /// Return matched_prefix if the block is found, otherwise return None.
+    /// matched_prefix is the longest prefix of the key that matches the block.
+    /// buffer is the value of the block.
+    #[pyo3(name = "match_prefix_sync")]
+    fn py_match_prefix_sync<'a>(
+        &'a self,
+        py: Python<'a>,
+        prefix: Vec<u32>,
+    ) -> PyResult<Vec<u32>> {
+        let datenlord_client = Arc::clone(&self.datenlord_client);
+
+        let match_prefix_result = pyo3_asyncio::tokio::get_runtime().handle().block_on(async {
+            match datenlord_client.match_prefix(prefix).await {
+                Ok(prefix) => {
+                    Ok(prefix)
+                }
+                Err(e) => Err(PyException::new_err(format!("try_load failed: {:?}", e))),
+            }
+        });
+
+        match match_prefix_result {
+            Ok(prefix) => Ok(prefix),
+            Err(e) => Err(e),
+        }
+    }
+
     /// Try to load a kv cache block
     /// Return (matched_prefix, buffer) if the block is found, otherwise return None.
     /// matched_prefix is the longest prefix of the key that matches the block.
@@ -110,7 +159,7 @@ impl DatenLordSDK {
     fn py_try_load<'a>(
         &'a self,
         py: Python<'a>,
-        prefix: String,
+        prefix: Vec<u32>,
     ) -> PyResult<Bound<PyAny>> {
         let datenlord_client = Arc::clone(&self.datenlord_client);
 
@@ -131,7 +180,7 @@ impl DatenLordSDK {
     fn py_insert<'a>(
         &'a self,
         py: Python<'a>,
-        key: String,
+        key: Vec<u32>,
         data: &Bound<PyBytes>,
     ) -> PyResult<Bound<PyAny>> {
         let datenlord_client = Arc::clone(&self.datenlord_client);

@@ -232,6 +232,74 @@ impl DistributeKVCacheClient {
 
     #[allow(unreachable_code)]
     #[allow(unused_variables)]
+    /// Try to match the prefix and get the block from the distribute cache
+    pub async fn match_prefix(&self, prefix: Vec<u32>) -> DatenLordResult<Vec<u32>> {
+        // 1. check current node has the local block cache
+        // If ok, get the block from the local block cache
+        // If not, get the block from the distribute cache
+        // Optimize: Try to compare partial prefix with the local block cache and remote block cache
+        let start = tokio::time::Instant::now();
+        let local_cache_lock = self.block_cache.lock().await;
+        let local_kv_cache_meta = match local_cache_lock.match_prefix(prefix.clone()) {
+            Some(kv_cache_meta) => {
+                debug!(
+                    "Matched local kv cache meta from local cache: {:?}",
+                    kv_cache_meta
+                );
+                kv_cache_meta
+            }
+            None => {
+                debug!("Failed to match local kv cache meta from local cache, try to get from the distribute cache");
+                // Empty meta
+                KVCacheMeta::default()
+            }
+        };
+        let local_prefix_len = local_kv_cache_meta.prefix.len().cast::<u64>();
+        let start_1 = start.elapsed();
+        debug!("local_cache_lock.match_prefix(prefix.clone()) check Time cost: {:?}", start_1);
+
+        // 2. Match prefix to get the block id and target node
+        let (kv_block_meta, node_address) = match self.inner.match_prefix(prefix.clone()).await {
+            Ok((kv_block_meta, node_address)) => {
+                debug!(
+                    "Matched remote kv block meta: {:?} node_address: {:?}",
+                    kv_block_meta, node_address
+                );
+                (kv_block_meta, node_address)
+            }
+            Err(err) => {
+                error!(
+                    "Failed to match prefix: {:?} with error: {:?}",
+                    prefix, err
+                );
+                // Return a empty data
+                (KVCacheMeta::default(), String::new())
+            }
+        };
+        let start_2 = start.elapsed();
+        debug!("self.inner.match_prefix(prefix.clone()).await check Time cost: {:?}", start_2 - start_1);
+
+        let remote_prefix_len = kv_block_meta.prefix.len().cast::<u64>();
+        // println!(
+        //     "Matched remote kv block meta: {:?} node_address: {:?}",
+        //     kv_block_meta, node_address
+        // );
+        info!(
+            "Matched remote kv block meta: {:?} node_address: {:?}",
+            kv_block_meta, node_address
+        );
+
+        // If local prefix length is less than remote prefix length, we will get the block from the local cache
+        if local_prefix_len >= remote_prefix_len {
+            return Ok(local_kv_cache_meta.prefix);
+        }
+
+        // Return the prefix
+        Ok(kv_block_meta.prefix)
+    }
+
+    #[allow(unreachable_code)]
+    #[allow(unused_variables)]
     /// Try to load the block from the distribute cache, return sub string with the prefix
     pub async fn try_load(&self, prefix: Vec<u32>) -> DatenLordResult<(Vec<u32>, Vec<u8>)> {
         // 1. check current node has the local block cache
@@ -707,6 +775,10 @@ impl DistributeKVCacheClientInner {
                 indexes: kv_cache_index_insert_requests,
                 node_address: node_address.into_bytes(),
             });
+        debug!(
+            "Insert indexes to the distribute cache with kv_cache_index_batch_insert_request: {:?}",
+            kv_cache_index_batch_insert_request,
+        );
         let packet = KVCachePacket::new(
             ReqType::KVCacheIndexBatchInsertRequest.to_u8(),
             kv_cache_index_batch_insert_request,

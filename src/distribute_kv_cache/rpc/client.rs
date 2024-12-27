@@ -194,7 +194,6 @@ where
         let start_1 = start.elapsed();
         debug!("{:?} Encode request cost: {:?}", self, start_1);
 
-
         // TODO: If data is very large, we need to send it in multiple times
         // and do not copy the data
 
