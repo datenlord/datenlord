@@ -64,7 +64,7 @@ pub struct KVCacheMeta {
     /// The kv cache size
     pub size: u64,
     /// The kv cache prefix
-    pub prefix: String,
+    pub prefix: Vec<u32>,
 }
 
 impl Default for KVCacheMeta {
@@ -73,7 +73,7 @@ impl Default for KVCacheMeta {
             block_id: UNUSED_KV_BLOCK_ID,
             offset: 0,
             size: 0,
-            prefix: String::new(),
+            prefix: Vec::new(),
         }
     }
 }
@@ -86,7 +86,9 @@ struct LocalBlockCache {
     /// The block metas
     block_metas: Vec<KVCacheMeta>,
     /// The radix tree for block metas, support partial match
-    block_metas_tree: Trie<String, KVCacheMeta>,
+    /// Use token ids as the key, and the kv cache meta as the value
+    /// u32 size is enough for the token id in tokenized.
+    block_metas_tree: Trie<Vec<u32>, KVCacheMeta>,
 }
 
 impl LocalBlockCache {
@@ -147,7 +149,7 @@ impl LocalBlockCache {
     }
 
     /// Try to match local cache prefix.
-    pub fn match_prefix(&self, prefix: String) -> Option<KVCacheMeta> {
+    pub fn match_prefix(&self, prefix: Vec<u32>) -> Option<KVCacheMeta> {
         // Find the kv cache meta with the prefix
         match self.block_metas_tree.get_ancestor_key(&prefix) {
             Some(ancestor_key) => {
@@ -231,7 +233,7 @@ impl DistributeKVCacheClient {
     #[allow(unreachable_code)]
     #[allow(unused_variables)]
     /// Try to load the block from the distribute cache, return sub string with the prefix
-    pub async fn try_load(&self, prefix: String) -> DatenLordResult<(String, Vec<u8>)> {
+    pub async fn try_load(&self, prefix: Vec<u32>) -> DatenLordResult<(Vec<u32>, Vec<u8>)> {
         // 1. check current node has the local block cache
         // If ok, get the block from the local block cache
         // If not, get the block from the distribute cache
@@ -308,7 +310,7 @@ impl DistributeKVCacheClient {
         // Empty address from the distribute cache
         if node_address.len() == 0 {
             error!("Failed to get block, node address is empty");
-            return Ok((String::new(), Vec::new()));
+            return Ok((Vec::new(), Vec::new()));
         }
         let start_3 = start.elapsed();
         debug!("local_cache_lock.try_load(local_kv_cache_meta.clone()) check Time cost: {:?}", start_3 - start_2);
@@ -330,13 +332,13 @@ impl DistributeKVCacheClient {
                     "Failed to get block: {:?} node_address: {:?} kv_block_meta: {:?}",
                     err, node_address, kv_block_meta
                 );
-                return Ok((String::new(), Vec::new()));
+                return Ok((Vec::new(), Vec::new()));
             }
         };
         let start_4 = start.elapsed();
         debug!("self.inner.get_block(node_address.clone(), kv_block_meta.block_id) check Time cost: {:?}", start_4 - start_3);
 
-        return Ok((String::new(), Vec::new()));
+        // return Ok((Vec::new(), Vec::new()));
         // return Ok((String::new(), block_data));
 
         // 4. Copy the block data to the data with kv cache meta offset and size
@@ -354,7 +356,7 @@ impl DistributeKVCacheClient {
     }
 
     /// Insert a block to the distribute cache
-    pub async fn insert(&self, prefix: String, data: Vec<u8>) -> DatenLordResult<()> {
+    pub async fn insert(&self, prefix: Vec<u32>, data: Vec<u8>) -> DatenLordResult<()> {
         let start = tokio::time::Instant::now();
         // Check current size is valid
         if data.len().cast::<u64>() > self.inner.block_size {
@@ -600,9 +602,8 @@ impl DistributeKVCacheClientInner {
     /// return the kv cache meta info and remote node address
     ///
     //. If not find, will return a empty string
-    async fn match_prefix(&self, prefix: String) -> DatenLordResult<(KVCacheMeta, String)> {
-        let raw_prefix = prefix.clone();
-        let prefix = prefix.into_bytes();
+    async fn match_prefix(&self, prefix: Vec<u32>) -> DatenLordResult<(KVCacheMeta, String)> {
+        let mut raw_prefix = prefix.clone();
         // Get the cache node with the block id
         let master_node = self.cluster_manager.get_master_node().await?;
         let addr = format!("{}:{}", master_node.ip(), master_node.port());
@@ -644,14 +645,14 @@ impl DistributeKVCacheClientInner {
                         }
                     })?;
                     info!("Matched kv cache meta address: {:?}", node_address);
+                    raw_prefix.truncate(u64_to_usize(response.kv_cache_key_len));
                     return Ok((
                         KVCacheMeta {
                             block_id: response.kv_cache_id,
                             offset: response.offset,
                             size: response.size,
                             // Get sub string from the raw prefix
-                            prefix: raw_prefix[0..u64_to_usize(response.kv_cache_key_len)]
-                                .to_string(),
+                            prefix: raw_prefix,
                         },
                         node_address,
                     ));
@@ -688,7 +689,7 @@ impl DistributeKVCacheClientInner {
         // Generate Vec<KVCacheIndexInsertRequest>
         let mut kv_cache_index_insert_requests = Vec::new();
         for item in kv_cache_meta_list.into_iter() {
-            let kv_cache_key = item.prefix.into_bytes();
+            let kv_cache_key = item.prefix;
             kv_cache_index_insert_requests.push(KVCacheIndexInsertRequest {
                 block_size: self.block_size,
                 kv_cache_id: item.block_id,
@@ -743,9 +744,7 @@ impl DistributeKVCacheClientInner {
     }
 
     /// Remove a index from the distribute cache
-    async fn remove_index(&self, prefix: String) -> DatenLordResult<()> {
-        let prefix = prefix.into_bytes();
-
+    async fn remove_index(&self, prefix: Vec<u32>) -> DatenLordResult<()> {
         // Get the cache node with the block id
         let master_node = self.cluster_manager.get_master_node().await?;
         let addr = format!("{}:{}", master_node.ip(), master_node.port());
@@ -981,35 +980,38 @@ mod tests {
         local_block_cache.clear(fetched_block_id);
 
         let data = vec![1u8; 10];
+        let prefix1 = vec![1_u32, 2_u32, 3_u32];
         let offset = local_block_cache.get_next_offset();
         let kv_cache_meta = KVCacheMeta {
             block_id: fetched_block_id,
             offset: offset,
             size: data.len() as u64,
-            prefix: "test1".to_string(),
+            prefix: prefix1.clone(),
         };
         let insert_result = local_block_cache.insert(kv_cache_meta, &data).is_ok();
         assert!(insert_result);
 
         let data = vec![2u8; 30];
+        let prefix2 = vec![1_u32, 2_u32, 4_u32];
         let offset = local_block_cache.get_next_offset();
         let kv_cache_meta = KVCacheMeta {
             block_id: fetched_block_id,
             offset: offset,
             size: data.len() as u64,
-            prefix: "test2".to_string(),
+            prefix: prefix2.clone(),
         };
         let insert_result = local_block_cache.insert(kv_cache_meta, &data).is_ok();
         assert!(insert_result);
 
         // Current local block cache is full
         let data = vec![3u8; 30];
+        let prefix3 = vec![1_u32, 2_u32, 5_u32];
         let offset = local_block_cache.get_next_offset();
         let kv_cache_meta = KVCacheMeta {
             block_id: fetched_block_id,
             offset: offset,
             size: data.len() as u64,
-            prefix: "test3".to_string(),
+            prefix: prefix3,
         };
         let insert_result = local_block_cache.insert(kv_cache_meta, &data).is_ok();
         assert!(!insert_result);
@@ -1025,11 +1027,11 @@ mod tests {
         assert_eq!(current_kv_cache_metas[0].block_id, fetched_block_id);
         assert_eq!(current_kv_cache_metas[0].offset, 0);
         assert_eq!(current_kv_cache_metas[0].size, 10);
-        assert_eq!(current_kv_cache_metas[0].prefix, "test1");
+        assert_eq!(current_kv_cache_metas[0].prefix, prefix1);
         assert_eq!(current_kv_cache_metas[1].block_id, fetched_block_id);
         assert_eq!(current_kv_cache_metas[1].offset, 10);
         assert_eq!(current_kv_cache_metas[1].size, 30);
-        assert_eq!(current_kv_cache_metas[1].prefix, "test2");
+        assert_eq!(current_kv_cache_metas[1].prefix, prefix2);
 
         // Clean the local block cache
         let new_block_id = 2;

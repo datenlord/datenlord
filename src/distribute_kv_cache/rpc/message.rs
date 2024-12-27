@@ -13,6 +13,29 @@ use super::{
     utils::{get_u64_from_buf, u64_to_usize},
 };
 
+// Zero copy conversion between u32 and u8 buffers.
+fn u32_to_u8_buffer(input: Vec<u32>) -> Vec<u8> {
+    let len = input.len() * 4;
+    let ptr = input.as_ptr();
+    let capacity = input.capacity() * 4;
+
+    std::mem::forget(input);
+
+    unsafe { Vec::from_raw_parts(ptr as *mut u8, len, capacity) }
+}
+
+// Zero copy conversion between u8 and u32 buffers.
+fn u8_to_u32_buffer(input: Vec<u8>) -> Vec<u32> {
+    assert_eq!(input.len() % 4, 0, "Buffer length must be a multiple of 4");
+    let len = input.len() / 4;
+    let ptr = input.as_ptr();
+    let capacity = input.capacity() / 4;
+
+    std::mem::forget(input);
+
+    unsafe { Vec::from_raw_parts(ptr as *mut u32, len, capacity) }
+}
+
 /// The request type of the request.
 #[derive(Debug)]
 pub enum ReqType {
@@ -472,14 +495,16 @@ pub struct KVCacheIndexMatchRequest {
     /// The kv block size.
     pub block_size: u64,
     /// The kv cache key.
-    pub kv_cache_key: Vec<u8>,
+    pub kv_cache_key: Vec<u32>,
 }
 
 impl Encode for KVCacheIndexMatchRequest {
     /// Encode the kv cache index match request into a byte buffer.
     fn encode(&self, buf: &mut BytesMut) {
         buf.put_u64(self.block_size.to_le());
-        buf.put_slice(&self.kv_cache_key);
+        // Zero copy convert u32 to u8 buffer.
+        let buffer = u32_to_u8_buffer(self.kv_cache_key.clone());
+        buf.put_slice(&buffer);
     }
 }
 
@@ -490,7 +515,16 @@ impl Decode for KVCacheIndexMatchRequest {
             return Err(RpcError::InternalError("Insufficient bytes".to_owned()));
         }
         let block_size = get_u64_from_buf(buf, 0)?;
-        let kv_cache_key = buf[8..].to_vec();
+        let remaining = &buf[8..];
+        if remaining.len() % 4 != 0 {
+            return Err(RpcError::InternalError("Invalid length for kv_cache_key".to_owned()));
+        }
+
+        // Convert the remaining bytes into u32 values.
+        let buffer = remaining.to_vec();
+        // Convert to vec<u8>, contains copy here.
+        let kv_cache_key = u8_to_u32_buffer(buffer);
+
         Ok(KVCacheIndexMatchRequest {
             block_size,
             kv_cache_key,
@@ -504,7 +538,16 @@ impl Decode for KVCacheIndexMatchRequest {
         }
         let block_size = get_u64_from_buf(&buf, 0)?;
         // TODO: change to bytes
-        let kv_cache_key = buf[8..].to_vec();
+        // Convert the remaining bytes into u32 values.
+        let remaining = &buf[8..];
+        if remaining.len() % 4 != 0 {
+            return Err(RpcError::InternalError("Invalid length for kv_cache_key".to_owned()));
+        }
+
+        // Convert to vec<u8>, contains copy here.
+        let buffer = remaining.to_vec();
+        let kv_cache_key = u8_to_u32_buffer(buffer);
+
         Ok(KVCacheIndexMatchRequest {
             block_size,
             kv_cache_key,
@@ -604,7 +647,7 @@ pub struct KVCacheIndexInsertRequest {
     /// The key length
     pub kv_cache_key_len: u64,
     /// The kv cache key.
-    pub kv_cache_key: Vec<u8>,
+    pub kv_cache_key: Vec<u32>,
 }
 
 impl Encode for KVCacheIndexInsertRequest {
@@ -615,7 +658,10 @@ impl Encode for KVCacheIndexInsertRequest {
         buf.put_u64(self.offset.to_le());
         buf.put_u64(self.size.to_le());
         buf.put_u64(self.kv_cache_key_len.to_le());
-        buf.put_slice(&self.kv_cache_key);
+
+        // Zero copy convert u32 to u8 buffer.
+        let buffer = u32_to_u8_buffer(self.kv_cache_key.clone());
+        buf.put_slice(&buffer);
     }
 }
 
@@ -630,7 +676,18 @@ impl Decode for KVCacheIndexInsertRequest {
         let offset = get_u64_from_buf(buf, 16)?;
         let size = get_u64_from_buf(buf, 24)?;
         let kv_cache_key_len = get_u64_from_buf(buf, 32)?;
-        let kv_cache_key = buf[40..40 + u64_to_usize(kv_cache_key_len)].to_vec();
+        println!("kv_cache_key_len: {}", kv_cache_key_len);
+        // Give a range to get the remaining bytes.
+        let remaining = &buf[40..40+u64_to_usize(kv_cache_key_len)*4];
+        if remaining.len() % 4 != 0 {
+            return Err(RpcError::InternalError("Invalid length for kv_cache_key".to_owned()));
+        }
+        // Convert to vec<u8>, contains copy here.
+        // TODO: change to zero copy conversion.
+        let buffer: Vec<u8> = remaining.to_vec();
+        // Convert the remaining bytes into u32 values.
+        let kv_cache_key = u8_to_u32_buffer(buffer);
+
         Ok(KVCacheIndexInsertRequest {
             block_size,
             kv_cache_key,
@@ -652,7 +709,16 @@ impl Decode for KVCacheIndexInsertRequest {
         let size = get_u64_from_buf(&buf, 24)?;
         let kv_cache_key_len = get_u64_from_buf(&buf, 32)?;
         // TODO: change to bytes
-        let kv_cache_key = buf[40..40 + u64_to_usize(kv_cache_key_len)].to_vec();
+        // Convert the remaining bytes into u32 values.
+        let remaining = &buf[40..40+u64_to_usize(kv_cache_key_len)*4];
+        if remaining.len() % 4 != 0 {
+            return Err(RpcError::InternalError("Invalid length for kv_cache_key".to_owned()));
+        }
+        // Convert to vec<u8>, contains copy here.
+        let buffer = remaining.to_vec();
+        // Convert the remaining bytes into u32 values.
+        let kv_cache_key = u8_to_u32_buffer(buffer);
+
         Ok(KVCacheIndexInsertRequest {
             block_size,
             kv_cache_key,
@@ -667,12 +733,18 @@ impl Decode for KVCacheIndexInsertRequest {
 impl ActualSize for KVCacheIndexInsertRequest {
     /// Get the actual size of the request.
     fn actual_size(&self) -> u64 {
-        let kv_cache_key_len = usize_to_u64(self.kv_cache_key.len());
+        // Update to u32 ac
+        let kv_cache_key_len = usize_to_u64(self.kv_cache_key.len() * 4);
         let block_size_len = usize_to_u64(mem::size_of_val(&self.block_size));
         let kv_cache_id_len = usize_to_u64(mem::size_of_val(&self.kv_cache_id));
         let offset_len = usize_to_u64(mem::size_of_val(&self.offset));
         let size_len = usize_to_u64(mem::size_of_val(&self.size));
         let kv_cache_key_len_len = usize_to_u64(mem::size_of_val(&self.kv_cache_key_len));
+        println!("self.kv_cache_key: {:?} self.kv_cache_key len: {:?}", self.kv_cache_key, self.kv_cache_key.len());
+        println!(
+            "kv_cache_key_len: {}, block_size_len: {}, kv_cache_id_len: {}, offset_len: {}, size_len: {}, kv_cache_key_len_len: {}",
+            kv_cache_key_len, block_size_len, kv_cache_id_len, offset_len, size_len, kv_cache_key_len_len
+        );
         kv_cache_key_len
             .overflow_add(block_size_len)
             .overflow_add(kv_cache_id_len)
@@ -766,6 +838,32 @@ impl Decode for KVCacheIndexBatchInsertRequest {
             // TODO: memory copy?
             let mut sub_buf = buf.split_off(offset);
             let index = KVCacheIndexInsertRequest::decode(&mut sub_buf)?;
+            println!("index size: {:?}", index.actual_size());
+            offset += u64_to_usize(index.actual_size());
+            indexes.push(index);
+            // Merge the buffer back, make sure buf is not changed.
+            buf.unsplit(sub_buf);
+        }
+        let node_address = buf[offset..].to_vec();
+        Ok(KVCacheIndexBatchInsertRequest {
+            batch_size,
+            indexes,
+            node_address,
+        })
+    }
+
+    /// Decode the byte buffer into a kv cache index batch insert request.
+    fn decode_large_data(buf: bytes::Bytes) -> Result<Self, RpcError> {
+        if buf.len() < 8 {
+            return Err(RpcError::InternalError("Insufficient bytes".to_owned()));
+        }
+        let batch_size = get_u64_from_buf(&buf, 0)?;
+        let mut indexes = Vec::new();
+        let mut offset = 8;
+        for _ in 0..batch_size {
+            // TODO: memory copy?
+            let sub_buf = buf.slice(offset..);
+            let index = KVCacheIndexInsertRequest::decode_large_data(sub_buf)?;
             offset += u64_to_usize(index.actual_size());
             indexes.push(index);
         }
@@ -776,29 +874,6 @@ impl Decode for KVCacheIndexBatchInsertRequest {
             node_address,
         })
     }
-
-        /// Decode the byte buffer into a kv cache index batch insert request.
-        fn decode_large_data(buf: bytes::Bytes) -> Result<Self, RpcError> {
-            if buf.len() < 8 {
-                return Err(RpcError::InternalError("Insufficient bytes".to_owned()));
-            }
-            let batch_size = get_u64_from_buf(&buf, 0)?;
-            let mut indexes = Vec::new();
-            let mut offset = 8;
-            for _ in 0..batch_size {
-                // TODO: memory copy?
-                let sub_buf = buf.slice(offset..);
-                let index = KVCacheIndexInsertRequest::decode_large_data(sub_buf)?;
-                offset += u64_to_usize(index.actual_size());
-                indexes.push(index);
-            }
-            let node_address = buf[offset..].to_vec();
-            Ok(KVCacheIndexBatchInsertRequest {
-                batch_size,
-                indexes,
-                node_address,
-            })
-        }
 }
 
 impl ActualSize for KVCacheIndexBatchInsertRequest {
@@ -820,14 +895,16 @@ pub struct KVCacheIndexRemoveRequest {
     /// The kv block size.
     pub block_size: u64,
     /// The kv cache key.
-    pub kv_cache_key: Vec<u8>,
+    pub kv_cache_key: Vec<u32>,
 }
 
 impl Encode for KVCacheIndexRemoveRequest {
     /// Encode the kv cache index remove request into a byte buffer.
     fn encode(&self, buf: &mut BytesMut) {
         buf.put_u64(self.block_size.to_le());
-        buf.put_slice(&self.kv_cache_key);
+        // Zero copy convert u32 to u8 buffer.
+        let buffer = u32_to_u8_buffer(self.kv_cache_key.clone());
+        buf.put_slice(&buffer);
     }
 }
 
@@ -838,7 +915,16 @@ impl Decode for KVCacheIndexRemoveRequest {
             return Err(RpcError::InternalError("Insufficient bytes".to_owned()));
         }
         let block_size = get_u64_from_buf(buf, 0)?;
-        let kv_cache_key = buf[8..].to_vec();
+        let remaining = &buf[8..];
+        if remaining.len() % 4 != 0 {
+            return Err(RpcError::InternalError("Invalid length for kv_cache_key".to_owned()));
+        }
+
+        // Convert to vec<u8>, contains copy here.
+        let buffer = remaining.to_vec();
+        // Convert the remaining bytes into u32 values.
+        let kv_cache_key = u8_to_u32_buffer(buffer);
+
         Ok(KVCacheIndexRemoveRequest {
             block_size,
             kv_cache_key,
@@ -851,8 +937,19 @@ impl Decode for KVCacheIndexRemoveRequest {
             return Err(RpcError::InternalError("Insufficient bytes".to_owned()));
         }
         let block_size = get_u64_from_buf(&buf, 0)?;
-        // TODO: change to bytes
-        let kv_cache_key = buf[8..].to_vec();
+        let remaining = &buf[8..];
+        if remaining.len() % 4 != 0 {
+            return Err(RpcError::InternalError("Invalid length for kv_cache_key".to_owned()));
+        }
+
+        // Convert the remaining bytes into u32 values.
+        let mut kv_cache_key = Vec::new();
+        for chunk in remaining.chunks(4) {
+            let value = u32::from_le_bytes(chunk.try_into().map_err(|_| {
+                RpcError::InternalError("Failed to parse kv_cache_key chunk".to_owned())
+            })?);
+            kv_cache_key.push(value);
+        }
         Ok(KVCacheIndexRemoveRequest {
             block_size,
             kv_cache_key,
@@ -1722,5 +1819,118 @@ mod test {
 
         let expected_buffer_len = u64_to_usize(packet.get_req_len());
         assert_eq!(buffer.len(), expected_buffer_len);
+    }
+
+    // KVCacheIndexInsertRequest
+    #[test]
+    fn test_kv_cache_index_insert_request_encode_decode() {
+        let block_size = 123;
+        let kv_cache_id = 123;
+        let offset = 456;
+        let size = 789;
+        let kv_cache_key_len = 3;
+        let kv_cache_key = vec![0_u32, 1_u32, 2_u32];
+
+        let request = KVCacheIndexInsertRequest {
+            block_size,
+            kv_cache_id,
+            offset,
+            size,
+            kv_cache_key_len,
+            kv_cache_key: kv_cache_key.clone(),
+        };
+
+        let mut buffer = BytesMut::new();
+        request.encode(&mut buffer);
+
+        let decoded_request = KVCacheIndexInsertRequest::decode(&mut buffer).unwrap();
+
+        assert_eq!(decoded_request.kv_cache_id, kv_cache_id);
+        assert_eq!(decoded_request.offset, offset);
+        assert_eq!(decoded_request.size, size);
+        assert_eq!(decoded_request.kv_cache_key_len, kv_cache_key_len);
+        assert_eq!(decoded_request.kv_cache_key, kv_cache_key);
+    }
+
+    // KVCacheIndexBatchInsertRequest
+    #[test]
+    fn test_kv_cache_index_batch_insert_request_encode_decode() {
+        let batch_size = 1;
+        let node_address = vec![1_u8, 2_u8, 3_u8, 4_u8];
+
+        let block_size = 123;
+        let kv_cache_id = 123;
+        let kv_cache_key_len = 3;
+        let kv_cache_key = vec![0_u32, 1_u32, 2_u32];
+
+        let request = KVCacheIndexBatchInsertRequest {
+            batch_size,
+            node_address: node_address.clone(),
+            indexes: vec![KVCacheIndexInsertRequest {
+                block_size,
+                kv_cache_id,
+                offset: 456,
+                size: 789,
+                kv_cache_key_len,
+                kv_cache_key: kv_cache_key.clone(),
+            }],
+        };
+
+        let mut buffer = BytesMut::new();
+        request.encode(&mut buffer);
+        // buffer len: 64
+        println!("buffer len: {:?}", buffer.len());
+
+        let decoded_request = KVCacheIndexBatchInsertRequest::decode(&mut buffer).unwrap();
+
+        assert_eq!(decoded_request.batch_size, batch_size);
+        assert_eq!(decoded_request.node_address, node_address);
+        assert_eq!(decoded_request.indexes.len(), 1);
+        assert_eq!(decoded_request.indexes[0].block_size, block_size);
+        assert_eq!(decoded_request.indexes[0].kv_cache_id, kv_cache_id);
+        assert_eq!(decoded_request.indexes[0].offset, 456);
+        assert_eq!(decoded_request.indexes[0].size, 789);
+        assert_eq!(decoded_request.indexes[0].kv_cache_key_len, kv_cache_key_len);
+        assert_eq!(decoded_request.indexes[0].kv_cache_key, kv_cache_key);
+    }
+
+    // KVCacheIndexRemoveRequest
+    #[test]
+    fn test_kv_cache_index_remove_request_encode_decode() {
+        let block_size = 123;
+        let kv_cache_key = vec![0_u32, 1_u32, 2_u32];
+
+        let request = KVCacheIndexRemoveRequest {
+            block_size,
+            kv_cache_key: kv_cache_key.clone(),
+        };
+
+        let mut buffer = BytesMut::new();
+        request.encode(&mut buffer);
+
+        let decoded_request = KVCacheIndexRemoveRequest::decode(&mut buffer).unwrap();
+
+        assert_eq!(decoded_request.block_size, block_size);
+        assert_eq!(decoded_request.kv_cache_key, kv_cache_key);
+    }
+
+    // KVCahceIndexMatchRequest
+    #[test]
+    fn test_kv_cache_index_match_request_encode_decode() {
+        let block_size = 123;
+        let kv_cache_key = vec![0_u32, 1_u32, 2_u32];
+
+        let request = KVCacheIndexMatchRequest {
+            block_size,
+            kv_cache_key: kv_cache_key.clone(),
+        };
+
+        let mut buffer = BytesMut::new();
+        request.encode(&mut buffer);
+
+        let decoded_request = KVCacheIndexMatchRequest::decode(&mut buffer).unwrap();
+
+        assert_eq!(decoded_request.block_size, block_size);
+        assert_eq!(decoded_request.kv_cache_key, kv_cache_key);
     }
 }

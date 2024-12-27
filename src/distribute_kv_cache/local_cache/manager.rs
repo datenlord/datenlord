@@ -335,7 +335,7 @@ impl KVBlockManager {
 #[derive(Debug)]
 pub struct IndexManager {
     /// Global Radix tree to store prefix index, key is prompt, value is (block id, offset, size, address)
-    index: Arc<RwLock<Trie<String, String>>>,
+    index: Arc<RwLock<Trie<Vec<u32>, String>>>,
     /// Global block id allocator
     id_allocator: AtomicU64,
 }
@@ -356,7 +356,7 @@ impl IndexManager {
     }
 
     /// Insert a new key-value pair into the index
-    pub fn insert(&self, key: String, value: String) {
+    pub fn insert(&self, key: Vec<u32>, value: String) {
         match self.index.write() {
             Ok(mut write_lock) => {
                 write_lock.insert(key, value);
@@ -368,10 +368,10 @@ impl IndexManager {
     }
 
     /// Remove a key-value pair from the index
-    pub fn remove(&self, key: String) {
+    pub fn remove(&self, key: &Vec<u32>) {
         match self.index.write() {
             Ok(mut write_lock) => {
-                write_lock.remove(&key);
+                write_lock.remove(key);
             }
             Err(e) => {
                 error!("Failed to get write lock: {}", e);
@@ -380,7 +380,7 @@ impl IndexManager {
     }
 
     /// Get the value by key from the index
-    pub fn get(&self, key: &str) -> Option<String> {
+    pub fn get(&self, key: &Vec<u32>) -> Option<String> {
         match self.index.read() {
             Ok(read_lock) => read_lock.get(key).cloned(),
             Err(e) => {
@@ -391,7 +391,7 @@ impl IndexManager {
     }
 
     /// Get longest prefix match value by key from the index and value
-    pub fn get_longest_kv(&self, key: &str) -> Option<(String, String)> {
+    pub fn get_longest_kv(&self, key: &Vec<u32>) -> Option<(Vec<u32>, String)> {
         match self.index.read() {
             Ok(read_lock) => match read_lock.get_ancestor_key(key) {
                 Some(ancestor_key) => match read_lock.get_ancestor_value(key) {
@@ -415,30 +415,35 @@ mod tests {
     #[test]
     fn test_index_manager() {
         let index_manager = IndexManager::new();
-        index_manager.insert("test".to_owned(), "123".to_owned());
-        assert_eq!(index_manager.get("test"), Some("123".to_owned()));
-        index_manager.remove("test".to_owned());
-        assert_eq!(index_manager.get("test"), None);
+        let test_key = vec![1_u32, 2_u32, 3_u32];
+        index_manager.insert(test_key.clone(), "123".to_owned());
+        assert_eq!(index_manager.get(&test_key), Some("123".to_owned()));
+        index_manager.remove(&test_key);
+        assert_eq!(index_manager.get(&test_key), None);
 
         // Test longest prefix match
-        index_manager.insert("test".to_owned(), "123".to_owned());
-        index_manager.insert("test1".to_owned(), "1234".to_owned());
-        index_manager.insert("test2".to_owned(), "12345".to_owned());
+        let test_key = vec![1_u32, 2_u32, 3_u32];
+        let test1_key = vec![1_u32, 2_u32, 3_u32, 4_u32];
+        let test2_key = vec![1_u32, 2_u32, 3_u32, 5_u32];
+        let test3_key = vec![1_u32, 2_u32, 3_u32, 6_u32];
+        index_manager.insert(test_key.clone(), "123".to_owned());
+        index_manager.insert(test1_key.clone(), "1234".to_owned());
+        index_manager.insert(test2_key.clone(), "12345".to_owned());
         assert_eq!(
-            index_manager.get_longest_kv("test"),
-            Some(("test".to_owned(), "123".to_owned()))
+            index_manager.get_longest_kv(&test_key),
+            Some((test_key.clone(), "123".to_owned()))
         );
         assert_eq!(
-            index_manager.get_longest_kv("test1"),
-            Some(("test1".to_owned(), "1234".to_owned()))
+            index_manager.get_longest_kv(&test1_key),
+            Some((test1_key.clone(), "1234".to_owned()))
         );
         assert_eq!(
-            index_manager.get_longest_kv("test2"),
-            Some(("test2".to_owned(), "12345".to_owned()))
+            index_manager.get_longest_kv(&test2_key),
+            Some((test2_key.clone(), "12345".to_owned()))
         );
         assert_eq!(
-            index_manager.get_longest_kv("test3"),
-            Some(("test".to_owned(), "123".to_owned()))
+            index_manager.get_longest_kv(&test3_key),
+            Some((test_key.clone(), "123".to_owned()))
         );
     }
 }

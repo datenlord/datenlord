@@ -144,9 +144,9 @@ mod tests {
         // assert!(buf.iter().all(|&x| x == 1));
 
         let start = tokio::time::Instant::now();
-        for i in 4..=10 {
+        for i in 4_u32..=10 {
             // Test get 2 from the kv cache client
-            let prefix = format!("test{i}");
+            let prefix = vec![0_u32, i];
             let data = vec![1u8; 16777216];
             // let (matched_prefix, buf) = kvcacheclient.try_load(prefix.to_owned()).await.unwrap();
             kvcacheclient.insert(prefix.to_owned(), data).await.unwrap();

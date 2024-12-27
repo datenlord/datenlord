@@ -629,6 +629,7 @@ impl Job for IndexHandler {
                     //     "KVCacheIndexInsertRequest: Received request: {:?}",
                     //     req_body
                     // );
+                    println!("KVCacheIndexInsertRequest: Received request: {:?}", req_body);
 
                     let node_address = match String::from_utf8(req_body.node_address) {
                         Ok(addr) => Some(addr),
@@ -657,35 +658,17 @@ impl Job for IndexHandler {
                     };
 
                     for index in indexes {
-                        match String::from_utf8(index.kv_cache_key) {
-                            Ok(key) => {
-                                debug!("KVCacheIndexInsertRequest: Insert key: {:?}", key);
-                                let kv_cache_index_value = match node_address {
-                                    Some(ref address) => generate_kv_cache_index_value(
-                                        index.kv_cache_id,
-                                        index.offset,
-                                        index.size,
-                                        address,
-                                    ),
-                                    None => {
-                                        error!("Failed to get node address");
-                                        kv_cache_index_insert_resp = KVCacheIndexInsertResponse {
-                                            block_size: index.block_size,
-                                            kv_cache_id: index.kv_cache_id,
-                                            status: StatusCode::InternalError,
-                                        };
-                                        break;
-                                    }
-                                };
-                                self.index_manager.insert(key, kv_cache_index_value);
-                                kv_cache_index_insert_resp = KVCacheIndexInsertResponse {
-                                    block_size: index.block_size,
-                                    kv_cache_id: index.kv_cache_id,
-                                    status: StatusCode::Success,
-                                };
-                            }
-                            Err(err) => {
-                                error!("Failed to convert kv cache key to string: {:?}", err);
+                        let key = index.kv_cache_key;
+                        debug!("KVCacheIndexInsertRequest: Insert key: {:?}", key);
+                        let kv_cache_index_value = match node_address {
+                            Some(ref address) => generate_kv_cache_index_value(
+                                index.kv_cache_id,
+                                index.offset,
+                                index.size,
+                                address,
+                            ),
+                            None => {
+                                error!("Failed to get node address");
                                 kv_cache_index_insert_resp = KVCacheIndexInsertResponse {
                                     block_size: index.block_size,
                                     kv_cache_id: index.kv_cache_id,
@@ -693,6 +676,12 @@ impl Job for IndexHandler {
                                 };
                                 break;
                             }
+                        };
+                        self.index_manager.insert(key, kv_cache_index_value);
+                        kv_cache_index_insert_resp = KVCacheIndexInsertResponse {
+                            block_size: index.block_size,
+                            kv_cache_id: index.kv_cache_id,
+                            status: StatusCode::Success,
                         };
                     }
 
@@ -725,25 +714,12 @@ impl Job for IndexHandler {
                     //     req_body
                     // );
 
-                    let kv_cache_index_remove_resp = match String::from_utf8(req_body.kv_cache_key)
-                    {
-                        Ok(key) => {
-                            // Remove the key-value pair from the index
-                            self.index_manager.remove(key);
+                    // Remove the key-value pair from the index
+                    self.index_manager.remove(&req_body.kv_cache_key);
 
-                            KVCacheIndexRemoveResponse {
-                                block_size: req_body.block_size,
-                                status: StatusCode::Success,
-                            }
-                        }
-                        Err(err) => {
-                            error!("Failed to convert kv cache key to string: {:?}", err);
-
-                            KVCacheIndexRemoveResponse {
-                                block_size: req_body.block_size,
-                                status: StatusCode::InternalError,
-                            }
-                        }
+                    let kv_cache_index_remove_resp = KVCacheIndexRemoveResponse {
+                        block_size: req_body.block_size,
+                        status: StatusCode::Success,
                     };
 
                     // Prepare response body
@@ -770,66 +746,50 @@ impl Job for IndexHandler {
                         }
                     };
 
-                    // debug!("KVCacheIndexMatchRequest: Received request: {:?}", req_body);
+                    debug!("KVCacheIndexMatchRequest: Received request: {:?}", req_body);
+                    println!("KVCacheIndexMatchRequest: Received request: {:?}", req_body);
 
-                    let kv_cache_id_allocate_resp = match String::from_utf8(req_body.kv_cache_key) {
-                        Ok(key) => {
-                            // Get the value by key from the index
-                            let longest_kv = self.index_manager.get_longest_kv(&key);
-
-                            match longest_kv {
-                                Some((key, value)) => match parse_kv_cache_index_value(&value) {
-                                    Ok((block_id, offset, size, addr)) => {
-                                        debug!(
-                                            "KVCacheIndexMatchRequest: Matched value: {:?}",
-                                            value
-                                        );
-                                        KVCacheIndexMatchResponse {
-                                            block_size: req_body.block_size,
-                                            kv_cache_key_len: usize_to_u64(key.len()),
-                                            kv_cache_id: block_id,
-                                            offset,
-                                            size,
-                                            status: StatusCode::Success,
-                                            node_address: addr.into_bytes(),
-                                        }
-                                    }
-                                    Err(err) => {
-                                        error!("Failed to parse kv cache index value: {:?}", err);
-                                        KVCacheIndexMatchResponse {
-                                            block_size: req_body.block_size,
-                                            kv_cache_key_len: 0,
-                                            kv_cache_id: 0,
-                                            offset: 0,
-                                            size: 0,
-                                            status: StatusCode::InternalError,
-                                            node_address: vec![],
-                                        }
-                                    }
-                                },
-                                None => KVCacheIndexMatchResponse {
+                    // Get the value by key from the index
+                    let longest_kv = self.index_manager.get_longest_kv(&req_body.kv_cache_key);
+                    let kv_cache_id_allocate_resp = match longest_kv {
+                        Some((key, value)) => match parse_kv_cache_index_value(&value) {
+                            Ok((block_id, offset, size, addr)) => {
+                                debug!(
+                                    "KVCacheIndexMatchRequest: Matched value: {:?}",
+                                    value
+                                );
+                                KVCacheIndexMatchResponse {
+                                    block_size: req_body.block_size,
+                                    kv_cache_key_len: usize_to_u64(key.len()),
+                                    kv_cache_id: block_id,
+                                    offset,
+                                    size,
+                                    status: StatusCode::Success,
+                                    node_address: addr.into_bytes(),
+                                }
+                            }
+                            Err(err) => {
+                                error!("Failed to parse kv cache index value: {:?}", err);
+                                KVCacheIndexMatchResponse {
                                     block_size: req_body.block_size,
                                     kv_cache_key_len: 0,
                                     kv_cache_id: 0,
                                     offset: 0,
                                     size: 0,
-                                    status: StatusCode::NotFound,
+                                    status: StatusCode::InternalError,
                                     node_address: vec![],
-                                },
+                                }
                             }
-                        }
-                        Err(err) => {
-                            error!("Failed to convert kv cache key to string: {:?}", err);
-                            KVCacheIndexMatchResponse {
-                                block_size: req_body.block_size,
-                                kv_cache_key_len: 0,
-                                kv_cache_id: 0,
-                                offset: 0,
-                                size: 0,
-                                status: StatusCode::InternalError,
-                                node_address: vec![],
-                            }
-                        }
+                        },
+                        None => KVCacheIndexMatchResponse {
+                            block_size: req_body.block_size,
+                            kv_cache_key_len: 0,
+                            kv_cache_id: 0,
+                            offset: 0,
+                            size: 0,
+                            status: StatusCode::NotFound,
+                            node_address: vec![],
+                        },
                     };
 
                     // Prepare response body
@@ -1234,6 +1194,7 @@ mod tests {
             len: 0,
         };
         let mut req_buffer = BytesMut::new();
+        let key1 = vec![1_u32, 2_u32, 3_u32, 4_u32];
         let request = message::KVCacheIndexBatchInsertRequest {
             batch_size: 1,
             indexes: vec![message::KVCacheIndexInsertRequest {
@@ -1241,8 +1202,8 @@ mod tests {
                 kv_cache_id: 0,
                 offset: 0,
                 size: 0,
-                kv_cache_key_len: usize_to_u64("test_key".as_bytes().to_vec().len()),
-                kv_cache_key: "test_key".as_bytes().to_vec(),
+                kv_cache_key_len: usize_to_u64(key1.len()),
+                kv_cache_key: key1,
             }],
             node_address: "test_key".as_bytes().to_vec(),
         };
@@ -1272,9 +1233,10 @@ mod tests {
             len: 0,
         };
         let mut req_buffer = BytesMut::new();
+        let key2 = vec![1_u32, 2_u32, 3_u32, 4_u32];
         let request = message::KVCacheIndexMatchRequest {
             block_size: BLOCK_SIZE as u64,
-            kv_cache_key: "test_key".as_bytes().to_vec(),
+            kv_cache_key: key2,
         };
         request.encode(&mut req_buffer);
         handler.dispatch(req_header, req_buffer, done_tx).await;
@@ -1304,9 +1266,10 @@ mod tests {
             len: 0,
         };
         let mut req_buffer = BytesMut::new();
+        let key3 = vec![1_u32, 2_u32, 3_u32, 4_u32, 5_u32, 6_u32, 7_u32, 8_u32];
         let request = message::KVCacheIndexMatchRequest {
             block_size: BLOCK_SIZE as u64,
-            kv_cache_key: "test_key111".as_bytes().to_vec(),
+            kv_cache_key: key3,
         };
         request.encode(&mut req_buffer);
         handler.dispatch(req_header, req_buffer, done_tx).await;
@@ -1335,9 +1298,10 @@ mod tests {
             len: 0,
         };
         let mut req_buffer = BytesMut::new();
+        let key4 = vec![1_u32, 3_u32];
         let request = message::KVCacheIndexMatchRequest {
             block_size: BLOCK_SIZE as u64,
-            kv_cache_key: "test_ke2".as_bytes().to_vec(),
+            kv_cache_key: key4,
         };
         request.encode(&mut req_buffer);
         handler.dispatch(req_header, req_buffer, done_tx).await;
@@ -1366,9 +1330,10 @@ mod tests {
             len: 0,
         };
         let mut req_buffer = BytesMut::new();
+        let key5 = vec![1_u32, 2_u32, 3_u32, 4_u32];
         let request = message::KVCacheIndexRemoveRequest {
             block_size: BLOCK_SIZE as u64,
-            kv_cache_key: "test_key".as_bytes().to_vec(),
+            kv_cache_key: key5,
         };
         request.encode(&mut req_buffer);
         handler.dispatch(req_header, req_buffer, done_tx).await;
@@ -1394,9 +1359,10 @@ mod tests {
             len: 0,
         };
         let mut req_buffer = BytesMut::new();
+        let key6 = vec![1_u32, 2_u32, 3_u32, 4_u32];
         let request = message::KVCacheIndexMatchRequest {
             block_size: BLOCK_SIZE as u64,
-            kv_cache_key: "test_key".as_bytes().to_vec(),
+            kv_cache_key: key6,
         };
         request.encode(&mut req_buffer);
         handler.dispatch(req_header, req_buffer, done_tx).await;
@@ -1425,9 +1391,10 @@ mod tests {
             len: 0,
         };
         let mut req_buffer = BytesMut::new();
+        let key7 = vec![1_u32, 2_u32, 3_u32, 4_u32, 5_u32, 6_u32, 7_u32, 8_u32];
         let request = message::KVCacheIndexMatchRequest {
             block_size: BLOCK_SIZE as u64,
-            kv_cache_key: "test_key".as_bytes().to_vec(),
+            kv_cache_key: key7,
         };
         request.encode(&mut req_buffer);
         handler.dispatch(req_header, req_buffer, done_tx).await;
