@@ -36,7 +36,8 @@ export PROMETHEUS_LABEL=prometheus-server
 export SCHEDULER_IMAGE=k8s.gcr.io/kube-scheduler:v1.19.1
 export SNAPSHOTTER_VERSION=v5.0.0
 # setup etcd config
-export ETCD_IMAGE=m.daocloud.io/gcr.io/etcd-development/etcd:v3.5.0
+# export ETCD_IMAGE=m.daocloud.io/gcr.io/etcd-development/etcd:v3.5.0
+export ETCD_IMAGE=quay.io/coreos/etcd:v3.5.9
 export ETCD_CONTAINER_NAME=etcd
 # start local node config
 export DATENLORD_LOCAL_BIND_DIR=/tmp/datenlord_data_dir

@@ -101,12 +101,12 @@ async fn main() -> DatenLordResult<()> {
     for _ in 0..config.op_times {
         match config.op_type.as_str() {
             "read" => {
-                let key = "key".to_string();
+                let key = vec![1_u32, 2_u32, 3_u32, 4_u32];
                 let (prefix, value) = kvcacheclient.try_load(key.clone()).await.unwrap();
-                debug!("Get key: {} value len: {:?}", prefix, value.len());
+                debug!("Get key: {:?} value len: {:?}", prefix, value.len());
             }
             "write" => {
-                let key = "key".to_string();
+                let key = vec![1_u32, 2_u32, 3_u32, 4_u32];
                 let value  = vec![0_u8; config.block_size.cast()];
                 kvcacheclient.insert(key.clone(), value).await.unwrap();
             }

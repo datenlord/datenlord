@@ -11,18 +11,13 @@ async def main():
     print("SDK initialized successfully")
 
     # Create a bytes object
-    kvcache = bytes(768)
-    for i in range(100):
+    for i in range(10):
         key = f"sdk{i}"
         # convert the string to a list of integers
         key = [ord(char) for char in key]
         print(f"key: {key}")
-        await sdk.insert(key, kvcache)
-        matched_key, data = await sdk.try_load(key)
-
-        # Make sure the key is matched, not partial matched
-        assert matched_key == key
-        print(f"res: {matched_key}, datasize: {data}")
+        res = sdk.match_prefix_sync(key)
+        print(f"res: {res}")
 
 if __name__  == "__main__":
     asyncio.run(main())
