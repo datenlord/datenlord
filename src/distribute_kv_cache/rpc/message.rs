@@ -677,7 +677,7 @@ impl Decode for KVCacheIndexInsertRequest {
         let offset = get_u64_from_buf(buf, 16)?;
         let size = get_u64_from_buf(buf, 24)?;
         let kv_cache_key_len = get_u64_from_buf(buf, 32)?;
-        println!("kv_cache_key_len: {}", kv_cache_key_len);
+        debug!("kv_cache_key_len: {}", kv_cache_key_len);
         // Give a range to get the remaining bytes.
         let remaining = &buf[40..40+u64_to_usize(kv_cache_key_len)*4];
         if remaining.len() % 4 != 0 {
@@ -741,8 +741,8 @@ impl ActualSize for KVCacheIndexInsertRequest {
         let offset_len = usize_to_u64(mem::size_of_val(&self.offset));
         let size_len = usize_to_u64(mem::size_of_val(&self.size));
         let kv_cache_key_len_len = usize_to_u64(mem::size_of_val(&self.kv_cache_key_len));
-        println!("self.kv_cache_key: {:?} self.kv_cache_key len: {:?}", self.kv_cache_key, self.kv_cache_key.len());
-        println!(
+        debug!("self.kv_cache_key: {:?} self.kv_cache_key len: {:?}", self.kv_cache_key, self.kv_cache_key.len());
+        debug!(
             "kv_cache_key_len: {}, block_size_len: {}, kv_cache_id_len: {}, offset_len: {}, size_len: {}, kv_cache_key_len_len: {}",
             kv_cache_key_len, block_size_len, kv_cache_id_len, offset_len, size_len, kv_cache_key_len_len
         );
@@ -840,7 +840,7 @@ impl Decode for KVCacheIndexBatchInsertRequest {
             // TODO: memory copy?
             let mut sub_buf = buf.split_off(offset);
             let index = KVCacheIndexInsertRequest::decode(&mut sub_buf)?;
-            println!("index size: {:?}", index.actual_size());
+            debug!("index size: {:?}", index.actual_size());
             offset += u64_to_usize(index.actual_size());
             indexes.push(index);
             // Merge the buffer back, make sure buf is not changed.
@@ -1092,7 +1092,7 @@ impl Encode for KVBlockGetResponse {
             StatusCode::VersionMismatch => buf.put_u8(3),
         }
         let start = std::time::Instant::now();
-        println!("buf len: {:?} capacity: {:?}", buf.len(), buf.capacity());
+        debug!("buf len: {:?} capacity: {:?}", buf.len(), buf.capacity());
         // buf = BytesMut::from(&self.data);
         // buf.copy_from_slice(&self.data);
         // buf.extend_from_slice(&self.data);
@@ -1100,7 +1100,7 @@ impl Encode for KVBlockGetResponse {
         unsafe {
             buf.set_len(17+self.data.len());
         }
-        println!("encode KVBlockGetResponse data cost: {:?}", start.elapsed());
+        debug!("encode KVBlockGetResponse data cost: {:?}", start.elapsed());
     }
 
     /// Encode large data
@@ -1143,7 +1143,7 @@ impl Decode for KVBlockGetResponse {
         let data = buf.get(17..).unwrap_or(&[]).to_vec();
         // let data = vec![];
         // Use unsafe to avoid copy
-        println!("decode KVBlockGetResponse data cost: {:?}", start.elapsed());
+        debug!("decode KVBlockGetResponse data cost: {:?}", start.elapsed());
         let data_len = usize_to_u64(data.len());
         if data_len != block_size {
             return Err(RpcError::InternalError(format!(
@@ -1178,7 +1178,7 @@ impl Decode for KVBlockGetResponse {
 
         // let data = vec![];
         // Use unsafe to avoid copy
-        println!("decode decode_large_data KVBlockGetResponse data cost: {:?}", start.elapsed());
+        debug!("decode decode_large_data KVBlockGetResponse data cost: {:?}", start.elapsed());
         let data_len = usize_to_u64(data.len());
         if data_len != block_size {
             return Err(RpcError::InternalError(format!(
@@ -1214,14 +1214,14 @@ impl Encode for KVBlockPutRequest {
         let start = std::time::Instant::now();
         // TODO: change this encode type
         buf.put_slice(&self.data);
-        println!("encode KVBlockPutRequest bytes mut data cost: {:?}", start.elapsed());
+        debug!("encode KVBlockPutRequest bytes mut data cost: {:?}", start.elapsed());
 
         // let tempdata = self.data.clone();
         // // Test to copy to Bytes
         // let start = std::time::Instant::now();
         // // let _data = bytes::Bytes::from(tempdata);
         // let _data = bytes::Bytes::copy_from_slice(&tempdata);
-        // println!("encode KVBlockPutRequest bytes data cost: {:?}", start.elapsed());
+        // debug!("encode KVBlockPutRequest bytes data cost: {:?}", start.elapsed());
     }
 
     // fn encode_large_data(self) -> Option<Bytes> {
@@ -1252,7 +1252,7 @@ impl Decode for KVBlockPutRequest {
         // 10ms
         // let mut data = Vec::with_capacity(block_size as usize);
         // data.extend_from_slice(buf);
-        println!("decode KVBlockPutRequest data cost: {:?}", start.elapsed());
+        debug!("decode KVBlockPutRequest data cost: {:?}", start.elapsed());
         let data_len = usize_to_u64(data.len());
         if data_len != block_size {
             return Err(RpcError::InternalError(format!(
@@ -1881,7 +1881,7 @@ mod test {
         let mut buffer = BytesMut::new();
         request.encode(&mut buffer);
         // buffer len: 64
-        println!("buffer len: {:?}", buffer.len());
+        debug!("buffer len: {:?}", buffer.len());
 
         let decoded_request = KVCacheIndexBatchInsertRequest::decode(&mut buffer).unwrap();
 

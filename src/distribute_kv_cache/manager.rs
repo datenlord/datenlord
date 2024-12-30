@@ -598,7 +598,6 @@ impl Job for IndexHandler {
 
                     // Get next block id
                     let block_id = self.index_manager.allocate_id();
-                    println!("block_id: {:?}", block_id);
                     let kv_cache_id_allocate_resp = KVCacheIdAllocateResponse {
                         block_size: req_body.block_size,
                         kv_cache_id: block_id,
@@ -625,11 +624,10 @@ impl Job for IndexHandler {
                         }
                     };
 
-                    // debug!(
-                    //     "KVCacheIndexInsertRequest: Received request: {:?}",
-                    //     req_body
-                    // );
-                    println!("KVCacheIndexInsertRequest: Received request: {:?}", req_body);
+                    debug!(
+                        "KVCacheIndexInsertRequest: Received request: {:?}",
+                        req_body
+                    );
 
                     let node_address = match String::from_utf8(req_body.node_address) {
                         Ok(addr) => Some(addr),
@@ -747,7 +745,6 @@ impl Job for IndexHandler {
                     };
 
                     debug!("KVCacheIndexMatchRequest: Received request: {:?}", req_body);
-                    println!("KVCacheIndexMatchRequest: Received request: {:?}", req_body);
 
                     // Get the value by key from the index
                     let longest_kv = self.index_manager.get_longest_kv(&req_body.kv_cache_key);

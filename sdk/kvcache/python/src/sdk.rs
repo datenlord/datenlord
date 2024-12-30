@@ -131,7 +131,7 @@ impl DatenLordSDK {
     #[pyo3(name = "match_prefix_sync")]
     fn py_match_prefix_sync<'a>(
         &'a self,
-        py: Python<'a>,
+        _py: Python<'a>,
         prefix: Vec<u32>,
     ) -> PyResult<Vec<u32>> {
         let datenlord_client = Arc::clone(&self.datenlord_client);
@@ -166,11 +166,41 @@ impl DatenLordSDK {
         future_into_py(py, async move {
             match datenlord_client.try_load(prefix).await {
                 Ok((prefix, data)) => {
-                    Ok((prefix, Buffer::new(data)))
+                    // TODO: return buffer here.
+                    Ok((prefix, Buffer::new(data.to_vec())))
+                    // Ok((prefix, Buffer::new(data.try_into().unwrap())))
                 }
                 Err(e) => Err(PyException::new_err(format!("try_load failed: {:?}", e))),
             }
         })
+    }
+
+    /// Try to load a kv cache block, sync version
+    /// Return (matched_prefix, buffer) if the block is found, otherwise return None.
+    /// matched_prefix is the longest prefix of the key that matches the block.
+    /// buffer is the value of the block.
+    #[pyo3(name = "try_load_sync")]
+    fn py_try_load_sync<'a>(
+        &'a self,
+        _py: Python<'a>,
+        prefix: Vec<u32>,
+    ) -> PyResult<(Vec<u32>, Buffer)> {
+        let datenlord_client = Arc::clone(&self.datenlord_client);
+
+        let try_load_result = pyo3_asyncio::tokio::get_runtime().handle().block_on(async {
+            match datenlord_client.try_load(prefix).await {
+                Ok((prefix, data)) => {
+                    Ok((prefix, Buffer::new(data.to_vec())))
+                    // Ok((prefix, Buffer::new(data.try_into().unwrap())))
+                }
+                Err(e) => Err(PyException::new_err(format!("try_load failed: {:?}", e))),
+            }
+        });
+
+        match try_load_result {
+            Ok((prefix, data)) => Ok((prefix, data)),
+            Err(e) => Err(e),
+        }
     }
 
     /// Insert a block to the distributed kv cache
@@ -192,5 +222,30 @@ impl DatenLordSDK {
                 Err(e) => Err(PyException::new_err(format!("insert failed: {:?}", e))),
             }
         })
+    }
+
+    /// Insert a block to the distributed kv cache, sync version
+    /// The `key` is the key of the block to be inserted.
+    /// The `data` is the value of the block to be inserted.
+    #[pyo3(name = "insert_sync")]
+    fn py_insert_sync<'a>(
+        &'a self,
+        _py: Python<'a>,
+        key: Vec<u32>,
+        data: Vec<u8>,
+    ) -> PyResult<()> {
+        let datenlord_client = Arc::clone(&self.datenlord_client);
+
+        let insert_result = pyo3_asyncio::tokio::get_runtime().handle().block_on(async {
+            match datenlord_client.insert(key, data).await {
+                Ok(_) => Ok(()),
+                Err(e) => Err(PyException::new_err(format!("insert failed: {:?}", e))),
+            }
+        });
+
+        match insert_result {
+            Ok(_) => Ok(()),
+            Err(e) => Err(e),
+        }
     }
 }

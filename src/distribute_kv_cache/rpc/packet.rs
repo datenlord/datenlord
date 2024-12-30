@@ -319,16 +319,12 @@ impl<P: Packet + Send + Sync> PacketsKeeper<P> {
     pub async fn take_task(&self, seq: u64, resp_buffer: BytesMut) -> Result<(), RpcError> {
         // Try to sync from buffer
         {
-            println!("take_task111");
             let mut packets_inner = self.inner.lock().await;
-            println!("take_task: {:?}", packets_inner);
             while let Ok(packet) = self.buffer_packets_receiver.try_recv() {
-                println!("take_task self.buffer_packets_receiver.try_recv(): {:?}", packet);
+                debug!("take_task self.buffer_packets_receiver.try_recv(): {:?}", packet);
                 let seq = packet.seq();
                 packets_inner.add_task(seq, packet);
             }
-
-            println!("take_task222");
 
             if let Some(mut packet) = packets_inner.remove_task(seq) {
                 let seq = packet.seq();

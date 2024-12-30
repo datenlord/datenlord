@@ -301,7 +301,7 @@ impl DistributeKVCacheClient {
     #[allow(unreachable_code)]
     #[allow(unused_variables)]
     /// Try to load the block from the distribute cache, return sub string with the prefix
-    pub async fn try_load(&self, prefix: Vec<u32>) -> DatenLordResult<(Vec<u32>, Vec<u8>)> {
+    pub async fn try_load(&self, prefix: Vec<u32>) -> DatenLordResult<(Vec<u32>, bytes::Bytes)> {
         // 1. check current node has the local block cache
         // If ok, get the block from the local block cache
         // If not, get the block from the distribute cache
@@ -367,7 +367,8 @@ impl DistributeKVCacheClient {
                     local_kv_cache_meta,
                     data.len()
                 );
-                return Ok((local_kv_cache_meta.prefix, data));
+                // TODO: use bytes instead of Vec<u8>
+                return Ok((local_kv_cache_meta.prefix, bytes::Bytes::from(data)));
             } else {
                 debug!(
                     "Failed to get block from local cache, try to get from the distribute cache"
@@ -378,7 +379,7 @@ impl DistributeKVCacheClient {
         // Empty address from the distribute cache
         if node_address.len() == 0 {
             error!("Failed to get block, node address is empty");
-            return Ok((Vec::new(), Vec::new()));
+            return Ok((Vec::new(), bytes::Bytes::new()));
         }
         let start_3 = start.elapsed();
         debug!("local_cache_lock.try_load(local_kv_cache_meta.clone()) check Time cost: {:?}", start_3 - start_2);
@@ -400,7 +401,7 @@ impl DistributeKVCacheClient {
                     "Failed to get block: {:?} node_address: {:?} kv_block_meta: {:?}",
                     err, node_address, kv_block_meta
                 );
-                return Ok((Vec::new(), Vec::new()));
+                return Ok((Vec::new(), bytes::Bytes::new()));
             }
         };
         let start_4 = start.elapsed();
@@ -420,7 +421,7 @@ impl DistributeKVCacheClient {
         // let mut data = Vec::with_capacity(size);
         // data.extend_from_slice(&block_data[offset..offset + size]);
 
-        Ok((kv_block_meta.prefix, block_data[offset..offset + size].to_vec()))
+        Ok((kv_block_meta.prefix, block_data.slice(offset..offset + size)))
     }
 
     /// Insert a block to the distribute cache
@@ -864,7 +865,7 @@ impl DistributeKVCacheClientInner {
     }
 
     /// Get the kv block from the distribute cache node
-    async fn get_block(&self, addr: String, kv_cache_id: u64) -> DatenLordResult<Vec<u8>> {
+    async fn get_block(&self, addr: String, kv_cache_id: u64) -> DatenLordResult<bytes::Bytes> {
         let (tx, rx) = flume::unbounded::<Result<KVCacheResponse, KVCacheRequest>>();
         let kv_cache_request = KVCacheRequest::KVBlockGetRequest(KVBlockGetRequest {
             block_size: self.block_size,
@@ -885,10 +886,11 @@ impl DistributeKVCacheClientInner {
         match rx.recv_async().await {
             Ok(Ok(response)) => match response {
                 // TODO: fix this get operation.
-                KVCacheResponse::KVBlockGetResponse(_response) => {
+                KVCacheResponse::KVBlockGetResponse(response) => {
                     debug!("Get block from remote cache");
-                    // return Ok(response.data);
-                    return Ok(vec![]);
+                    // Return bytes here.
+                    return Ok(response.data);
+                    // return Ok(vec![]);
                 }
                 _ => {
                     return Err(DatenLordError::DistributeCacheManagerErr {

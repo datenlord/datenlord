@@ -20,9 +20,12 @@ async def main():
         await sdk.insert(key, kvcache)
         matched_key, data = await sdk.try_load(key)
 
+        res = await sdk.match_prefix(key)
+        print(f"matched res: {res}")
+
         # Make sure the key is matched, not partial matched
         assert matched_key == key
-        print(f"res: {matched_key}, datasize: {data}")
+        print(f"res: {matched_key}, datasize: {data.get_len()}")
 
 if __name__  == "__main__":
     asyncio.run(main())

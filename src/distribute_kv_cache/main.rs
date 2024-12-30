@@ -5,7 +5,7 @@ use datenlord::{
     common::{
         error::{DatenLordError, DatenLordResult},
         logger::{init_logger, LogRole},
-        task_manager::{self, TaskName, TASK_MANAGER},
+        task_manager::{TaskName, TASK_MANAGER},
     },
     distribute_kv_cache::{
         cluster::{
