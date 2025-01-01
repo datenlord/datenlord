@@ -167,7 +167,8 @@ impl DatenLordSDK {
             match datenlord_client.try_load(prefix).await {
                 Ok((prefix, data)) => {
                     // TODO: return buffer here.
-                    Ok((prefix, Buffer::new(data.to_vec())))
+                    Ok((prefix, Buffer::new(data)))
+                    // Ok((prefix, Buffer::new(data.to_vec())))
                     // Ok((prefix, Buffer::new(data.try_into().unwrap())))
                 }
                 Err(e) => Err(PyException::new_err(format!("try_load failed: {:?}", e))),
@@ -190,7 +191,8 @@ impl DatenLordSDK {
         let try_load_result = pyo3_asyncio::tokio::get_runtime().handle().block_on(async {
             match datenlord_client.try_load(prefix).await {
                 Ok((prefix, data)) => {
-                    Ok((prefix, Buffer::new(data.to_vec())))
+                    // Ok((prefix, Buffer::new(data.to_vec())))
+                    Ok((prefix, Buffer::new(data)))
                     // Ok((prefix, Buffer::new(data.try_into().unwrap())))
                 }
                 Err(e) => Err(PyException::new_err(format!("try_load failed: {:?}", e))),

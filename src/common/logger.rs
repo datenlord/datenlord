@@ -1,3 +1,4 @@
+use tracing::info;
 use tracing::level_filters::LevelFilter as Level;
 use tracing_subscriber::filter;
 use tracing_subscriber::fmt::format::FmtSpan;
@@ -103,6 +104,8 @@ pub fn init_logger(role: LogRole, level: Level) {
             tracing::subscriber::set_global_default(subscriber);
     } else {
         tracing::subscriber::set_global_default(subscriber)
-            .unwrap_or_else(|error| panic!("Could not set logger ,err {error}"));
+            // .unwrap_or_else(|error| panic!("Could not set logger ,err {error}"));
+            // Do not panic here, because the logger may be set multiple times.
+            .unwrap_or_else(|error| info!("Could not set logger ,err {error}"));
     }
 }

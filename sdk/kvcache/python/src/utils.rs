@@ -9,11 +9,11 @@ use pyo3::pymethods;
 /// Reference to opendal lib.
 #[pyclass]
 pub struct Buffer {
-    inner: Vec<u8>,
+    inner: bytes::Bytes,
 }
 
 impl Buffer {
-    pub fn new(inner: Vec<u8>) -> Self {
+    pub fn new(inner: bytes::Bytes) -> Self {
         Buffer { inner }
     }
 
@@ -30,11 +30,13 @@ impl Buffer {
 #[pymethods]
 impl Buffer {
     unsafe fn __getbuffer__(
-        slf: PyRefMut<Self>,
+        slf: PyRef<Self>,
+        // slf: PyRefMut<Self>,
         view: *mut ffi::Py_buffer,
         flags: c_int,
     ) -> PyResult<()> {
-        let bytes = slf.inner.as_slice();
+        // let bytes = slf.inner.as_slice();
+        let bytes = slf.inner.as_ref();
         let ret = ffi::PyBuffer_FillInfo(
             view,
             slf.as_ptr() as *mut _,
@@ -50,9 +52,9 @@ impl Buffer {
     }
 
     unsafe fn __releasebuffer__(&mut self, view: *mut ffi::Py_buffer) {
-        unsafe {
-            ffi::PyBuffer_Release(view);
-        }
+        // unsafe {
+            // ffi::PyBuffer_Release(view);
+        // }
     }
 
     fn get_len(&self) -> usize {

@@ -9,12 +9,13 @@ async def benchmark_write():
     # Configurations
     # block_size = 1024 # 1KB
     # block_size = 1024 * 1024 # 1MB
-    block_size = 1024 * 1024 * 16 # 16MB
+    block_size = 1024 * 1024 * 16 * 2 # 16MB
 
     # data_sizes = [256, 512, 1024]
     # data_sizes = [1024, 2*1024, 4*1024, 8*1024, 16*1024, 32*1024, 64*1024, 128*1024, 256*1024, 512*1024, 1024*1024]
     # data_sizes = [512*1024, 1024*1024, 2*1024*1024, 4*1024*1024, 8*1024*1024, 16*1024*1024]
     data_sizes = [16*1024*1024]
+    # data_sizes = [1*1024*1024]
     num_operations = 100
 
     # Initialize the SDK
