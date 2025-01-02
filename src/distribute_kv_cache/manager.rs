@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{fmt, sync::Arc};
 
 use async_trait::async_trait;
 use bytes::BytesMut;
@@ -543,7 +543,7 @@ impl Job for KVBlockHandler {
 
 /// The handler for the RPC kv cache index  request.
 #[derive(Debug)]
-pub struct IndexHandler {
+pub struct IndexHandler<K> {
     /// The request header.
     header: ReqHeader,
     /// The request body.
@@ -551,17 +551,21 @@ pub struct IndexHandler {
     /// The channel for sending the response.
     done_tx: mpsc::Sender<Vec<bytes::Bytes>>,
     /// Local index manager
-    index_manager: Arc<IndexManager>,
+    index_manager: Arc<IndexManager<K>>,
 }
 
-impl IndexHandler {
+impl<K> IndexHandler<K>
+where
+    K: num::Num + Eq + Send + Sync + Clone + fmt::Debug + 'static,
+    Vec<K>: radix_trie::TrieKey + Clone,
+{
     /// Create a new index handler.
     #[must_use]
     pub fn new(
         header: ReqHeader,
         request: bytes::Bytes,
         done_tx: mpsc::Sender<Vec<bytes::Bytes>>,
-        index_manager: Arc<IndexManager>,
+        index_manager: Arc<IndexManager<K>>,
     ) -> Self {
         Self {
             header,
@@ -573,7 +577,11 @@ impl IndexHandler {
 }
 
 #[async_trait]
-impl Job for IndexHandler {
+impl<K> Job for IndexHandler<K>
+where
+    K: num::Num + Eq + Send + Sync + Clone + fmt::Debug + 'static,
+    Vec<K>: radix_trie::TrieKey + Clone,
+{
     /// Index handler inner run.
     /// Support Block id allocation and prefix index management.
     async fn run(&self) {
@@ -616,7 +624,7 @@ impl Job for IndexHandler {
                 ReqType::KVCacheIndexBatchInsertRequest => {
                     // Try to read the request body
                     // Decode the request body
-                    let req_body = match KVCacheIndexBatchInsertRequest::decode_large_data(req_buffer) {
+                    let req_body = match KVCacheIndexBatchInsertRequest::<K>::decode_large_data(req_buffer) {
                         Ok(req) => req,
                         Err(err) => {
                             debug!("Failed to decode index request: {:?}", err);
@@ -822,24 +830,29 @@ impl Job for IndexHandler {
     }
 }
 
+
 /// The kv cache handler for the RPC server.
 #[derive(Clone, Debug)]
-pub struct KVCacheHandler {
+pub struct KVCacheHandler<K> {
     /// The worker pool for the RPC server.
     worker_pool: Arc<WorkerPool>,
     /// Local cache manager
     cache_manager: Arc<KVBlockManager>,
     /// Local index manager
-    index_manager: Arc<IndexManager>,
+    index_manager: Arc<IndexManager<K>>,
 }
 
-impl KVCacheHandler {
+impl<K> KVCacheHandler<K>
+where
+    K: num::Num + Eq + Send + Sync + Clone + fmt::Debug + 'static,
+    Vec<K>: radix_trie::TrieKey + Clone,
+{
     /// Create a new file kv cache RPC server handler.
     #[must_use]
     pub fn new(
         worker_pool: Arc<WorkerPool>,
         cache_manager: Arc<KVBlockManager>,
-        index_manager: Arc<IndexManager>,
+        index_manager: Arc<IndexManager<K>>,
     ) -> Self {
         Self {
             worker_pool,
@@ -850,7 +863,11 @@ impl KVCacheHandler {
 }
 
 #[async_trait]
-impl RpcServerConnectionHandler for KVCacheHandler {
+impl<K> RpcServerConnectionHandler for KVCacheHandler<K>
+where
+    K: num::Num + Eq + Send + Sync + Clone + fmt::Debug + 'static,
+    Vec<K>: radix_trie::TrieKey + Clone,
+{
     async fn dispatch(
         &self,
         req_header: ReqHeader,
@@ -914,7 +931,7 @@ impl RpcServerConnectionHandler for KVCacheHandler {
 
 /// The distribute cache manager.
 #[derive(Debug)]
-pub struct DistributeCacheManager {
+pub struct DistributeCacheManager<K> {
     /// Local config
     config: DistributeCacheConfig,
     /// Local cache manager, we will use it to manage the local cache, and export manaually data for the cache
@@ -923,13 +940,17 @@ pub struct DistributeCacheManager {
     cache_manager: Arc<KVBlockManager>,
     /// Local index manager, we will use it to manage the local index, and export manaually data for the cache
     /// We will share it in rpc request
-    index_manager: Arc<IndexManager>,
+    index_manager: Arc<IndexManager<K>>,
     /// The distribute cache cluster
     /// We will serve as a standalone server for cluster manager, and read current status from it
     cluster_manager: Arc<ClusterManager>,
 }
 
-impl DistributeCacheManager {
+impl<K> DistributeCacheManager<K>
+where
+    K: num::Num + Eq + Send + Sync + Clone + fmt::Debug + 'static,
+    Vec<K>: radix_trie::TrieKey + Clone,
+{
     /// Create a new distribute cache manager.
     pub fn new(
         kv_engine: Arc<KVEngineType>,
@@ -1100,7 +1121,7 @@ mod tests {
 
     /// Test index handler and block handler
 
-    fn setup() -> (Arc<KVBlockManager>, Arc<IndexManager>) {
+    fn setup() -> (Arc<KVBlockManager>, Arc<IndexManager<u32>>) {
         (
             Arc::new(KVBlockManager::default()),
             Arc::new(IndexManager::new()),

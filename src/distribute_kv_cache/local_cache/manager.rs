@@ -333,18 +333,22 @@ impl KVBlockManager {
 /// IndexManager struct to manage kv cache index.
 #[allow(dead_code)]
 #[derive(Debug)]
-pub struct IndexManager {
+pub struct IndexManager<K> {
     /// Global Radix tree to store prefix index, key is prompt, value is (block id, offset, size, address)
-    index: Arc<RwLock<Trie<Vec<u32>, String>>>,
+    index: Arc<RwLock<Trie<Vec<K>, String>>>,
     /// Global block id allocator
     id_allocator: AtomicU64,
 }
 
-impl IndexManager {
+impl<K> IndexManager<K>
+where
+    K: num::Num + Eq,
+    Vec<K>: radix_trie::TrieKey + Clone,
+{
     /// Create a new IndexManager
     pub fn new() -> Self {
         IndexManager {
-            index: Arc::new(RwLock::new(Trie::new())),
+            index: Arc::new(RwLock::new(Trie::<Vec<K>, String>::new())),
             id_allocator: AtomicU64::new(0),
         }
     }
@@ -356,7 +360,7 @@ impl IndexManager {
     }
 
     /// Insert a new key-value pair into the index
-    pub fn insert(&self, key: Vec<u32>, value: String) {
+    pub fn insert(&self, key: Vec<K>, value: String) {
         match self.index.write() {
             Ok(mut write_lock) => {
                 write_lock.insert(key, value);
@@ -368,7 +372,7 @@ impl IndexManager {
     }
 
     /// Remove a key-value pair from the index
-    pub fn remove(&self, key: &Vec<u32>) {
+    pub fn remove(&self, key: &Vec<K>) {
         match self.index.write() {
             Ok(mut write_lock) => {
                 write_lock.remove(key);
@@ -380,7 +384,7 @@ impl IndexManager {
     }
 
     /// Get the value by key from the index
-    pub fn get(&self, key: &Vec<u32>) -> Option<String> {
+    pub fn get(&self, key: &Vec<K>) -> Option<String> {
         match self.index.read() {
             Ok(read_lock) => read_lock.get(key).cloned(),
             Err(e) => {
@@ -391,7 +395,7 @@ impl IndexManager {
     }
 
     /// Get longest prefix match value by key from the index and value
-    pub fn get_longest_kv(&self, key: &Vec<u32>) -> Option<(Vec<u32>, String)> {
+    pub fn get_longest_kv(&self, key: &Vec<K>) -> Option<(Vec<K>, String)> {
         match self.index.read() {
             Ok(read_lock) => match read_lock.get_ancestor_key(key) {
                 Some(ancestor_key) => match read_lock.get_ancestor_value(key) {

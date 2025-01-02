@@ -239,7 +239,8 @@ async fn main() -> anyhow::Result<()> {
                 match config.storage.params {
                     StorageParams::S3(s3config) => {
                         let distribute_cache_manager =
-                            distribute_kv_cache::manager::DistributeCacheManager::new(
+                            // This type is only used in kvcache.
+                            distribute_kv_cache::manager::DistributeCacheManager::<u32>::new(
                                 kv_engine,
                                 &distribute_cache_config_inner,
                                 &s3config,

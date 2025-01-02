@@ -1,3 +1,4 @@
+use core::fmt;
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use clippy_utilities::Cast;
@@ -56,7 +57,10 @@ pub struct KVBlock {
 ///
 /// Set current kv cache metadata info to single kv block
 #[derive(Debug, Clone)]
-pub struct KVCacheMeta {
+pub struct KVCacheMeta<K>
+where
+    K: num::Num + Eq + Send + Sync + Clone + fmt::Debug + 'static,
+{
     /// The kv block id
     pub block_id: u64,
     /// The kv cache offset
@@ -64,10 +68,13 @@ pub struct KVCacheMeta {
     /// The kv cache size
     pub size: u64,
     /// The kv cache prefix
-    pub prefix: Vec<u32>,
+    pub prefix: Vec<K>,
 }
 
-impl Default for KVCacheMeta {
+impl<K> Default for KVCacheMeta<K>
+where
+    K: num::Num + Eq + Send + Sync + Clone + fmt::Debug + 'static,
+{
     fn default() -> Self {
         Self {
             block_id: UNUSED_KV_BLOCK_ID,
@@ -80,18 +87,25 @@ impl Default for KVCacheMeta {
 
 /// Local block cache
 #[derive(Debug, Clone)]
-struct LocalBlockCache {
+struct LocalBlockCache<K>
+where
+    K: num::Num + Eq + Send + Sync + Clone + fmt::Debug + 'static,
+{
     /// The block data
     block_cache: KVBlock,
     /// The block metas
-    block_metas: Vec<KVCacheMeta>,
+    block_metas: Vec<KVCacheMeta<K>>,
     /// The radix tree for block metas, support partial match
     /// Use token ids as the key, and the kv cache meta as the value
     /// u32 size is enough for the token id in tokenized.
-    block_metas_tree: Trie<Vec<u32>, KVCacheMeta>,
+    block_metas_tree: Trie<Vec<K>, KVCacheMeta<K>>,
 }
 
-impl LocalBlockCache {
+impl<K> LocalBlockCache<K>
+where
+    K: num::Num + Eq + Send + Sync + Clone + fmt::Debug + 'static,
+    Vec<K>: radix_trie::TrieKey + Clone,
+{
     /// Create a new local block cache
     pub fn new(block_size: u64) -> Self {
         Self {
@@ -106,7 +120,7 @@ impl LocalBlockCache {
     }
 
     /// Insert a kv cache to the local block cache
-    pub fn insert(&mut self, kv_cache_meta: KVCacheMeta, data: &[u8]) -> DatenLordResult<()> {
+    pub fn insert(&mut self, kv_cache_meta: KVCacheMeta<K>, data: &[u8]) -> DatenLordResult<()> {
         // Check current block id is equal to the kv cache block id
         if self.block_cache.block_id == UNUSED_KV_BLOCK_ID {
             return Err(DatenLordError::DistributeCacheManagerErr {
@@ -149,7 +163,7 @@ impl LocalBlockCache {
     }
 
     /// Try to match local cache prefix.
-    pub fn match_prefix(&self, prefix: Vec<u32>) -> Option<KVCacheMeta> {
+    pub fn match_prefix(&self, prefix: Vec<K>) -> Option<KVCacheMeta<K>> {
         // Find the kv cache meta with the prefix
         match self.block_metas_tree.get_ancestor_key(&prefix) {
             Some(ancestor_key) => {
@@ -163,7 +177,7 @@ impl LocalBlockCache {
     /// Try to get the block data from the local block cache
     ///
     /// TODO: Local cache may cover the remote block metas tree, consider to set a threshold to drop the query
-    pub fn try_load(&self, kv_cache_meta: KVCacheMeta) -> Option<Vec<u8>> {
+    pub fn try_load(&self, kv_cache_meta: KVCacheMeta<K>) -> Option<Vec<u8>> {
         let offset = kv_cache_meta.offset.cast::<usize>();
         let size = kv_cache_meta.size.cast::<usize>();
 
@@ -200,21 +214,28 @@ impl LocalBlockCache {
     }
 
     /// Get KVCacheMeta
-    pub fn get_kv_cache_metas(&self) -> Vec<KVCacheMeta> {
+    pub fn get_kv_cache_metas(&self) -> Vec<KVCacheMeta<K>> {
         self.block_metas.clone()
     }
 }
 
 /// The distribute cache client
 #[derive(Debug, Clone)]
-pub struct DistributeKVCacheClient {
+pub struct DistributeKVCacheClient<K>
+where
+    K: num::Num + Eq + Send + Sync + Clone + fmt::Debug + 'static,
+{
     /// The distribute cache inner
-    inner: DistributeKVCacheClientInner,
+    inner: DistributeKVCacheClientInner<K>,
     /// Single block cache, used to collect the block data from the infer side.
-    block_cache: Arc<Mutex<LocalBlockCache>>,
+    block_cache: Arc<Mutex<LocalBlockCache<K>>>,
 }
 
-impl DistributeKVCacheClient {
+impl<K> DistributeKVCacheClient<K>
+where
+    K: num::Num + Eq + Send + Sync + Clone + fmt::Debug + 'static,
+    Vec<K>: radix_trie::TrieKey + Clone,
+{
     /// Create a new distribute cache client
     pub fn new(cluster_manager: Arc<ClusterManager>, block_size: u64) -> Self {
         let inner = DistributeKVCacheClientInner::new(cluster_manager, block_size);
@@ -233,7 +254,7 @@ impl DistributeKVCacheClient {
     #[allow(unreachable_code)]
     #[allow(unused_variables)]
     /// Try to match the prefix and get the block from the distribute cache
-    pub async fn match_prefix(&self, prefix: Vec<u32>) -> DatenLordResult<Vec<u32>> {
+    pub async fn match_prefix(&self, prefix: Vec<K>) -> DatenLordResult<Vec<K>> {
         // 1. check current node has the local block cache
         // If ok, get the block from the local block cache
         // If not, get the block from the distribute cache
@@ -301,7 +322,7 @@ impl DistributeKVCacheClient {
     #[allow(unreachable_code)]
     #[allow(unused_variables)]
     /// Try to load the block from the distribute cache, return sub string with the prefix
-    pub async fn try_load(&self, prefix: Vec<u32>) -> DatenLordResult<(Vec<u32>, bytes::Bytes)> {
+    pub async fn try_load(&self, prefix: Vec<K>) -> DatenLordResult<(Vec<K>, bytes::Bytes)> {
         // 1. check current node has the local block cache
         // If ok, get the block from the local block cache
         // If not, get the block from the distribute cache
@@ -425,7 +446,7 @@ impl DistributeKVCacheClient {
     }
 
     /// Insert a block to the distribute cache
-    pub async fn insert(&self, prefix: Vec<u32>, data: Vec<u8>) -> DatenLordResult<()> {
+    pub async fn insert(&self, prefix: Vec<K>, data: Vec<u8>) -> DatenLordResult<()> {
         let start = tokio::time::Instant::now();
         // Check current size is valid
         if data.len().cast::<u64>() > self.inner.block_size {
@@ -537,16 +558,23 @@ impl DistributeKVCacheClient {
 
 /// The distribute cache client
 #[derive(Debug, Clone)]
-pub struct DistributeKVCacheClientInner {
+pub struct DistributeKVCacheClientInner<K>
+where
+    K: num::Num + Eq + Send + Sync + Clone + fmt::Debug + 'static,
+{
     /// The cluster manager, only used to watch hashring changes
     cluster_manager: Arc<ClusterManager>,
     /// The rpc client cache
-    rpc_client_cache: Arc<Mutex<HashMap<String, Arc<RpcClient<KVCachePacket>>>>>,
+    /// TODO: Change to trait
+    rpc_client_cache: Arc<Mutex<HashMap<String, Arc<RpcClient<KVCachePacket<K>>>>>>,
     /// Block size
     block_size: u64,
 }
 
-impl DistributeKVCacheClientInner {
+impl<K> DistributeKVCacheClientInner<K>
+where
+    K: num::Num + Eq + Send + Sync + Clone + fmt::Debug + 'static,
+{
     /// Create a new distribute cache client
     pub fn new(cluster_manager: Arc<ClusterManager>, block_size: u64) -> Self {
         let rpc_client_cache = Arc::new(Mutex::new(HashMap::new()));
@@ -626,7 +654,7 @@ impl DistributeKVCacheClientInner {
         let addr = format!("{}:{}", master_node.ip(), master_node.port());
         debug!("Alloc block id from the master node: {:?}", addr);
 
-        let (tx, rx) = flume::unbounded::<Result<KVCacheResponse, KVCacheRequest>>();
+        let (tx, rx) = flume::unbounded::<Result<KVCacheResponse, KVCacheRequest<K>>>();
         let kv_cache_id_allocate_request =
             KVCacheRequest::KVCacheIdAllocateRequest(KVCacheIdAllocateRequest {
                 block_size: self.block_size,
@@ -636,7 +664,7 @@ impl DistributeKVCacheClientInner {
             kv_cache_id_allocate_request,
             tx.clone(),
         );
-        let rpc_client = self.get_client(addr.clone()).await?;
+        let rpc_client: Arc<RpcClient<KVCachePacket<K>>> = self.get_client(addr.clone()).await?;
         rpc_client.send_request(packet).await.map_err(|err| {
             DatenLordError::DistributeCacheManagerErr {
                 context: vec![format!("Failed to send request: {:?}", err)],
@@ -671,13 +699,13 @@ impl DistributeKVCacheClientInner {
     /// return the kv cache meta info and remote node address
     ///
     //. If not find, will return a empty string
-    async fn match_prefix(&self, prefix: Vec<u32>) -> DatenLordResult<(KVCacheMeta, String)> {
+    async fn match_prefix(&self, prefix: Vec<K>) -> DatenLordResult<(KVCacheMeta<K>, String)> {
         let mut raw_prefix = prefix.clone();
         // Get the cache node with the block id
         let master_node = self.cluster_manager.get_master_node().await?;
         let addr = format!("{}:{}", master_node.ip(), master_node.port());
 
-        let (tx, rx) = flume::unbounded::<Result<KVCacheResponse, KVCacheRequest>>();
+        let (tx, rx) = flume::unbounded::<Result<KVCacheResponse, KVCacheRequest<K>>>();
         let kv_cache_index_match_request =
             KVCacheRequest::KVCacheIndexMatchRequest(KVCacheIndexMatchRequest {
                 block_size: self.block_size,
@@ -748,7 +776,7 @@ impl DistributeKVCacheClientInner {
     /// Insert a index to the distribute cache
     async fn insert_indexes(
         &self,
-        kv_cache_meta_list: Vec<KVCacheMeta>,
+        kv_cache_meta_list: Vec<KVCacheMeta<K>>,
         node_address: String,
     ) -> DatenLordResult<()> {
         // Get the cache node with the block id
@@ -769,7 +797,7 @@ impl DistributeKVCacheClientInner {
             });
         }
 
-        let (tx, rx) = flume::unbounded::<Result<KVCacheResponse, KVCacheRequest>>();
+        let (tx, rx) = flume::unbounded::<Result<KVCacheResponse, KVCacheRequest<K>>>();
         let kv_cache_index_batch_insert_request =
             KVCacheRequest::KVCacheIndexBatchInsertRequest(KVCacheIndexBatchInsertRequest {
                 batch_size: kv_cache_index_insert_requests.len() as u64,
@@ -817,12 +845,12 @@ impl DistributeKVCacheClientInner {
     }
 
     /// Remove a index from the distribute cache
-    async fn remove_index(&self, prefix: Vec<u32>) -> DatenLordResult<()> {
+    async fn remove_index(&self, prefix: Vec<K>) -> DatenLordResult<()> {
         // Get the cache node with the block id
         let master_node = self.cluster_manager.get_master_node().await?;
         let addr = format!("{}:{}", master_node.ip(), master_node.port());
 
-        let (tx, rx) = flume::unbounded::<Result<KVCacheResponse, KVCacheRequest>>();
+        let (tx, rx) = flume::unbounded::<Result<KVCacheResponse, KVCacheRequest<K>>>();
         let kv_cache_index_remove_request =
             KVCacheRequest::KVCacheIndexRemoveRequest(KVCacheIndexRemoveRequest {
                 block_size: self.block_size,
@@ -866,7 +894,7 @@ impl DistributeKVCacheClientInner {
 
     /// Get the kv block from the distribute cache node
     async fn get_block(&self, addr: String, kv_cache_id: u64) -> DatenLordResult<bytes::Bytes> {
-        let (tx, rx) = flume::unbounded::<Result<KVCacheResponse, KVCacheRequest>>();
+        let (tx, rx) = flume::unbounded::<Result<KVCacheResponse, KVCacheRequest<K>>>();
         let kv_cache_request = KVCacheRequest::KVBlockGetRequest(KVBlockGetRequest {
             block_size: self.block_size,
             kv_cache_id,
@@ -926,7 +954,7 @@ impl DistributeKVCacheClientInner {
         let start_1 = start.elapsed();
         debug!("kv_blocks.into_iter() check Time cost: {:?}", start_1);
 
-        let (tx, rx) = flume::unbounded::<Result<KVCacheResponse, KVCacheRequest>>();
+        let (tx, rx) = flume::unbounded::<Result<KVCacheResponse, KVCacheRequest<K>>>();
         let kv_cache_batch_put_request =
             KVCacheRequest::KVBlockBatchPutRequest(KVBlockBatchPutRequest {
                 batch_size: kv_block_put_requests.len() as u64,
@@ -980,7 +1008,7 @@ impl DistributeKVCacheClientInner {
         }
     }
 
-    async fn get_client(&self, addr: String) -> DatenLordResult<Arc<RpcClient<KVCachePacket>>> {
+    async fn get_client(&self, addr: String) -> DatenLordResult<Arc<RpcClient<KVCachePacket<K>>>> {
         let mut rpc_client_cache = self.rpc_client_cache.lock().await;
         if rpc_client_cache.contains_key(&addr) {
             let rpc_client =
@@ -1001,7 +1029,7 @@ impl DistributeKVCacheClientInner {
             };
             let addr_clone = addr.clone();
             let connect_stream = connect_timeout!(addr_clone, timeout_options.read_timeout).await?;
-            let rpc_client = RpcClient::<KVCachePacket>::new(connect_stream, &timeout_options);
+            let rpc_client = RpcClient::<KVCachePacket<K>>::new(connect_stream, &timeout_options);
             rpc_client.start_recv();
 
             // TODO: add ping into a loop.
@@ -1124,7 +1152,7 @@ mod tests {
         let port = 2889;
         let addr = format!("{}:{}", ip, port);
         let cache_manager = Arc::new(KVBlockManager::default());
-        let index_manager = Arc::new(IndexManager::new());
+        let index_manager = Arc::new(IndexManager::<u32>::new());
         let pool = Arc::new(WorkerPool::new(5, 5));
         let handler = KVCacheHandler::new(Arc::clone(&pool), cache_manager, index_manager);
         let mut server = RpcServer::new(&ServerTimeoutOptions::default(), 5, 5, handler);
@@ -1137,7 +1165,7 @@ mod tests {
         let client = Arc::new(client);
         let node = Node::default();
         let distribute_kvcache_client_inner =
-            DistributeKVCacheClientInner::new(Arc::new(ClusterManager::new(client, node)), 64);
+            DistributeKVCacheClientInner::<u32>::new(Arc::new(ClusterManager::new(client, node)), 64);
 
         let res = distribute_kvcache_client_inner.get_client(addr).await;
         assert!(res.is_ok());

@@ -106,7 +106,7 @@ async fn main() -> DatenLordResult<()> {
         })?;
 
     let cache_manager = Arc::new(KVBlockManager::default());
-    let index_manager = Arc::new(IndexManager::new());
+    let index_manager = Arc::new(IndexManager::<u32>::new());
 
     let pool = Arc::new(WorkerPool::new(5, 5));
     let handler = KVCacheHandler::new(Arc::clone(&pool), cache_manager, index_manager);
