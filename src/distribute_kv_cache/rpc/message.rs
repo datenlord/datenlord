@@ -1278,9 +1278,16 @@ impl Encode for KVBlockPutRequest {
         // debug!("encode KVBlockPutRequest bytes data cost: {:?}", start.elapsed());
     }
 
-    // fn encode_large_data(self) -> Option<Bytes> {
-    //     Some(bytes::Bytes::from(self.data))
-    // }
+    fn encode_large_data(&self, buf: &mut BytesMut) -> (u64, Vec<bytes::Bytes>) {
+        let len = self.data.len() + 16;
+        if buf.capacity() < 16 {
+            buf.reserve(16);
+        }
+        buf.put_u64(self.block_size.to_le());
+        buf.put_u64(self.kv_cache_id.to_le());
+
+        (len.cast(), vec![self.data.clone()])
+    }
 }
 
 impl Decode for KVBlockPutRequest {
@@ -1353,12 +1360,12 @@ impl Encode for KVBlockBatchPutRequest {
     }
 
     /// Get large data with Bytes, disable memory copy
-    fn encode_large_data(&self, _buf: &mut BytesMut) -> (u64, Vec<bytes::Bytes>) {
+    fn encode_large_data(&self, buf: &mut BytesMut) -> (u64, Vec<bytes::Bytes>) {
         let len = self.actual_size();
         let mut data = Vec::new();
         // (self.batch_size.to_le_bytes());
         for block in &self.blocks {
-            data.extend(block.encode_large_data(_buf).1);
+            data.extend(block.encode_large_data(buf).1);
         }
         (len, data)
     }

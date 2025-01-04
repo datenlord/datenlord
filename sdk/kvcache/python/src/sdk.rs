@@ -18,7 +18,7 @@ use crate::utils::Buffer;
 #[pyclass]
 pub struct DatenLordSDK {
     /// The `DistributeKVCacheClient` instance that represents the filesystem.
-    datenlord_client: Arc<DistributeKVCacheClient>,
+    datenlord_client: Arc<DistributeKVCacheClient<u32>>,
 }
 
 #[pymethods]
@@ -53,7 +53,7 @@ impl DatenLordSDK {
             let node = Node::default();
             let cluster_manager = Arc::new(ClusterManager::new(kv_engine, node));
 
-            let kvcacheclient = Arc::new(DistributeKVCacheClient::new(cluster_manager, block_size));
+            let kvcacheclient: Arc<DistributeKVCacheClient<u32>> = Arc::new(DistributeKVCacheClient::new(cluster_manager, block_size));
             let kvcacheclient_clone = Arc::clone(&kvcacheclient);
             match kvcacheclient_clone.start_watch().await {
                 Ok(()) => {

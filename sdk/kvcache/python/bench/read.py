@@ -2,6 +2,9 @@ import asyncio
 import time
 from datenlordsdk import DatenLordSDK
 
+def convert_string_to_list_of_integers(string):
+    return [ord(char) for char in string]
+
 async def benchmark_read():
     # Configurations
     # block_size = 1024 # 1KB
@@ -12,7 +15,7 @@ async def benchmark_read():
     # data_sizes = [1024, 2*1024, 4*1024, 8*1024, 16*1024, 32*1024, 64*1024, 128*1024, 256*1024, 512*1024, 1024*1024]
     # data_sizes = [512 * 1024, 1024 * 1024, 2 * 1024 * 1024, 4 * 1024 * 1024, 8 * 1024 * 1024, 16 * 1024 * 1024]
     data_sizes = [16 * 1024 * 1024]
-    num_operations = 10
+    num_operations = 1000
 
     # Initialize the SDK
     sdk = DatenLordSDK(
@@ -35,6 +38,7 @@ async def benchmark_read():
         start_time = time.time()
 
         for key in keys:
+            key = convert_string_to_list_of_integers(key)
             await sdk.try_load(key)
             # assert len(data) == data_size, f"Data size mismatch for key {key}: expected {data_size}, got {len(data)}"
 

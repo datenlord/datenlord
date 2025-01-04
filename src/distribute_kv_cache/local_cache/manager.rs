@@ -226,7 +226,7 @@ impl KVBlockManager {
         // Create a new LRUPolicy with a capacity of 2000
         // It will evict the least recently used block when the cache is full
         // TODO: Support mem limit and block size limit， current is block count limit
-        let policy = LRUPolicy::new(6000);
+        let policy = LRUPolicy::new(10);
         let cache = Arc::new(RwLock::new(CacheManager::new(policy)));
         KVBlockManager { cache, backend }
     }

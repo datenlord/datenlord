@@ -2,6 +2,9 @@ import asyncio
 import time
 from datenlordsdk import DatenLordSDK
 
+def convert_string_to_list_of_integers(string):
+    return [ord(char) for char in string]
+
 async def benchmark_write():
     # Configurations
     # block_size = 1024 # 1KB
@@ -12,7 +15,7 @@ async def benchmark_write():
     # data_sizes = [1024, 2*1024, 4*1024, 8*1024, 16*1024, 32*1024, 64*1024, 128*1024, 256*1024, 512*1024, 1024*1024]
     # data_sizes = [512*1024, 1024*1024, 2*1024*1024, 4*1024*1024, 8*1024*1024, 16*1024*1024]
     data_sizes = [16*1024*1024]
-    num_operations = 10
+    num_operations = 100
 
     # Initialize the SDK
     sdk = DatenLordSDK(
@@ -20,6 +23,7 @@ async def benchmark_write():
         kv_engine_address=["127.0.0.1:2379"],
         log_level="debug"
     )
+    print("SDK initialized successfully")
 
     for data_size in data_sizes:
         print(f"\nTesting with block_size={block_size}, data_size={data_size}...")
@@ -34,6 +38,8 @@ async def benchmark_write():
 
         for i in range(num_operations):
             key = f"key_bs{block_size}_ds{data_size}_id{i}"
+            key = convert_string_to_list_of_integers(key)
+
             await sdk.insert(key, data_to_write)
 
         # Calculate elapsed time and throughput
