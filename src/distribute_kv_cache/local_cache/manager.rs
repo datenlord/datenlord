@@ -309,7 +309,15 @@ impl KVBlockManager {
 
         // Write the block to the cache
         let block_ref = Arc::new(RwLock::new(block));
-        self.cache.write().unwrap().put(meta.clone(), block_ref);
+        match self.cache.write() {
+            Ok(mut cache) => {
+                cache.put(meta.clone(), block_ref);
+            }
+            Err(_) => {
+                error!("Failed to write block to cache");
+                return Ok(());
+            }
+        }
 
         Ok(())
 
