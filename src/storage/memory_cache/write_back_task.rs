@@ -14,7 +14,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
-use crate::async_fuse::fuse::protocol::INum;
+use crate::fs::fs_util::INum;
 use crate::storage::error::StorageResult;
 use crate::storage::policy::EvictPolicy;
 use crate::storage::{Block, BlockCoordinate, BlockId, MemoryCache, Storage};
@@ -146,24 +146,34 @@ where
                 .get_mut(&ino)
                 .and_then(|file_level_pending_blocks| file_level_pending_blocks.remove(&block_id))
             {
-                if self
+                let write_back_barrier = Arc::new(tokio::sync::Barrier::new(2));
+                let write_back_barrier_clone = Arc::clone(&write_back_barrier);
+                let storage_clone = Arc::clone(&self.storage);
+                let block_clone = block.clone();
+                let res = self
                     .block_flush_spawn_handle
-                    .spawn(|_| {
-                        write_back_one_block(
-                            Arc::clone(&self.storage),
-                            ino,
-                            block_id,
-                            block.clone(),
-                            tx,
-                        )
+                    .spawn(|_| async move {
+                        write_back_one_block(storage_clone, ino, block_id, block_clone, tx).await;
+                        write_back_barrier_clone.wait().await;
                     })
-                    .await
-                    .is_err()
-                {
+                    .await;
+
+                if let Err(err) = res {
+                    // let wg_clone = wg.clone();
+                    // Manaually write back the block
+                    if let Err(e) = self.storage.backend().store(ino, block_id, block).await {
+                        error!(
+                            "Failed to store block where ino={ino}, block_id={block_id}, err={e}."
+                        );
+                    }
                     // Ensure that the block is flushed to the backend, and notify the loop to
                     // shutdown.
-                    error!("Try to spawn a `BlockFlush` task after shutdown.");
+                    error!("Try to spawn a `BlockFlush` task after shutdown or current block_flush_spawn_handle is spawn is failed, error is {err}.");
+                    // drop(wg_clone);
                 }
+
+                // TODO: Add a timeout to avoid indefinite blocking in the task, panic/return error when timeout.
+                write_back_barrier.wait().await;
             }
         }
     }
@@ -177,30 +187,45 @@ where
         let mut shutdown = self.block_flush_spawn_handle.is_shutdown();
 
         if let Some(file_level_pending_blocks) = file_level_pending_blocks {
+            // Use a waitgroup or channel to wait for this tasks is finished, and make sure these write back task is finished.
+            let file_level_pending_blocks_size = file_level_pending_blocks.len();
+            let write_back_barrier = Arc::new(tokio::sync::Barrier::new(
+                file_level_pending_blocks_size + 1,
+            ));
             for (block_id, (block, tx)) in file_level_pending_blocks {
                 if shutdown {
                     error!("Trying to flush a file after shutdown.");
                 } else {
+                    // write_back_barrier
+                    let storage_clone = Arc::clone(&self.storage);
+                    let write_back_barrier_clone = Arc::clone(&write_back_barrier);
+                    let block_clone = block.clone();
                     let res = self
                         .block_flush_spawn_handle
-                        .spawn(|_| {
-                            write_back_one_block(
-                                Arc::clone(&self.storage),
-                                ino,
-                                block_id,
-                                block.clone(),
-                                tx,
-                            )
+                        .spawn(|_| async move {
+                            write_back_one_block(storage_clone, ino, block_id, block_clone, tx)
+                                .await;
+                            write_back_barrier_clone.wait().await;
                         })
                         .await;
-                    if res.is_err() {
+
+                    if let Err(err) = res {
+                        // let wg_clone = wg.clone();
                         shutdown = true;
                         if let Err(e) = self.storage.backend().store(ino, block_id, block).await {
                             error!("Failed to store block where ino={ino}, block_id={block_id}, err={e}.");
                         }
+                        // Ensure that the block is flushed to the backend, and notify the loop to
+                        // shutdown.
+                        error!("Try to spawn a `BlockFlush` task after shutdown or current block_flush_spawn_handle is spawn is failed, error is {err}.");
+                        // drop(wg_clone);
                     }
                 }
             }
+
+            // Wait for write back task is finished
+            // TODO: Add a timeout to avoid indefinite blocking in the task, panic/return error when timeout.
+            write_back_barrier.wait().await;
         }
     }
 
@@ -292,6 +317,8 @@ where
             if interval.period() != new_period {
                 interval = tokio::time::interval(new_period);
             }
+
+            info!("Write back task is running.");
 
             select! {
                 command = self.command_receiver.recv() => {

@@ -3,7 +3,7 @@ on:
   pull_request:
     branches: [master]
   schedule: [cron: "0 */4 * * *"]
-  workflow_dispatch: 
+  workflow_dispatch:
 
 jobs:
   kind-csi-e2e:
@@ -34,7 +34,8 @@ jobs:
           echo "Cron test"
           sh scripts/ci/cron-test.sh false
       - name: Archive Perf Result
-        uses: actions/upload-artifact@v2
+        # Update to v4, ref: https://github.blog/changelog/2024-02-13-deprecation-notice-v1-and-v2-of-the-artifact-actions/
+        uses: actions/upload-artifact@v4
         with:
           name: perf-report
           path: /tmp/output/*
@@ -43,7 +44,7 @@ jobs:
         if: ${{ failure() }}
         run: |
           sh scripts/ci/print-datenlord-logs.sh
-      
+
       - name: Debugging with ssh
         if: ${{ failure() }}
         uses: lhotari/action-upterm@v1

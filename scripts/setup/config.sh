@@ -36,7 +36,8 @@ export PROMETHEUS_LABEL=prometheus-server
 export SCHEDULER_IMAGE=k8s.gcr.io/kube-scheduler:v1.19.1
 export SNAPSHOTTER_VERSION=v5.0.0
 # setup etcd config
-export ETCD_IMAGE=gcr.io/etcd-development/etcd:v3.4.13
+# export ETCD_IMAGE=m.daocloud.io/gcr.io/etcd-development/etcd:v3.5.0
+export ETCD_IMAGE=quay.io/coreos/etcd:v3.5.9
 export ETCD_CONTAINER_NAME=etcd
 # start local node config
 export DATENLORD_LOCAL_BIND_DIR=/tmp/datenlord_data_dir
@@ -51,7 +52,7 @@ export ETCD_END_POINT=127.0.0.1:2379
 export BIND_MOUNTER=`realpath $BIND_MOUNTER`
 # setup minio config
 # MinIO Docker image with a specific version tag
-export MINIO_IMAGE=minio/minio:RELEASE.2024-04-06T05-26-02Z
+export MINIO_IMAGE=docker.m.daocloud.io/minio/minio:RELEASE.2024-04-06T05-26-02Z
 # MinIO container name
 export MINIO_CONTAINER_NAME=minio-server
 # MinIO access and secret keys
@@ -59,9 +60,11 @@ export MINIO_ACCESS_KEY=minioadmin
 export MINIO_SECRET_KEY=minioadmin
 # MinIO port (the default MinIO port is 9000)
 export MINIO_PORT=9000
-export CONSOLE_PORT=9090
+export CONSOLE_PORT=9091
 # MinIO bucket name
 export MINIO_BUCKET=mybucket
+# Export kind executable path
+export PATH=$HOME/bin:$PATH
 
 set -xv # enable debug
 set -e # exit on error

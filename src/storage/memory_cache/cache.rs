@@ -9,10 +9,10 @@ use clippy_utilities::OverflowArithmetic;
 use datenlord::metrics::CACHE_METRICS;
 use lockfree_cuckoohash::{pin, LockFreeCuckooHash as HashMap};
 use tokio::sync::{mpsc, oneshot, RwLock};
-use tracing::warn;
+use tracing::{error, warn};
 
 use super::write_back_task::Command;
-use crate::async_fuse::fuse::protocol::INum;
+use crate::fs::fs_util::INum;
 use crate::storage::error::StorageResult;
 use crate::storage::policy::EvictPolicy;
 use crate::storage::{Block, BlockCoordinate, BlockId, Storage, StorageError};
@@ -268,8 +268,37 @@ where
         Ok(res)
     }
 
+    async fn load_from_self_with_version(
+        &self,
+        ino: INum,
+        block_id: usize,
+        _version: u64,
+    ) -> StorageResult<Option<Block>> {
+        // self.load_from_self(ino, block_id).await
+        self.load_from_backend_with_version(ino, block_id, _version)
+            .await
+    }
+
     async fn load_from_backend(&self, ino: INum, block_id: usize) -> StorageResult<Option<Block>> {
+        error!("load_from_backend");
         let res = self.backend.load(ino, block_id).await;
+
+        if let Ok(Some(_)) = res {
+            // The cache is considered missed, only if the block exists in the backend.
+            CACHE_METRICS.cache_miss_count_inc("memory");
+        }
+
+        res
+    }
+
+    async fn load_from_backend_with_version(
+        &self,
+        ino: INum,
+        block_id: usize,
+        version: u64,
+    ) -> StorageResult<Option<Block>> {
+        error!("load_from_backend_with_version");
+        let res = self.backend.load_with_version(ino, block_id, version).await;
 
         if let Ok(Some(_)) = res {
             // The cache is considered missed, only if the block exists in the backend.

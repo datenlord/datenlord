@@ -4,23 +4,20 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::common::task_manager::{TaskName, TASK_MANAGER};
+use crate::config::{MemoryCacheConfig, SoftLimit, StorageConfig, StorageParams, StorageS3Config};
 use clippy_utilities::OverflowArithmetic;
-use datenlord::common::task_manager::{TaskName, TASK_MANAGER};
-use datenlord::config::{
-    MemoryCacheConfig, SoftLimit, StorageConfig, StorageParams, StorageS3Config,
-};
+use parking_lot::Mutex;
 use tokio_util::sync::CancellationToken;
 use tracing::level_filters::LevelFilter;
 use tracing::{debug, info}; // warn, error
 
+use crate::async_fuse::fuse::file_system::FuseFileSystem;
 use crate::async_fuse::fuse::{mount, session};
-use crate::async_fuse::memfs;
-use crate::async_fuse::memfs::kv_engine::{KVEngine, KVEngineType};
 use crate::common::logger::{init_logger, LogRole};
-use crate::storage::policy::LruPolicy;
-use crate::storage::{
-    BackendBuilder, BlockCoordinate, MemoryCacheBuilder, StorageManager, BLOCK_SIZE_IN_BYTES,
-};
+use crate::fs::datenlordfs;
+use crate::fs::kv_engine::{etcd_impl, KVEngine, KVEngineType};
+use crate::new_storage::{BackendBuilder, MemoryCache, StorageManager, BLOCK_SIZE};
 
 pub const TEST_NODE_ID: &str = "test_node";
 pub const TEST_ETCD_ENDPOINT: &str = "127.0.0.1:2379";
@@ -49,12 +46,14 @@ fn test_storage_config(is_s3: bool) -> StorageConfig {
         NonZeroUsize::new(5).unwrap_or_else(|| unreachable!("5 is not 0.")),
     );
     StorageConfig {
-        block_size: BLOCK_SIZE_IN_BYTES,
+        block_size: BLOCK_SIZE,
         memory_cache_config: MemoryCacheConfig {
             capacity: CACHE_DEFAULT_CAPACITY,
             command_queue_limit: 1000,
             write_back: true,
             soft_limit,
+            write_back_interval: Duration::from_millis(200),
+            write_back_dirty_limit: 10,
         },
         params,
     }
@@ -62,7 +61,7 @@ fn test_storage_config(is_s3: bool) -> StorageConfig {
 
 async fn run_fs(mount_point: &Path, is_s3: bool, token: CancellationToken) -> anyhow::Result<()> {
     let storage_config = test_storage_config(is_s3);
-    let kv_engine: Arc<memfs::kv_engine::etcd_impl::EtcdKVEngine> =
+    let kv_engine: Arc<etcd_impl::EtcdKVEngine> =
         Arc::new(KVEngineType::new(vec![TEST_ETCD_ENDPOINT.to_owned()]).await?);
 
     let storage = {
@@ -72,21 +71,12 @@ async fn run_fs(mount_point: &Path, is_s3: bool, token: CancellationToken) -> an
         let block_size = storage_config.block_size;
         let capacity_in_blocks = memory_cache_config.capacity.overflow_div(block_size);
 
-        let backend = BackendBuilder::new(storage_param.clone(), block_size)
-            .build()
-            .await?;
-        let lru_policy = LruPolicy::<BlockCoordinate>::new(capacity_in_blocks);
-        let memory_cache = MemoryCacheBuilder::new(lru_policy, backend, block_size)
-            .command_queue_limit(memory_cache_config.command_queue_limit)
-            .limit(memory_cache_config.soft_limit)
-            .write_through(!memory_cache_config.write_back)
-            .build()
-            .await;
-        StorageManager::new(memory_cache, block_size)
+        let cache = Arc::new(Mutex::new(MemoryCache::new(capacity_in_blocks, block_size)));
+        let backend = Arc::new(BackendBuilder::new(storage_param.clone()).build().await?);
+        StorageManager::new(cache, backend, block_size)
     };
 
-    let storage = Arc::new(storage);
-    let fs: memfs::MemFs<memfs::S3MetaData> = memfs::MemFs::new(
+    let fs: FuseFileSystem<datenlordfs::S3MetaData> = FuseFileSystem::new_datenlord_fs(
         mount_point
             .as_os_str()
             .to_str()
@@ -98,7 +88,7 @@ async fn run_fs(mount_point: &Path, is_s3: bool, token: CancellationToken) -> an
         storage,
     )
     .await?;
-    let ss = session::new_session_of_memfs(mount_point, fs).await?;
+    let ss = session::new_fuse_session(mount_point, fs).await?;
     ss.run(token).await?;
 
     Ok(())

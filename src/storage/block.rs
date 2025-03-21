@@ -8,8 +8,10 @@ use aligned_utils::bytes::AlignedBytes;
 use clippy_utilities::OverflowArithmetic;
 
 use super::StorageError;
-use crate::async_fuse::fuse::fuse_reply::{AsIoSlice, CouldBeAsIoSliceList};
-use crate::async_fuse::fuse::protocol::INum;
+use crate::{
+    async_fuse::fuse::fuse_reply::{AsIoSlice, CouldBeAsIoSliceList},
+    fs::fs_util::INum,
+};
 
 /// Page Size
 const PAGE_SIZE: usize = 4096;
@@ -58,10 +60,12 @@ pub struct Block {
 impl std::fmt::Debug for Block {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         let inner_slice = make_partial_u8_slice(self.inner.as_ref(), 0, 8);
+        let inner_slice_end =
+            make_partial_u8_slice(self.inner.as_ref(), self.inner.len() - 8, self.inner.len());
 
         write!(
             f,
-            "Block {{ inner: {inner_slice}, start: {}, end: {}, dirty: {} }}",
+            "Block {{ inner: {inner_slice}, inner_end: {inner_slice_end}, start: {}, end: {}, dirty: {} }}",
             self.start,
             self.end,
             self.dirty()

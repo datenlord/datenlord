@@ -68,7 +68,17 @@ opendal = {version = "0.43.0", features = ["layers-prometheus"]}
 signal-hook = { version = "0.3.17", features = ["iterator"]}
 signal-hook-tokio = { version = "0.3.1", features = ["futures-v0_3"] }
 tokio-util = "0.7.10"
+dashmap = "5.5.3"
+smallvec = "1.13.2"
+bytes = "1.6.0"
+hashbrown = "0.14.3"
+rand_distr = "0.4.3"
 serfig = "0.1.0"
+flume = "0.11.0"
+arc-swap = "1.7.1"
+# radix_trie = "0.2.1"
+radix_trie = { git = "https://github.com/IRONICBo/rust_radix_trie" }
+num = "0.4.3"
 
 [build-dependencies]
 protoc-grpcio = "3.0.0"
@@ -79,10 +89,25 @@ mock-etcd = { git = "https://github.com/datenlord/etcd-client", rev = "f697899" 
 #  We don't want to start up a real service for some api when doing unit test.
 mockall = "0.11.2"
 tempfile = "3"
+rstest = "0.22.0"
 
 [[bin]]
 path = "src/bin/bind_mounter.rs"
 name = "bind_mounter"
+
+[[bin]]
+path = "src/distribute_kv_cache/main.rs"
+name = "kvcache"
+
+[[bin]]
+path = "src/distribute_kv_cache/pyclient.rs"
+name = "kvcache_pyclient"
+
+[profile.release]
+debug = true
+
+[profile.dev]
+debug = true
 
 [features]
 abi-7-9 = []

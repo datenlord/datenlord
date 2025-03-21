@@ -1,4 +1,4 @@
-//! This is the storage managing mechanism implementation for the memfs
+//! This is the storage managing mechanism implementation for the datenlordfs
 
 mod backend;
 mod block;
@@ -43,3 +43,6 @@ mod mock;
 
 #[cfg(test)]
 pub use mock::MemoryStorage;
+
+/// The cache module for storage.
+mod distribute_kv_cache;

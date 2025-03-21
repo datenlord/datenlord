@@ -1,3 +1,4 @@
+use tracing::info;
 use tracing::level_filters::LevelFilter as Level;
 use tracing_subscriber::filter;
 use tracing_subscriber::fmt::format::FmtSpan;
@@ -6,6 +7,7 @@ use tracing_subscriber::prelude::*;
 
 /// Represents the role of the logger.
 #[derive(Debug)]
+#[allow(clippy::upper_case_acronyms)] // consider making the acronym lowercase, except the initial letter: `Sdk`
 pub enum LogRole {
     /// Same as `NodeRole::Node`.
     Node,
@@ -22,6 +24,11 @@ pub enum LogRole {
     /// user.
     #[allow(dead_code)] // /bin/bind_mounter.rs is still using this.
     BindMounter,
+    /// For distribute cache node.
+    Cache,
+    /// Same as `NodeRole::SDK`.
+    #[allow(dead_code)] // /sdk is still using this.
+    SDK,
 }
 
 impl From<crate::config::NodeRole> for LogRole {
@@ -31,7 +38,8 @@ impl From<crate::config::NodeRole> for LogRole {
             crate::config::NodeRole::Node => LogRole::Node,
             crate::config::NodeRole::Controller => LogRole::Controller,
             crate::config::NodeRole::SchedulerExtender => LogRole::SchedulerExtender,
-            crate::config::NodeRole::AsyncFuse => LogRole::AsyncFuse,
+            crate::config::NodeRole::AsyncFuse | crate::config::NodeRole::SDK => LogRole::AsyncFuse,
+            crate::config::NodeRole::Cache => LogRole::Cache,
         }
     }
 }
@@ -49,6 +57,8 @@ impl LogRole {
             #[cfg(test)]
             LogRole::Test => "test",
             LogRole::BindMounter => "bind_mounter",
+            LogRole::Cache => "cache",
+            LogRole::SDK => "sdk",
         }
     }
 }
@@ -62,8 +72,12 @@ pub fn init_logger(role: LogRole, level: Level) {
         .with_target("hyper", Level::WARN)
         .with_target("h2", Level::WARN)
         .with_target("tower", Level::WARN)
-        .with_target("datenlord::async_fuse::fuse", Level::INFO)
+        .with_target("datenlord::async_fuse::fuse", Level::ERROR)
         .with_target("datenlord::metrics", Level::INFO)
+        .with_target("datenlordsdk", Level::DEBUG)
+        .with_target("datenlord::distribute_kv_cache", Level::DEBUG)
+        .with_target("datenlord::distribute_kv_cache::rpc", Level::DEBUG)
+        .with_target("datenlord::distribute_kv_cache::rpc::client", Level::DEBUG)
         .with_target("", level);
 
     let log_path = format!("./datenlord_{}.log", role.as_str());
@@ -90,6 +104,8 @@ pub fn init_logger(role: LogRole, level: Level) {
             tracing::subscriber::set_global_default(subscriber);
     } else {
         tracing::subscriber::set_global_default(subscriber)
-            .unwrap_or_else(|error| panic!("Could not set logger ,err {error}"));
+            // .unwrap_or_else(|error| panic!("Could not set logger ,err {error}"));
+            // Do not panic here, because the logger may be set multiple times.
+            .unwrap_or_else(|error| info!("Could not set logger ,err {error}"));
     }
 }

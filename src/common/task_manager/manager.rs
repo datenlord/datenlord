@@ -31,6 +31,8 @@ pub struct TaskManager {
     tasks: Mutex<HashMap<TaskName, Task>>,
     /// The status of task manager, `true` for shutting down.
     is_shutdown: Arc<AtomicBool>,
+    /// Runtime of this task manager node.
+    runtime: tokio::runtime::Runtime,
 }
 
 impl TaskManager {
@@ -43,31 +45,66 @@ impl TaskManager {
     #[inline]
     #[must_use]
     pub fn new() -> Self {
+        #[allow(clippy::unwrap_used)]
+        // Get shared singleton tokio runtime.
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(8)
+            .enable_all()
+            .build()
+            .unwrap();
+
+        info!("Create a new task manager.");
+
         let mut tasks = HashMap::new();
         let is_shutdown = Arc::default();
         for (prev, next) in EDGES {
             tasks
                 .entry(prev)
-                .or_insert_with(|| Task::new(prev, Arc::clone(&is_shutdown)))
+                .or_insert_with(|| {
+                    Task::new(prev, Arc::clone(&is_shutdown), runtime.handle().clone())
+                })
                 .add_dependency(next);
             tasks
                 .entry(next)
-                .or_insert_with(|| Task::new(next, Arc::clone(&is_shutdown)))
+                .or_insert_with(|| {
+                    Task::new(next, Arc::clone(&is_shutdown), runtime.handle().clone())
+                })
                 .inc_predecessor_count();
         }
+
+        info!("Initialize task manager with {:?} tasks.", tasks.len());
 
         // Start GC task
         for gc_task_name in GC_TASKS {
             tasks
                 .entry(gc_task_name)
-                .or_insert_with(|| Task::new(gc_task_name, Arc::clone(&is_shutdown)))
+                .or_insert_with(|| {
+                    Task::new(
+                        gc_task_name,
+                        Arc::clone(&is_shutdown),
+                        runtime.handle().clone(),
+                    )
+                })
                 .convert_to_gc_task();
         }
+
+        info!(
+            "Initialize task manager with {:?} GC tasks.",
+            GC_TASKS.len()
+        );
 
         Self {
             tasks: Mutex::new(tasks),
             is_shutdown,
+            runtime,
         }
+    }
+
+    /// Get current runtime for this task manager.
+    #[inline]
+    #[must_use]
+    pub fn runtime(&self) -> &tokio::runtime::Runtime {
+        &self.runtime
     }
 
     /// Dumps all edges of the dependency graph.
@@ -140,7 +177,7 @@ impl TaskManager {
     /// After `shutdown` being called, no new task should be spawned via task
     /// manager.
     #[inline]
-    #[instrument(skip(self))]
+    #[instrument(level = "debug", skip(self))]
     pub async fn shutdown(&self) {
         let mut queue = VecDeque::from([TaskName::Root]);
 
