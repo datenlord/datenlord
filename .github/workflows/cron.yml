@@ -10,7 +10,7 @@ jobs:
     name: KIND-K8S-CSI-E2E
     # How to run K8S CSI e2e test
     # https://www.stackovercloud.com/2020/01/08/blog-testing-of-csi-drivers/
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       - name: Free Disk Space (Ubuntu)
         run: |

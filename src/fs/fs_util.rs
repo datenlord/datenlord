@@ -306,7 +306,6 @@ impl FileAttr {
         Ok(attr_changed.then_some(dirty_attr))
     }
 
-    /// ```
     /// File permissions in Unix/Linux systems are represented as a 12-bit structure,
     /// laid out as follows:
     /// ┌───────────────┬─────────┬─────────┬─────────┐
@@ -323,7 +322,6 @@ impl FileAttr {
     ///        └─ Special: Set User ID (suid), Set Group ID (sgid), and Sticky Bit (stky).
     /// When Sticky Bit set on a directory, files in that directory may only be unlinked or -
     /// renamed by root or the directory owner or the file owner.
-    /// ```
     pub fn check_perm(&self, uid: u32, gid: u32, access_mode: u8) -> DatenLordResult<()> {
         if NEED_CHECK_PERM {
             self.check_perm_inner(uid, gid, access_mode)

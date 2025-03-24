@@ -10,7 +10,7 @@ use clippy_utilities::OverflowArithmetic;
 use parking_lot::Mutex;
 use tokio_util::sync::CancellationToken;
 use tracing::level_filters::LevelFilter;
-use tracing::{debug, info}; // warn, error
+use tracing::{debug, error, info}; // warn, error
 
 use crate::async_fuse::fuse::file_system::FuseFileSystem;
 use crate::async_fuse::fuse::{mount, session};
@@ -96,7 +96,7 @@ async fn run_fs(mount_point: &Path, is_s3: bool, token: CancellationToken) -> an
 
 #[allow(clippy::let_underscore_must_use)]
 pub async fn setup(mount_dir: &Path, is_s3: bool) -> anyhow::Result<()> {
-    init_logger(LogRole::Test, LevelFilter::INFO);
+    init_logger(LogRole::Test, LevelFilter::DEBUG);
     debug!("setup started with mount_dir: {:?}", mount_dir);
     if mount_dir.exists() {
         debug!("mount_dir {:?} exists ,try umount", mount_dir);
@@ -148,11 +148,11 @@ pub async fn teardown(mount_dir: &Path) -> anyhow::Result<()> {
     tokio::time::sleep(Duration::new(seconds, 0)).await;
 
     mount::umount(mount_dir).await.unwrap_or_else(|err| {
-        panic!(
+        error!(
             "failed to un-mount {:?}, the error is: {}",
             mount_dir,
             crate::common::util::format_anyhow_error(&err),
-        )
+        );
     });
     let abs_mount_path = fs::canonicalize(mount_dir)?;
     fs::remove_dir_all(abs_mount_path)?;

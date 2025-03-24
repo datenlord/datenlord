@@ -691,6 +691,10 @@ impl MetaData for S3MetaData {
         size: u64,
         version: u64,
     ) -> DatenLordResult<FileAttr> {
+        debug!(
+            "write_remote_size_and_version_helper() ino={} size={}",
+            ino, size
+        );
         let mut node = self
             .get_node_from_kv_engine(ino)
             .await?

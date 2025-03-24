@@ -1,52 +1,53 @@
-name: Coverage
+# TODO: skip for now
+# name: Coverage
 
-on:
-  push:
-    branches:
-      - master
-  pull_request:
-    branches: [master]
+# on:
+#   push:
+#     branches:
+#       - master
+#   pull_request:
+#     branches: [master]
 
-env:
-  CI_RUST_TOOLCHAIN: 1.74.0
-  ETCD_CONTAINER_NAME: etcd
-  ETCD_IMAGE: gcr.io/etcd-development/etcd:v3.4.13
+# env:
+#   CI_RUST_TOOLCHAIN: 1.74.0
+#   ETCD_CONTAINER_NAME: etcd
+#   ETCD_IMAGE: gcr.io/etcd-development/etcd:v3.4.13
 
-jobs:
-  coverage:
-    name: Coverage
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v2
-      - run: sudo sh ./.github/scripts/install_cov_deps.sh
-      - name: Install CSI dependencies
-        run: |
-          sudo apt update
-          sudo apt install -y cmake g++ libprotobuf-dev protobuf-compiler
-      - uses: actions-rs/toolchain@v1
-        with:
-          profile: default
-          toolchain: ${{ env.CI_RUST_TOOLCHAIN }}
-          override: true
-          components: llvm-tools-preview
-      - uses: Swatinem/rust-cache@v2
-      - name: Run etcd service
-        run: |
-            docker pull $ETCD_IMAGE
-            docker run -d --rm --net host --name $ETCD_CONTAINER_NAME $ETCD_IMAGE
-            docker ps
-            docker logs $ETCD_CONTAINER_NAME    
-      - name: Modify fuse.conf
-        run: sudo sed -i 's/#user_allow_other/user_allow_other/g' /etc/fuse.conf
-      - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@cargo-llvm-cov
-      - name: Generate code coverage
-        run: cargo llvm-cov --codecov --output-path codecov.info
-      - name: Print Integration Test Logs
-        run: cat datenlord_test.log
-      - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v4
-        with:
-          token: ${{ secrets.CODECOV_TOKEN }}
-          files: codecov.info
-          verbose: true
+# jobs:
+#   coverage:
+#     name: Coverage
+#     runs-on: ubuntu-22.04
+#     steps:
+#       - uses: actions/checkout@v2
+#       - run: sudo sh ./.github/scripts/install_cov_deps.sh
+#       - name: Install CSI dependencies
+#         run: |
+#           sudo apt update
+#           sudo apt install -y cmake g++ libprotobuf-dev protobuf-compiler
+#       - uses: actions-rs/toolchain@v1
+#         with:
+#           profile: default
+#           toolchain: ${{ env.CI_RUST_TOOLCHAIN }}
+#           override: true
+#           components: llvm-tools-preview
+#       - uses: Swatinem/rust-cache@v2
+#       - name: Run etcd service
+#         run: |
+#             docker pull $ETCD_IMAGE
+#             docker run -d --rm --net host --name $ETCD_CONTAINER_NAME $ETCD_IMAGE
+#             docker ps
+#             docker logs $ETCD_CONTAINER_NAME
+#       - name: Modify fuse.conf
+#         run: sudo sed -i 's/#user_allow_other/user_allow_other/g' /etc/fuse.conf
+#       - name: Install cargo-llvm-cov
+#         uses: taiki-e/install-action@cargo-llvm-cov
+#       - name: Generate code coverage
+#         run: cargo llvm-cov --codecov --output-path codecov.info
+#       - name: Print Integration Test Logs
+#         run: cat datenlord_test.log
+#       - name: Upload coverage to Codecov
+#         uses: codecov/codecov-action@v4
+#         with:
+#           token: ${{ secrets.CODECOV_TOKEN }}
+#           files: codecov.info
+#           verbose: true

@@ -419,7 +419,8 @@ impl FileHandleInner {
                 // Check version
                 if block.version() != version {
                     warn!(
-                        "Version mismatch previous: {}, current: {}",
+                        "Block dirty flag: {}, version mismatch previous: {}, current: {}",
+                        block.dirty(),
                         version,
                         block.version()
                     );

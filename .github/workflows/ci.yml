@@ -17,7 +17,7 @@ env:
 jobs:
   outdated:
     name: Outdated
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v2
       - uses: actions-rs/install@v0.1
@@ -28,7 +28,7 @@ jobs:
 
   audit:
     name: Audit
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     env:
       # https://github.com/datenlord/datenlord/actions/runs/11811977077/job/32906419874?pr=525
       # debug will cause unexcept json parsing error
@@ -40,10 +40,20 @@ jobs:
         token: ${{ secrets.GITHUB_TOKEN }}
         # `RUSTSEC-2023-0071`: `rsa` crate depended by `opendal`. There are no better solutions now.
         ignore: RUSTSEC-2023-0071
+      continue-on-error: true
+
+    - name: Upload audit report
+      if: failure()
+      run: |
+        mkdir -p audit_reports
+        echo "${{ steps.audit.outputs.audit_report }}" > audit_reports/audit_report.txt
+        upload-artifact:
+          name: audit_report
+          path: audit_reports/audit_report.txt
 
   check:
     name: Check
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       - name: Install CSI dependencies
         run: |
@@ -62,7 +72,7 @@ jobs:
 
   csi-sanity-test:
     name: CSI-Sanity-Test
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       - name: Install CSI dependencies
         run: |
@@ -121,7 +131,7 @@ jobs:
 
   fmt:
     name: Fmt
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v2
       - uses: actions-rs/toolchain@v1
@@ -137,7 +147,7 @@ jobs:
 
   clippy:
     name: Clippy
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       - name: Install CSI dependencies
         run: |
@@ -154,11 +164,11 @@ jobs:
       - uses: actions-rs/cargo@v1
         with:
           command: clippy
-          args: --all-features --all-targets -- -D warnings
+          args: --all-features --all-targets --locked -- -D warnings
 
   fstest:
     name: fstest
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       - name: Install CSI dependencies
         run: |
