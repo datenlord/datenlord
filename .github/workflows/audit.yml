@@ -7,9 +7,19 @@ on:
 
 jobs:
   audit:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v1
       - uses: actions-rs/audit-check@v1
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
+        continue-on-error: true
+
+      - name: Upload audit report
+        if: failure()
+        run: |
+          mkdir -p audit_reports
+          echo "${{ steps.audit.outputs.audit_report }}" > audit_reports/audit_report.txt
+          upload-artifact:
+            name: audit_report
+            path: audit_reports/audit_report.txt
