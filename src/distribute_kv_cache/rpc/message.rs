@@ -3,15 +3,16 @@ use std::{fmt, mem};
 use async_trait::async_trait;
 use bytes::{BufMut, BytesMut};
 use clippy_utilities::{Cast, OverflowArithmetic};
+use num_enum::{IntoPrimitive, TryFromPrimitive};
+use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
-
-use crate::async_fuse::util::usize_to_u64;
 
 use super::{
     error::RpcError,
     packet::{ActualSize, Decode, Encode, Packet},
     utils::{get_u64_from_buf, u64_to_usize},
 };
+use crate::async_fuse::util::usize_to_u64;
 
 /// Zero copy conversion between num key and u8 buffers.
 #[allow(clippy::mem_forget)]
@@ -84,113 +85,47 @@ fn u8_to_u32_buffer(input: Vec<u8>) -> Vec<u32> {
 }
 
 /// The request type of the request.
-#[derive(Debug)]
+#[derive(Debug, IntoPrimitive, TryFromPrimitive, Serialize, Deserialize, Clone, Copy)]
+#[repr(u8)]
 pub enum ReqType {
     /// The keep alive request 0.
-    KeepAliveRequest,
+    KeepAliveRequest = 0,
     /// The file block request 1.
-    FileBlockRequest,
+    FileBlockRequest = 1,
     /// The block allocate request 2.
-    KVCacheIdAllocateRequest,
+    KVCacheIdAllocateRequest = 2,
     /// The kv cache index get request 3.
-    KVCacheIndexMatchRequest,
+    KVCacheIndexMatchRequest = 3,
     /// The kv cache index batch insert request 4.
-    KVCacheIndexBatchInsertRequest,
+    KVCacheIndexBatchInsertRequest = 4,
     /// The kv cache index remove request 5.
-    KVCacheIndexRemoveRequest,
+    KVCacheIndexRemoveRequest = 5,
     /// The kv block get request 6.
-    KVBlockGetRequest,
+    KVBlockGetRequest = 6,
     /// The kv block put request 7.
-    KVBlockBatchPutRequest,
-}
-
-impl ReqType {
-    /// Convert u8 to `ReqType`
-    pub fn from_u8(op: u8) -> Result<Self, RpcError> {
-        match op {
-            0 => Ok(Self::KeepAliveRequest),
-            1 => Ok(Self::FileBlockRequest),
-            2 => Ok(Self::KVCacheIdAllocateRequest),
-            3 => Ok(Self::KVCacheIndexMatchRequest),
-            4 => Ok(Self::KVCacheIndexBatchInsertRequest),
-            5 => Ok(Self::KVCacheIndexRemoveRequest),
-            6 => Ok(Self::KVBlockGetRequest),
-            7 => Ok(Self::KVBlockBatchPutRequest),
-            _ => Err(RpcError::InternalError(format!(
-                "Invalid operation type: {op}"
-            ))),
-        }
-    }
-
-    /// Convert `ReqType` to u8
-    #[must_use]
-    pub fn to_u8(&self) -> u8 {
-        match *self {
-            Self::KeepAliveRequest => 0,
-            Self::FileBlockRequest => 1,
-            Self::KVCacheIdAllocateRequest => 2,
-            Self::KVCacheIndexMatchRequest => 3,
-            Self::KVCacheIndexBatchInsertRequest => 4,
-            Self::KVCacheIndexRemoveRequest => 5,
-            Self::KVBlockGetRequest => 6,
-            Self::KVBlockBatchPutRequest => 7,
-        }
-    }
+    KVBlockBatchPutRequest = 7,
 }
 
 /// The operation type of the response.
-#[derive(Debug)]
+#[derive(Debug, IntoPrimitive, TryFromPrimitive, Serialize, Deserialize, Clone, Copy)]
+#[repr(u8)]
 pub enum RespType {
     /// The keep alive response.
-    KeepAliveResponse,
+    KeepAliveResponse = 0,
     /// The file block response.
-    FileBlockResponse,
+    FileBlockResponse = 1,
     /// The block allocate response.
-    KVCacheIdAllocateResponse,
+    KVCacheIdAllocateResponse = 2,
     /// The kv cache index get response.
-    KVCacheIndexMatchResponse,
+    KVCacheIndexMatchResponse = 3,
     /// The kv cache index put response.
-    KVCacheIndexInsertResponse,
+    KVCacheIndexInsertResponse = 4,
     /// The kv cache index remove response.
-    KVCacheIndexRemoveResponse,
+    KVCacheIndexRemoveResponse = 5,
     /// The kv block get response.
-    KVBlockGetResponse,
+    KVBlockGetResponse = 6,
     /// The kv block put response.
-    KVBlockBatchPutResponse,
-}
-
-impl RespType {
-    /// Convert u8 to `RespType`
-    pub fn from_u8(op: u8) -> Result<Self, RpcError> {
-        match op {
-            0 => Ok(Self::KeepAliveResponse),
-            1 => Ok(Self::FileBlockResponse),
-            2 => Ok(Self::KVCacheIdAllocateResponse),
-            3 => Ok(Self::KVCacheIndexMatchResponse),
-            4 => Ok(Self::KVCacheIndexInsertResponse),
-            5 => Ok(Self::KVCacheIndexRemoveResponse),
-            6 => Ok(Self::KVBlockGetResponse),
-            7 => Ok(Self::KVBlockBatchPutResponse),
-            _ => Err(RpcError::InternalError(format!(
-                "Invalid operation type: {op}"
-            ))),
-        }
-    }
-
-    /// Convert `RespType` to u8
-    #[must_use]
-    pub fn to_u8(&self) -> u8 {
-        match *self {
-            Self::KeepAliveResponse => 0,
-            Self::FileBlockResponse => 1,
-            Self::KVCacheIdAllocateResponse => 2,
-            Self::KVCacheIndexMatchResponse => 3,
-            Self::KVCacheIndexInsertResponse => 4,
-            Self::KVCacheIndexRemoveResponse => 5,
-            Self::KVBlockGetResponse => 6,
-            Self::KVBlockBatchPutResponse => 7,
-        }
-    }
+    KVBlockBatchPutResponse = 7,
 }
 
 /// Common data structures shared between the client and server.
@@ -322,16 +257,19 @@ impl Decode for FileBlockResponse {
 }
 
 /// The status code of the response.
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+#[derive(
+    Debug, IntoPrimitive, TryFromPrimitive, PartialEq, Eq, Clone, Copy, Serialize, Deserialize,
+)]
+#[repr(u8)]
 pub enum StatusCode {
     /// The request is successful.
-    Success,
+    Success = 0,
     /// The request is not found.
-    NotFound,
+    NotFound = 1,
     /// The request is invalid.
-    InternalError,
+    InternalError = 2,
     /// The request is out dated.
-    VersionMismatch,
+    VersionMismatch = 3,
 }
 
 impl Default for StatusCode {
@@ -370,7 +308,7 @@ impl FileBlockPacket {
             // Will be auto set by client
             seq: 0,
             // Set operation
-            op: ReqType::FileBlockRequest.to_u8(),
+            op: ReqType::FileBlockRequest.into(),
             request: block_request.clone(),
             timestamp: 0,
             response: None,
@@ -464,7 +402,7 @@ impl Packet for FileBlockPacket {
 }
 
 /// The request to allocate a global kv cache id.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct KVCacheIdAllocateRequest {
     /// The kv block size.
     pub block_size: u64,
@@ -654,13 +592,8 @@ impl Encode for KVCacheIndexMatchResponse {
         buf.put_u64(self.kv_cache_id.to_le());
         buf.put_u64(self.offset.to_le());
         buf.put_u64(self.size.to_le());
-        match self.status {
-            StatusCode::Success => buf.put_u8(0),
-            StatusCode::NotFound => buf.put_u8(1),
-            StatusCode::InternalError => buf.put_u8(2),
-            // Not used here.
-            StatusCode::VersionMismatch => buf.put_u8(3),
-        }
+        let status: u8 = self.status.into();
+        buf.put_u8(status);
         buf.put_slice(&self.node_address);
     }
 }
@@ -677,11 +610,10 @@ impl Decode for KVCacheIndexMatchResponse {
         let offset = get_u64_from_buf(buf, 24)?;
         let size = get_u64_from_buf(buf, 32)?;
         let status = match buf.get(40) {
-            Some(&0) => StatusCode::Success,
-            Some(&1) => StatusCode::NotFound,
-            Some(&2) => StatusCode::InternalError,
-            Some(&3) => StatusCode::VersionMismatch,
-            _ => return Err(RpcError::InternalError("Invalid status code".to_owned())),
+            Some(&status_code) => StatusCode::try_from(status_code).map_err(|e| {
+                RpcError::InternalError(format!("Invalid status code {status_code} with error {e}"))
+            })?,
+            None => return Err(RpcError::InternalError("Invalid status code".to_owned())),
         };
         let node_address = buf.get(41..).unwrap_or(&[]).to_vec();
         Ok(KVCacheIndexMatchResponse {
@@ -1170,7 +1102,7 @@ impl ActualSize for KVBlockGetRequest {
 }
 
 /// The response to get kv block.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct KVBlockGetResponse {
     /// The kv block size.
     pub block_size: u64,
@@ -1179,6 +1111,7 @@ pub struct KVBlockGetResponse {
     /// The status of the response.
     pub status: StatusCode,
     /// The data of the block.
+    #[serde(skip_serializing, skip_deserializing)]
     pub data: bytes::Bytes,
 }
 
@@ -1784,7 +1717,8 @@ where
 
     /// Set response data to current packet
     fn set_resp_data(&mut self, data: BytesMut) -> Result<(), RpcError> {
-        let response_type = RespType::from_u8(self.op)?;
+        let response_type = RespType::try_from(self.op)
+            .map_err(|e| RpcError::InternalError(format!("Invalid response type: {e}")))?;
         match response_type {
             RespType::KVCacheIdAllocateResponse => {
                 self.response = Some(KVCacheResponse::decode(

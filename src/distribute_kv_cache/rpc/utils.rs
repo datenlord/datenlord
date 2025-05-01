@@ -1,4 +1,5 @@
-use bytes::Buf;
+use bytes::{Buf, BytesMut};
+use tracing::debug;
 
 use super::error::RpcError;
 
@@ -99,5 +100,24 @@ pub const fn u64_to_usize(x: u64) -> usize {
     #[cfg(not(target_pointer_width = "16"))]
     {
         x as usize
+    }
+}
+
+/// Ensure buffer length
+pub fn ensure_buffer_len(buffer: &mut BytesMut, len: usize) {
+    let start = std::time::Instant::now();
+    if buffer.capacity() < len {
+        buffer.reserve(len + 1);
+        debug!(
+            "Client reserve buffer {:?} to size {:?} cost: {:?}",
+            len,
+            len,
+            start.elapsed()
+        );
+    }
+    // req_buffer.resize(u64_to_usize(len), 0);
+    // req_buffer.resize(u64_to_usize(len), 0);
+    unsafe {
+        buffer.set_len(len);
     }
 }
