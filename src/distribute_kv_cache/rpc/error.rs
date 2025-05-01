@@ -1,7 +1,9 @@
 use std::fmt;
 
+use thiserror::Error;
+
 /// Error types for the RPC server and client
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Error)]
 pub enum RpcError {
     /// The request is invalid.
     InvalidRequest(String),

@@ -78,6 +78,7 @@ arc-swap = "1.7.1"
 radix_trie = { git = "https://github.com/datenlord/radix_trie" }
 num = "0.4.3"
 flume = "0.11.0"
+num_enum = "0.7.3"
 
 [build-dependencies]
 protoc-grpcio = "3.0.0"

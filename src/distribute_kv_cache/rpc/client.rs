@@ -15,7 +15,7 @@ use tokio::{
 };
 use tracing::debug;
 
-use crate::{read_exact_timeout, write_all_timeout};
+use crate::{distribute_kv_cache::rpc::utils, read_exact_timeout, write_all_timeout};
 
 use super::{
     common::ClientTimeoutOptions,
@@ -113,20 +113,7 @@ where
     pub async fn recv_len(&self, len: u64) -> Result<(), RpcError> {
         let start = tokio::time::Instant::now();
         let mut req_buffer: &mut BytesMut = unsafe { &mut *self.resp_buf.get() };
-        if req_buffer.capacity() < u64_to_usize(len) {
-            req_buffer.reserve(u64_to_usize(len) + 1);
-            debug!(
-                "Client reserve buffer {:?} to size {:?} cost: {:?}",
-                u64_to_usize(len),
-                len,
-                start.elapsed()
-            );
-        }
-        // req_buffer.resize(u64_to_usize(len), 0);
-        // req_buffer.resize(u64_to_usize(len), 0);
-        unsafe {
-            req_buffer.set_len(u64_to_usize(len));
-        }
+        utils::ensure_buffer_len(req_buffer, u64_to_usize(len));
         let start_1 = start.elapsed();
         debug!(
             "Client resize buffer {:?} to size {:?} cost: {:?}",
@@ -150,22 +137,13 @@ where
     }
 
     /// Receive request body from the server, try to read huge len data with given buffer.
-    pub async fn recv_huge_len(&self, len: u64, req_buffer: &mut BytesMut) -> Result<(), RpcError> {
+    pub async fn recv_len_pass_in_len(
+        &self,
+        len: u64,
+        req_buffer: &mut BytesMut,
+    ) -> Result<(), RpcError> {
         let start = tokio::time::Instant::now();
-        if req_buffer.capacity() < u64_to_usize(len) {
-            req_buffer.reserve(u64_to_usize(len) + 1);
-            debug!(
-                "Client reserve buffer {:?} to size {:?} cost: {:?}",
-                u64_to_usize(len),
-                len,
-                start.elapsed()
-            );
-        }
-        // req_buffer.resize(u64_to_usize(len), 0);
-        // req_buffer.resize(u64_to_usize(len), 0);
-        unsafe {
-            req_buffer.set_len(u64_to_usize(len));
-        }
+        utils::ensure_buffer_len(req_buffer, u64_to_usize(len));
         let start_1 = start.elapsed();
         debug!(
             "Client resize buffer {:?} to size {:?} cost: {:?}",
@@ -252,7 +230,7 @@ where
         // Set to packet task
         let keep_alive_msg = ReqHeader {
             seq: current_seq,
-            op: ReqType::KeepAliveRequest.to_u8(),
+            op: ReqType::KeepAliveRequest.into(),
             len: 0,
         };
 
@@ -320,7 +298,7 @@ where
                     self.received_keepalive_timestamp
                         .store(current_timestamp, std::sync::atomic::Ordering::Release);
                     // Update the received keep alive seq
-                    if let Ok(resp_type) = RespType::from_u8(header.op) {
+                    if let Ok(resp_type) = RespType::try_from(header.op) {
                         if let RespType::KeepAliveResponse = resp_type {
                             // Keep alive response, receive_header will handle this op.
                             debug!("{:?} Received keep alive response: {:?}", self, header);
@@ -360,7 +338,10 @@ where
                                 debug!("{:?} Try to receive huge response body with size {:?} in user buffer", self, header.len);
                                 let mut resp_buffer =
                                     BytesMut::with_capacity(u64_to_usize(header.len));
-                                match self.recv_huge_len(header.len, &mut resp_buffer).await {
+                                match self
+                                    .recv_len_pass_in_len(header.len, &mut resp_buffer)
+                                    .await
+                                {
                                     Ok(()) => {}
                                     Err(err) => {
                                         debug!(
@@ -669,7 +650,7 @@ mod tests {
         let mut buf = BytesMut::new();
         RespHeader {
             seq: 1,
-            op: RespType::KeepAliveResponse.to_u8(),
+            op: RespType::KeepAliveResponse.into(),
             len: 0,
         }
         .encode(&mut buf);
@@ -684,7 +665,7 @@ mod tests {
         let connection = RpcClientConnectionInner::<TestPacket>::new(stream, &timeout_options, 123);
         let header = connection.recv_header().await.unwrap();
         assert_eq!(header.seq, 1);
-        assert_eq!(header.op, RespType::KeepAliveResponse.to_u8());
+        assert_eq!(header.op, Into::<u8>::into(RespType::KeepAliveResponse));
     }
 
     #[tokio::test]
@@ -726,7 +707,7 @@ mod tests {
         let connection = RpcClientConnectionInner::<TestPacket>::new(stream, &timeout_options, 123);
         let req_header = ReqHeader {
             seq: 1,
-            op: ReqType::KeepAliveRequest.to_u8(),
+            op: ReqType::KeepAliveRequest.into(),
             len: 0,
         };
 
@@ -761,7 +742,7 @@ mod tests {
         let mut buf = BytesMut::new();
         RespHeader {
             seq: 1,
-            op: RespType::KeepAliveResponse.to_u8(),
+            op: RespType::KeepAliveResponse.into(),
             len: 0,
         }
         .encode(&mut buf);

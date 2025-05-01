@@ -14,7 +14,9 @@ use tokio::{
     task,
 };
 
-use crate::{read_exact_timeout, write_all_timeout, write_vectored_timeout};
+use crate::{
+    distribute_kv_cache::rpc::utils, read_exact_timeout, write_all_timeout, write_vectored_timeout,
+};
 
 use super::{
     common::ServerTimeoutOptions,
@@ -131,13 +133,7 @@ where
     pub async fn recv_len(&self, len: u64) -> Result<(), RpcError> {
         let start = tokio::time::Instant::now();
         let mut req_buffer: &mut BytesMut = unsafe { &mut *self.req_buf.get() };
-        if req_buffer.capacity() < u64_to_usize(len) {
-            req_buffer.reserve(u64_to_usize(len) - req_buffer.capacity());
-        }
-        // req_buffer.resize(u64_to_usize(len), 0);
-        unsafe {
-            req_buffer.set_len(u64_to_usize(len));
-        }
+        utils::ensure_buffer_len(req_buffer, u64_to_usize(len));
         let start_1 = start.elapsed();
         debug!("Server resize buffer to size {:?} cost: {:?}", len, start_1);
 
@@ -156,15 +152,13 @@ where
     }
 
     /// Recv huge request body from the stream
-    pub async fn recv_huge_len(&self, len: u64, req_buffer: &mut BytesMut) -> Result<(), RpcError> {
+    pub async fn recv_len_pass_in_len(
+        &self,
+        len: u64,
+        req_buffer: &mut BytesMut,
+    ) -> Result<(), RpcError> {
         let start = tokio::time::Instant::now();
-        if req_buffer.capacity() < u64_to_usize(len) {
-            req_buffer.reserve(u64_to_usize(len) - req_buffer.capacity());
-        }
-        // req_buffer.resize(u64_to_usize(len), 0);
-        unsafe {
-            req_buffer.set_len(u64_to_usize(len));
-        }
+        utils::ensure_buffer_len(req_buffer, u64_to_usize(len));
         let start_1 = start.elapsed();
         debug!("Server resize buffer to size {:?} cost: {:?}", len, start_1);
 
@@ -249,7 +243,7 @@ where
         // Dispatch the handler for the connection
         let seq = req_header.seq;
         let body_len = req_header.len;
-        if let Ok(req_type) = ReqType::from_u8(req_header.op) {
+        if let Ok(req_type) = ReqType::try_from(req_header.op) {
             debug!(
                 "Dispatch request with header type: {:?}, seq: {:?}, body_len: {:?}",
                 req_type, seq, body_len
@@ -260,7 +254,7 @@ where
                 // In current implementation, we just send keepalive header to the client stream
                 let resp_header = RespHeader {
                     seq,
-                    op: RespType::KeepAliveResponse.to_u8(),
+                    op: RespType::KeepAliveResponse.into(),
                     len: 0,
                 };
                 // Only one process will access this buffer, so we can use this buffer directly.
@@ -294,7 +288,11 @@ where
                 debug!("Request body length is huge, try to read the request body");
                 // Huge body length, need to consider to take user buffer
                 let mut req_buffer = BytesMut::with_capacity(u64_to_usize(body_len));
-                match self.inner.recv_huge_len(body_len, &mut req_buffer).await {
+                match self
+                    .inner
+                    .recv_len_pass_in_len(body_len, &mut req_buffer)
+                    .await
+                {
                     Ok(()) => {}
                     Err(err) => {
                         warn!("Failed to receive huge request body: {:?}", err);
