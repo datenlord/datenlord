@@ -1,11 +1,11 @@
 use std::{fmt, mem};
 
 use async_trait::async_trait;
-use bytes::{BufMut, BytesMut};
+use bytes::{Buf, BufMut, BytesMut};
 use clippy_utilities::{Cast, OverflowArithmetic};
 use num_enum::{IntoPrimitive, TryFromPrimitive};
-use serde::{Deserialize, Serialize};
-use tracing::{debug, warn};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use tracing::{debug, error, warn};
 
 use super::{
     error::RpcError,
@@ -17,6 +17,7 @@ use crate::async_fuse::util::usize_to_u64;
 /// Zero copy conversion between num key and u8 buffers.
 #[allow(clippy::mem_forget)]
 #[allow(clippy::as_conversions)]
+#[allow(dead_code)]
 fn num_to_u8_buffer<K>(input: Vec<K>) -> Vec<u8>
 where
     K: num::Num,
@@ -411,7 +412,10 @@ pub struct KVCacheIdAllocateRequest {
 impl Encode for KVCacheIdAllocateRequest {
     /// Encode the kv cache id allocate request into a byte buffer.
     fn encode(&self, buf: &mut BytesMut) {
-        buf.put_u64(self.block_size.to_le());
+        let mut writer = buf.writer();
+        if let Err(err) = bincode::serialize_into(&mut writer, self) {
+            error!("Failed to serialize: {}", err);
+        }
     }
 }
 
@@ -443,7 +447,7 @@ impl ActualSize for KVCacheIdAllocateRequest {
 }
 
 /// The response to allocate a global kv cache id.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct KVCacheIdAllocateResponse {
     /// The kv block size.
     pub block_size: u64,
@@ -454,28 +458,33 @@ pub struct KVCacheIdAllocateResponse {
 impl Encode for KVCacheIdAllocateResponse {
     /// Encode the kv cache id allocate response into a byte buffer.
     fn encode(&self, buf: &mut BytesMut) {
-        buf.put_u64(self.block_size.to_le());
-        buf.put_u64(self.kv_cache_id.to_le());
+        let mut writer = buf.writer();
+        if let Err(err) = bincode::serialize_into(&mut writer, self) {
+            error!("Failed to serialize: {}", err);
+        }
     }
 }
 
 impl Decode for KVCacheIdAllocateResponse {
     /// Decode the byte buffer into a kv cache id allocate response.
-    fn decode(buf: &mut BytesMut) -> Result<Self, RpcError> {
-        if buf.len() < 16 {
+    fn decode_large_data(buf: bytes::Bytes) -> Result<Self, RpcError> {
+        // TODO: Skip check the size of buffer
+        if buf.len() < 8 {
             return Err(RpcError::InternalError("Insufficient bytes".to_owned()));
         }
-        let block_size = get_u64_from_buf(buf, 0)?;
-        let kv_cache_id = get_u64_from_buf(buf, 8)?;
-        Ok(KVCacheIdAllocateResponse {
-            block_size,
-            kv_cache_id,
-        })
+        let reader = buf.reader();
+        match bincode::deserialize_from(reader) {
+            Ok(resp) => Ok(resp),
+            Err(err) => {
+                error!("Failed to deserialize: {}", err);
+                Err(RpcError::InternalError("Failed to deserialize".to_owned()))
+            }
+        }
     }
 }
 
 /// The request to match kv cache index.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct KVCacheIndexMatchRequest<K> {
     /// The kv block size.
     pub block_size: u64,
@@ -485,15 +494,14 @@ pub struct KVCacheIndexMatchRequest<K> {
 
 impl<K> Encode for KVCacheIndexMatchRequest<K>
 where
-    K: num::Num + Send + Sync + Clone + fmt::Debug,
+    K: num::Num + Send + Sync + Clone + fmt::Debug + Serialize + DeserializeOwned,
 {
     /// Encode the kv cache index match request into a byte buffer.
     fn encode(&self, buf: &mut BytesMut) {
-        debug!("KVCacheIndexMatchRequest self: {:?}", self);
-        buf.put_u64(self.block_size.to_le());
-        // Zero copy convert u32 to u8 buffer.
-        let buffer = num_to_u8_buffer(self.kv_cache_key.clone());
-        buf.put_slice(&buffer);
+        let mut writer = buf.writer();
+        if let Err(err) = bincode::serialize_into(&mut writer, self) {
+            error!("Failed to serialize: {}", err);
+        }
     }
 }
 
@@ -566,7 +574,7 @@ where
 }
 
 /// The response to match kv cache index.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct KVCacheIndexMatchResponse {
     /// The kv block size.
     pub block_size: u64,
@@ -587,14 +595,10 @@ pub struct KVCacheIndexMatchResponse {
 impl Encode for KVCacheIndexMatchResponse {
     /// Encode the kv cache index match response into a byte buffer.
     fn encode(&self, buf: &mut BytesMut) {
-        buf.put_u64(self.block_size.to_le());
-        buf.put_u64(self.kv_cache_key_len.to_le());
-        buf.put_u64(self.kv_cache_id.to_le());
-        buf.put_u64(self.offset.to_le());
-        buf.put_u64(self.size.to_le());
-        let status: u8 = self.status.into();
-        buf.put_u8(status);
-        buf.put_slice(&self.node_address);
+        let mut writer = buf.writer();
+        if let Err(err) = bincode::serialize_into(&mut writer, self) {
+            error!("Failed to serialize: {}", err);
+        }
     }
 }
 
@@ -629,7 +633,7 @@ impl Decode for KVCacheIndexMatchResponse {
 }
 
 /// The request to insert kv cache index.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct KVCacheIndexInsertRequest<K> {
     /// The kv block size.
     pub block_size: u64,
@@ -648,19 +652,14 @@ pub struct KVCacheIndexInsertRequest<K> {
 
 impl<K> Encode for KVCacheIndexInsertRequest<K>
 where
-    K: num::Num + Send + Sync + Clone + fmt::Debug,
+    K: num::Num + Send + Sync + Clone + fmt::Debug + Serialize + DeserializeOwned,
 {
     /// Encode the kv cache index insert request into a byte buffer.
     fn encode(&self, buf: &mut BytesMut) {
-        buf.put_u64(self.block_size.to_le());
-        buf.put_u64(self.kv_cache_id.to_le());
-        buf.put_u64(self.offset.to_le());
-        buf.put_u64(self.size.to_le());
-        buf.put_u64(self.kv_cache_key_len.to_le());
-
-        // Zero copy convert u32 to u8 buffer.
-        let buffer = num_to_u8_buffer(self.kv_cache_key.clone());
-        buf.put_slice(&buffer);
+        let mut writer = buf.writer();
+        if let Err(err) = bincode::serialize_into(&mut writer, self) {
+            error!("Failed to serialize: {}", err);
+        }
     }
 }
 
@@ -770,7 +769,7 @@ where
 }
 
 /// The response to insert kv cache index.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct KVCacheIndexInsertResponse {
     /// The kv block size.
     pub block_size: u64,
@@ -783,14 +782,9 @@ pub struct KVCacheIndexInsertResponse {
 impl Encode for KVCacheIndexInsertResponse {
     /// Encode the kv cache index insert response into a byte buffer.
     fn encode(&self, buf: &mut BytesMut) {
-        buf.put_u64(self.block_size.to_le());
-        buf.put_u64(self.kv_cache_id.to_le());
-        match self.status {
-            StatusCode::Success => buf.put_u8(0),
-            StatusCode::NotFound => buf.put_u8(1),
-            StatusCode::InternalError => buf.put_u8(2),
-            // Not used here.
-            StatusCode::VersionMismatch => buf.put_u8(3),
+        let mut writer = buf.writer();
+        if let Err(err) = bincode::serialize_into(&mut writer, self) {
+            error!("Failed to serialize: {}", err);
         }
     }
 }
@@ -819,7 +813,7 @@ impl Decode for KVCacheIndexInsertResponse {
 }
 
 /// The request to batch insert kv cache index.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct KVCacheIndexBatchInsertRequest<K> {
     /// The batch size
     pub batch_size: u64,
@@ -831,16 +825,14 @@ pub struct KVCacheIndexBatchInsertRequest<K> {
 
 impl<K> Encode for KVCacheIndexBatchInsertRequest<K>
 where
-    K: num::Num + Send + Sync + Clone + fmt::Debug,
+    K: num::Num + Send + Sync + Clone + fmt::Debug + Serialize + DeserializeOwned,
 {
     /// Encode the kv cache index batch insert request into a byte buffer.
     fn encode(&self, buf: &mut BytesMut) {
-        debug!("KVCacheIndexBatchInsertRequest self: {:?}", self);
-        buf.put_u64(self.batch_size.to_le());
-        for index in &self.indexes {
-            index.encode(buf);
+        let mut writer = buf.writer();
+        if let Err(err) = bincode::serialize_into(&mut writer, self) {
+            error!("Failed to serialize: {}", err);
         }
-        buf.put_slice(&self.node_address);
     }
 }
 
@@ -917,7 +909,7 @@ where
 
 /// The request to remove kv cache index.
 /// TODO: check both `kv_cache_id` and `kv_cache_key` to make sure current deletion is correct.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct KVCacheIndexRemoveRequest<K> {
     /// The kv block size.
     pub block_size: u64,
@@ -927,14 +919,14 @@ pub struct KVCacheIndexRemoveRequest<K> {
 
 impl<K> Encode for KVCacheIndexRemoveRequest<K>
 where
-    K: num::Num + Send + Sync + Clone + fmt::Debug,
+    K: num::Num + Send + Sync + Clone + fmt::Debug + Serialize + DeserializeOwned,
 {
     /// Encode the kv cache index remove request into a byte buffer.
     fn encode(&self, buf: &mut BytesMut) {
-        buf.put_u64(self.block_size.to_le());
-        // Zero copy convert u32 to u8 buffer.
-        let buffer = num_to_u8_buffer(self.kv_cache_key.clone());
-        buf.put_slice(&buffer);
+        let mut writer = buf.writer();
+        if let Err(err) = bincode::serialize_into(&mut writer, self) {
+            error!("Failed to serialize: {}", err);
+        }
     }
 }
 
@@ -1007,7 +999,7 @@ where
 }
 
 /// The response to remove kv cache index.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct KVCacheIndexRemoveResponse {
     /// The kv block size.
     pub block_size: u64,
@@ -1018,13 +1010,9 @@ pub struct KVCacheIndexRemoveResponse {
 impl Encode for KVCacheIndexRemoveResponse {
     /// Encode the kv cache index remove response into a byte buffer.
     fn encode(&self, buf: &mut BytesMut) {
-        buf.put_u64(self.block_size.to_le());
-        match self.status {
-            StatusCode::Success => buf.put_u8(0),
-            StatusCode::NotFound => buf.put_u8(1),
-            StatusCode::InternalError => buf.put_u8(2),
-            // Not used here.
-            StatusCode::VersionMismatch => buf.put_u8(3),
+        let mut writer = buf.writer();
+        if let Err(err) = bincode::serialize_into(&mut writer, self) {
+            error!("Failed to serialize: {}", err);
         }
     }
 }
@@ -1048,7 +1036,7 @@ impl Decode for KVCacheIndexRemoveResponse {
 }
 
 /// The request to get kv block.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct KVBlockGetRequest {
     /// The kv block size.
     pub block_size: u64,
@@ -1057,10 +1045,12 @@ pub struct KVBlockGetRequest {
 }
 
 impl Encode for KVBlockGetRequest {
-    /// Encode the kv block get request into a byte buffer.
+    /// Encode the kv cache id allocate request into a byte buffer.
     fn encode(&self, buf: &mut BytesMut) {
-        buf.put_u64(self.block_size.to_le());
-        buf.put_u64(self.kv_cache_id.to_le());
+        let mut writer = buf.writer();
+        if let Err(err) = bincode::serialize_into(&mut writer, self) {
+            error!("Failed to serialize: {}", err);
+        }
     }
 }
 
@@ -1118,28 +1108,10 @@ pub struct KVBlockGetResponse {
 impl Encode for KVBlockGetResponse {
     /// Encode the kv block get response into a byte buffer.
     fn encode(&self, buf: &mut BytesMut) {
-        if buf.capacity() < 17 + self.data.len() {
-            buf.reserve(17 + self.data.len());
+        let mut writer = buf.writer();
+        if let Err(err) = bincode::serialize_into(&mut writer, self) {
+            error!("Failed to serialize: {}", err);
         }
-        buf.put_u64(self.block_size.to_le());
-        buf.put_u64(self.kv_cache_id.to_le());
-        match self.status {
-            StatusCode::Success => buf.put_u8(0),
-            StatusCode::NotFound => buf.put_u8(1),
-            StatusCode::InternalError => buf.put_u8(2),
-            // Not used here.
-            StatusCode::VersionMismatch => buf.put_u8(3),
-        }
-        let start = std::time::Instant::now();
-        debug!("buf len: {:?} capacity: {:?}", buf.len(), buf.capacity());
-        // buf = BytesMut::from(&self.data);
-        // buf.copy_from_slice(&self.data);
-        // buf.extend_from_slice(&self.data);
-        // buf.put_slice(&self.data);
-        unsafe {
-            buf.set_len(17 + self.data.len());
-        }
-        debug!("encode KVBlockGetResponse data cost: {:?}", start.elapsed());
     }
 
     /// Encode large data
@@ -1238,12 +1210,13 @@ impl Decode for KVBlockGetResponse {
 }
 
 /// The request to put kv block.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct KVBlockPutRequest {
     /// The kv block size.
     pub block_size: u64,
     /// The kv cache id.
     pub kv_cache_id: u64,
+    #[serde(skip_serializing, skip_deserializing)]
     /// The data of the block.
     pub data: bytes::Bytes,
 }
@@ -1251,22 +1224,10 @@ pub struct KVBlockPutRequest {
 impl Encode for KVBlockPutRequest {
     /// Encode the kv block put request into a byte buffer.
     fn encode(&self, buf: &mut BytesMut) {
-        buf.put_u64(self.block_size.to_le());
-        buf.put_u64(self.kv_cache_id.to_le());
-        let start = std::time::Instant::now();
-        // TODO: change this encode type
-        buf.put_slice(&self.data);
-        debug!(
-            "encode KVBlockPutRequest bytes mut data cost: {:?}",
-            start.elapsed()
-        );
-
-        // let tempdata = self.data.clone();
-        // // Test to copy to Bytes
-        // let start = std::time::Instant::now();
-        // // let _data = bytes::Bytes::from(tempdata);
-        // let _data = bytes::Bytes::copy_from_slice(&tempdata);
-        // debug!("encode KVBlockPutRequest bytes data cost: {:?}", start.elapsed());
+        let mut writer = buf.writer();
+        if let Err(err) = bincode::serialize_into(&mut writer, self) {
+            error!("Failed to serialize: {}", err);
+        }
     }
 
     fn encode_large_data(&self, buf: &mut BytesMut) -> (u64, Vec<bytes::Bytes>) {
@@ -1321,7 +1282,7 @@ impl ActualSize for KVBlockPutRequest {
 }
 
 /// The request to put multiple kv blocks.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct KVBlockBatchPutRequest {
     /// The kv block batch size.
     pub batch_size: u64,
@@ -1332,9 +1293,9 @@ pub struct KVBlockBatchPutRequest {
 impl Encode for KVBlockBatchPutRequest {
     /// Encode the kv block batch put request into a byte buffer.
     fn encode(&self, buf: &mut BytesMut) {
-        buf.put_u64(self.batch_size.to_le());
-        for block in &self.blocks {
-            block.encode(buf);
+        let mut writer = buf.writer();
+        if let Err(err) = bincode::serialize_into(&mut writer, self) {
+            error!("Failed to serialize: {}", err);
         }
     }
 
@@ -1382,7 +1343,7 @@ impl ActualSize for KVBlockBatchPutRequest {
 }
 
 /// The response to put kv block.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct KVBlockBatchPutResponse {
     /// The kv block size.
     pub block_size: u64,
@@ -1399,14 +1360,9 @@ pub struct KVBlockBatchPutResponse {
 impl Encode for KVBlockBatchPutResponse {
     /// Encode the kv block batch put response into a byte buffer.
     fn encode(&self, buf: &mut BytesMut) {
-        buf.put_u64(self.block_size.to_le());
-        buf.put_u64(self.success_batch_size.to_le());
-        for kv_cache_id in &self.success_kv_cache_ids {
-            buf.put_u64(kv_cache_id.to_le());
-        }
-        buf.put_u64(self.failed_batch_size.to_le());
-        for kv_cache_id in &self.failed_kv_cache_ids {
-            buf.put_u64(kv_cache_id.to_le());
+        let mut writer = buf.writer();
+        if let Err(err) = bincode::serialize_into(&mut writer, self) {
+            error!("Failed to serialize: {}", err);
         }
     }
 }
@@ -1463,7 +1419,7 @@ pub enum KVCacheRequest<K> {
 
 impl<K> Encode for KVCacheRequest<K>
 where
-    K: num::Num + Send + Sync + Clone + fmt::Debug + Send + Sync,
+    K: num::Num + Send + Sync + Clone + fmt::Debug + Send + Sync + Serialize + DeserializeOwned,
 {
     /// Encode the kv cache request into a byte buffer.
     #[allow(clippy::pattern_type_mismatch)]
@@ -1672,7 +1628,7 @@ where
 
 impl<K> Encode for KVCachePacket<K>
 where
-    K: num::Num + Send + Sync + Clone + fmt::Debug,
+    K: num::Num + Send + Sync + Clone + fmt::Debug + Serialize + DeserializeOwned,
 {
     /// Encode the kv cache packet into a byte buffer.
     fn encode(&self, buffer: &mut BytesMut) {
@@ -1683,7 +1639,16 @@ where
 #[async_trait]
 impl<K> Packet for KVCachePacket<K>
 where
-    K: num::Num + Send + Sync + Clone + fmt::Debug + Send + Sync + Clone,
+    K: num::Num
+        + Send
+        + Sync
+        + Clone
+        + fmt::Debug
+        + Send
+        + Sync
+        + Clone
+        + Serialize
+        + DeserializeOwned,
 {
     /// Get the sequence number of the packet.
     fn seq(&self) -> u64 {
