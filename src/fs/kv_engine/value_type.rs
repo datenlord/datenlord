@@ -21,6 +21,8 @@ pub enum ValueType {
     Raw(Vec<u8>),
     /// String value
     String(String),
+    /// Json value
+    Json(serde_json::Value),
 }
 
 impl ValueType {
