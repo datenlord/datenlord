@@ -16,7 +16,6 @@ type JobImpl = Box<dyn Job + Send + Sync + 'static>;
 pub struct WorkerPool {
     /// The number of workers in the worker pool.
     /// Current implementation is that the worker pool with a fixed number of workers.
-    /// TODO: Test if we need a dynamic worker pool.
     max_workers: usize,
     /// The maximum number of jobs that can be waiting in the job queue.
     max_waiting_jobs: usize,
@@ -193,7 +192,8 @@ mod tests {
         drop(worker_pool);
     }
 
-    #[tokio::test]
+    #[allow(dead_code)]
+    // This function is used to benchmark the worker pool, skip for ut.
     async fn benchmark_worker_pool() {
         // setup();
 

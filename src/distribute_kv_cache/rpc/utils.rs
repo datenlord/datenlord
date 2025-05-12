@@ -1,16 +1,29 @@
+use std::mem;
+
 use bytes::{Buf, BytesMut};
 use tracing::debug;
 
 use super::error::RpcError;
 
+/// Encode value to buffer
+#[macro_export]
+macro_rules! encode_to_buf {
+    ($buf:expr, $value:expr) => {{
+        let mut writer = $buf.writer();
+        if let Err(err) = bincode::serialize_into(&mut writer, $value) {
+            error!("Failed to serialize: {}", err);
+        }
+    }};
+}
+
 /// Read with timeout options from the environment variables
 #[macro_export]
 macro_rules! read_exact_timeout {
-    ($self:expr, $dst:expr, $read_timeout:expr) => {
+    ($reader:expr, $dst:expr, $read_timeout:expr) => {
         async move {
             use tokio::time::timeout;
 
-            match timeout($read_timeout, $self.read_exact($dst)).await {
+            match timeout($read_timeout, $reader.read_exact($dst)).await {
                 Ok(res) => match res {
                     Ok(size) => Ok(size),
                     Err(read_err) => Err(read_err),
@@ -24,11 +37,11 @@ macro_rules! read_exact_timeout {
 /// Write with timeout options from the environment variables
 #[macro_export]
 macro_rules! write_all_timeout {
-    ($self:expr, $src:expr, $write_timeout:expr) => {
+    ($writer:expr, $src:expr, $write_timeout:expr) => {
         async move {
             use tokio::time::timeout;
 
-            match timeout($write_timeout, $self.write_all($src)).await {
+            match timeout($write_timeout, $writer.write_all($src)).await {
                 Ok(res) => match res {
                     Ok(size) => Ok(size),
                     Err(write_err) => Err(write_err),
@@ -42,12 +55,12 @@ macro_rules! write_all_timeout {
 /// Write vectored with timeout options from the environment variables
 #[macro_export]
 macro_rules! write_vectored_timeout {
-    ($self:expr, $src:expr, $write_timeout:expr) => {
+    ($writer:expr, $src:expr, $write_timeout:expr) => {
         async move {
             use tokio::time::timeout;
 
             // TODO: check all the write_vectored is done
-            match timeout($write_timeout, $self.write_vectored($src)).await {
+            match timeout($write_timeout, $writer.write_vectored($src)).await {
                 Ok(res) => match res {
                     Ok(size) => Ok(size),
                     Err(write_err) => Err(write_err),
@@ -115,9 +128,79 @@ pub fn ensure_buffer_len(buffer: &mut BytesMut, len: usize) {
             start.elapsed()
         );
     }
-    // req_buffer.resize(u64_to_usize(len), 0);
-    // req_buffer.resize(u64_to_usize(len), 0);
     unsafe {
         buffer.set_len(len);
     }
+}
+
+/// Zero copy conversion between num key and u8 buffers.
+#[allow(clippy::mem_forget)]
+#[allow(clippy::as_conversions)]
+#[allow(dead_code)]
+fn num_to_u8_buffer<K>(input: Vec<K>) -> Vec<u8>
+where
+    K: num::Num,
+{
+    let len = input.len() * mem::size_of::<K>();
+    let ptr = input.as_ptr();
+    let capacity = input.capacity();
+
+    std::mem::forget(input);
+
+    unsafe { Vec::from_raw_parts(ptr as *mut u8, len, capacity) }
+}
+
+/// Zero copy conversion between u8 and num key buffers.
+#[allow(dead_code)]
+#[allow(clippy::mem_forget)]
+#[allow(clippy::as_conversions)]
+#[allow(clippy::integer_division)]
+fn u8_to_num_buffer<K>(input: Vec<u8>) -> Vec<K>
+where
+    K: num::Num,
+{
+    assert_eq!(
+        input.len() % mem::size_of::<K>(),
+        0,
+        "Buffer length must be a multiple of key size"
+    );
+    let len = input.len() / mem::size_of::<K>();
+    let ptr = input.as_ptr();
+    let capacity = input.capacity() / mem::size_of::<K>();
+
+    std::mem::forget(input);
+
+    unsafe { Vec::from_raw_parts(ptr as *mut K, len, capacity) }
+}
+
+/// Zero copy conversion between u32 and u8 buffers.
+#[allow(dead_code)]
+#[allow(clippy::mem_forget)]
+#[allow(clippy::as_conversions)]
+#[allow(clippy::integer_division)]
+fn u32_to_u8_buffer(input: Vec<u32>) -> Vec<u8> {
+    let len = input.len() * 4;
+    let ptr = input.as_ptr();
+    let capacity = input.capacity() * 4;
+
+    std::mem::forget(input);
+
+    unsafe { Vec::from_raw_parts(ptr as *mut u8, len, capacity) }
+}
+
+/// Zero copy conversion between u8 and u32 buffers.
+#[allow(dead_code)]
+#[allow(clippy::mem_forget)]
+#[allow(clippy::cast_ptr_alignment)]
+#[allow(clippy::as_conversions)]
+#[allow(clippy::integer_division)]
+fn u8_to_u32_buffer(input: Vec<u8>) -> Vec<u32> {
+    assert_eq!(input.len() % 4, 0, "Buffer length must be a multiple of 4");
+    let len = input.len() / 4;
+    let ptr = input.as_ptr();
+    let capacity = input.capacity() / 4;
+
+    std::mem::forget(input);
+
+    unsafe { Vec::from_raw_parts(ptr as *mut u32, len, capacity) }
 }

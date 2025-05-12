@@ -1,34 +1,34 @@
-use std::{collections::HashMap, fmt::Debug, sync::Arc};
+use std::{collections::HashMap, fmt::Debug, mem, sync::Arc};
 
 use async_trait::async_trait;
-use bytes::{BufMut, BytesMut};
+use bytes::{Buf, BufMut, BytesMut};
+use serde::{Deserialize, Serialize};
 use tokio::{sync::Mutex, time::Instant};
-use tracing::debug;
+use tracing::{debug, error};
 
-use super::{
-    error::RpcError,
-    utils::{get_u64_from_buf, get_u8_from_buf, u64_to_usize},
-};
+use crate::{async_fuse::util::usize_to_u64, encode_to_buf};
+
+use super::{error::RpcError, utils::u64_to_usize};
 
 /// The size of the request header.
-pub const REQ_HEADER_SIZE: u64 = 17;
+pub const REQ_HEADER_SIZE: u64 = usize_to_u64(mem::size_of::<ReqHeader>());
 /// The size of the response header.
-pub const RESP_HEADER_SIZE: u64 = 17;
+pub const RESP_HEADER_SIZE: u64 = usize_to_u64(mem::size_of::<RespHeader>());
 
-/// The Encode trait is used to encode a message structure into a byte buffer.
+/// The `Encode` trait is used to encode a message structure into a byte buffer.
 pub trait Encode: Sync {
     /// Encode the message into a byte buffer, this operation will append to buffer
     /// If you need to encode from start, you should clear the buffer first
     fn encode(&self, buf: &mut BytesMut);
-
-    /// Get large data with Bytes, disable memory copy
-    fn encode_large_data(&self, _buf: &mut BytesMut) -> (u64, Vec<bytes::Bytes>) {
-        // Default is empty
-        (0, vec![])
-    }
 }
 
-/// The Decode trait is used to message a byte buffer into a data structure.
+/// The `EncodeLarge` trait is used to encode a large message structure into a byte buffer.
+pub trait EncodeLarge: Sync {
+    /// Get large data with Bytes, disable memory copy
+    fn encode_large_data(&self, _buf: &mut BytesMut) -> (u64, Vec<bytes::Bytes>);
+}
+
+/// The `Decode` trait is used to message a byte buffer into a data structure.
 #[allow(clippy::unimplemented)]
 pub trait Decode {
     /// Decode the byte buffer into a data structure
@@ -38,7 +38,11 @@ pub trait Decode {
     {
         unimplemented!("Not implemented for this type")
     }
+}
 
+/// The `DecodeLarge` trait is used to message a byte buffer into a data structure.
+#[allow(clippy::unimplemented)]
+pub trait DecodeLarge {
     /// Decode the large data into a data structure
     fn decode_large_data(_buf: bytes::Bytes) -> Result<Self, RpcError>
     where
@@ -56,7 +60,7 @@ pub trait ActualSize {
 
 /// The message module contains the data structures shared between the client and server.
 /// Assume the cluster only contains one version server, so we won't consider the compatibility
-#[derive(Debug)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct ReqHeader {
     /// The sequence number of the request.
     pub seq: u64,
@@ -70,9 +74,7 @@ pub struct ReqHeader {
 
 impl Encode for ReqHeader {
     fn encode(&self, buf: &mut BytesMut) {
-        buf.put_u64(self.seq.to_le());
-        buf.put_u8(self.op.to_le());
-        buf.put_u64(self.len.to_le());
+        encode_to_buf!(buf, self);
     }
 }
 
@@ -84,17 +86,14 @@ impl Decode for ReqHeader {
             ));
         }
 
-        let seq = get_u64_from_buf(buf, 0)?;
-        let op = get_u8_from_buf(buf, 8)?;
-        let len = get_u64_from_buf(buf, 9)?;
-
-        Ok(ReqHeader { seq, op, len })
+        let reader = buf.reader();
+        bincode::deserialize_from(reader).map_err(|e| RpcError::InternalError(e.to_string()))
     }
 }
 
 /// The message module contains the data structures shared between the client and server.
 /// Assume the cluster only contains one version server, so we won't consider the compatibility
-#[derive(Debug, PartialEq, Clone, Copy)]
+#[derive(Debug, PartialEq, Clone, Copy, Serialize, Deserialize)]
 pub struct RespHeader {
     /// The sequence number of the response.
     pub seq: u64,
@@ -108,9 +107,7 @@ pub struct RespHeader {
 
 impl Encode for RespHeader {
     fn encode(&self, buf: &mut BytesMut) {
-        buf.put_u64(self.seq.to_le());
-        buf.put_u8(self.op);
-        buf.put_u64(self.len.to_le());
+        encode_to_buf!(buf, self);
     }
 }
 
@@ -122,15 +119,12 @@ impl Decode for RespHeader {
             ));
         }
 
-        let seq = get_u64_from_buf(buf, 0)?;
-        let op = get_u8_from_buf(buf, 8)?;
-        let len = get_u64_from_buf(buf, 9)?;
-
-        Ok(RespHeader { seq, op, len })
+        let reader = buf.reader();
+        bincode::deserialize_from(reader).map_err(|e| RpcError::InternalError(e.to_string()))
     }
 }
 
-/// Define the Packet trait, for once send or receive packets
+/// Define the RequestTask trait, for once send or receive packets
 ///
 /// Client will create a packet and serialize it to a byte array,
 /// send it to the server. And create a temp response packet in client.
@@ -141,7 +135,7 @@ impl Decode for RespHeader {
 /// Client will receive the response packet and deserialize it to a packet struct.
 /// and check the status of the packet and the response.
 #[async_trait]
-pub trait Packet: Sync + Send + Clone + Debug + Encode {
+pub trait RequestTask: Sync + Send + Clone + Debug + Encode {
     /// Get the packet seq number
     fn seq(&self) -> u64;
     /// Set the packet seq number
@@ -162,7 +156,7 @@ pub trait Packet: Sync + Send + Clone + Debug + Encode {
     fn get_req_len(&self) -> u64;
 
     /// Serialize response data to bytes
-    /// We will get the serialized response data by accessing the property of the Packet
+    /// We will get the serialized response data by accessing the property of the RequestTask
     fn set_resp_data(&mut self, data: BytesMut) -> Result<(), RpcError>;
 
     /// Set the packet result, and we will send the response buffer to caller, caller and directly decode this buffer
@@ -173,13 +167,13 @@ pub trait Packet: Sync + Send + Clone + Debug + Encode {
 #[derive(Debug)]
 struct PacketsInner<P>
 where
-    P: Packet + Send + Sync,
+    P: RequestTask + Send + Sync,
 {
     /// current tasks, marked by the seq number
     packets: HashMap<u64, P>,
 }
 
-impl<P: Packet + Send + Sync> PacketsInner<P> {
+impl<P: RequestTask + Send + Sync> PacketsInner<P> {
     /// Create a new `PacketsInner`
     #[must_use]
     pub fn new() -> Self {
@@ -245,7 +239,7 @@ impl<P: Packet + Send + Sync> PacketsInner<P> {
 #[derive(Debug)]
 pub struct PacketsKeeper<P>
 where
-    P: Packet + Send + Sync,
+    P: RequestTask + Send + Sync,
 {
     /// current tasks, marked by the seq number
     inner: Arc<Mutex<PacketsInner<P>>>,
@@ -260,7 +254,7 @@ where
     current_time: Instant,
 }
 
-impl<P: Packet + Send + Sync> PacketsKeeper<P> {
+impl<P: RequestTask + Send + Sync> PacketsKeeper<P> {
     /// Create a new `PacketsKeeper`
     #[must_use]
     pub fn new(timeout: u64) -> Self {
@@ -354,7 +348,7 @@ impl<P: Packet + Send + Sync> PacketsKeeper<P> {
                             .await;
                     }
                 }
-                packets_inner.remove_task(seq);
+                // packets_inner.remove_task(seq);
 
                 return Ok(());
             }
@@ -400,7 +394,7 @@ mod tests {
     }
 
     #[async_trait]
-    impl Packet for TestPacket {
+    impl RequestTask for TestPacket {
         fn seq(&self) -> u64 {
             self.seq
         }

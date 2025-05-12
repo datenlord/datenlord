@@ -140,7 +140,7 @@ pub fn u32_to_usize(x: u32) -> usize {
 #[allow(clippy::missing_const_for_fn)] // <- false positive
 #[inline]
 #[must_use]
-pub fn usize_to_u64(x: usize) -> u64 {
+pub const fn usize_to_u64(x: usize) -> u64 {
     #[allow(clippy::as_conversions)]
     #[cfg(not(target_pointer_width = "128"))]
     {

@@ -64,7 +64,6 @@ where
     /// The TCP stream for the connection.
     stream: UnsafeCell<net::TcpStream>,
     /// The worker pool for the connection.
-    /// TODO:
     #[allow(dead_code)]
     worker_pool: Arc<WorkerPool>,
     /// Options for the timeout of the connection
@@ -152,7 +151,7 @@ where
     }
 
     /// Recv huge request body from the stream
-    pub async fn recv_len_pass_in_len(
+    pub async fn recv_len_pass_in(
         &self,
         len: u64,
         req_buffer: &mut BytesMut,
@@ -193,6 +192,8 @@ where
 
     /// Send vectored response to the stream
     /// The response is a byte array, contains the response header and body.
+    /// This is not used in current implementation
+    /// But it is used in the future, when the response is a vector of byte array
     pub async fn send_vectored_response(&self, resp: &[IoSlice<'_>]) -> Result<usize, RpcError> {
         let writer = self.get_stream_mut();
         // writer.write_all_buf(resp).await?;
@@ -288,11 +289,7 @@ where
                 debug!("Request body length is huge, try to read the request body");
                 // Huge body length, need to consider to take user buffer
                 let mut req_buffer = BytesMut::with_capacity(u64_to_usize(body_len));
-                match self
-                    .inner
-                    .recv_len_pass_in_len(body_len, &mut req_buffer)
-                    .await
-                {
+                match self.inner.recv_len_pass_in(body_len, &mut req_buffer).await {
                     Ok(()) => {}
                     Err(err) => {
                         warn!("Failed to receive huge request body: {:?}", err);

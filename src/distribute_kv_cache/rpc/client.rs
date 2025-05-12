@@ -21,7 +21,7 @@ use super::{
     common::ClientTimeoutOptions,
     error::RpcError,
     message::{ReqType, RespType},
-    packet::{Decode, Encode, Packet, PacketsKeeper, ReqHeader, RespHeader, REQ_HEADER_SIZE},
+    packet::{Decode, Encode, PacketsKeeper, ReqHeader, RequestTask, RespHeader, REQ_HEADER_SIZE},
     utils::u64_to_usize,
 };
 
@@ -32,7 +32,7 @@ const HUGE_BODY_LEN: u64 = 1024 * 1024;
 /// TODO: combine `RpcClientConnectionInner` and `RpcClientConnection`
 struct RpcClientConnectionInner<P>
 where
-    P: Packet + Clone + Send + Sync + 'static,
+    P: RequestTask + Clone + Send + Sync + 'static,
 {
     /// The TCP stream for the connection.
     stream: UnsafeCell<TcpStream>,
@@ -62,7 +62,7 @@ where
 // TODO: Add markable id for this client
 impl<P> Debug for RpcClientConnectionInner<P>
 where
-    P: Packet + Clone + Send + Sync + 'static,
+    P: RequestTask + Clone + Send + Sync + 'static,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RpcClientConnectionInner")
@@ -73,7 +73,7 @@ where
 
 impl<P> RpcClientConnectionInner<P>
 where
-    P: Packet + Clone + Send + Sync + 'static,
+    P: RequestTask + Clone + Send + Sync + 'static,
 {
     /// Create a new connection.
     pub fn new(stream: TcpStream, timeout_options: &ClientTimeoutOptions, client_id: u64) -> Self {
@@ -137,7 +137,7 @@ where
     }
 
     /// Receive request body from the server, try to read huge len data with given buffer.
-    pub async fn recv_len_pass_in_len(
+    pub async fn recv_len_pass_in(
         &self,
         len: u64,
         req_buffer: &mut BytesMut,
@@ -338,10 +338,7 @@ where
                                 debug!("{:?} Try to receive huge response body with size {:?} in user buffer", self, header.len);
                                 let mut resp_buffer =
                                     BytesMut::with_capacity(u64_to_usize(header.len));
-                                match self
-                                    .recv_len_pass_in_len(header.len, &mut resp_buffer)
-                                    .await
-                                {
+                                match self.recv_len_pass_in(header.len, &mut resp_buffer).await {
                                     Ok(()) => {}
                                     Err(err) => {
                                         debug!(
@@ -385,15 +382,21 @@ where
     }
 }
 
-unsafe impl<P> Send for RpcClientConnectionInner<P> where P: Packet + Clone + Send + Sync + 'static {}
+unsafe impl<P> Send for RpcClientConnectionInner<P> where
+    P: RequestTask + Clone + Send + Sync + 'static
+{
+}
 
-unsafe impl<P> Sync for RpcClientConnectionInner<P> where P: Packet + Clone + Send + Sync + 'static {}
+unsafe impl<P> Sync for RpcClientConnectionInner<P> where
+    P: RequestTask + Clone + Send + Sync + 'static
+{
+}
 
 /// The RPC client definition.
 #[derive(Debug)]
 pub struct RpcClient<P>
 where
-    P: Packet + Clone + Send + Sync + 'static,
+    P: RequestTask + Clone + Send + Sync + 'static,
 {
     /// The timeout options for the client.
     /// TODO:
@@ -409,7 +412,7 @@ where
 
 impl<P> RpcClient<P>
 where
-    P: Packet + Clone + Send + Sync + 'static,
+    P: RequestTask + Clone + Send + Sync + 'static,
 {
     /// Create a new RPC client.
     ///
@@ -465,7 +468,7 @@ where
 /// and clean outdated tasks when the task is timeout.
 struct ReceiveHeaderFuture<'a, P, F>
 where
-    P: Packet + Clone + Send + Sync + 'static,
+    P: RequestTask + Clone + Send + Sync + 'static,
     F: Future<Output = Result<RespHeader, RpcError>> + Unpin,
 {
     /// The inner connection for the client.
@@ -478,7 +481,7 @@ where
 
 impl<'a, P, F> ReceiveHeaderFuture<'a, P, F>
 where
-    P: Packet + Clone + Send + Sync + 'static,
+    P: RequestTask + Clone + Send + Sync + 'static,
     F: Future<Output = Result<RespHeader, RpcError>> + Unpin,
 {
     /// Create a new receive header stream.
@@ -497,7 +500,7 @@ where
 
 impl<'a, P, F> Future for ReceiveHeaderFuture<'a, P, F>
 where
-    P: Packet + Clone + Send + Sync + 'static,
+    P: RequestTask + Clone + Send + Sync + 'static,
     F: Future<Output = Result<RespHeader, RpcError>> + Unpin,
 {
     type Output = Result<RespHeader, RpcError>;
@@ -578,7 +581,7 @@ mod tests {
     }
 
     #[async_trait]
-    impl Packet for TestPacket {
+    impl RequestTask for TestPacket {
         fn seq(&self) -> u64 {
             self.seq
         }
