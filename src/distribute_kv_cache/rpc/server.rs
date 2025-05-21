@@ -130,24 +130,9 @@ where
 
     /// Recv request body from the stream
     pub async fn recv_len(&self, len: u64) -> Result<(), RpcError> {
-        let start = tokio::time::Instant::now();
-        let mut req_buffer: &mut BytesMut = unsafe { &mut *self.req_buf.get() };
-        utils::ensure_buffer_len(req_buffer, u64_to_usize(len));
-        let start_1 = start.elapsed();
-        debug!("Server resize buffer to size {:?} cost: {:?}", len, start_1);
+        let req_buffer: &mut BytesMut = unsafe { &mut *self.req_buf.get() };
 
-        let reader = self.get_stream_mut();
-        match read_exact_timeout!(reader, &mut req_buffer, self.timeout_options.read_timeout).await
-        {
-            Ok(size) => {
-                debug!("Received request body: {:?}", size);
-                Ok(())
-            }
-            Err(err) => {
-                debug!("Failed to receive request: {:?}", err);
-                Err(RpcError::InternalError(err.to_string()))
-            }
-        }
+        self.recv_len_pass_in(len, req_buffer).await
     }
 
     /// Recv huge request body from the stream
@@ -156,10 +141,7 @@ where
         len: u64,
         req_buffer: &mut BytesMut,
     ) -> Result<(), RpcError> {
-        let start = tokio::time::Instant::now();
         utils::ensure_buffer_len(req_buffer, u64_to_usize(len));
-        let start_1 = start.elapsed();
-        debug!("Server resize buffer to size {:?} cost: {:?}", len, start_1);
 
         let reader = self.get_stream_mut();
         match read_exact_timeout!(reader, req_buffer, self.timeout_options.read_timeout).await {

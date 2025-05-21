@@ -2,16 +2,19 @@ use std::{
     cell::UnsafeCell,
     fmt::Debug,
     pin::Pin,
-    sync::{atomic::AtomicU64, Arc},
-    task::{Context, Poll},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
 };
 
 use bytes::BytesMut;
-use futures::{pin_mut, Future};
+use futures::{stream::FuturesUnordered, Future, StreamExt};
+use once_cell::sync::Lazy;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
-    time::{Instant, Interval},
+    time::Instant,
 };
 use tracing::debug;
 
@@ -28,6 +31,9 @@ use super::{
 /// The huge body length for the response,
 /// when the response is too large, we need to consider to take user buffer.
 const HUGE_BODY_LEN: u64 = 1024 * 1024;
+
+/// The client ID generator for the connection.
+static CLIENT_ID_GEN: Lazy<AtomicU64> = Lazy::new(|| AtomicU64::new(1));
 
 /// TODO: combine `RpcClientConnectionInner` and `RpcClientConnection`
 struct RpcClientConnectionInner<P>
@@ -111,29 +117,9 @@ where
 
     /// Receive request body from the server.
     pub async fn recv_len(&self, len: u64) -> Result<(), RpcError> {
-        let start = tokio::time::Instant::now();
-        let mut req_buffer: &mut BytesMut = unsafe { &mut *self.resp_buf.get() };
-        utils::ensure_buffer_len(req_buffer, u64_to_usize(len));
-        let start_1 = start.elapsed();
-        debug!(
-            "Client resize buffer {:?} to size {:?} cost: {:?}",
-            u64_to_usize(len),
-            len,
-            start_1
-        );
+        let req_buffer: &mut BytesMut = unsafe { &mut *self.resp_buf.get() };
 
-        let reader = self.get_stream_mut();
-        match read_exact_timeout!(reader, &mut req_buffer, self.timeout_options.read_timeout).await
-        {
-            Ok(size) => {
-                debug!("{:?} Received response body len: {:?}", self, size);
-                Ok(())
-            }
-            Err(err) => {
-                debug!("{:?} Failed to receive response header: {:?}", self, err);
-                Err(RpcError::InternalError(err.to_string()))
-            }
-        }
+        self.recv_len_pass_in(len, req_buffer).await
     }
 
     /// Receive request body from the server, try to read huge len data with given buffer.
@@ -142,15 +128,7 @@ where
         len: u64,
         req_buffer: &mut BytesMut,
     ) -> Result<(), RpcError> {
-        let start = tokio::time::Instant::now();
         utils::ensure_buffer_len(req_buffer, u64_to_usize(len));
-        let start_1 = start.elapsed();
-        debug!(
-            "Client resize buffer {:?} to size {:?} cost: {:?}",
-            u64_to_usize(len),
-            len,
-            start_1
-        );
 
         let reader = self.get_stream_mut();
         match read_exact_timeout!(reader, req_buffer, self.timeout_options.read_timeout).await {
@@ -176,9 +154,6 @@ where
     ) -> Result<(), RpcError> {
         let start = tokio::time::Instant::now();
         let buf = unsafe { &mut *self.req_buf.get() };
-        // unsafe {
-        //     buf.set_len(0);
-        // }
         buf.clear();
 
         // encode just need to append to buffer, do not clear buffer
@@ -236,6 +211,8 @@ where
 
         if let Ok(()) = self.send_data(&keep_alive_msg, None).await {
             debug!("{:?} Success to sent keep alive message", self);
+            self.received_keepalive_timestamp
+                .store(current_timestamp, std::sync::atomic::Ordering::Release);
             Ok(())
         } else {
             debug!("{:?} Failed to send keep alive message", self);
@@ -276,21 +253,32 @@ where
     }
 
     /// Receive loop for the client.
+    #[allow(clippy::type_complexity)]
     pub async fn recv_loop(&self) {
         // Check and clean keeper timeout unused task
         // The timeout data will be cleaned by the get function
         // We don't need to clean the timeout data radically
-        let mut tickers = Box::pin(tokio::time::interval(
-            self.timeout_options.task_timeout.div_f32(2.0),
-        ));
+        let mut pending: FuturesUnordered<
+            Pin<Box<dyn Future<Output = Result<RespHeader, RpcError>> + Send>>,
+        > = FuturesUnordered::new();
         loop {
             debug!("{:?} recv_loop Start to receive response", self);
-            // Clean timeout tasks, will block here
-            let recv_header_f = self.recv_header();
-            pin_mut!(recv_header_f);
-            let selector = ReceiveHeaderFuture::new(self, &mut tickers, &mut recv_header_f);
-            match selector.await {
-                Ok(header) => {
+
+            let tick_fut = async {
+                let mut tickers = Box::pin(tokio::time::interval(
+                    self.timeout_options.task_timeout.div_f32(2.0),
+                ));
+                tickers.tick().await;
+                Err::<RespHeader, RpcError>(RpcError::Timeout(
+                    "Current tasks is timeout".to_owned(),
+                ))
+            };
+            pending.push(Box::pin(tick_fut));
+            pending.push(Box::pin(self.recv_header()));
+
+            // let selector = ReceiveHeaderFuture::new(self, &mut tickers, &mut recv_header_f);
+            match pending.next().await {
+                Some(Ok(header)) => {
                     // Try to receive the response from the server
                     let header_seq = header.seq;
                     debug!("{:?} Received keep alive response or other response.", self);
@@ -366,9 +354,11 @@ where
                         break;
                     }
                 }
-                Err(err) => {
-                    debug!("{:?} Failed to receive request header: {:?}", self, err);
-                    break;
+                Some(Err(err)) => {
+                    debug!("{:?} recv_loop Failed to receive response: {:?}", self, err);
+                }
+                None => {
+                    debug!("{:?} recv_loop No response received", self);
                 }
             }
         }
@@ -399,13 +389,11 @@ where
     P: RequestTask + Clone + Send + Sync + 'static,
 {
     /// The timeout options for the client.
-    /// TODO:
     #[allow(dead_code)]
     timeout_options: ClientTimeoutOptions,
     /// Inner connection for the client.
     inner_connection: Arc<RpcClientConnectionInner<P>>,
     /// Client ID for the connection
-    /// TODO:
     #[allow(dead_code)]
     client_id: AtomicU64,
 }
@@ -420,7 +408,8 @@ where
     /// The client will be closed if the keep alive message is not received in 100 times
     /// When the stream is broken, the client will be closed, and we need to recreate a new client
     pub fn new(stream: TcpStream, timeout_options: &ClientTimeoutOptions) -> Self {
-        let client_id = AtomicU64::new(0);
+        let client_id_val = CLIENT_ID_GEN.fetch_add(1, Ordering::Relaxed);
+        let client_id = AtomicU64::new(client_id_val);
         let inner_connection = RpcClientConnectionInner::new(
             stream,
             timeout_options,
@@ -458,74 +447,8 @@ where
     /// The inner can not start two loop, because the stream is unsafe
     /// we need to start the loop in the client or higher level manually
     /// WARN: this function does not support concurrent call
-    pub async fn ping(&self) -> Result<(), RpcError> {
+    pub async unsafe fn ping(&self) -> Result<(), RpcError> {
         self.inner_connection.ping().await
-    }
-}
-
-/// The receive stream for the client.
-/// The stream will be used to receive the response from the server,
-/// and clean outdated tasks when the task is timeout.
-struct ReceiveHeaderFuture<'a, P, F>
-where
-    P: RequestTask + Clone + Send + Sync + 'static,
-    F: Future<Output = Result<RespHeader, RpcError>> + Unpin,
-{
-    /// The inner connection for the client.
-    client_inner: &'a RpcClientConnectionInner<P>,
-    /// The interval for period task.
-    interval: &'a mut Pin<Box<Interval>>,
-    /// The recv_future in the client.
-    recv_future: Pin<&'a mut F>,
-}
-
-impl<'a, P, F> ReceiveHeaderFuture<'a, P, F>
-where
-    P: RequestTask + Clone + Send + Sync + 'static,
-    F: Future<Output = Result<RespHeader, RpcError>> + Unpin,
-{
-    /// Create a new receive header stream.
-    fn new(
-        client_inner: &'a RpcClientConnectionInner<P>,
-        interval: &'a mut Pin<Box<Interval>>,
-        recv_future: &'a mut F,
-    ) -> Self {
-        Self {
-            client_inner,
-            interval,
-            recv_future: Pin::new(recv_future),
-        }
-    }
-}
-
-impl<'a, P, F> Future for ReceiveHeaderFuture<'a, P, F>
-where
-    P: RequestTask + Clone + Send + Sync + 'static,
-    F: Future<Output = Result<RespHeader, RpcError>> + Unpin,
-{
-    type Output = Result<RespHeader, RpcError>;
-
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let self_mut: &mut ReceiveHeaderFuture<'a, P, F> = self.get_mut();
-        let client_inner = self_mut.client_inner;
-
-        // clean timeout tasks
-        let mut tick_ready = false;
-        while self_mut.interval.as_mut().poll_tick(cx).is_ready() {
-            // consume all ticks in once call
-            tick_ready = true;
-        }
-        while tick_ready {
-            let clean_future = client_inner.packets_keeper.clean_timeout_tasks();
-            pin_mut!(clean_future);
-            match clean_future.poll(cx) {
-                Poll::Ready(()) => tick_ready = false,
-                Poll::Pending => return Poll::Pending,
-            }
-        }
-
-        // recv header data
-        self_mut.recv_future.as_mut().poll(cx)
     }
 }
 
