@@ -4,6 +4,7 @@ use std::{
 };
 
 use async_trait::async_trait;
+use tokio::sync;
 use tracing::debug;
 
 use super::error::RpcError;
@@ -46,9 +47,9 @@ impl WorkerPool {
         let mut worker_queue = Vec::new();
 
         // In current implementation, we create a fixed number of workers.
-        let receiver = Arc::new(job_receiver);
+        let receiver = job_receiver.clone();
         for _ in 0..max_workers {
-            let worker = Worker::new(Arc::clone(&receiver));
+            let worker = Worker::new(receiver.clone());
             worker.start();
             worker_queue.push(worker);
         }
@@ -88,36 +89,34 @@ impl WorkerPool {
 #[derive(Clone)]
 struct Worker {
     /// Job recv channel
-    job_rx: Arc<flume::Receiver<JobImpl>>,
-    /// Shutdown recv channel
-    shutdown_rx: flume::Receiver<()>,
-    /// Shutdown send channel
-    shutdown_tx: flume::Sender<()>,
+    job_rx: flume::Receiver<JobImpl>,
+    /// Shutdown notify
+    shutdown_notify: Arc<sync::Notify>,
 }
 
 impl Worker {
     /// Create a new worker.
-    fn new(receiver: Arc<flume::Receiver<JobImpl>>) -> Self {
+    fn new(receiver: flume::Receiver<JobImpl>) -> Self {
         debug!("Create a new worker...");
-        let (shutdown_tx, shutdown_rx) = flume::bounded::<()>(1);
+        let shutdown_notify = Arc::new(sync::Notify::new());
         Self {
             job_rx: receiver,
-            shutdown_rx,
-            shutdown_tx,
+            shutdown_notify,
         }
     }
 
     /// Start the worker.
+    #[allow(clippy::ignored_unit_patterns)]
     fn start(&self) {
-        let shutdown_rx = self.shutdown_rx.clone();
-        let receiver: Arc<flume::Receiver<Box<dyn Job + Send + Sync>>> = Arc::clone(&self.job_rx);
+        let shutdown_notify = Arc::clone(&self.shutdown_notify);
+        let receiver: flume::Receiver<Box<dyn Job + Send + Sync>> = self.job_rx.clone();
         tokio::task::spawn(async move {
             // Core worker loop
             loop {
                 debug!("Worker is waiting for a job...");
                 tokio::select! {
                     // Recv shutdown signal
-                    _ = shutdown_rx.recv_async() => {
+                    _ = shutdown_notify.notified() => {
                         debug!("Worker received a shutdown signal...");
                         break;
                     }
@@ -136,10 +135,7 @@ impl Worker {
 
     /// Exit the worker.
     fn exit(&self) {
-        match self.shutdown_tx.send(()) {
-            Ok(()) => debug!("Worker is exiting..."),
-            Err(e) => debug!("Failed to send shutdown signal: {:?}", e),
-        }
+        self.shutdown_notify.notify_waiters();
     }
 }
 
