@@ -37,8 +37,8 @@ impl ClusterManager {
 
     /// Get current node
     #[must_use]
-    pub fn get_current_node(&self) -> Node {
-        self.inner.get_current_node()
+    pub fn get_current_node_local(&self) -> Node {
+        self.inner.get_current_node_local()
     }
 
     /// Get master node
@@ -57,7 +57,7 @@ impl ClusterManager {
     }
 
     /// Get node by hashring index
-    pub async fn get_node(&self, key: String) -> DatenLordResult<Node> {
+    pub async fn get_node_remote(&self, key: String) -> DatenLordResult<Node> {
         let ring = self.get_ring().await?;
         debug!("Get node by key: {:?} ring: {:?}", key, ring);
         if let Some(node) = ring.get_node(&key) {
@@ -97,15 +97,15 @@ impl ClusterManager {
             // 1. Init cluster manager
             debug!(
                 "Cluster manager start to run in node: {:?}",
-                self.inner.get_current_node().endpoint()
+                self.inner.get_current_node_local().endpoint()
             );
-            let mut current_node_info = self.inner.get_current_node();
+            let mut current_node_info = self.inner.get_current_node_local();
             // Next step is to register the node
             current_node_info.set_status(NodeStatus::Registering);
             self.inner.update_node(current_node_info);
             self.inner.update_node_in_cluster().await?;
 
-            let mut current_node_info = self.inner.get_current_node();
+            let mut current_node_info = self.inner.get_current_node_local();
             // 2. Register node to etcd
             debug!(
                 "Current node {:?} status: {:?}",
@@ -123,7 +123,7 @@ impl ClusterManager {
             self.inner.update_node_in_cluster().await?;
 
             // 2. Register node to etcd
-            let mut current_node_info = self.inner.get_current_node();
+            let mut current_node_info = self.inner.get_current_node_local();
             debug!(
                 "Current node {:?} status: {:?}",
                 current_node_info.endpoint(),
@@ -145,7 +145,7 @@ impl ClusterManager {
             }
 
             // 4. Serve as normal status
-            let current_node_info = self.inner.get_current_node();
+            let current_node_info = self.inner.get_current_node_local();
             match current_node_info.status() {
                 // Serve as slave node
                 NodeStatus::Slave => match self.do_slave_tasks().await {
@@ -187,7 +187,7 @@ impl ClusterManager {
     /// 1. Master node will watch the node list update, and update the ring
     /// 2. Master will check self
     async fn do_master_tasks(&self) -> DatenLordResult<()> {
-        let current_node_info = self.inner.get_current_node();
+        let current_node_info = self.inner.get_current_node_local();
         debug!(
             "do_master_tasks: {:?} will watch the node list update, and update the ring",
             current_node_info.endpoint()
@@ -237,7 +237,7 @@ impl ClusterManager {
     async fn do_slave_tasks(&self) -> DatenLordResult<()> {
         // Try to watch master and hashring
         // Wait for status update
-        let current_node_info = self.inner.get_current_node();
+        let current_node_info = self.inner.get_current_node_local();
         debug!(
             "do_slave_tasks: Node {:?} will watch the ring update and campaign master",
             current_node_info.endpoint()
@@ -305,19 +305,19 @@ impl ClusterManagerInner {
 
     /// Update node info
     pub async fn update_node_in_cluster(&self) -> DatenLordResult<()> {
-        let node = self.node.load();
-        let key = &KeyType::CacheNode(node.endpoint().clone());
+        let current_node = self.node.load();
+        let current_node_endpoint = current_node.endpoint();
+        let key = &KeyType::CacheNode(current_node_endpoint.clone());
         let node_session = self.node_session.load();
         let Some(current_session) = node_session.as_ref().cloned() else {
-            let current_node = self.node.load();
             warn!(
                 "Current {} session is invalid, return to endpoint",
-                current_node.endpoint()
+                current_node_endpoint
             );
             return Err(DatenLordError::CacheClusterErr {
                 context: vec![format!(
                     "Current {} session is invalid",
-                    current_node.endpoint()
+                    current_node_endpoint
                 )],
             });
         };
@@ -325,7 +325,7 @@ impl ClusterManagerInner {
         self.kv_engine
             .set(
                 key,
-                &ValueType::Json(serde_json::to_value(node.as_ref())?),
+                &ValueType::Json(serde_json::to_value(current_node.as_ref())?),
                 Some(SetOption {
                     session: Some(current_session),
                     prev_kv: false,
@@ -380,7 +380,7 @@ impl ClusterManagerInner {
     ///
     /// Try to campaign master, will return status and master value
     pub async fn do_campaign(&self) -> DatenLordResult<(bool, String)> {
-        let node = self.get_current_node();
+        let node = self.get_current_node_local();
         let hash_ring = self.get_ring(false).await?;
 
         let node_session = self.node_session.load();
@@ -455,7 +455,7 @@ impl ClusterManagerInner {
     pub async fn watch_nodes(&self) -> DatenLordResult<()> {
         debug!(
             "Node: {:?} watch_nodes: will watch the node list update",
-            self.get_current_node().endpoint()
+            self.get_current_node_local().endpoint()
         );
         // Write ticker task
         let mut interval = tokio::time::interval(Duration::from_secs(SESSION_TIMEOUT_SEC));
@@ -693,7 +693,7 @@ impl ClusterManagerInner {
     pub async fn watch_master(&self) -> DatenLordResult<()> {
         debug!(
             "Node: {:?} watch_master: will watch the master node and try to update master hashring",
-            self.get_current_node().endpoint()
+            self.get_current_node_local().endpoint()
         );
 
         // Watch with prefix
@@ -921,7 +921,7 @@ impl ClusterManagerInner {
     }
 
     /// Get current node
-    pub fn get_current_node(&self) -> Node {
+    pub fn get_current_node_local(&self) -> Node {
         self.node.load().as_ref().clone()
     }
 
@@ -1153,19 +1153,19 @@ mod tests {
 
         assert_eq!(
             Arc::clone(&master_cluster_manager)
-                .get_current_node()
+                .get_current_node_local()
                 .status(),
             NodeStatus::Master
         );
         assert_eq!(
             Arc::clone(&slave_cluster_manager_1)
-                .get_current_node()
+                .get_current_node_local()
                 .status(),
             NodeStatus::Slave
         );
         assert_eq!(
             Arc::clone(&slave_cluster_manager_2)
-                .get_current_node()
+                .get_current_node_local()
                 .status(),
             NodeStatus::Slave
         );
@@ -1185,7 +1185,7 @@ mod tests {
         );
 
         assert_eq!(
-            master_cluster_manager.get_current_node().status(),
+            master_cluster_manager.get_current_node_local().status(),
             NodeStatus::Master
         );
         assert_eq!(master_cluster_manager.get_nodes().await.unwrap().len(), 2);
@@ -1249,13 +1249,13 @@ mod tests {
 
         assert_eq!(
             Arc::clone(&master_cluster_manager)
-                .get_current_node()
+                .get_current_node_local()
                 .status(),
             NodeStatus::Master
         );
         assert_eq!(
             Arc::clone(&slave_cluster_manager_1)
-                .get_current_node()
+                .get_current_node_local()
                 .status(),
             NodeStatus::Slave
         );
@@ -1268,7 +1268,7 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_secs(SESSION_TIMEOUT_SEC + 1)).await;
 
         // Check if the slave node has become the new master
-        let new_master_status = slave_cluster_manager_1.get_current_node().status();
+        let new_master_status = slave_cluster_manager_1.get_current_node_local().status();
         assert_eq!(new_master_status, NodeStatus::Master);
 
         debug!("test_remove_master_node: slave node has taken over as master");
