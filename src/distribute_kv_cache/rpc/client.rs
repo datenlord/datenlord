@@ -446,7 +446,10 @@ where
     /// Manually send ping by the send request
     /// The inner can not start two loop, because the stream is unsafe
     /// we need to start the loop in the client or higher level manually
-    /// WARN: this function does not support concurrent call
+    ///
+    /// # Safety
+    /// The stream is unsafe, we need to make sure the stream is not used by other threads,
+    /// you can only call this function inside the client loop.
     pub async unsafe fn ping(&self) -> Result<(), RpcError> {
         self.inner_connection.ping().await
     }
