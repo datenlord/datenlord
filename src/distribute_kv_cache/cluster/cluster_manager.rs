@@ -777,9 +777,9 @@ impl ClusterManagerInner {
         // Add a txn to update ring, update hashring is usually in low priority.
         // Try to check the ring version and update the ring to etcd
         // If failed, we need to return upper level and regenerate the hashring
-        let ring_key = &KeyType::CacheRing;
+        let ring_key_type = &KeyType::CacheRing;
         let mut txn = self.kv_engine.new_meta_txn().await;
-        let latest_hash_ring = match txn.get(ring_key).await {
+        let latest_hash_ring = match txn.get(ring_key_type).await {
             Ok(Some(ValueType::Json(ring_json))) => {
                 // Get current ring from etcd
                 let ring: Ring<Node> = serde_json::from_value(ring_json)?;
@@ -850,7 +850,7 @@ impl ClusterManagerInner {
         let ring_value = &ValueType::Json(current_json_value);
 
         txn.set(master_key, master_value);
-        txn.set(ring_key, ring_value);
+        txn.set(ring_key_type, ring_value);
         txn.commit().await?;
 
         Ok(())
