@@ -43,3 +43,6 @@ mod mock;
 
 #[cfg(test)]
 pub use mock::MemoryStorage;
+
+/// Distribute cache
+pub mod cache;
