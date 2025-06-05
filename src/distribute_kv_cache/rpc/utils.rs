@@ -1,6 +1,6 @@
 use std::mem;
 
-use bytes::{Buf, BytesMut};
+use bytes::{Buf, BufMut, BytesMut};
 use tracing::debug;
 
 use super::error::RpcError;
