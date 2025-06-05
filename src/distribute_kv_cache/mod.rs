@@ -8,3 +8,9 @@ pub mod rpc;
 
 /// Cluster manager
 pub mod cluster;
+
+/// Distribute cache and kvcache config
+pub mod config;
+
+/// Distribute cache and kvcache manager
+pub mod manager;
