@@ -6,15 +6,18 @@ pub struct DistributeCacheConfig {
     pub rpc_server_ip: String,
     /// RPC server port
     pub rpc_server_port: u16,
+    /// Capacity of the cache in size
+    pub capacity: u32,
 }
 
 impl DistributeCacheConfig {
     /// Create a new config
     #[must_use]
-    pub fn new(rpc_server_ip: String, rpc_server_port: u16) -> Self {
+    pub fn new(rpc_server_ip: String, rpc_server_port: u16, capacity: u32) -> Self {
         Self {
             rpc_server_ip,
             rpc_server_port,
+            capacity,
         }
     }
 }
