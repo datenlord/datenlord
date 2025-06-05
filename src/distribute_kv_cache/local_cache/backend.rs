@@ -4,6 +4,8 @@ use tokio::io::AsyncWriteExt;
 
 use std::fmt::Debug;
 
+use crate::distribute_kv_cache::local_cache::StorageError;
+
 use super::StorageResult;
 
 /// The `Backend` trait represents a backend storage system.
@@ -93,12 +95,14 @@ impl Backend for FSBackend {
 /// The `S3Backend` struct represents a backend storage system that uses S3.
 #[derive(Debug)]
 pub struct S3Backend {
+    /// The `Operator` instance used for interacting with the S3 storage system.
     operator: Operator,
 }
 
 impl S3Backend {
     /// Creates a new `S3Backend` instance with the given `Operator`.
     /// You need to create a s3 operator and pass it to this function.
+    #[must_use]
     pub fn new(operator: Operator) -> Self {
         Self { operator }
     }
@@ -116,7 +120,9 @@ impl Backend for S3Backend {
         loop {
             // Read data and catch the size
             // Calculate the remaining buffer size
-            let remaining_buf = &mut buf[read_size..];
+            let remaining_buf = buf.get_mut(read_size..).ok_or_else(|| {
+                StorageError::Internal(anyhow::anyhow!("Buffer is too small to read more data."))
+            })?;
             let result = reader.read(remaining_buf).await;
             match result {
                 Ok(0) => break,

@@ -1,7 +1,7 @@
 use std::{fmt, sync::Arc};
 
 use async_trait::async_trait;
-use bytes::{Buf, BytesMut, BufMut};
+use bytes::{Buf, BufMut, BytesMut};
 use clippy_utilities::Cast;
 use opendal::{
     layers::{ConcurrentLimitLayer, RetryLayer},
@@ -65,11 +65,12 @@ const DEFAULT_INDEX_KEY: &str = "kvcacheindex";
 /// Helper function to generate kv cache index value
 #[allow(dead_code)]
 fn generate_kv_cache_index_value(block_id: u64, offset: u64, size: u64, addr: &str) -> String {
-    format!("{}_{}_{}_{}", block_id, offset, size, addr)
+    format!("{block_id}_{offset}_{size}_{addr}")
 }
 
 /// Helper function to parse kv cache index value
 #[allow(dead_code)]
+#[allow(clippy::indexing_slicing)]
 fn parse_kv_cache_index_value(value: &str) -> DatenLordResult<(u64, u64, u64, String)> {
     let parts: Vec<&str> = value.split('_').collect();
     let block_id = parts[0]
@@ -87,7 +88,7 @@ fn parse_kv_cache_index_value(value: &str) -> DatenLordResult<(u64, u64, u64, St
         .map_err(|err| DatenLordError::CacheClusterErr {
             context: vec![format!("Failed to parse size: {:?}", err)],
         })?;
-    let addr = parts[3].to_string();
+    let addr = parts[3].to_owned();
 
     Ok((block_id, offset, size, addr))
 }
@@ -160,35 +161,33 @@ impl Job for FileBlockHandler {
             self.request.block_size,
         );
         // error!("current file block request: {:?}", self.request);
-        let block = self.local_cache_manager.read(meta_data).await;
-        if let Ok(block) = block {
-            if let Some(block) = block {
-                // Check version
-                if block.get_meta_data().get_version() != self.request.block_version {
-                    // If the version is not matched, we need to return failed
-                    file_block_resp = FileBlockResponse {
-                        file_id: self.request.file_id,
-                        block_id: self.request.block_id,
-                        block_size: self.request.block_size,
-                        block_version: self.request.block_version,
-                        hash_ring_version: current_hash_ring_version,
-                        status: StatusCode::VersionMismatch,
-                        data: vec![],
-                    };
-                } else {
-                    // Prepare response body
-                    file_block_resp = FileBlockResponse {
-                        file_id: self.request.file_id,
-                        block_id: self.request.block_id,
-                        block_size: self.request.block_size,
-                        block_version: self.request.block_version,
-                        hash_ring_version: current_hash_ring_version,
-                        status: StatusCode::Success,
-                        // 20241210 TODO: Need to return data
-                        // data: block.get_data(),
-                        data: vec![],
-                    };
-                }
+        let block = Box::pin(self.local_cache_manager.read(meta_data)).await;
+        if let Ok(Some(block)) = block {
+            // Check version
+            if block.get_meta_data().get_version() == self.request.block_version {
+                // Prepare response body
+                file_block_resp = FileBlockResponse {
+                    file_id: self.request.file_id,
+                    block_id: self.request.block_id,
+                    block_size: self.request.block_size,
+                    block_version: self.request.block_version,
+                    hash_ring_version: current_hash_ring_version,
+                    status: StatusCode::Success,
+                    // 20241210 TODO: Need to return data
+                    // data: block.get_data(),
+                    data: vec![],
+                };
+            } else {
+                // If the version is not matched, we need to return failed
+                file_block_resp = FileBlockResponse {
+                    file_id: self.request.file_id,
+                    block_id: self.request.block_id,
+                    block_size: self.request.block_size,
+                    block_version: self.request.block_version,
+                    hash_ring_version: current_hash_ring_version,
+                    status: StatusCode::VersionMismatch,
+                    data: vec![],
+                };
             }
         }
 
@@ -198,8 +197,8 @@ impl Job for FileBlockHandler {
         // error!("current file block response data: {:?}", file_block_resp.data);
 
         // Prepare response body
-        let mut resp_body_buffer = BytesMut::new();
-        encode_to_buf!(resp_body_buffer, &file_block_resp);
+        let resp_body_buffer = BytesMut::new();
+        encode_to_buf!(resp_body_buffer.clone(), &file_block_resp);
         // Prepare response header
         let resp_header = RespHeader {
             seq: self.header.seq,
@@ -255,7 +254,7 @@ impl RpcServerConnectionHandler for BlockHandler {
     async fn dispatch(
         &self,
         req_header: ReqHeader,
-        mut req_buffer: BytesMut,
+        req_buffer: BytesMut,
         done_tx: mpsc::Sender<Vec<bytes::Bytes>>,
     ) {
         // Dispatch the handler for the connection
@@ -342,6 +341,8 @@ impl KVBlockHandler {
 impl Job for KVBlockHandler {
     /// KV block handler inner run.
     /// Support Block get and batch put.
+    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::wildcard_enum_match_arm)]
     async fn run(&self) {
         // Get current request type
         if let Ok(req_type) = ReqType::try_from(self.header.op) {
@@ -385,25 +386,25 @@ impl Job for KVBlockHandler {
                     // Get the block by id
                     let metadata = MetaData::new(req_body.kv_cache_id, 0, 0, 0);
                     let block = self.cache_manager.read(metadata).await;
-                    if let Ok(block) = block {
-                        if let Some(block) = block {
-                            let data = block.read().unwrap().get_data();
-                            // let data = block.get_data();
-                            if data.len() as u64 == req_body.block_size {
-                                kv_block_get_resp = KVBlockGetResponse {
-                                    kv_cache_id: req_body.kv_cache_id,
-                                    block_size: req_body.block_size,
-                                    status: StatusCode::InternalError,
-                                    data,
-                                };
-                            } else {
-                                kv_block_get_resp = KVBlockGetResponse {
-                                    kv_cache_id: req_body.kv_cache_id,
-                                    block_size: req_body.block_size,
-                                    status: StatusCode::InternalError,
-                                    data: bytes::Bytes::new(),
-                                };
-                            }
+                    if let Ok(Some(block)) = block {
+                        let data = block
+                            .read()
+                            .map_or(bytes::Bytes::new(), |block| block.get_data());
+                        // let data = block.get_data();
+                        if usize_to_u64(data.len()) == req_body.block_size {
+                            kv_block_get_resp = KVBlockGetResponse {
+                                kv_cache_id: req_body.kv_cache_id,
+                                block_size: req_body.block_size,
+                                status: StatusCode::Success,
+                                data,
+                            };
+                        } else {
+                            kv_block_get_resp = KVBlockGetResponse {
+                                kv_cache_id: req_body.kv_cache_id,
+                                block_size: req_body.block_size,
+                                status: StatusCode::InternalError,
+                                data: bytes::Bytes::new(),
+                            };
                         }
                     };
                     let start_1 = start.elapsed();
@@ -478,7 +479,7 @@ impl Job for KVBlockHandler {
                     // debug!("KVBlockBatchPutRequest: Received request: {:?}", req_body);
                     let mut success_ids = vec![];
                     let mut failed_ids = vec![];
-                    for block in req_body.blocks.into_iter() {
+                    for block in req_body.blocks {
                         let block_start = tokio::time::Instant::now();
                         let meta_data = MetaData::new(block.kv_cache_id, 0, 0, 0);
                         let kv_block = Block::new(meta_data, block.data);
@@ -488,7 +489,7 @@ impl Job for KVBlockHandler {
                             block_start_0
                         );
                         match self.cache_manager.write(kv_block).await {
-                            Ok(_) => {
+                            Ok(()) => {
                                 success_ids.push(block.kv_cache_id);
                                 let block_start_1 = block_start.elapsed();
                                 debug!(
@@ -515,17 +516,17 @@ impl Job for KVBlockHandler {
 
                     let kv_block_batch_put_resp = KVBlockBatchPutResponse {
                         block_size: req_body.batch_size,
-                        success_batch_size: success_ids.len() as u64,
+                        success_batch_size: usize_to_u64(success_ids.len()),
                         success_kv_cache_ids: success_ids,
-                        failed_batch_size: failed_ids.len() as u64,
+                        failed_batch_size: usize_to_u64(failed_ids.len()),
                         failed_kv_cache_ids: failed_ids,
                     };
 
                     // Prepare response body
                     // let mut resp_body_buffer = BytesMut::with_capacity(20*1024*1024);
-                    let mut resp_body_buffer =
+                    let resp_body_buffer =
                         resp_header_buffer.split_off(packet::RESP_HEADER_SIZE.cast());
-                    encode_to_buf!(resp_body_buffer, &kv_block_batch_put_resp);
+                    encode_to_buf!(resp_body_buffer.clone(), &kv_block_batch_put_resp);
                     // Prepare response header
                     let resp_header = RespHeader {
                         seq: req_header.seq,
@@ -627,6 +628,8 @@ where
 {
     /// Index handler inner run.
     /// Support Block id allocation and prefix index management.
+    #[allow(clippy::wildcard_enum_match_arm)]
+    #[allow(clippy::too_many_lines)]
     async fn run(&self) {
         // Get current request type
         if let Ok(req_type) = ReqType::try_from(self.header.op) {
@@ -656,8 +659,8 @@ where
                         kv_cache_id: block_id,
                     };
 
-                    let mut resp_body_buffer = BytesMut::new();
-                    encode_to_buf!(resp_body_buffer, &kv_cache_id_allocate_resp);
+                    let resp_body_buffer = BytesMut::new();
+                    encode_to_buf!(resp_body_buffer.clone(), &kv_cache_id_allocate_resp);
                     let resp_header = RespHeader {
                         seq: req_header.seq,
                         op: RespType::KVCacheIdAllocateResponse.into(),
@@ -694,41 +697,39 @@ where
                     };
 
                     let indexes = req_body.indexes;
-                    let mut kv_cache_index_insert_resp = match indexes.get(0) {
-                        Some(index) => KVCacheIndexInsertResponse {
+                    let mut kv_cache_index_insert_resp = if let Some(index) = indexes.get(0) {
+                        KVCacheIndexInsertResponse {
                             block_size: index.block_size,
                             kv_cache_id: index.kv_cache_id,
                             status: StatusCode::Success,
-                        },
-                        None => {
-                            error!("Failed to get index 0 from KVCacheIndexInsertRequest");
-                            KVCacheIndexInsertResponse {
-                                block_size: 0,
-                                kv_cache_id: 0,
-                                status: StatusCode::InternalError,
-                            }
+                        }
+                    } else {
+                        error!("Failed to get index 0 from KVCacheIndexInsertRequest");
+                        KVCacheIndexInsertResponse {
+                            block_size: 0,
+                            kv_cache_id: 0,
+                            status: StatusCode::InternalError,
                         }
                     };
 
                     for index in indexes {
                         let key = index.kv_cache_key;
                         debug!("KVCacheIndexInsertRequest: Insert key: {:?}", key);
-                        let kv_cache_index_value = match node_address {
-                            Some(ref address) => generate_kv_cache_index_value(
+                        let kv_cache_index_value = if let Some(ref address) = node_address {
+                            generate_kv_cache_index_value(
                                 index.kv_cache_id,
                                 index.offset,
                                 index.size,
                                 address,
-                            ),
-                            None => {
-                                error!("Failed to get node address");
-                                kv_cache_index_insert_resp = KVCacheIndexInsertResponse {
-                                    block_size: index.block_size,
-                                    kv_cache_id: index.kv_cache_id,
-                                    status: StatusCode::InternalError,
-                                };
-                                break;
-                            }
+                            )
+                        } else {
+                            error!("Failed to get node address");
+                            kv_cache_index_insert_resp = KVCacheIndexInsertResponse {
+                                block_size: index.block_size,
+                                kv_cache_id: index.kv_cache_id,
+                                status: StatusCode::InternalError,
+                            };
+                            break;
                         };
                         self.index_manager.insert(key, kv_cache_index_value);
                         kv_cache_index_insert_resp = KVCacheIndexInsertResponse {
@@ -739,8 +740,8 @@ where
                     }
 
                     // Prepare response body
-                    let mut resp_body_buffer = BytesMut::new();
-                    encode_to_buf!(resp_body_buffer, &kv_cache_index_insert_resp);
+                    let resp_body_buffer = BytesMut::new();
+                    encode_to_buf!(resp_body_buffer.clone(), &kv_cache_index_insert_resp);
                     // Prepare response header
                     let resp_header = RespHeader {
                         seq: req_header.seq,
@@ -912,6 +913,7 @@ where
     K: num::Num + Eq + Send + Sync + Clone + fmt::Debug + Serialize + DeserializeOwned + 'static,
     Vec<K>: radix_trie::TrieKey + Clone,
 {
+    #[allow(clippy::wildcard_enum_match_arm)]
     async fn dispatch(
         &self,
         req_header: ReqHeader,
@@ -1013,7 +1015,7 @@ where
             .bucket(&backend_config.bucket_name);
 
         // Init region
-        if let Some(region) = backend_config.region.to_owned() {
+        if let Some(region) = backend_config.region.clone() {
             builder.region(region.as_str());
         } else {
             // Auto detect region
@@ -1059,6 +1061,8 @@ where
     }
 
     /// Start the distribute cache manager.
+    #[allow(clippy::pattern_type_mismatch)] // for `tokio::select!`
+    #[allow(clippy::never_loop)]
     pub async fn start(&self) -> DatenLordResult<()> {
         // 1. start cluster manager
         let cluster_manager_clone = Arc::clone(&self.cluster_manager);
