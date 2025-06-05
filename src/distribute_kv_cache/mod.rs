@@ -14,3 +14,6 @@ pub mod config;
 
 /// Distribute cache and kvcache manager
 pub mod manager;
+
+/// Distribute kv cache client
+pub mod kvclient;
