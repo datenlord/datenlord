@@ -17,3 +17,6 @@ pub mod manager;
 
 /// Distribute kv cache client
 pub mod kvclient;
+
+/// Cluster manager
+pub mod main;
