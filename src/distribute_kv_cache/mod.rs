@@ -17,3 +17,6 @@ pub mod manager;
 
 /// Distribute kv cache client
 pub mod kvclient;
+
+/// Test module
+pub mod tests;
