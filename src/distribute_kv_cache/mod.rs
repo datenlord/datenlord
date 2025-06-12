@@ -8,3 +8,6 @@ pub mod rpc;
 
 /// Cluster manager
 pub mod cluster;
+
+/// Distribute kv cache client
+pub mod kvclient;
