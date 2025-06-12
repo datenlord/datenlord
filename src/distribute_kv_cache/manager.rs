@@ -20,7 +20,6 @@ use crate::{
     },
     config::StorageS3Config,
     distribute_kv_cache::{
-        local_cache::block::Block,
         rpc::{
             message::{
                 KVBlockBatchPutRequest, KVBlockBatchPutResponse, KVBlockGetRequest,
@@ -30,6 +29,7 @@ use crate::{
             },
             packet::{self, EncodeLarge},
         },
+        server_cache::block::Block,
     },
     encode_to_buf,
     fs::kv_engine::KVEngineType,
@@ -41,11 +41,6 @@ use super::{
         node::{Node, NodeStatus},
     },
     config::DistributeCacheConfig,
-    local_cache::{
-        backend::S3Backend,
-        block::MetaData,
-        manager::{BlockManager, IndexManager, KVBlockManager},
-    },
     rpc::{
         common::ServerTimeoutOptions,
         message::{
@@ -55,6 +50,11 @@ use super::{
         packet::{Encode, ReqHeader, RespHeader},
         server::{RpcServer, RpcServerConnectionHandler},
         workerpool::{Job, WorkerPool},
+    },
+    server_cache::{
+        backend::S3Backend,
+        block::MetaData,
+        manager::{BlockManager, IndexManager, KVBlockManager},
     },
 };
 

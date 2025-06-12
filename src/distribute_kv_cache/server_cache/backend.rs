@@ -4,7 +4,7 @@ use tokio::io::AsyncWriteExt;
 
 use std::fmt::Debug;
 
-use crate::distribute_kv_cache::local_cache::StorageError;
+use crate::distribute_kv_cache::server_cache::StorageError;
 
 use super::StorageResult;
 
@@ -129,7 +129,7 @@ impl Backend for S3Backend {
                 Ok(size) => {
                     // The size is not full, we should break the loop
                     read_size += size;
-                    if size == 4 * 1024 * 1024 {
+                    if read_size == 4 * 1024 * 1024 {
                         break;
                     }
                 }

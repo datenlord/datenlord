@@ -7,7 +7,7 @@ use std::{
 use radix_trie::Trie;
 use tracing::{debug, error};
 
-use crate::distribute_kv_cache::local_cache::block::BLOCK_SIZE;
+use crate::distribute_kv_cache::server_cache::block::BLOCK_SIZE;
 
 use super::{
     backend::{Backend, FSBackend},
