@@ -97,8 +97,6 @@ where
 {
     /// The block data
     block_cache: KVBlock,
-    /// The block metas
-    block_metas: Vec<KVCacheMeta<K>>,
     /// The radix tree for block metas, support partial match
     /// Use token ids as the key, and the kv cache meta as the value
     /// u32 size is enough for the token id in tokenized.
@@ -118,12 +116,12 @@ where
                 block_size,
                 data: Vec::with_capacity(u64_to_usize(block_size)),
             },
-            block_metas: Vec::new(),
             block_metas_tree: Trie::new(),
         }
     }
 
     /// Insert a kv cache to the local block cache
+    #[allow(clippy::needless_pass_by_value)]
     pub fn insert(&mut self, kv_cache_meta: KVCacheMeta<K>, data: &[u8]) -> DatenLordResult<()> {
         // Check current block id is equal to the kv cache block id
         if self.block_cache.block_id == UNUSED_KV_BLOCK_ID {
@@ -149,9 +147,6 @@ where
         // 2. Insert the kv cache meta to the block metas tree
         self.block_metas_tree
             .insert(kv_cache_meta.prefix.clone(), kv_cache_meta.clone());
-
-        // 3. Insert the kv cache meta to the block metas
-        self.block_metas.push(kv_cache_meta);
 
         Ok(())
     }
@@ -204,7 +199,6 @@ where
     pub fn clear(&mut self, new_block_id: u64) {
         self.block_cache.block_id = new_block_id;
         self.block_cache.data.clear();
-        self.block_metas.clear();
 
         // Clear the block metas tree
         self.block_metas_tree = Trie::new();
@@ -222,8 +216,8 @@ where
     }
 
     /// Get `KVCacheMeta`
-    pub fn get_kv_cache_metas(&self) -> Vec<KVCacheMeta<K>> {
-        self.block_metas.clone()
+    pub fn get_kv_cache_metas(&self) -> Vec<&KVCacheMeta<K>> {
+        self.block_metas_tree.get_values()
     }
 }
 
@@ -719,7 +713,7 @@ where
     #[allow(clippy::wildcard_enum_match_arm)]
     async fn insert_indexes(
         &self,
-        kv_cache_meta_list: Vec<KVCacheMeta<K>>,
+        kv_cache_meta_list: Vec<&KVCacheMeta<K>>,
         node_address: String,
     ) -> DatenLordResult<()> {
         // Get the cache node with the block id
@@ -729,7 +723,7 @@ where
         // Generate Vec<KVCacheIndexInsertRequest>
         let mut kv_cache_index_insert_requests = Vec::new();
         for item in kv_cache_meta_list {
-            let kv_cache_key = item.prefix;
+            let kv_cache_key = item.prefix.clone();
             kv_cache_index_insert_requests.push(KVCacheIndexInsertRequest {
                 block_size: self.block_size,
                 kv_cache_id: item.block_id,
