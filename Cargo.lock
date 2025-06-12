@@ -2573,7 +2573,7 @@ dependencies = [
 [[package]]
 name = "radix_trie"
 version = "0.2.1"
-source = "git+https://github.com/datenlord/radix_trie#68d7db82e240daf8ff41a5edabbf9eaf8187a945"
+source = "git+https://github.com/datenlord/radix_trie#455672314075fa9108cecb9b5c3a19d76cabf1f3"
 dependencies = [
  "endian-type",
  "nibble_vec",
