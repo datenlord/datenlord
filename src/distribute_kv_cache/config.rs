@@ -6,7 +6,7 @@ pub struct DistributeCacheConfig {
     pub rpc_server_ip: String,
     /// RPC server port
     pub rpc_server_port: u16,
-    /// Capacity of the cache in size
+    /// Capacity of the cache in in Byte
     pub capacity: u32,
 }
 
