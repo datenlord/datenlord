@@ -477,15 +477,10 @@ impl DecodeLarge for KVBlockGetResponse {
                 .to_owned(),
         )
         .map_err(|e| RpcError::InternalError(e.to_string()))?;
-        let start = std::time::Instant::now();
         let data = buf.slice(17..);
 
         // let data = vec![];
         // Use unsafe to avoid copy
-        debug!(
-            "decode decode_large_data KVBlockGetResponse data cost: {:?}",
-            start.elapsed()
-        );
         let data_len = usize_to_u64(data.len());
         if data_len != block_size {
             return Err(RpcError::InternalError(format!(

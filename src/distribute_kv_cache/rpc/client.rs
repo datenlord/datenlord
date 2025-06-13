@@ -152,7 +152,6 @@ where
         req_header: &dyn Encode,
         req_body: Option<&dyn Encode>,
     ) -> Result<(), RpcError> {
-        let start = tokio::time::Instant::now();
         let buf = unsafe { &mut *self.req_buf.get() };
         buf.clear();
 
@@ -163,12 +162,9 @@ where
             // encode just need to append to buffer, do not clear buffer
             body.encode(buf);
         }
-        let start_1 = start.elapsed();
-        debug!("{:?} Encode request cost: {:?}", self, start_1);
 
-        // TODO: If data is very large, we need to send it in multiple times
+        // FIXME: If data is very large, we need to send it in multiple times
         // and do not copy the data
-
         debug!("{:?} Sent data with length: {:?}", self, buf.len());
         let writer = self.get_stream_mut();
         // Copy from user space to tcp stream
