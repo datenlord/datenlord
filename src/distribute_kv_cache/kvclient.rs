@@ -46,7 +46,7 @@ const UNUSED_KV_BLOCK_ID: u64 = 0;
 /// |cache1|cache2|cache3| => contains kv cache data = cache1, cache2, cache3
 /// |0-----|1-----|2-----| => prefix = 0, 1, 2
 ///
-/// TODO: Hold the kv cache and fetch from local cache
+/// Note: The prefix and offset of this block are maintained in `KVCacheMeta`.
 #[derive(Debug, Clone)]
 pub struct KVBlock {
     /// The block id
@@ -254,10 +254,11 @@ where
         self.inner.start_watch().await
     }
 
-    #[allow(unreachable_code)]
-    #[allow(unused_variables)]
-    /// Try to match the prefix and get the block from the distribute cache
-    pub async fn match_prefix(&self, prefix: Vec<K>) -> DatenLordResult<Vec<K>> {
+    /// Get the matched metadata, return with the metadata and the prefix metadata is from local or remote
+    async fn get_matched_metadata(
+        &self,
+        prefix: Vec<K>,
+    ) -> DatenLordResult<(KVCacheMeta<K>, bool, String)> {
         // 1. check current node has the local block cache
         // If ok, get the block from the local block cache
         // If not, get the block from the distribute cache
@@ -300,72 +301,43 @@ where
             kv_block_meta, node_address
         );
 
-        // If local prefix length is less than remote prefix length, we will get the block from the local cache
+        // If local prefix length is more than remote prefix length, we will get the block from the local cache
         if local_prefix_len >= remote_prefix_len {
-            return Ok(local_kv_cache_meta.prefix);
+            return Ok((local_kv_cache_meta, true, String::new()));
         }
 
         // Return the prefix
-        Ok(kv_block_meta.prefix)
+        Ok((kv_block_meta, false, node_address))
+    }
+
+    #[allow(unreachable_code)]
+    #[allow(unused_variables)]
+    /// Try to match the prefix and get the block from the distribute cache
+    pub async fn match_prefix(&self, prefix: Vec<K>) -> DatenLordResult<Vec<K>> {
+        match self.get_matched_metadata(prefix).await {
+            Ok((kv_cache_meta, _, _)) => Ok(kv_cache_meta.prefix),
+            Err(e) => Err(e),
+        }
     }
 
     #[allow(unreachable_code)]
     #[allow(unused_variables)]
     /// Try to load the block from the distribute cache, return sub string with the prefix
     pub async fn try_load(&self, prefix: Vec<K>) -> DatenLordResult<(Vec<K>, bytes::Bytes)> {
-        // 1. check current node has the local block cache
-        // If ok, get the block from the local block cache
-        // If not, get the block from the distribute cache
-        // Optimize: Try to compare partial prefix with the local block cache and remote block cache
+        let (metadata, is_local, node_address) = self.get_matched_metadata(prefix.clone()).await?;
+
         let local_cache_lock = self.block_cache.lock().await;
-        let local_kv_cache_meta = if let Some(kv_cache_meta) =
-            local_cache_lock.match_prefix(prefix.clone())
-        {
-            debug!(
-                "Matched local kv cache meta from local cache: {:?}",
-                kv_cache_meta
-            );
-            kv_cache_meta
-        } else {
-            debug!("Failed to match local kv cache meta from local cache, try to get from the distribute cache");
-            // Empty meta
-            KVCacheMeta::default()
-        };
-        let local_prefix_len = local_kv_cache_meta.prefix.len().cast::<u64>();
-
-        // 2. Match prefix to get the block id and target node
-        let (kv_block_meta, node_address) = match self.inner.match_prefix(prefix.clone()).await {
-            Ok((kv_block_meta, node_address)) => {
-                debug!(
-                    "Matched remote kv block meta: {:?} node_address: {:?}",
-                    kv_block_meta, node_address
-                );
-                (kv_block_meta, node_address)
-            }
-            Err(err) => {
-                error!("Failed to match prefix: {:?} with error: {:?}", prefix, err);
-                // Return a empty data
-                (KVCacheMeta::default(), String::new())
-            }
-        };
-
-        let remote_prefix_len = kv_block_meta.prefix.len().cast::<u64>();
-        info!(
-            "Matched remote kv block meta: {:?} node_address: {:?}",
-            kv_block_meta, node_address
-        );
-
-        // If local prefix length is less than remote prefix length, we will get the block from the local cache
-        if local_prefix_len >= remote_prefix_len {
+        // If local prefix length is more than remote prefix length, we will get the block from the local cache
+        if is_local {
             // Get the block from local cache
-            if let Some(data) = local_cache_lock.try_load(local_kv_cache_meta.clone()) {
+            if let Some(data) = local_cache_lock.try_load(metadata.clone()) {
                 debug!(
                     "Get block from local cache: {:?} data len {:?}",
-                    local_kv_cache_meta,
+                    metadata,
                     data.len()
                 );
                 // TODO: use bytes instead of Vec<u8>
-                return Ok((local_kv_cache_meta.prefix, bytes::Bytes::from(data)));
+                return Ok((metadata.prefix, bytes::Bytes::from(data)));
             }
 
             debug!("Failed to get block from local cache, try to get from the distribute cache");
@@ -381,7 +353,7 @@ where
         // TODO: update string key with u64
         let block_data = match self
             .inner
-            .get_block(node_address.clone(), kv_block_meta.block_id)
+            .get_block(node_address.clone(), metadata.block_id)
             .await
         {
             Ok(data) => data,
@@ -391,24 +363,21 @@ where
 
                 error!(
                     "Failed to get block: {:?} node_address: {:?} kv_block_meta: {:?}",
-                    err, node_address, kv_block_meta
+                    err, node_address, metadata
                 );
                 return Ok((Vec::new(), bytes::Bytes::new()));
             }
         };
 
         // 4. Copy the block data to the data with kv cache meta offset and size
-        let offset = u64_to_usize(kv_block_meta.offset);
-        let size = u64_to_usize(kv_block_meta.size);
+        let offset = u64_to_usize(metadata.offset);
+        let size = u64_to_usize(metadata.size);
         debug!(
             "Get block from remote cache: {:?} offset: {:?} size: {:?}",
-            kv_block_meta, offset, size
+            metadata, offset, size
         );
 
-        Ok((
-            kv_block_meta.prefix,
-            block_data.slice(offset..offset + size),
-        ))
+        Ok((metadata.prefix, block_data.slice(offset..offset + size)))
     }
 
     /// Insert a block to the distribute cache
@@ -471,6 +440,8 @@ where
                 self.inner.put_blocks(addr.clone(), vec![kv_block]).await?;
 
                 // If ok, insert the indexes to the distribute cache
+                // Note: If index insertion fails, the data block becomes unreachable in remote node
+                // and will eventually be garbage collected by LRU-based remote GC.
                 self.inner.insert_indexes(kv_cache_metas, addr).await?;
 
                 // If ok, clear the block cache
@@ -554,7 +525,8 @@ where
                     }
                 }
                 Err(err) => {
-                    warn!("Failed to get ring: {:?}", err);
+                    warn!("Failed to get ring: {:?}, will retry in 3 seconds.", err);
+                    tokio::time::sleep(Duration::from_secs(3)).await;
                 }
             }
         }
