@@ -60,13 +60,6 @@ pub struct KVCacheServerConfig {
 
 #[tokio::main]
 async fn main() -> DatenLordResult<()> {
-    // TASK_MANAGER
-    //     .spawn(TaskName::Metrics, metrics::start_metrics_server)
-    //     .await
-    //     .map_err(|e| DatenLordError::DistributeCacheManagerErr {
-    //         context: vec![format!("Failed to start metrics server: {:?}", e)],
-    //     })?;
-
     let config = KVCacheServerConfig::parse();
     init_logger(
         LogRole::Cache,
@@ -81,15 +74,13 @@ async fn main() -> DatenLordResult<()> {
     let port = config.port;
     let addr = format!("{}:{}", ip, port);
     info!("KV cache server started at {}", addr);
-    println!("KV cache server started at {}", addr);
 
     let etcd_endpoint = config.etcd_endpoint;
     let client = EtcdKVEngine::new(vec![etcd_endpoint.to_owned()])
         .await
-        .unwrap();
+        .expect("Failed to create EtcdKVEngine");
     let client = Arc::new(client);
     info!("Connected to etcd server at {}", etcd_endpoint);
-    println!("Connected to etcd server at {}", etcd_endpoint);
 
     let node = Node::new(ip.to_owned(), port, 1, NodeStatus::Initializing);
     let cluster_manager = Arc::new(ClusterManager::new(client, node));
@@ -114,17 +105,13 @@ async fn main() -> DatenLordResult<()> {
     match server.listen(&addr).await {
         Ok(()) => {
             info!("KV cache server started successfully");
-            println!("KV cache server started successfully");
         }
         Err(err) => {
             panic!("Failed to start kv cache server: {:?}", err);
         }
     }
 
-    // task_manager::wait_for_shutdown(&TASK_MANAGER)?.await;
     tokio::signal::ctrl_c().await?;
-    // tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
-    // TASK_MANAGER.shutdown().await;
     info!("KV cache server stopped");
     Ok(())
 }
