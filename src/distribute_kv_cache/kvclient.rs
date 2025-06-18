@@ -195,8 +195,8 @@ where
         Some(data)
     }
 
-    /// Clear the local block cache with new block id
-    pub fn clear(&mut self, new_block_id: u64) {
+    /// Refresh the block id and clear the block cache with metadata
+    pub fn refresh_id_and_clear(&mut self, new_block_id: u64) {
         self.block_cache.block_id = new_block_id;
         self.block_cache.data.clear();
 
@@ -400,10 +400,13 @@ where
             current_block_id
         );
 
-        while current_block_id == UNUSED_KV_BLOCK_ID {
+        // This branch will only call once in sdk initialize, avoiding difficult injection during SDK initialization.
+        // FIXME: the while statement was previously used as a condition here.
+        // It is necessary to confirm whether it needs to be changed back to while.
+        if current_block_id == UNUSED_KV_BLOCK_ID {
             let new_block_id = self.inner.alloc_block_id().await?;
             debug!("Alloc new block id: {:?}", new_block_id);
-            block_cache.clear(new_block_id);
+            block_cache.refresh_id_and_clear(new_block_id); // refresh block id and clear
             current_block_id = new_block_id;
         }
 
@@ -446,7 +449,7 @@ where
 
                 // If ok, clear the block cache
                 let current_block_id = self.inner.alloc_block_id().await?;
-                block_cache.clear(current_block_id);
+                block_cache.refresh_id_and_clear(current_block_id);
 
                 // Try to insert the kv cache meta again
                 let next_offset = block_cache.get_next_offset();
