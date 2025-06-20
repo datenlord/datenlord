@@ -12,15 +12,16 @@ use datenlord::{
             cluster_manager::ClusterManager,
             node::{Node, NodeStatus},
         },
-        local_cache::manager::{IndexManager, KVBlockManager},
         manager::KVCacheHandler,
         rpc::{common::ServerTimeoutOptions, server::RpcServer, workerpool::WorkerPool},
+        server_cache::manager::{IndexManager, KVBlockManager},
     },
     fs::kv_engine::{etcd_impl::EtcdKVEngine, KVEngine},
     // metrics,
 };
 use tracing::{error, info, level_filters::LevelFilter};
 
+/// KV cache server config
 #[derive(Debug, Parser)]
 #[clap(author,version,about,long_about=None)]
 pub struct KVCacheServerConfig {
@@ -84,7 +85,7 @@ async fn main() -> DatenLordResult<()> {
 
     let node = Node::new(ip.to_owned(), port, 1, NodeStatus::Initializing);
     let cluster_manager = Arc::new(ClusterManager::new(client, node));
-    let cluster_manager_clone = Arc::clone(&cluster_manager);
+    let cluster_manager_clone: Arc<ClusterManager> = Arc::clone(&cluster_manager);
     TASK_MANAGER
         .spawn(TaskName::Rpc, |_token| async move {
             if let Err(e) = cluster_manager_clone.run().await {
