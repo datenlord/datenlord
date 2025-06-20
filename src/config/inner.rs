@@ -24,6 +24,8 @@ pub enum Role {
     SchedulerExtender,
     /// Run async fuse
     AsyncFuse,
+    /// Run as distribute cache node
+    Cache,
     /// Run as sdk
     SDK,
 }
