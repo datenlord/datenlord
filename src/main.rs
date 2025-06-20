@@ -222,7 +222,7 @@ async fn main() -> anyhow::Result<()> {
                 })
                 .await?;
         }
-        NodeRole::SDK => {
+        NodeRole::Cache | NodeRole::SDK => {
             panic!("SDK role is not supported yet");
         }
     }
