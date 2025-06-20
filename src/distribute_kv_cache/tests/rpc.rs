@@ -30,18 +30,18 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
 
-    use crate::connect_timeout;
     use crate::distribute_kv_cache::rpc::client::RpcClient;
     use crate::distribute_kv_cache::rpc::common::{ClientTimeoutOptions, ServerTimeoutOptions};
     use crate::distribute_kv_cache::rpc::message::{
-        FileBlockPacket, FileBlockRequest, FileBlockResponse, ReqType, RespType, StatusCode,
+        FileBlockRequest, FileBlockRequestTask, FileBlockResponse, ReqType, RespType, StatusCode,
     };
-    use crate::distribute_kv_cache::rpc::packet::{Decode, Encode, ReqHeader, RespHeader};
+    use crate::distribute_kv_cache::rpc::packet::{Encode, ReqHeader, RespHeader};
     use crate::distribute_kv_cache::rpc::server::{RpcServer, RpcServerConnectionHandler};
     use crate::distribute_kv_cache::rpc::utils::u64_to_usize;
     use crate::distribute_kv_cache::rpc::workerpool::{Job, WorkerPool};
+    use crate::{connect_timeout, encode_to_buf};
     use async_trait::async_trait;
-    use bytes::BytesMut;
+    use bytes::{Buf, BufMut, BytesMut};
     use tokio::sync::mpsc;
     use tokio::time;
     use tracing::{debug, error};
@@ -92,12 +92,12 @@ mod tests {
                 status: StatusCode::Success,
                 data: vec![0_u8; u64_to_usize(size)],
             };
-            let mut resp_body_buffer = BytesMut::new();
-            file_block_resp.encode(&mut resp_body_buffer);
+            let resp_body_buffer = BytesMut::new();
+            encode_to_buf!(resp_body_buffer.clone(), &file_block_resp);
             // Prepare response header
             let resp_header = RespHeader {
                 seq: self.header.seq,
-                op: RespType::FileBlockResponse.to_u8(),
+                op: RespType::FileBlockResponse.into(),
                 len: usize_to_u64(resp_body_buffer.len()),
             };
             let mut resp_header_buffer = BytesMut::new();
@@ -137,15 +137,16 @@ mod tests {
         async fn dispatch(
             &self,
             req_header: ReqHeader,
-            mut req_buffer: BytesMut,
+            req_buffer: BytesMut,
             done_tx: mpsc::Sender<Vec<bytes::Bytes>>,
         ) {
             // Dispatch the handler for the connection
-            if let Ok(req_type) = ReqType::from_u8(req_header.op) {
+            if let Ok(req_type) = ReqType::try_from(req_header.op) {
                 if let ReqType::FileBlockRequest = req_type {
                     // Try to read the request body
                     // Decode the request body
-                    let req_body = match FileBlockRequest::decode(&mut req_buffer) {
+                    let reader = req_buffer.reader();
+                    let req_body: FileBlockRequest = match bincode::deserialize_from(reader) {
                         Ok(req) => req,
                         Err(err) => {
                             debug!("Failed to decode file block request: {:?}", err);
@@ -218,30 +219,31 @@ mod tests {
             .await
             .unwrap();
 
-        let rpc_client = RpcClient::<FileBlockPacket>::new(connect_stream, &timeout_options);
+        let rpc_client = RpcClient::<FileBlockRequestTask>::new(connect_stream, &timeout_options);
         rpc_client.start_recv();
 
         time::sleep(Duration::from_secs(1)).await;
 
         // Send ping
-        rpc_client.ping().await.unwrap();
+        unsafe {
+            rpc_client.ping().await.unwrap();
+        }
 
         // benchmark for 400 block with 512k size
         let block_size = 512 * 1024;
         let block_count = 400;
 
-        let start = time::Instant::now();
         for i in 0..block_count {
             let (tx, rx) = flume::unbounded::<Result<FileBlockResponse, FileBlockRequest>>();
             // Send file block request
             let block_request = FileBlockRequest {
                 block_id: i,
-                block_size: block_size,
+                block_size,
                 file_id: 0,
                 block_version: 0,
                 hash_ring_version: 1,
             };
-            let packet = FileBlockPacket::new(&block_request, tx.clone());
+            let packet = FileBlockRequestTask::new(&block_request, tx.clone());
             rpc_client.send_request(packet).await.unwrap();
 
             loop {
@@ -265,41 +267,39 @@ mod tests {
                 }
             }
         }
-        let elapsed = start.elapsed();
-        println!("Elapsed time: {:?}", elapsed);
 
-        // let (tx, rx) = flume::unbounded::<Result<FileBlockResponse, FileBlockRequest>>();
-        // // Send file block request
-        // let block_request = FileBlockRequest {
-        //     block_id: 0,
-        //     block_size: block_size,
-        //     file_id: 0,
-        //     block_version: 0,
-        //     hash_ring_version: 1,
-        // };
-        // let mut packet = FileBlockPacket::new(&block_request, tx.clone());
-        // rpc_client.send_request(&mut packet).await.unwrap();
+        let (tx, rx) = flume::unbounded::<Result<FileBlockResponse, FileBlockRequest>>();
+        // Send file block request
+        let block_request = FileBlockRequest {
+            block_id: 0,
+            block_size,
+            file_id: 0,
+            block_version: 0,
+            hash_ring_version: 1,
+        };
+        let packet = FileBlockRequestTask::new(&block_request, tx.clone());
+        rpc_client.send_request(packet).await.unwrap();
 
-        // loop {
-        //     match rx.recv_async().await {
-        //         Ok(resp) => {
-        //             let resp = resp.unwrap();
-        //             debug!("Received response ok with len: {:?}", resp.data.len());
+        loop {
+            match rx.recv_async().await {
+                Ok(resp) => {
+                    let resp = resp.unwrap();
+                    debug!("Received response ok with len: {:?}", resp.data.len());
 
-        //             assert_eq!(resp.file_id, 0);
-        //             assert_eq!(resp.block_id, 0);
-        //             assert_eq!(resp.block_size, 4096);
-        //             assert_eq!(resp.status, StatusCode::Success);
-        //             assert_eq!(resp.data.len(), 4096);
-        //             debug!("Received response ok with len: {:?}", resp.data.len());
-        //             break;
-        //         }
-        //         Err(err) => {
-        //             error!("Failed to receive response: {:?}", err);
-        //             time::sleep(Duration::from_secs(1)).await;
-        //         }
-        //     }
-        // }
+                    assert_eq!(resp.file_id, 0);
+                    assert_eq!(resp.block_id, 0);
+                    assert_eq!(resp.block_size, 4096);
+                    assert_eq!(resp.status, StatusCode::Success);
+                    assert_eq!(resp.data.len(), 4096);
+                    debug!("Received response ok with len: {:?}", resp.data.len());
+                    break;
+                }
+                Err(err) => {
+                    error!("Failed to receive response: {:?}", err);
+                    time::sleep(Duration::from_secs(1)).await;
+                }
+            }
+        }
 
         server.stop();
     }
@@ -328,13 +328,15 @@ mod tests {
             .await
             .unwrap();
 
-        let rpc_client = RpcClient::<FileBlockPacket>::new(connect_stream, &timeout_options);
+        let rpc_client = RpcClient::<FileBlockRequestTask>::new(connect_stream, &timeout_options);
         rpc_client.start_recv();
 
         time::sleep(Duration::from_secs(5)).await;
 
         // Send ping, and current response is error
-        assert!(rpc_client.ping().await.is_err());
+        unsafe {
+            assert!(rpc_client.ping().await.is_err());
+        }
 
         server.stop();
     }
@@ -363,7 +365,7 @@ mod tests {
             .await
             .unwrap();
 
-        let rpc_client = RpcClient::<FileBlockPacket>::new(connect_stream, &timeout_options);
+        let rpc_client = RpcClient::<FileBlockRequestTask>::new(connect_stream, &timeout_options);
         rpc_client.start_recv();
 
         // Drop client
