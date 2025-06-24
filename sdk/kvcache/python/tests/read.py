@@ -14,12 +14,14 @@ async def test_read():
     print("SDK initialized successfully")
 
     # Create a bytes object with size 768
-    data_to_write = bytes(768)
+    data_to_write1 = bytes([1] * 768)
+    data_to_write2 = bytes([2] * 768)
+    data_to_write3 = bytes([3] * 768)
 
-    # Write keys k1, k2, k3 for testing read operation
-    await sdk.insert(convert_string_to_list_of_integers("k1"), data_to_write)
-    await sdk.insert(convert_string_to_list_of_integers("k2"), data_to_write)
-    await sdk.insert(convert_string_to_list_of_integers("k3"), data_to_write)
+    # Write keys k1, k22, k333 for testing read operation
+    await sdk.insert(convert_string_to_list_of_integers("k1"), data_to_write1)
+    await sdk.insert(convert_string_to_list_of_integers("k22"), data_to_write2)
+    await sdk.insert(convert_string_to_list_of_integers("k333"), data_to_write3)
 
     # Test Case: Read Operation
     # Read a key "k" that doesn't exist
@@ -34,6 +36,9 @@ async def test_read():
     assert (
         data.get_len() == 768
     ), f"Data size mismatch for key 'k1': expected 768, got {data.get_len()}"
+    assert (
+        memoryview(data).tobytes() == data_to_write1
+    ), f"Data mismatch for key 'k1'"
 
     # Read partial match for "k111"
     matched_key, data = await sdk.try_load(convert_string_to_list_of_integers("k111"))
@@ -43,24 +48,33 @@ async def test_read():
     assert (
         data.get_len() == 768
     ), f"Data size mismatch for key 'k111': expected 768, got {data.get_len()}"
+    assert (
+        memoryview(data).tobytes() == data_to_write1
+    ), f"Data mismatch for key 'k1'"
 
-    # Read exact match for "k2"
-    matched_key, data = await sdk.try_load(convert_string_to_list_of_integers("k2"))
+    # Read exact match for "k22"
+    matched_key, data = await sdk.try_load(convert_string_to_list_of_integers("k22"))
     assert matched_key == convert_string_to_list_of_integers(
-        "k2"
-    ), f"Expected match for key 'k2', but got {matched_key}"
+        "k22"
+    ), f"Expected match for key 'k22', but got {matched_key}"
     assert (
         data.get_len() == 768
-    ), f"Data size mismatch for key 'k2': expected 768, got {data.get_len()}"
+    ), f"Data size mismatch for key 'k22': expected 768, got {data.get_len()}"
+    assert (
+        memoryview(data).tobytes() == data_to_write2
+    ), f"Data mismatch for key 'k22'"
 
-    # Read exact match for "k3"
-    matched_key, data = await sdk.try_load(convert_string_to_list_of_integers("k3"))
+    # Read exact match for "k333"
+    matched_key, data = await sdk.try_load(convert_string_to_list_of_integers("k333"))
     assert matched_key == convert_string_to_list_of_integers(
-        "k3"
-    ), f"Expected match for key 'k3', but got {matched_key}"
+        "k333"
+    ), f"Expected match for key 'k333', but got {matched_key}"
     assert (
         data.get_len() == 768
-    ), f"Data size mismatch for key 'k3': expected 768, got {data.get_len()}"
+    ), f"Data size mismatch for key 'k333': expected 768, got {data.get_len()}"
+    assert (
+        memoryview(data).tobytes() == data_to_write3
+    ), f"Data mismatch for key 'k333'"
 
     # Read a key "k4" that doesn't exist
     matched_key, data = await sdk.try_load(convert_string_to_list_of_integers("k4"))

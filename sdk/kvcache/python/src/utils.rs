@@ -52,9 +52,9 @@ impl Buffer {
     }
 
     unsafe fn __releasebuffer__(&mut self, view: *mut ffi::Py_buffer) {
-        // unsafe {
-            // ffi::PyBuffer_Release(view);
-        // }
+        unsafe {
+            ffi::PyBuffer_Release(view);
+        }
     }
 
     fn get_len(&self) -> usize {
