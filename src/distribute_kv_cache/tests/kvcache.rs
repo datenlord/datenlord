@@ -1,30 +1,3 @@
-use std::sync::Once;
-
-use tracing::level_filters::LevelFilter;
-use tracing_subscriber::{
-    filter, fmt::layer, layer::SubscriberExt, util::SubscriberInitExt, Layer,
-};
-
-/// Use for unit test to setup tracing
-#[allow(dead_code)]
-static INIT: Once = Once::new();
-
-/// Set up once for tracing
-#[allow(dead_code)]
-fn setup() {
-    // init tracing once
-    INIT.call_once(|| {
-        // Set the tracing log level to debug
-        let filter = filter::Targets::new().with_target(
-            "datenlord::storage::distribute_kv_cache",
-            LevelFilter::DEBUG,
-        );
-        tracing_subscriber::registry()
-            .with(layer().with_filter(filter))
-            .init();
-    });
-}
-
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 #[allow(clippy::indexing_slicing)]
@@ -47,12 +20,34 @@ mod tests {
             manager::KVCacheHandler,
             rpc::{common::ServerTimeoutOptions, server::RpcServer, workerpool::WorkerPool},
             server_cache::manager::{IndexManager, KVBlockManager},
-            tests::kvcache::setup,
         },
         fs::kv_engine::{etcd_impl::EtcdKVEngine, DeleteOption, KVEngine, KVEngineType, KeyType},
     };
+    use std::sync::Once;
+
+    use tracing::level_filters::LevelFilter;
+    use tracing_subscriber::{
+        filter, fmt::layer, layer::SubscriberExt, util::SubscriberInitExt, Layer,
+    };
 
     const ETCD_ADDRESS: &str = "127.0.0.1:2379";
+    /// Use for unit test to setup tracing
+    static INIT: Once = Once::new();
+
+    /// Set up once for tracing
+    fn setup() {
+        // init tracing once
+        INIT.call_once(|| {
+            // Set the tracing log level to debug
+            let filter = filter::Targets::new().with_target(
+                "datenlord::storage::distribute_kv_cache",
+                LevelFilter::DEBUG,
+            );
+            tracing_subscriber::registry()
+                .with(layer().with_filter(filter))
+                .init();
+        });
+    }
 
     async fn clean_up_etcd() {
         // Clean up all `CacheNode` prefix keys in etcd

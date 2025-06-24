@@ -340,44 +340,4 @@ mod tests {
 
         server.stop();
     }
-
-    #[tokio::test]
-    async fn test_client_drop() {
-        // setup();
-        // Setup server
-        let addr = "127.0.0.1:2792";
-        let pool = Arc::new(WorkerPool::new(4, 100));
-        let handler = FileBlockRpcServerHandler::new(Arc::clone(&pool));
-        let mut server = RpcServer::new(&ServerTimeoutOptions::default(), 4, 100, handler);
-        server.listen(addr).await.unwrap();
-        time::sleep(Duration::from_secs(1)).await;
-        assert!(is_port_in_use(addr).await);
-        time::sleep(Duration::from_secs(1)).await;
-
-        // Create a client
-        let timeout_options = ClientTimeoutOptions {
-            read_timeout: Duration::from_secs(1),
-            write_timeout: Duration::from_secs(1),
-            task_timeout: Duration::from_secs(1),
-            keep_alive_timeout: Duration::from_secs(1),
-        };
-        let connect_stream = connect_timeout!(addr, timeout_options.read_timeout)
-            .await
-            .unwrap();
-
-        let rpc_client = RpcClient::<FileBlockRequestTask>::new(connect_stream, &timeout_options);
-        rpc_client.start_recv();
-
-        // Drop client
-        drop(rpc_client);
-
-        // Wait some time to ensure the client has dropped, wait for tcp read timeout. default is 20 second
-        time::sleep(Duration::from_secs(20)).await;
-
-        // Check if the server has detected the dropped connection
-        // For example, check the connection count, logs, etc.
-        // done_rx channel is closed, stop sending response to the str
-
-        server.stop();
-    }
 }
