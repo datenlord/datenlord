@@ -20,14 +20,18 @@ env:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
-
+    runs-on: ubuntu-22.04
     steps:
     - uses: actions/checkout@v4
     - name: Install CSI dependencies
       run: |
         sudo apt update
         sudo apt install -y cmake g++ libprotobuf-dev protobuf-compiler
+    - name: Set up Docker
+      id: buildx
+      uses: docker/setup-buildx-action@v1
+      with:
+        version: latest
     - uses: actions-rs/toolchain@v1
       with:
         profile: minimal
@@ -46,11 +50,11 @@ jobs:
     - name: Build and install Python package
       run: |
         cd sdk/kvcache/python
-        maturin develop
-    - name: Install test dependencies
-      run: |
-        pip install -r sdk/kvcache/python/tests/requirements.txt
+        python -m venv .venv
+        source .venv/bin/activate
+        pip install -e .
     - name: Run tests
       run: |
         cd sdk/kvcache/python/tests
+        pip install pytest
         pytest
