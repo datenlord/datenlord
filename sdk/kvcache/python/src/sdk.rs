@@ -68,7 +68,7 @@ impl DatenLordSDK {
         });
 
         Ok(DatenLordSDK {
-            datenlord_client: datenlord_client,
+            datenlord_client,
         })
     }
 
