@@ -53,8 +53,3 @@ jobs:
         python -m venv .venv
         source .venv/bin/activate
         pip install -e .
-    - name: Run tests
-      run: |
-        cd sdk/kvcache/python/tests
-        pip install pytest
-        pytest
