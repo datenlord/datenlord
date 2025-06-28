@@ -57,4 +57,4 @@ jobs:
       run: |
         cd sdk/kvcache/python/tests
         pip install pytest
-        pytest
+        pytest -p no:warnings
