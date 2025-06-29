@@ -1,0 +1,16 @@
+[build-system]
+build-backend = "maturin"
+requires = ["maturin>=1.0,<2.0"]
+
+[project]
+classifiers = [
+  "Programming Language :: Rust",
+  "Programming Language :: Python :: Implementation :: CPython",
+  "Programming Language :: Python :: Implementation :: PyPy",
+]
+description = "DatenLord Python Binding"
+license = { text = "MIT" }
+name = "datenlordsdk"
+readme = "README.md"
+version = "0.1.0"
+requires-python = ">=3.10, < 3.13"
