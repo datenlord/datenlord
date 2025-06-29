@@ -73,57 +73,133 @@ mod tests {
             .unwrap();
     }
 
-    async fn start_node(ip: &str, port: u16, node_id: u32) -> Arc<ClusterManager> {
+    #[tokio::test]
+    async fn test_shutdown_one_slave_and_rw() {
+        setup();
+        clean_up_etcd().await;
+
+        // Setup the kv cache server
+        let ip = "127.0.0.1";
+        let port = 2789;
         let addr = format!("{ip}:{port}");
-        let client = EtcdKVEngine::new(vec![ETCD_ADDRESS.to_owned()])
+        let etcd_endpoint = "localhost:2379";
+        let client = EtcdKVEngine::new(vec![etcd_endpoint.to_owned()])
             .await
             .unwrap();
         let client = Arc::new(client);
 
-        let node = Node::new(ip.to_owned(), port, node_id, NodeStatus::Initializing);
+        let node = Node::new(ip.to_owned(), port, 1, NodeStatus::Initializing);
         let cluster_manager = Arc::new(ClusterManager::new(client, node));
         let cluster_manager_clone = Arc::clone(&cluster_manager);
         tokio::spawn(async move {
             cluster_manager_clone.run().await.unwrap();
         });
 
+        // Wait for the cluster manager login as master
         tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
-        cluster_manager
-    }
+        let is_master_online = cluster_manager.get_master_node().await;
+        assert!(is_master_online.is_ok());
 
-    #[tokio::test]
-    async fn test_distribute_kv_cache_e2e() {
-        setup();
-        clean_up_etcd().await;
+        let cache_manager = Arc::new(KVBlockManager::default());
+        let index_manager = Arc::new(IndexManager::<u32>::new());
 
-        // Start three nodes
-        let node1 = start_node("127.0.0.1", 2789, 1).await;
-        let node2 = start_node("127.0.0.1", 2790, 2).await;
-        let node3 = start_node("127.0.0.1", 2791, 3).await;
+        let pool = Arc::new(WorkerPool::new(5, 5));
+        let handler = KVCacheHandler::new(Arc::clone(&pool), cache_manager, index_manager);
+        let mut server = RpcServer::new(&ServerTimeoutOptions::default(), 5, 5, handler);
+        server.listen(&addr).await.unwrap();
 
-        // Verify master node is online
-        assert!(node1.get_master_node().await.is_ok());
-
-        // Simulate node2 going offline
-        node2.set_status(NodeStatus::Offline).await.unwrap();
+        tokio::time::sleep(tokio::time::Duration::from_secs(1000)).await;
 
         // Setup the kv cache client
         let block_size = 16777216;
-        let kvcacheclient = DistributeKVCacheClient::new(node1.clone(), block_size);
+        let kvcacheclient = DistributeKVCacheClient::new(cluster_manager, block_size);
         kvcacheclient.start_watch().await.unwrap();
 
-        // Test insert and read operations
+        // Test insert 1 to the kv cache client
         let prefix = [1, 2, 3, 1];
         let data = vec![1u8; 16777216];
-        kvcacheclient.insert(prefix.to_vec(), data.clone()).await.unwrap();
+        kvcacheclient.insert(prefix.to_vec(), data).await.unwrap();
 
-        let (matched_prefix, buf) = kvcacheclient.try_load(prefix.to_vec()).await.unwrap();
+        // Test insert 2 to the kv cache client
+        let prefix = vec![1, 2, 3, 2];
+        let data = vec![2u8; 16777216];
+        kvcacheclient.insert(prefix, data).await.unwrap();
+
+        // Test insert 3 to the kv cache client, will evict and insert to remote node
+        let prefix = vec![1, 2, 3, 3];
+        let data = vec![3u8; 16777216];
+        kvcacheclient.insert(prefix.clone(), data).await.unwrap();
+
+        // Test get 1 from the kv cache client
+        let prefix = vec![1, 2, 3, 1];
+        let (matched_prefix, buf) = kvcacheclient.try_load(prefix.clone()).await.unwrap();
         assert_eq!(matched_prefix, vec![1, 2, 3, 1]);
-        assert_eq!(buf, data);
+        assert_eq!(buf.len(), 16777216);
+        assert!(buf.iter().all(|&x| x == 1));
+    }
 
-        // Bring node2 back online
-        node2.set_status(NodeStatus::Online).await.unwrap();
+    #[tokio::test]
+    async fn test_shutdown_two_slaves_and_rw() {
+        setup();
+        clean_up_etcd().await;
 
-        // Additional read/write tests can be added here
+        // Setup the kv cache server
+        let ip = "127.0.0.1";
+        let port = 2789;
+        let addr = format!("{ip}:{port}");
+        let etcd_endpoint = "localhost:2379";
+        let client = EtcdKVEngine::new(vec![etcd_endpoint.to_owned()])
+            .await
+            .unwrap();
+        let client = Arc::new(client);
+
+        let node = Node::new(ip.to_owned(), port, 1, NodeStatus::Initializing);
+        let cluster_manager = Arc::new(ClusterManager::new(client, node));
+        let cluster_manager_clone = Arc::clone(&cluster_manager);
+        tokio::spawn(async move {
+            cluster_manager_clone.run().await.unwrap();
+        });
+
+        // Wait for the cluster manager login as master
+        tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+        let is_master_online = cluster_manager.get_master_node().await;
+        assert!(is_master_online.is_ok());
+
+        let cache_manager = Arc::new(KVBlockManager::default());
+        let index_manager = Arc::new(IndexManager::<u32>::new());
+
+        let pool = Arc::new(WorkerPool::new(5, 5));
+        let handler = KVCacheHandler::new(Arc::clone(&pool), cache_manager, index_manager);
+        let mut server = RpcServer::new(&ServerTimeoutOptions::default(), 5, 5, handler);
+        server.listen(&addr).await.unwrap();
+
+        tokio::time::sleep(tokio::time::Duration::from_secs(1000)).await;
+
+        // Setup the kv cache client
+        let block_size = 16777216;
+        let kvcacheclient = DistributeKVCacheClient::new(cluster_manager, block_size);
+        kvcacheclient.start_watch().await.unwrap();
+
+        // Test insert 1 to the kv cache client
+        let prefix = [1, 2, 3, 1];
+        let data = vec![1u8; 16777216];
+        kvcacheclient.insert(prefix.to_vec(), data).await.unwrap();
+
+        // Test insert 2 to the kv cache client
+        let prefix = vec![1, 2, 3, 2];
+        let data = vec![2u8; 16777216];
+        kvcacheclient.insert(prefix, data).await.unwrap();
+
+        // Test insert 3 to the kv cache client, will evict and insert to remote node
+        let prefix = vec![1, 2, 3, 3];
+        let data = vec![3u8; 16777216];
+        kvcacheclient.insert(prefix.clone(), data).await.unwrap();
+
+        // Test get 1 from the kv cache client
+        let prefix = vec![1, 2, 3, 1];
+        let (matched_prefix, buf) = kvcacheclient.try_load(prefix.clone()).await.unwrap();
+        assert_eq!(matched_prefix, vec![1, 2, 3, 1]);
+        assert_eq!(buf.len(), 16777216);
+        assert!(buf.iter().all(|&x| x == 1));
     }
 }
