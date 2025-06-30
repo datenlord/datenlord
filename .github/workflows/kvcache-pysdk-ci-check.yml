@@ -1,0 +1,47 @@
+name: Bindings Python CI
+on:
+  pull_request:
+    branches: [master]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: true
+
+env:
+  CI_RUST_TOOLCHAIN: 1.74.0
+  CONTROLLER_SOCKET_FILE: /tmp/controller.sock
+  BIND_MOUNTER: target/debug/bind_mounter
+  ETCD_CONTAINER_NAME: etcd
+  ETCD_IMAGE: gcr.io/etcd-development/etcd:v3.4.13
+  NODE_SOCKET_FILE: /tmp/node.sock
+  RUST_BACKTRACE: full
+  RUST_LOG: debug
+  DATENLORD_LOCAL_BIND_DIR: /tmp/datenlord_data_dir
+
+jobs:
+  check:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install CSI dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y cmake g++ libprotobuf-dev protobuf-compiler
+      - uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: ${{ env.CI_RUST_TOOLCHAIN }}
+          override: true
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions-rs/cargo@v1
+        with:
+          command: check
+      - name: Clippy Check
+        working-directory: "sdk/kvcache/python"
+        run: |
+          cargo clippy -- -D warnings
+      - name: Ruff Check
+        working-directory: "sdk/kvcache/python"
+        run: |
+          pip install ruff
+          ruff check .
