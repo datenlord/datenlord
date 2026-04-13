@@ -34,7 +34,7 @@ itertools = "0.10.0"
 k8s-openapi = { version = "0.15.0", default-features = false, features = [
     "v1_19",
 ] }
-libc = "0.2.79"
+libc = "0.2.184"
 lockfree-cuckoohash = "0.1.0"
 memchr = "2.3.4"
 macro-utils = { path = "./macro-utils" }
