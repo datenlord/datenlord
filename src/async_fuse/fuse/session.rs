@@ -420,11 +420,10 @@ impl<F: FileSystem + Send + Sync + 'static> Session<F> {
         // TODO: rewrite init based on do_init() in fuse_lowlevel.c
         // https://github.com/libfuse/libfuse/blob/master/lib/fuse_lowlevel.c#L1892
         let reply = ReplyInit::new(req.unique(), file);
-        // We don't support ABI versions before 7.8
-        if arg.major < 7 || (arg.major == 7 && arg.minor < 8) {
-            error!("Unsupported FUSE ABI version={}.{}", arg.major, arg.minor);
+        if let Err(e) = validate_kernel_abi_version(arg) {
+            error!("{e}");
             reply.error_code(Errno::EPROTO).await?;
-            return Err(anyhow!("FUSE ABI version too low"));
+            return Err(e);
         }
         // Call filesystem init method and give it a chance to return an error
         let filesystem = fs;
@@ -495,6 +494,33 @@ impl<F: FileSystem + Send + Sync + 'static> Session<F> {
 
         Ok(())
     }
+}
+
+fn validate_kernel_abi_version(arg: &FuseInitIn) -> anyhow::Result<()> {
+    let kernel_version = ProtoVersion {
+        major: arg.major,
+        minor: arg.minor,
+    };
+    let compiled_version = ProtoVersion {
+        major: FUSE_KERNEL_VERSION,
+        minor: FUSE_KERNEL_MINOR_VERSION,
+    };
+
+    if kernel_version.major != compiled_version.major {
+        return Err(anyhow!(
+            "unsupported FUSE ABI major version {kernel_version}; \
+             DatenLord is compiled for {compiled_version}",
+        ));
+    }
+
+    if kernel_version.minor < compiled_version.minor {
+        return Err(anyhow!(
+            "kernel FUSE ABI version {kernel_version} is lower than the \
+             DatenLord compiled ABI version {compiled_version}",
+        ));
+    }
+
+    Ok(())
 }
 
 /// Dispatch request to the filesystem
@@ -874,4 +900,69 @@ async fn dispatch<'a>(
 async fn not_implement_helper(req: &Request<'_>, file: &mut File) -> nix::Result<usize> {
     let reply = ReplyEmpty::new(req.unique(), file);
     reply.error_code(Errno::ENOSYS).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{validate_kernel_abi_version, FUSE_KERNEL_MINOR_VERSION, FUSE_KERNEL_VERSION};
+    use crate::async_fuse::fuse::protocol::FuseInitIn;
+
+    fn fuse_init_in(major: u32, minor: u32) -> FuseInitIn {
+        FuseInitIn {
+            major,
+            minor,
+            max_readahead: 0,
+            flags: 0,
+        }
+    }
+
+    #[test]
+    fn accept_compiled_kernel_abi_version() {
+        let arg = fuse_init_in(FUSE_KERNEL_VERSION, FUSE_KERNEL_MINOR_VERSION);
+        assert!(
+            validate_kernel_abi_version(&arg).is_ok(),
+            "compiled FUSE ABI version must be accepted",
+        );
+    }
+
+    #[test]
+    fn accept_newer_kernel_minor_abi_version() {
+        let arg = fuse_init_in(FUSE_KERNEL_VERSION, FUSE_KERNEL_MINOR_VERSION + 1);
+        assert!(
+            validate_kernel_abi_version(&arg).is_ok(),
+            "newer compatible FUSE ABI minor version must be accepted",
+        );
+    }
+
+    #[test]
+    fn reject_lower_kernel_minor_abi_version() {
+        let arg = fuse_init_in(FUSE_KERNEL_VERSION, FUSE_KERNEL_MINOR_VERSION - 1);
+        let err = validate_kernel_abi_version(&arg);
+        assert!(
+            err.is_err(),
+            "lower FUSE ABI minor version must be rejected",
+        );
+        assert!(
+            err.map_err(|e| e.to_string())
+                .err()
+                .is_some_and(|e| e.contains("lower")),
+            "lower FUSE ABI minor version should explain the mismatch",
+        );
+    }
+
+    #[test]
+    fn reject_different_kernel_major_abi_version() {
+        let arg = fuse_init_in(FUSE_KERNEL_VERSION + 1, 0);
+        let err = validate_kernel_abi_version(&arg);
+        assert!(
+            err.is_err(),
+            "different FUSE ABI major version must be rejected",
+        );
+        assert!(
+            err.map_err(|e| e.to_string())
+                .err()
+                .is_some_and(|e| e.contains("major")),
+            "different FUSE ABI major version should explain the mismatch",
+        );
+    }
 }
