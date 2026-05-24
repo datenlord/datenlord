@@ -166,6 +166,16 @@ jobs:
           command: clippy
           args: --all-features --all-targets --locked -- -D warnings
 
+  clippy-allow:
+    name: Clippy Allow
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+      - name: Check new Clippy allowances
+        run: .github/scripts/check-new-clippy-allows.sh
+
   fstest:
     name: fstest
     runs-on: ubuntu-22.04
